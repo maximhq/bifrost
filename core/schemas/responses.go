@@ -131,14 +131,46 @@ type ResponsesTextConfigFormat struct {
 
 // ResponsesTextConfigFormatJSONSchema represents a JSON schema specification
 type ResponsesTextConfigFormatJSONSchema struct {
-	Name                 *string         `json:"name,omitempty"`
-	Schema               *any            `json:"schema,omitempty"`
-	Description          *string         `json:"description,omitempty"`
-	Strict               *bool           `json:"strict,omitempty"`
-	AdditionalProperties *bool           `json:"additionalProperties,omitempty"`
-	Properties           *map[string]any `json:"properties,omitempty"`
-	Required             []string        `json:"required,omitempty"`
-	Type                 *string         `json:"type,omitempty"`
+	Name                 *string                     `json:"name,omitempty"`
+	Schema               *any                        `json:"schema,omitempty"`
+	Description          *string                     `json:"description,omitempty"`
+	Strict               *bool                       `json:"strict,omitempty"`
+	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"`
+	Properties           *map[string]any             `json:"properties,omitempty"`
+	Required             []string                    `json:"required,omitempty"`
+	Type                 *string                     `json:"type,omitempty"`
+
+	// JSON Schema definition fields
+	Defs        *map[string]any `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
+	Definitions *map[string]any `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
+	Ref         *string         `json:"$ref,omitempty"`        // Reference to definition
+
+	// Array schema fields
+	Items    *map[string]any `json:"items,omitempty"`    // Array element schema
+	MinItems *int64          `json:"minItems,omitempty"` // Minimum array length
+	MaxItems *int64          `json:"maxItems,omitempty"` // Maximum array length
+
+	// Composition fields (union types)
+	AnyOf []map[string]any `json:"anyOf,omitempty"` // Union types (any of these schemas)
+	OneOf []map[string]any `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
+	AllOf []map[string]any `json:"allOf,omitempty"` // Schema intersection (all of these)
+
+	// String validation fields
+	Format    *string `json:"format,omitempty"`    // String format (email, date, uri, etc.)
+	Pattern   *string `json:"pattern,omitempty"`   // Regex pattern for strings
+	MinLength *int64  `json:"minLength,omitempty"` // Minimum string length
+	MaxLength *int64  `json:"maxLength,omitempty"` // Maximum string length
+
+	// Number validation fields
+	Minimum *float64 `json:"minimum,omitempty"` // Minimum number value
+	Maximum *float64 `json:"maximum,omitempty"` // Maximum number value
+
+	// Misc fields
+	Title            *string     `json:"title,omitempty"`            // Schema title
+	Default          interface{} `json:"default,omitempty"`          // Default value
+	Nullable         *bool       `json:"nullable,omitempty"`         // Nullable indicator (OpenAPI 3.0 style)
+	Enum             []string    `json:"enum,omitempty"`             // Enum values
+	PropertyOrdering []string    `json:"propertyOrdering,omitempty"` // Ordering of properties, specific to Gemini
 }
 
 type ResponsesResponseConversation struct {

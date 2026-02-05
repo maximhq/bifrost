@@ -74,7 +74,15 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 
 	// Extract additionalProperties
 	if addPropsVal, ok := paramsMap["additionalProperties"].(bool); ok {
-		result.AdditionalProperties = &addPropsVal
+		result.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+			AdditionalPropertiesBool: &addPropsVal,
+		}
+	}
+
+	if addPropsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["additionalProperties"]); ok {
+		result.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+			AdditionalPropertiesMap: &addPropsVal,
+		}
 	}
 
 	return result

@@ -14,6 +14,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+const DefaultCompletionMaxTokens = 8192 // Default max output tokens for Gemini - used for relative reasoning max token calculation
+const DefaultReasoningMinBudget = 1024  // Default minimum reasoning budget for Gemini
+const DynamicReasoningBudget = -1       // Special value for dynamic reasoning budget in Gemini
+
 type Role string
 
 const (
@@ -914,7 +918,7 @@ type GenerationConfigThinkingConfig struct {
 	ThinkingBudget *int32 `json:"thinkingBudget,omitempty"`
 
 	// Optional. Indicates the thinking level.
-	ThinkingLevel ThinkingLevel `json:"thinkingLevel,omitempty"`
+	ThinkingLevel *string `json:"thinkingLevel,omitempty"`
 }
 
 // Gemini API supports Camel case but genai sdk sends thinking fields as snake_case
@@ -922,12 +926,12 @@ type GenerationConfigThinkingConfig struct {
 func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 	// Define an auxiliary struct with both camelCase and snake_case tags
 	type Alias struct {
-		IncludeThoughts      *bool          `json:"includeThoughts"`
-		IncludeThoughtsSnake *bool          `json:"include_thoughts"`
-		ThinkingBudget       *int32         `json:"thinkingBudget"`
-		ThinkingBudgetSnake  *int32         `json:"thinking_budget"`
-		ThinkingLevel        *ThinkingLevel `json:"thinkingLevel"`
-		ThinkingLevelSnake   *ThinkingLevel `json:"thinking_level"`
+		IncludeThoughts      *bool   `json:"includeThoughts"`
+		IncludeThoughtsSnake *bool   `json:"include_thoughts"`
+		ThinkingBudget       *int32  `json:"thinkingBudget"`
+		ThinkingBudgetSnake  *int32  `json:"thinking_budget"`
+		ThinkingLevel        *string `json:"thinkingLevel"`
+		ThinkingLevelSnake   *string `json:"thinking_level"`
 	}
 
 	var aux Alias
@@ -949,9 +953,9 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 	}
 
 	if aux.ThinkingLevel != nil {
-		tc.ThinkingLevel = *aux.ThinkingLevel
+		tc.ThinkingLevel = aux.ThinkingLevel
 	} else if aux.ThinkingLevelSnake != nil {
-		tc.ThinkingLevel = *aux.ThinkingLevelSnake
+		tc.ThinkingLevel = aux.ThinkingLevelSnake
 	}
 
 	return nil

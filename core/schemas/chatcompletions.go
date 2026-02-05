@@ -275,12 +275,99 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 type ToolFunctionParameters struct {
-	Type                 string      `json:"type"`                           // Type of the parameters
-	Description          *string     `json:"description,omitempty"`          // Description of the parameters
-	Required             []string    `json:"required,omitempty"`             // Required parameter names
-	Properties           *OrderedMap `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string    `json:"enum,omitempty"`                 // Enum values for the parameters
-	AdditionalProperties *bool       `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Type                 string                      `json:"type"`                           // Type of the parameters
+	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
+	Required             []string                    `json:"required,omitempty"`             // Required parameter names
+	Properties           *OrderedMap                 `json:"properties,omitempty"`           // Parameter properties
+	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
+	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+
+	// JSON Schema definition fields
+	Defs        *OrderedMap `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
+	Definitions *OrderedMap `json:"definitions,omitempty"` // Legacy JSON Schema draft-07 definitions
+	Ref         *string     `json:"$ref,omitempty"`        // Reference to definition
+
+	// Array schema fields
+	Items    *OrderedMap `json:"items,omitempty"`    // Array element schema
+	MinItems *int64      `json:"minItems,omitempty"` // Minimum array length
+	MaxItems *int64      `json:"maxItems,omitempty"` // Maximum array length
+
+	// Composition fields (union types)
+	AnyOf []OrderedMap `json:"anyOf,omitempty"` // Union types (any of these schemas)
+	OneOf []OrderedMap `json:"oneOf,omitempty"` // Exclusive union types (exactly one of these)
+	AllOf []OrderedMap `json:"allOf,omitempty"` // Schema intersection (all of these)
+
+	// String validation fields
+	Format    *string `json:"format,omitempty"`    // String format (email, date, uri, etc.)
+	Pattern   *string `json:"pattern,omitempty"`   // Regex pattern for strings
+	MinLength *int64  `json:"minLength,omitempty"` // Minimum string length
+	MaxLength *int64  `json:"maxLength,omitempty"` // Maximum string length
+
+	// Number validation fields
+	Minimum *float64 `json:"minimum,omitempty"` // Minimum number value
+	Maximum *float64 `json:"maximum,omitempty"` // Maximum number value
+
+	// Misc fields
+	Title    *string     `json:"title,omitempty"`    // Schema title
+	Default  interface{} `json:"default,omitempty"`  // Default value
+	Nullable *bool       `json:"nullable,omitempty"` // Nullable indicator (OpenAPI 3.0 style)
+}
+
+type AdditionalPropertiesStruct struct {
+	AdditionalPropertiesBool *bool
+	AdditionalPropertiesMap  *OrderedMap
+}
+
+// MarshalJSON implements custom JSON marshalling for AdditionalPropertiesStruct.
+// It marshals either AdditionalPropertiesBool or AdditionalPropertiesMap based on which is set.
+func (a AdditionalPropertiesStruct) MarshalJSON() ([]byte, error) {
+
+	// if both are set, return an error
+	if a.AdditionalPropertiesBool != nil && a.AdditionalPropertiesMap != nil {
+		return nil, fmt.Errorf("both AdditionalPropertiesBool and AdditionalPropertiesMap are set; only one should be non-nil")
+	}
+
+	// If bool is set, marshal as boolean
+	if a.AdditionalPropertiesBool != nil {
+		return sonic.Marshal(*a.AdditionalPropertiesBool)
+	}
+
+	// If map is set, marshal as object
+	if a.AdditionalPropertiesMap != nil {
+		return sonic.Marshal(a.AdditionalPropertiesMap)
+	}
+
+	// If both are nil, return null
+	return nil, fmt.Errorf("additionalProperties cannot be null; omit the field instead")
+}
+
+// UnmarshalJSON implements custom JSON unmarshalling for AdditionalPropertiesStruct.
+// It handles both boolean and object types for additionalProperties.
+func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		a.AdditionalPropertiesBool = nil
+		a.AdditionalPropertiesMap = nil
+		return nil
+	}
+
+	// First, try to unmarshal as a boolean
+	var boolValue bool
+	if err := sonic.Unmarshal(data, &boolValue); err == nil {
+		a.AdditionalPropertiesMap = nil
+		a.AdditionalPropertiesBool = &boolValue
+		return nil
+	}
+
+	// If that fails, try to unmarshal as a map
+	var mapValue OrderedMap
+	if err := sonic.Unmarshal(data, &mapValue); err == nil {
+		a.AdditionalPropertiesBool = nil
+		a.AdditionalPropertiesMap = &mapValue
+		return nil
+	}
+
+	// If both fail, return an error
+	return fmt.Errorf("additionalProperties must be either a boolean or an object")
 }
 
 type OrderedMap map[string]interface{}

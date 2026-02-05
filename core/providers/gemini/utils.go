@@ -6,8 +6,63 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// isGemini3Plus returns true if the model is Gemini 3.0 or higher
+// Uses simple string operations for hot path performance
+func isGemini3Plus(model string) bool {
+	// Convert to lowercase for case-insensitive comparison
+	model = strings.ToLower(model)
+
+	// Find "gemini-" prefix
+	idx := strings.Index(model, "gemini-")
+	if idx == -1 {
+		return false
+	}
+
+	// Get the part after "gemini-"
+	afterPrefix := model[idx+7:] // len("gemini-") = 7
+	if len(afterPrefix) == 0 {
+		return false
+	}
+
+	// Check first character - if it's '3' or higher, it's 3.0+
+	firstChar := afterPrefix[0]
+	return firstChar >= '3'
+}
+
+// effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
+// Pro models only support "low" or "high"
+// Other models support "minimal", "low", "medium", and "high"
+func effortToThinkingLevel(effort string, model string) string {
+	isPro := strings.Contains(strings.ToLower(model), "pro")
+
+	switch effort {
+	case "none":
+		return "" // Empty string for no thinking
+	case "minimal":
+		if isPro {
+			return "low" // Pro models don't support minimal, use low
+		}
+		return "minimal"
+	case "low":
+		return "low"
+	case "medium":
+		if isPro {
+			return "high" // Pro models don't support medium, use high
+		}
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		if isPro {
+			return "high"
+		}
+		return "medium"
+	}
+}
 
 func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters() *schemas.ResponsesParameters {
 	params := &schemas.ResponsesParameters{
@@ -36,23 +91,56 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		if strings.Contains(r.Model, "openai") {
 			params.Reasoning.Summary = schemas.Ptr("auto")
 		}
-		if config.ThinkingConfig.ThinkingLevel != ThinkingLevelUnspecified {
-			switch config.ThinkingConfig.ThinkingLevel {
-			case ThinkingLevelLow:
-				params.Reasoning.Effort = schemas.Ptr("low")
-			case ThinkingLevelHigh:
-				params.Reasoning.Effort = schemas.Ptr("high")
-			}
+
+		// Determine max tokens for conversions
+		maxTokens := DefaultCompletionMaxTokens
+		if config.MaxOutputTokens > 0 {
+			maxTokens = int(config.MaxOutputTokens)
 		}
+		minBudget := DefaultReasoningMinBudget
+
+		// Priority: Budget first (if present), then Level
 		if config.ThinkingConfig.ThinkingBudget != nil {
-			params.Reasoning.MaxTokens = schemas.Ptr(int(*config.ThinkingConfig.ThinkingBudget))
-			switch *config.ThinkingConfig.ThinkingBudget {
+			// Budget is set - use it directly
+			budget := int(*config.ThinkingConfig.ThinkingBudget)
+			params.Reasoning.MaxTokens = schemas.Ptr(budget)
+
+			// Also provide effort for compatibility
+			effort := providerUtils.GetReasoningEffortFromBudgetTokens(budget, minBudget, maxTokens)
+			params.Reasoning.Effort = schemas.Ptr(effort)
+
+			// Handle special cases
+			switch budget {
 			case 0:
 				params.Reasoning.Effort = schemas.Ptr("none")
-			case -1:
-				// dynamic thinking budget
-				params.Reasoning.Effort = schemas.Ptr("medium")
-				params.Reasoning.MaxTokens = schemas.Ptr(-1)
+			case DynamicReasoningBudget:
+				params.Reasoning.Effort = schemas.Ptr("medium") // dynamic
+			}
+		} else if config.ThinkingConfig.ThinkingLevel != nil && *config.ThinkingConfig.ThinkingLevel != "" {
+			// Level is set (only on 3.0+) - convert to effort and budget
+			level := *config.ThinkingConfig.ThinkingLevel
+			var effort string
+
+			// Map Gemini thinking level to Bifrost effort
+			switch level {
+			case "minimal":
+				effort = "minimal"
+			case "low":
+				effort = "low"
+			case "medium":
+				effort = "medium"
+			case "high":
+				effort = "high"
+			default:
+				effort = "medium"
+			}
+
+			params.Reasoning.Effort = schemas.Ptr(effort)
+
+			// Also convert to budget for compatibility
+			if effort != "none" {
+				budget, _ := providerUtils.GetBudgetTokensFromReasoningEffort(effort, minBudget, maxTokens)
+				params.Reasoning.MaxTokens = schemas.Ptr(budget)
 			}
 		}
 	}
@@ -74,7 +162,7 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 	if config.ResponseMIMEType != "" {
 		switch config.ResponseMIMEType {
 		case "application/json":
-			params.Text = buildOpenAIResponseFormat(config.ResponseSchema, config.ResponseJSONSchema)
+			params.Text = buildOpenAIResponseFormat(config.ResponseJSONSchema, config.ResponseSchema)
 		case "text/plain":
 			params.Text = &schemas.ResponsesTextConfig{
 				Format: &schemas.ResponsesTextConfigFormat{
@@ -93,6 +181,80 @@ func (r *GeminiGenerationRequest) convertGenerationConfigToResponsesParameters()
 		params.ExtraParams["response_logprobs"] = config.ResponseLogprobs
 	}
 	return params
+}
+
+// convertSchemaToOrderedMap converts a Gemini Schema to an OrderedMap
+func convertSchemaToOrderedMap(schema *Schema) schemas.OrderedMap {
+	if schema == nil {
+		return schemas.OrderedMap{}
+	}
+
+	result := schemas.OrderedMap{}
+
+	if schema.Type != "" {
+		result["type"] = strings.ToLower(string(schema.Type))
+	}
+	if schema.Description != "" {
+		result["description"] = schema.Description
+	}
+	if len(schema.Enum) > 0 {
+		result["enum"] = schema.Enum
+	}
+	if len(schema.Required) > 0 {
+		result["required"] = schema.Required
+	}
+	if len(schema.Properties) > 0 {
+		props := make(map[string]interface{})
+		for k, v := range schema.Properties {
+			props[k] = convertSchemaToOrderedMap(v)
+		}
+		result["properties"] = props
+	}
+	if schema.Items != nil {
+		result["items"] = convertSchemaToOrderedMap(schema.Items)
+	}
+	if len(schema.AnyOf) > 0 {
+		anyOf := make([]interface{}, len(schema.AnyOf))
+		for i, s := range schema.AnyOf {
+			anyOf[i] = convertSchemaToOrderedMap(s)
+		}
+		result["anyOf"] = anyOf
+	}
+	if schema.Format != "" {
+		result["format"] = schema.Format
+	}
+	if schema.Pattern != "" {
+		result["pattern"] = schema.Pattern
+	}
+	if schema.MinLength != nil {
+		result["minLength"] = *schema.MinLength
+	}
+	if schema.MaxLength != nil {
+		result["maxLength"] = *schema.MaxLength
+	}
+	if schema.MinItems != nil {
+		result["minItems"] = *schema.MinItems
+	}
+	if schema.MaxItems != nil {
+		result["maxItems"] = *schema.MaxItems
+	}
+	if schema.Minimum != nil {
+		result["minimum"] = *schema.Minimum
+	}
+	if schema.Maximum != nil {
+		result["maximum"] = *schema.Maximum
+	}
+	if schema.Title != "" {
+		result["title"] = schema.Title
+	}
+	if schema.Default != nil {
+		result["default"] = schema.Default
+	}
+	if schema.Nullable != nil {
+		result["nullable"] = *schema.Nullable
+	}
+
+	return result
 }
 
 // convertSchemaToFunctionParameters converts genai.Schema to schemas.FunctionParameters
@@ -115,6 +277,60 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 
 	if len(schema.Enum) > 0 {
 		params.Enum = schema.Enum
+	}
+
+	// Array schema fields
+	if schema.Items != nil {
+		itemsMap := convertSchemaToOrderedMap(schema.Items)
+		params.Items = &itemsMap
+	}
+	if schema.MinItems != nil {
+		params.MinItems = schema.MinItems
+	}
+	if schema.MaxItems != nil {
+		params.MaxItems = schema.MaxItems
+	}
+
+	// Composition fields (anyOf)
+	if len(schema.AnyOf) > 0 {
+		anyOf := make([]schemas.OrderedMap, len(schema.AnyOf))
+		for i, s := range schema.AnyOf {
+			anyOf[i] = convertSchemaToOrderedMap(s)
+		}
+		params.AnyOf = anyOf
+	}
+
+	// String validation fields
+	if schema.Format != "" {
+		params.Format = &schema.Format
+	}
+	if schema.Pattern != "" {
+		params.Pattern = &schema.Pattern
+	}
+	if schema.MinLength != nil {
+		params.MinLength = schema.MinLength
+	}
+	if schema.MaxLength != nil {
+		params.MaxLength = schema.MaxLength
+	}
+
+	// Number validation fields
+	if schema.Minimum != nil {
+		params.Minimum = schema.Minimum
+	}
+	if schema.Maximum != nil {
+		params.Maximum = schema.Maximum
+	}
+
+	// Misc fields
+	if schema.Title != "" {
+		params.Title = &schema.Title
+	}
+	if schema.Default != nil {
+		params.Default = schema.Default
+	}
+	if schema.Nullable != nil {
+		params.Nullable = schema.Nullable
 	}
 
 	return params
@@ -357,7 +573,7 @@ func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
-func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string) GenerationConfig {
+func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseModalities []string, model string) GenerationConfig {
 	config := GenerationConfig{}
 
 	// Add response modalities if specified
@@ -396,14 +612,54 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}
-		if params.Reasoning.MaxTokens != nil {
-			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(*params.Reasoning.MaxTokens))
-		} else if params.Reasoning.Effort != nil {
-			switch *params.Reasoning.Effort {
-			case "minimal", "low":
-				config.ThinkingConfig.ThinkingLevel = ThinkingLevelLow
-			case "medium", "high":
-				config.ThinkingConfig.ThinkingLevel = ThinkingLevelHigh
+
+		// Get max tokens for conversions
+		maxTokens := DefaultCompletionMaxTokens
+		if config.MaxOutputTokens > 0 {
+			maxTokens = int(config.MaxOutputTokens)
+		}
+		minBudget := DefaultReasoningMinBudget
+
+		hasMaxTokens := params.Reasoning.MaxTokens != nil
+		hasEffort := params.Reasoning.Effort != nil
+		supportsLevel := isGemini3Plus(model) // Check if model is 3.0+
+
+		// PRIORITY RULE: If both max_tokens and effort are present, use ONLY max_tokens (budget)
+		// This ensures we send only thinkingBudget to Gemini, not thinkingLevel
+
+		// Handle "none" effort explicitly (only if max_tokens not present)
+		if !hasMaxTokens && hasEffort && *params.Reasoning.Effort == "none" {
+			config.ThinkingConfig.IncludeThoughts = false
+			config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+		} else if hasMaxTokens {
+			// User provided max_tokens - use thinkingBudget (all Gemini models support this)
+			// If both max_tokens and effort are present, we ignore effort and use ONLY max_tokens
+			budget := *params.Reasoning.MaxTokens
+			switch budget {
+			case 0:
+				config.ThinkingConfig.IncludeThoughts = false
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(0))
+			case DynamicReasoningBudget: // Special case: -1 means dynamic budget
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(DynamicReasoningBudget))
+			default:
+				config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budget))
+			}
+		} else if hasEffort {
+			// User provided effort only (no max_tokens)
+			if supportsLevel {
+				// Gemini 3.0+ - use thinkingLevel (more native)
+				level := effortToThinkingLevel(*params.Reasoning.Effort, model)
+				config.ThinkingConfig.ThinkingLevel = &level
+			} else {
+				// Gemini < 3.0 - must convert effort to budget
+				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(
+					*params.Reasoning.Effort,
+					minBudget,
+					maxTokens,
+				)
+				if err == nil {
+					config.ThinkingConfig.ThinkingBudget = schemas.Ptr(int32(budgetTokens))
+				}
 			}
 		}
 	}
@@ -417,9 +673,9 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 				switch formatType {
 				case "json_schema":
 					// OpenAI Structured Outputs: {"type": "json_schema", "json_schema": {...}}
-					if schema := extractSchemaFromResponseFormat(params.ResponseFormat); schema != nil {
+					if schemaMap := extractSchemaMapFromResponseFormat(params.ResponseFormat); schemaMap != nil {
 						config.ResponseMIMEType = "application/json"
-						config.ResponseSchema = schema
+						config.ResponseJSONSchema = schemaMap
 					}
 				case "json_object":
 					// Maps to Gemini's responseMimeType without schema
@@ -508,6 +764,67 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 		}
 	}
 
+	// Array schema fields
+	if params.Items != nil {
+		schema.Items = convertPropertyToSchema(*params.Items)
+	}
+	if params.MinItems != nil {
+		schema.MinItems = params.MinItems
+	}
+	if params.MaxItems != nil {
+		schema.MaxItems = params.MaxItems
+	}
+
+	// Composition fields (anyOf, oneOf, allOf)
+	if len(params.AnyOf) > 0 {
+		schema.AnyOf = make([]*Schema, len(params.AnyOf))
+		for i, item := range params.AnyOf {
+			schema.AnyOf[i] = convertPropertyToSchema(item)
+		}
+	}
+	// Note: Gemini treats oneOf the same as anyOf, so we map it to AnyOf
+	if len(params.OneOf) > 0 && len(schema.AnyOf) == 0 {
+		schema.AnyOf = make([]*Schema, len(params.OneOf))
+		for i, item := range params.OneOf {
+			schema.AnyOf[i] = convertPropertyToSchema(item)
+		}
+	}
+	// Note: Gemini doesn't have native allOf support, but we can still attempt to pass it through AnyOf
+	// This is a best-effort conversion as allOf semantics differ from anyOf
+
+	// String validation fields
+	if params.Format != nil {
+		schema.Format = *params.Format
+	}
+	if params.Pattern != nil {
+		schema.Pattern = *params.Pattern
+	}
+	if params.MinLength != nil {
+		schema.MinLength = params.MinLength
+	}
+	if params.MaxLength != nil {
+		schema.MaxLength = params.MaxLength
+	}
+
+	// Number validation fields
+	if params.Minimum != nil {
+		schema.Minimum = params.Minimum
+	}
+	if params.Maximum != nil {
+		schema.Maximum = params.Maximum
+	}
+
+	// Misc fields
+	if params.Title != nil {
+		schema.Title = *params.Title
+	}
+	if params.Default != nil {
+		schema.Default = params.Default
+	}
+	if params.Nullable != nil {
+		schema.Nullable = params.Nullable
+	}
+
 	return schema
 }
 
@@ -515,8 +832,15 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 func convertPropertyToSchema(prop interface{}) *Schema {
 	schema := &Schema{}
 
-	// Handle property as map[string]interface{}
-	if propMap, ok := prop.(map[string]interface{}); ok {
+	// Handle property as map[string]interface{} or schemas.OrderedMap
+	var propMap map[string]interface{}
+	switch v := prop.(type) {
+	case map[string]interface{}:
+		propMap = v
+	case schemas.OrderedMap:
+		propMap = map[string]interface{}(v)
+	}
+	if propMap != nil {
 		if propType, exists := propMap["type"]; exists {
 			if typeStr, ok := propType.(string); ok {
 				schema.Type = Type(typeStr)
@@ -570,6 +894,94 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				schema.Required = reqStrs
 			} else if reqStrs, ok := required.([]string); ok {
 				schema.Required = reqStrs
+			}
+		}
+
+		// Handle anyOf composition
+		if anyOf, exists := propMap["anyOf"]; exists {
+			if anyOfSlice, ok := anyOf.([]interface{}); ok {
+				schema.AnyOf = make([]*Schema, len(anyOfSlice))
+				for i, item := range anyOfSlice {
+					schema.AnyOf[i] = convertPropertyToSchema(item)
+				}
+			}
+		}
+
+		// Handle oneOf composition (Gemini treats it as anyOf)
+		if oneOf, exists := propMap["oneOf"]; exists {
+			if oneOfSlice, ok := oneOf.([]interface{}); ok && len(schema.AnyOf) == 0 {
+				schema.AnyOf = make([]*Schema, len(oneOfSlice))
+				for i, item := range oneOfSlice {
+					schema.AnyOf[i] = convertPropertyToSchema(item)
+				}
+			}
+		}
+
+		// Handle string validation fields
+		if format, exists := propMap["format"]; exists {
+			if formatStr, ok := format.(string); ok {
+				schema.Format = formatStr
+			}
+		}
+
+		if pattern, exists := propMap["pattern"]; exists {
+			if patternStr, ok := pattern.(string); ok {
+				schema.Pattern = patternStr
+			}
+		}
+
+		if minLength, exists := propMap["minLength"]; exists {
+			if minLengthVal, ok := toInt64(minLength); ok {
+				schema.MinLength = &minLengthVal
+			}
+		}
+
+		if maxLength, exists := propMap["maxLength"]; exists {
+			if maxLengthVal, ok := toInt64(maxLength); ok {
+				schema.MaxLength = &maxLengthVal
+			}
+		}
+
+		// Handle number validation fields
+		if minimum, exists := propMap["minimum"]; exists {
+			if minVal, ok := toFloat64(minimum); ok {
+				schema.Minimum = &minVal
+			}
+		}
+
+		if maximum, exists := propMap["maximum"]; exists {
+			if maxVal, ok := toFloat64(maximum); ok {
+				schema.Maximum = &maxVal
+			}
+		}
+
+		// Handle array validation fields
+		if minItems, exists := propMap["minItems"]; exists {
+			if minItemsVal, ok := toInt64(minItems); ok {
+				schema.MinItems = &minItemsVal
+			}
+		}
+
+		if maxItems, exists := propMap["maxItems"]; exists {
+			if maxItemsVal, ok := toInt64(maxItems); ok {
+				schema.MaxItems = &maxItemsVal
+			}
+		}
+
+		// Handle misc fields
+		if title, exists := propMap["title"]; exists {
+			if titleStr, ok := title.(string); ok {
+				schema.Title = titleStr
+			}
+		}
+
+		if defaultVal, exists := propMap["default"]; exists {
+			schema.Default = defaultVal
+		}
+
+		if nullable, exists := propMap["nullable"]; exists {
+			if nullableBool, ok := nullable.(bool); ok {
+				schema.Nullable = &nullableBool
 			}
 		}
 	}
@@ -652,10 +1064,37 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
-func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
+func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, *Content) {
 	var contents []Content
+	var systemInstruction *Content
 
 	for _, message := range messages {
+		// Handle system messages separately - Gemini requires them in SystemInstruction field
+		if message.Role == schemas.ChatMessageRoleSystem {
+			if systemInstruction == nil {
+				systemInstruction = &Content{}
+			}
+
+			// Extract system message content
+			if message.Content != nil {
+				if message.Content.ContentStr != nil && *message.Content.ContentStr != "" {
+					systemInstruction.Parts = append(systemInstruction.Parts, &Part{
+						Text: *message.Content.ContentStr,
+					})
+				} else if message.Content.ContentBlocks != nil {
+					for _, block := range message.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							systemInstruction.Parts = append(systemInstruction.Parts, &Part{
+								Text: *block.Text,
+							})
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// For non-system messages, proceed with normal handling
 		var parts []*Part
 
 		// Handle content
@@ -825,7 +1264,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) []Content {
 		}
 	}
 
-	return contents
+	return contents, systemInstruction
 }
 
 // normalizeSchemaTypes recursively normalizes type values from uppercase to lowercase
@@ -931,7 +1370,15 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	// Extract additionalProperties
 	if additionalProps, ok := normalizedSchemaMap["additionalProperties"].(bool); ok {
-		jsonSchema.AdditionalProperties = schemas.Ptr(additionalProps)
+		jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+			AdditionalPropertiesBool: &additionalProps,
+		}
+	}
+
+	if additionalProps, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["additionalProperties"]); ok {
+		jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
+			AdditionalPropertiesMap: &additionalProps,
+		}
 	}
 
 	// Extract name/title
@@ -941,45 +1388,203 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 		jsonSchema.Name = schemas.Ptr(title)
 	}
 
+	// Extract $defs (JSON Schema draft 2019-09+)
+	if defs, ok := normalizedSchemaMap["$defs"].(map[string]interface{}); ok {
+		jsonSchema.Defs = &defs
+	}
+
+	// Extract definitions (legacy JSON Schema draft-07)
+	if definitions, ok := normalizedSchemaMap["definitions"].(map[string]interface{}); ok {
+		jsonSchema.Definitions = &definitions
+	}
+
+	// Extract $ref
+	if ref, ok := normalizedSchemaMap["$ref"].(string); ok {
+		jsonSchema.Ref = schemas.Ptr(ref)
+	}
+
+	// Extract items (array element schema)
+	if items, ok := normalizedSchemaMap["items"].(map[string]interface{}); ok {
+		jsonSchema.Items = &items
+	}
+
+	// Extract minItems
+	if minItems, ok := toInt64(normalizedSchemaMap["minItems"]); ok {
+		jsonSchema.MinItems = &minItems
+	}
+
+	// Extract maxItems
+	if maxItems, ok := toInt64(normalizedSchemaMap["maxItems"]); ok {
+		jsonSchema.MaxItems = &maxItems
+	}
+
+	// Extract anyOf
+	if anyOf, ok := normalizedSchemaMap["anyOf"].([]interface{}); ok {
+		anyOfMaps := make([]map[string]any, 0, len(anyOf))
+		for _, item := range anyOf {
+			if m, ok := item.(map[string]interface{}); ok {
+				anyOfMaps = append(anyOfMaps, m)
+			}
+		}
+		if len(anyOfMaps) > 0 {
+			jsonSchema.AnyOf = anyOfMaps
+		}
+	}
+
+	// Extract oneOf
+	if oneOf, ok := normalizedSchemaMap["oneOf"].([]interface{}); ok {
+		oneOfMaps := make([]map[string]any, 0, len(oneOf))
+		for _, item := range oneOf {
+			if m, ok := item.(map[string]interface{}); ok {
+				oneOfMaps = append(oneOfMaps, m)
+			}
+		}
+		if len(oneOfMaps) > 0 {
+			jsonSchema.OneOf = oneOfMaps
+		}
+	}
+
+	// Extract allOf
+	if allOf, ok := normalizedSchemaMap["allOf"].([]interface{}); ok {
+		allOfMaps := make([]map[string]any, 0, len(allOf))
+		for _, item := range allOf {
+			if m, ok := item.(map[string]interface{}); ok {
+				allOfMaps = append(allOfMaps, m)
+			}
+		}
+		if len(allOfMaps) > 0 {
+			jsonSchema.AllOf = allOfMaps
+		}
+	}
+
+	// Extract format
+	if format, ok := normalizedSchemaMap["format"].(string); ok {
+		jsonSchema.Format = schemas.Ptr(format)
+	}
+
+	// Extract pattern
+	if pattern, ok := normalizedSchemaMap["pattern"].(string); ok {
+		jsonSchema.Pattern = schemas.Ptr(pattern)
+	}
+
+	// Extract minLength
+	if minLength, ok := toInt64(normalizedSchemaMap["minLength"]); ok {
+		jsonSchema.MinLength = &minLength
+	}
+
+	// Extract maxLength
+	if maxLength, ok := toInt64(normalizedSchemaMap["maxLength"]); ok {
+		jsonSchema.MaxLength = &maxLength
+	}
+
+	// Extract minimum
+	if minimum, ok := toFloat64(normalizedSchemaMap["minimum"]); ok {
+		jsonSchema.Minimum = &minimum
+	}
+
+	// Extract maximum
+	if maximum, ok := toFloat64(normalizedSchemaMap["maximum"]); ok {
+		jsonSchema.Maximum = &maximum
+	}
+
+	// Extract title (separate from name)
+	if title, ok := normalizedSchemaMap["title"].(string); ok {
+		jsonSchema.Title = schemas.Ptr(title)
+	}
+
+	// Extract default
+	if defaultVal, exists := normalizedSchemaMap["default"]; exists {
+		jsonSchema.Default = defaultVal
+	}
+
+	// Extract nullable
+	if nullable, ok := normalizedSchemaMap["nullable"].(bool); ok {
+		jsonSchema.Nullable = &nullable
+	}
+
+	// Extract enum
+	if enum, ok := normalizedSchemaMap["enum"].([]interface{}); ok {
+		enumStrs := make([]string, 0, len(enum))
+		for _, e := range enum {
+			if str, ok := e.(string); ok {
+				enumStrs = append(enumStrs, str)
+			}
+		}
+		if len(enumStrs) > 0 {
+			jsonSchema.Enum = enumStrs
+		}
+	} else if enumStrs, ok := normalizedSchemaMap["enum"].([]string); ok && len(enumStrs) > 0 {
+		jsonSchema.Enum = enumStrs
+	}
+
 	return jsonSchema
 }
 
 // buildOpenAIResponseFormat builds OpenAI response_format for JSON types
-func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interface{}) *schemas.ResponsesTextConfig {
+func buildOpenAIResponseFormat(responseJsonSchema interface{}, responseSchema *Schema) *schemas.ResponsesTextConfig {
+	name := "json_response"
+
 	var schemaMap map[string]interface{}
-	name := "response_schema"
 
-	// Prefer responseSchema over responseJsonSchema
-	if responseSchema != nil {
-		// Convert Schema struct to map
-		schemaBytes, err := sonic.Marshal(responseSchema)
-		if err == nil {
-			if err := sonic.Unmarshal(schemaBytes, &schemaMap); err == nil {
-				if responseSchema.Title != "" {
-					name = responseSchema.Title
-				}
-			}
-			// If unmarshal failed, schemaMap remains nil - will try next option
-		}
-	}
-
-	if schemaMap == nil && responseJsonSchema != nil {
+	// Try to use responseJsonSchema first
+	if responseJsonSchema != nil {
 		// Use responseJsonSchema directly if it's a map
-		if m, ok := responseJsonSchema.(map[string]interface{}); ok {
-			schemaMap = m
-			if title, ok := m["title"].(string); ok && title != "" {
-				name = title
+		var ok bool
+		schemaMap, ok = responseJsonSchema.(map[string]interface{})
+		if !ok {
+			// If not a map, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
 			}
 		}
-	}
+	} else if responseSchema != nil {
+		// Convert responseSchema to map using JSON marshaling and type normalization
+		data, err := sonic.Marshal(responseSchema)
+		if err != nil {
+			// If marshaling fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
 
-	// No schema provided - use json_object mode
-	if schemaMap == nil {
+		var rawMap map[string]interface{}
+		if err := sonic.Unmarshal(data, &rawMap); err != nil {
+			// If unmarshaling fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+
+		// Apply type normalization (convert types to lowercase)
+		normalized := convertTypeToLowerCase(rawMap)
+		var ok bool
+		schemaMap, ok = normalized.(map[string]interface{})
+		if !ok {
+			// If type assertion fails, fall back to json_object mode
+			return &schemas.ResponsesTextConfig{
+				Format: &schemas.ResponsesTextConfigFormat{
+					Type: "json_object",
+				},
+			}
+		}
+	} else {
+		// No schema provided - use json_object mode
 		return &schemas.ResponsesTextConfig{
 			Format: &schemas.ResponsesTextConfigFormat{
 				Type: "json_object",
 			},
 		}
+	}
+
+	// Extract name/title if present
+	if title, ok := schemaMap["title"].(string); ok && title != "" {
+		name = title
 	}
 
 	// Build JSONSchema with individual fields spread out
@@ -995,8 +1600,141 @@ func buildOpenAIResponseFormat(responseSchema *Schema, responseJsonSchema interf
 	}
 }
 
-// extractSchemaFromResponseFormat extracts Gemini Schema from OpenAI's response_format structure
-func extractSchemaFromResponseFormat(responseFormat *interface{}) *Schema {
+// extractTypesFromValue extracts type strings from various formats (string, []string, []interface{})
+func extractTypesFromValue(typeVal interface{}) []string {
+	switch t := typeVal.(type) {
+	case string:
+		return []string{t}
+	case []string:
+		return t
+	case []interface{}:
+		types := make([]string, 0, len(t))
+		for _, item := range t {
+			if typeStr, ok := item.(string); ok {
+				types = append(types, typeStr)
+			}
+		}
+		return types
+	default:
+		return nil
+	}
+}
+
+// normalizeSchemaForGemini recursively normalizes a JSON schema to be compatible with Gemini's API.
+// This handles cases where:
+// 1. type is an array like ["string", "null"] - kept as-is (Gemini supports this)
+// 2. type is an array with multiple non-null types like ["string", "integer"] - converted to anyOf
+// 3. Enums with nullable types need special handling
+func normalizeSchemaForGemini(schema map[string]interface{}) map[string]interface{} {
+	if schema == nil {
+		return nil
+	}
+
+	normalized := make(map[string]interface{})
+	for k, v := range schema {
+		normalized[k] = v
+	}
+
+	// Handle type field if it's an array (e.g., ["string", "null"] or ["string", "integer"])
+	if typeVal, exists := normalized["type"]; exists {
+		types := extractTypesFromValue(typeVal)
+		if len(types) > 1 {
+			// Count non-null types
+			nonNullTypes := make([]string, 0, len(types))
+			hasNull := false
+			for _, t := range types {
+				if t != "null" {
+					nonNullTypes = append(nonNullTypes, t)
+				} else {
+					hasNull = true
+				}
+			}
+
+			// If we have multiple non-null types, we need to convert to anyOf
+			// because Gemini only supports ["type", "null"] but not ["type1", "type2"]
+			if len(nonNullTypes) > 1 {
+				// Multiple non-null types - must use anyOf
+				delete(normalized, "type")
+
+				// Build anyOf with each non-null type
+				anyOfSchemas := make([]interface{}, 0, len(types))
+				for _, t := range nonNullTypes {
+					typeSchema := map[string]interface{}{"type": t}
+					anyOfSchemas = append(anyOfSchemas, typeSchema)
+				}
+
+				// If original had null, add it to anyOf
+				if hasNull {
+					anyOfSchemas = append(anyOfSchemas, map[string]interface{}{"type": "null"})
+				}
+
+				normalized["anyOf"] = anyOfSchemas
+
+				// Remove enum from top level if present, as it may not be compatible with anyOf
+				delete(normalized, "enum")
+			} else if len(nonNullTypes) == 1 && hasNull {
+				// Single non-null type with null - keep as array (Gemini supports this)
+				normalized["type"] = []interface{}{nonNullTypes[0], "null"}
+			} else if len(nonNullTypes) == 1 && !hasNull {
+				// Single type only - simplify to string
+				normalized["type"] = nonNullTypes[0]
+			} else if len(nonNullTypes) == 0 && hasNull {
+				// Only null type
+				normalized["type"] = "null"
+			}
+		}
+	}
+
+	// Recursively normalize properties
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		newProps := make(map[string]interface{})
+		for key, prop := range properties {
+			if propMap, ok := prop.(map[string]interface{}); ok {
+				newProps[key] = normalizeSchemaForGemini(propMap)
+			} else {
+				newProps[key] = prop
+			}
+		}
+		normalized["properties"] = newProps
+	}
+
+	// Recursively normalize items (for arrays)
+	if items, ok := schema["items"].(map[string]interface{}); ok {
+		normalized["items"] = normalizeSchemaForGemini(items)
+	}
+
+	// Recursively normalize anyOf
+	if anyOf, ok := schema["anyOf"].([]interface{}); ok {
+		newAnyOf := make([]interface{}, 0, len(anyOf))
+		for _, item := range anyOf {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				newAnyOf = append(newAnyOf, normalizeSchemaForGemini(itemMap))
+			} else {
+				newAnyOf = append(newAnyOf, item)
+			}
+		}
+		normalized["anyOf"] = newAnyOf
+	}
+
+	// Recursively normalize oneOf
+	if oneOf, ok := schema["oneOf"].([]interface{}); ok {
+		newOneOf := make([]interface{}, 0, len(oneOf))
+		for _, item := range oneOf {
+			if itemMap, ok := item.(map[string]interface{}); ok {
+				newOneOf = append(newOneOf, normalizeSchemaForGemini(itemMap))
+			} else {
+				newOneOf = append(newOneOf, item)
+			}
+		}
+		normalized["oneOf"] = newOneOf
+	}
+
+	return normalized
+}
+
+// extractSchemaMapFromResponseFormat extracts the JSON schema map from OpenAI's response_format structure
+// This returns the raw schema map to be used with ResponseJSONSchema
+func extractSchemaMapFromResponseFormat(responseFormat *interface{}) map[string]interface{} {
 	formatMap, ok := (*responseFormat).(map[string]interface{})
 	if !ok {
 		return nil
@@ -1022,18 +1760,8 @@ func extractSchemaFromResponseFormat(responseFormat *interface{}) *Schema {
 		return nil
 	}
 
-	// Convert map to Gemini Schema type via JSON marshaling
-	schemaBytes, err := sonic.Marshal(schemaMap)
-	if err != nil {
-		return nil
-	}
-
-	schema := &Schema{}
-	if err := sonic.Unmarshal(schemaBytes, schema); err != nil {
-		return nil
-	}
-
-	return schema
+	// Normalize the schema for Gemini compatibility
+	return normalizeSchemaForGemini(schemaMap)
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
@@ -1057,4 +1785,36 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	}
 
 	return ""
+}
+
+// toInt64 converts various numeric types to int64
+func toInt64(v interface{}) (int64, bool) {
+	switch val := v.(type) {
+	case int:
+		return int64(val), true
+	case int64:
+		return val, true
+	case float64:
+		return int64(val), true
+	case float32:
+		return int64(val), true
+	default:
+		return 0, false
+	}
+}
+
+// toFloat64 converts various numeric types to float64
+func toFloat64(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case float32:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	default:
+		return 0, false
+	}
 }
