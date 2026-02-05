@@ -11,61 +11,51 @@ func TestExtractBase64Image(t *testing.T) {
 		name     string
 		input    string
 		expected string
-		wantWarn bool
 	}{
 		{
 			name:     "data URL with JPEG",
 			input:    "data:image/jpeg;base64,/9j/4AAQSkZJRg==",
 			expected: "/9j/4AAQSkZJRg==",
-			wantWarn: false,
 		},
 		{
 			name:     "data URL with PNG",
 			input:    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==",
 			expected: "iVBORw0KGgoAAAANSUhEUg==",
-			wantWarn: false,
 		},
 		{
 			name:     "raw base64",
 			input:    "iVBORw0KGgoAAAANSUhEUg==",
 			expected: "iVBORw0KGgoAAAANSUhEUg==",
-			wantWarn: false,
 		},
 		{
 			name:     "HTTP URL",
 			input:    "https://example.com/image.jpg",
 			expected: "",
-			wantWarn: true,
 		},
 		{
 			name:     "HTTPS URL",
 			input:    "https://example.com/image.png",
 			expected: "",
-			wantWarn: true,
 		},
 		{
 			name:     "empty string",
 			input:    "",
 			expected: "",
-			wantWarn: false,
 		},
 		{
 			name:     "malformed data URL - no comma",
 			input:    "data:image/jpeg;base64",
 			expected: "",
-			wantWarn: true,
 		},
 		{
 			name:     "malformed data URL - empty after comma",
 			input:    "data:image/jpeg;base64,",
 			expected: "",
-			wantWarn: true,
 		},
 		{
-			name:     "invalid base64",
+			name:     "raw string passed through",
 			input:    "not-valid-base64!@#$%",
-			expected: "",
-			wantWarn: true,
+			expected: "not-valid-base64!@#$%",
 		},
 	}
 
@@ -76,79 +66,6 @@ func TestExtractBase64Image(t *testing.T) {
 				t.Errorf("extractBase64Image(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
-	}
-}
-
-func TestIsValidBase64(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  bool
-	}{
-		{
-			name:  "valid base64 - standard",
-			input: "iVBORw0KGgoAAAANSUhEUg==",
-			want:  true,
-		},
-		{
-			name:  "valid base64 - JPEG header",
-			input: "/9j/4AAQSkZJRg==",
-			want:  true,
-		},
-		{
-			name:  "valid base64 - no padding",
-			input: "SGVsbG8gV29ybGQ",
-			want:  true,
-		},
-		{
-			name:  "invalid - too short",
-			input: "abc",
-			want:  false,
-		},
-		{
-			name:  "invalid - special characters",
-			input: "abc!@#$%",
-			want:  false,
-		},
-		{
-			name:  "empty string",
-			input: "",
-			want:  false,
-		},
-		{
-			name:  "URL",
-			input: "https://example.com",
-			want:  false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isValidBase64(tt.input)
-			if result != tt.want {
-				t.Errorf("isValidBase64(%q) = %v, want %v", tt.input, result, tt.want)
-			}
-		})
-	}
-}
-
-func TestMin(t *testing.T) {
-	tests := []struct {
-		a, b int
-		want int
-	}{
-		{5, 10, 5},
-		{10, 5, 5},
-		{5, 5, 5},
-		{0, 10, 0},
-		{-5, 5, -5},
-	}
-
-	for _, tt := range tests {
-		result := min(tt.a, tt.b)
-		if result != tt.want {
-			t.Errorf("min(%d, %d) = %d, want %d", tt.a, tt.b, result, tt.want)
-		}
 	}
 }
 

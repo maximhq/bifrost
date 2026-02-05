@@ -3,9 +3,7 @@
 package ollama
 
 import (
-	"encoding/base64"
 	"encoding/json"
-	"log"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -92,9 +90,8 @@ func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
 			}
 		}
 
-		// Handle tool response messages - must set tool_name per Ollama semantics
-		// Ollama uses tool_name (function name) to correlate, not tool_call_id
-		// If Name is not set, try to map from ToolCallID to function name
+		// Handle tool response messages - set tool_name and tool_call_id per Ollama semantics
+		// Ollama uses tool_name (function name) to correlate, and also supports tool_call_id
 		if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
 			if msg.Name != nil {
 				ollamaMsg.ToolName = msg.Name
@@ -102,11 +99,11 @@ func convertMessagesToOllama(messages []schemas.ChatMessage) []OllamaMessage {
 				// Try to map ToolCallID to function name from previous assistant messages
 				if functionName, found := toolCallIDToName[*msg.ChatToolMessage.ToolCallID]; found {
 					ollamaMsg.ToolName = &functionName
-				} else {
-					log.Printf("Error in Tool message without Name field and ToolCallID '%s' not found in previous tool calls - Ollama requires tool_name field", *msg.ChatToolMessage.ToolCallID)
 				}
-			} else {
-				log.Printf("Error in Tool message without Name field or ToolCallID - Ollama requires tool_name field")
+			}
+			// Set tool_call_id if available
+			if msg.ChatToolMessage.ToolCallID != nil {
+				ollamaMsg.ToolCallID = msg.ChatToolMessage.ToolCallID
 			}
 		}
 
@@ -145,20 +142,23 @@ func convertMessagesFromOllama(messages []OllamaMessage) []schemas.ChatMessage {
 		// If hasToolCalls is true, Content remains nil (no content for function invocation requests)
 
 		// Handle assistant messages with tool calls
-		// Ollama doesn't provide tool call IDs - ID field is optional in Bifrost, so we don't set it
 		if hasToolCalls {
 			var toolCalls []schemas.ChatAssistantMessageToolCall
-			for i, tc := range msg.ToolCalls {
+			for _, tc := range msg.ToolCalls {
 				args, _ := json.Marshal(tc.Function.Arguments)
-				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Index: uint16(i),
+				bifrostTC := schemas.ChatAssistantMessageToolCall{
+					Index: uint16(tc.Function.Index),
 					Type:  schemas.Ptr("function"),
-					// ID is intentionally not set - Ollama doesn't provide tool call IDs
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &tc.Function.Name,
+						Name:      schemas.Ptr(tc.Function.Name),
 						Arguments: string(args),
 					},
-				})
+				}
+				// Set tool call ID if provided by Ollama
+				if tc.ID != "" {
+					bifrostTC.ID = schemas.Ptr(tc.ID)
+				}
+				toolCalls = append(toolCalls, bifrostTC)
 			}
 			bifrostMsg.ChatAssistantMessage = &schemas.ChatAssistantMessage{
 				ToolCalls: toolCalls,
@@ -204,12 +204,14 @@ func convertMessagesFromOllama(messages []OllamaMessage) []schemas.ChatMessage {
 		}
 
 		// Handle tool response messages
-		// Ollama uses tool_name (function name) to correlate, not tool_call_id
-		// We set ToolCallID to the function name for Bifrost compatibility, even though Ollama doesn't use IDs
-		if msg.Role == "tool" && msg.ToolName != nil {
-			toolCallID := *msg.ToolName
-			bifrostMsg.ChatToolMessage = &schemas.ChatToolMessage{
-				ToolCallID: &toolCallID, // Set to function name for compatibility
+		// Use tool_call_id if provided, otherwise fall back to tool_name for correlation
+		if msg.Role == "tool" && (msg.ToolName != nil || msg.ToolCallID != nil) {
+			bifrostMsg.ChatToolMessage = &schemas.ChatToolMessage{}
+			if msg.ToolCallID != nil {
+				bifrostMsg.ChatToolMessage.ToolCallID = msg.ToolCallID
+			} else if msg.ToolName != nil {
+				toolCallID := *msg.ToolName
+				bifrostMsg.ChatToolMessage.ToolCallID = &toolCallID
 			}
 			bifrostMsg.Name = msg.ToolName
 		}
@@ -304,13 +306,12 @@ func convertContentToOllama(content *schemas.ChatMessageContent) (string, []stri
 			// Note: ImageURLStruct.URL can be:
 			// 1. A data URL: "data:image/jpeg;base64,<base64>"
 			// 2. Raw base64: "<base64>"
-			// 3. HTTP(S) URL: "https://..." (not supported by Ollama)
+			// 3. HTTP(S) URL: "https://..." (not supported by Ollama, skipped)
 			if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
 				imageData := extractBase64Image(block.ImageURLStruct.URL)
 				if imageData != "" {
 					images = append(images, imageData)
 				}
-				// extractBase64Image logs warnings for unsupported formats
 			}
 		}
 	}
@@ -322,12 +323,13 @@ func convertContentToOllama(content *schemas.ChatMessageContent) (string, []stri
 
 // extractBase64Image extracts raw base64 data from various image URL formats.
 // Ollama expects raw base64 strings without data URL prefixes.
+// Returns empty string for unsupported formats (HTTP URLs, invalid data).
 //
 // Supported formats:
 //   - data:image/jpeg;base64,<base64> -> extracts <base64>
 //   - data:image/png;base64,<base64>  -> extracts <base64>
 //   - <raw-base64>                     -> returns as-is
-//   - http(s)://...                    -> logs warning, returns empty (not supported)
+//   - http(s)://...                    -> returns empty (not supported)
 func extractBase64Image(url string) string {
 	if url == "" {
 		return ""
@@ -339,68 +341,24 @@ func extractBase64Image(url string) string {
 		// Find the comma that separates the metadata from the base64 data
 		commaIndex := strings.Index(url, ",")
 		if commaIndex != -1 && commaIndex < len(url)-1 {
-			// Extract everything after the comma (the raw base64 data)
-			base64Data := url[commaIndex+1:]
-			// Validate it's actually base64
-			if isValidBase64(base64Data) {
-				return base64Data
-			}
-			log.Printf("Data URL contains invalid base64 data: %s", url[:min(50, len(url))])
-			return ""
+			return url[commaIndex+1:]
 		}
-		log.Printf("Malformed data URL (no comma separator): %s", url[:min(50, len(url))])
 		return ""
 	}
 
-	// Check if it's a regular HTTP(S) URL
+	// HTTP(S) URLs are not supported by Ollama
 	if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
-		log.Printf("Ollama does not support HTTP(S) image URLs. Please convert to base64: %s", url[:min(100, len(url))])
 		return ""
 	}
 
-	// Assume it's raw base64 - validate and return
-	if isValidBase64(url) {
-		return url
-	}
-
-	log.Printf("Image URL is neither a valid data URL nor base64: %s", url[:min(50, len(url))])
-	return ""
-}
-
-// isValidBase64 checks if a string is valid base64 encoded data.
-// This is more robust than just checking if it decodes, as it also validates
-// that the string contains only valid base64 characters.
-func isValidBase64(s string) bool {
-	if len(s) < 4 {
-		return false
-	}
-
-	// Try to decode - this validates both format and content
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		// Try with padding issues fixed
-		decoded, err = base64.RawStdEncoding.DecodeString(s)
-		if err != nil {
-			return false
-		}
-	}
-
-	// Sanity check: decoded data should be non-empty for images
-	return len(decoded) > 0
-}
-
-// min returns the minimum of two integers.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+	// Assume it's raw base64 - return as-is
+	// Ollama will handle validation on its end
+	return url
 }
 
 // ==================== TOOL CONVERSION UTILITIES ====================
 
 // convertToolCallsToOllama converts Bifrost tool calls to Ollama format.
-// Ollama tool calls don't require an ID field - they use function name for correlation
 func convertToolCallsToOllama(toolCalls []schemas.ChatAssistantMessageToolCall) []OllamaToolCall {
 	var ollamaToolCalls []OllamaToolCall
 
@@ -408,7 +366,6 @@ func convertToolCallsToOllama(toolCalls []schemas.ChatAssistantMessageToolCall) 
 		var args map[string]interface{}
 		if tc.Function.Arguments != "" {
 			if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-				log.Printf("Failed to unmarshal tool call arguments: %v. Raw arguments: %s", err, tc.Function.Arguments)
 				args = map[string]interface{}{
 					"_raw_arguments": tc.Function.Arguments,
 				}
@@ -423,12 +380,20 @@ func convertToolCallsToOllama(toolCalls []schemas.ChatAssistantMessageToolCall) 
 			name = *tc.Function.Name
 		}
 
-		ollamaToolCalls = append(ollamaToolCalls, OllamaToolCall{
+		ollamaTC := OllamaToolCall{
 			Function: OllamaToolCallFunction{
+				Index:     int(tc.Index),
 				Name:      name,
 				Arguments: args,
 			},
-		})
+		}
+
+		// Set tool call ID if available
+		if tc.ID != nil {
+			ollamaTC.ID = *tc.ID
+		}
+
+		ollamaToolCalls = append(ollamaToolCalls, ollamaTC)
 	}
 
 	return ollamaToolCalls
@@ -473,7 +438,7 @@ func convertToolsFromOllama(tools []OllamaTool) []schemas.ChatTool {
 			Type: schemas.ChatToolTypeFunction,
 			Function: &schemas.ChatToolFunction{
 				Name:        tool.Function.Name,
-				Description: &tool.Function.Description,
+				Description: schemas.Ptr(tool.Function.Description),
 				Parameters:  tool.Function.Parameters,
 			},
 		}

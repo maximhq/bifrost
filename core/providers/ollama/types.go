@@ -13,35 +13,40 @@ import (
 // OllamaChatRequest represents an Ollama chat completion request using native API.
 // See: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion
 type OllamaChatRequest struct {
-	Model     string          `json:"model"`                // Required: Name of the model to use
-	Messages  []OllamaMessage `json:"messages"`             // Required: Messages for the chat
-	Tools     []OllamaTool    `json:"tools,omitempty"`      // Optional: List of tools the model may use
-	Think     *bool           `json:"think,omitempty"`      // Optional: Enable thinking (default: false)
-	Format    interface{}     `json:"format,omitempty"`     // Optional: Format of the response (e.g., "json" or JSON schema)
-	Options   *OllamaOptions  `json:"options,omitempty"`    // Optional: Model parameters
-	Stream    *bool           `json:"stream,omitempty"`     // Optional: Enable streaming (default: true)
-	KeepAlive *string         `json:"keep_alive,omitempty"` // Optional: How long to keep model loaded (e.g., "5m", "0" to unload)
+	Model       string          `json:"model"`                  // Required: Name of the model to use
+	Messages    []OllamaMessage `json:"messages"`               // Required: Messages for the chat
+	Tools       []OllamaTool    `json:"tools,omitempty"`        // Optional: List of tools the model may use
+	Think       *OllamaThinkValue `json:"think,omitempty"`      // Optional: Enable thinking - bool or string ("low"/"medium"/"high")
+	Format      interface{}     `json:"format,omitempty"`       // Optional: Format of the response (e.g., "json" or JSON schema)
+	Options     *OllamaOptions  `json:"options,omitempty"`      // Optional: Model parameters
+	Stream      *bool           `json:"stream,omitempty"`       // Optional: Enable streaming (default: true)
+	KeepAlive   *string         `json:"keep_alive,omitempty"`   // Optional: How long to keep model loaded (e.g., "5m", "0" to unload)
+	Logprobs    *bool           `json:"logprobs,omitempty"`     // Optional: Return log probabilities
+	TopLogprobs *int            `json:"top_logprobs,omitempty"` // Optional: Number of top log probabilities to return
 }
 
 // OllamaMessage represents a message in Ollama format.
 type OllamaMessage struct {
-	Role      string           `json:"role"`                 // "system", "user", "assistant", or "tool"
-	Content   string           `json:"content"`              // Message content
-	Thinking  *string          `json:"thinking,omitempty"`   // Optional: Thinking content
-	Images    []string         `json:"images,omitempty"`     // Optional: Base64 encoded images for multimodal models
-	ToolCalls []OllamaToolCall `json:"tool_calls,omitempty"` // Optional: Tool calls made by the assistant
-	ToolName  *string          `json:"tool_name,omitempty"`  // Optional: Tool name
+	Role       string           `json:"role"`                  // "system", "user", "assistant", or "tool"
+	Content    string           `json:"content"`               // Message content
+	Thinking   *string          `json:"thinking,omitempty"`    // Optional: Thinking content
+	Images     []string         `json:"images,omitempty"`      // Optional: Base64 encoded images for multimodal models
+	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`  // Optional: Tool calls made by the assistant
+	ToolName   *string          `json:"tool_name,omitempty"`   // Optional: Tool name (for tool response messages)
+	ToolCallID *string          `json:"tool_call_id,omitempty"` // Optional: Tool call ID for correlation
 }
 
 // OllamaToolCall represents a tool call in Ollama format.
 type OllamaToolCall struct {
+	ID       string                  `json:"id,omitempty"` // Optional: Tool call ID for correlation
 	Function OllamaToolCallFunction `json:"function"`
 }
 
 // OllamaToolCallFunction represents the function details of a tool call.
 type OllamaToolCallFunction struct {
-	Name      string                 `json:"name"`
-	Arguments map[string]interface{} `json:"arguments"`
+	Index     int                    `json:"index"`     // Index of the tool call
+	Name      string                 `json:"name"`      // Function name
+	Arguments map[string]interface{} `json:"arguments"` // Function arguments
 }
 
 // OllamaTool represents a tool definition in Ollama format.
@@ -65,6 +70,7 @@ type OllamaOptions struct {
 	Temperature *float64 `json:"temperature,omitempty"` // Sampling temperature (0.0-2.0)
 	TopP        *float64 `json:"top_p,omitempty"`       // Top-p sampling
 	TopK        *int     `json:"top_k,omitempty"`       // Top-k sampling
+	MinP        *float64 `json:"min_p,omitempty"`       // Min-p sampling
 	Seed        *int     `json:"seed,omitempty"`        // Random seed for reproducibility
 	Stop        []string `json:"stop,omitempty"`        // Stop sequences
 
@@ -93,21 +99,37 @@ type OllamaOptions struct {
 	Numa     *bool `json:"numa,omitempty"`      // Enable NUMA support
 }
 
+// OllamaThinkValue represents the think parameter which can be a bool or a string.
+// Most models accept bool (true/false), while GPT-OSS accepts "low"/"medium"/"high".
+type OllamaThinkValue struct {
+	BoolVal   *bool
+	StringVal *string
+}
+
+// OllamaLogprob represents a token log probability in Ollama format.
+type OllamaLogprob struct {
+	Token      string            `json:"token"`                 // The token string
+	Logprob    float64           `json:"logprob"`               // Log probability of this token
+	Bytes      []int             `json:"bytes,omitempty"`       // Byte representation of the token
+	TopLogprobs []OllamaLogprob  `json:"top_logprobs,omitempty"` // Top alternative tokens
+}
+
 // ==================== RESPONSE TYPES ====================
 
 // OllamaChatResponse represents an Ollama chat completion response.
 type OllamaChatResponse struct {
-	Model              string         `json:"model"`                          // Model used for generation
-	CreatedAt          string         `json:"created_at"`                     // Timestamp when response was created
-	Message            *OllamaMessage `json:"message,omitempty"`              // Generated message
-	Done               bool           `json:"done"`                           // Whether generation is complete
-	DoneReason         *string        `json:"done_reason,omitempty"`          // Reason for completion ("stop", "length", "load", "unload")
-	TotalDuration      *int64         `json:"total_duration,omitempty"`       // Total time in nanoseconds
-	LoadDuration       *int64         `json:"load_duration,omitempty"`        // Time to load model in nanoseconds
-	PromptEvalCount    *int           `json:"prompt_eval_count,omitempty"`    // Number of tokens in prompt
-	PromptEvalDuration *int64         `json:"prompt_eval_duration,omitempty"` // Time to evaluate prompt in nanoseconds
-	EvalCount          *int           `json:"eval_count,omitempty"`           // Number of tokens generated
-	EvalDuration       *int64         `json:"eval_duration,omitempty"`        // Time to generate response in nanoseconds
+	Model              string          `json:"model"`                          // Model used for generation
+	CreatedAt          string          `json:"created_at"`                     // Timestamp when response was created
+	Message            *OllamaMessage  `json:"message,omitempty"`              // Generated message
+	Done               bool            `json:"done"`                           // Whether generation is complete
+	DoneReason         *string         `json:"done_reason,omitempty"`          // Reason for completion ("stop", "length", "load", "unload")
+	TotalDuration      *int64          `json:"total_duration,omitempty"`       // Total time in nanoseconds
+	LoadDuration       *int64          `json:"load_duration,omitempty"`        // Time to load model in nanoseconds
+	PromptEvalCount    *int            `json:"prompt_eval_count,omitempty"`    // Number of tokens in prompt
+	PromptEvalDuration *int64          `json:"prompt_eval_duration,omitempty"` // Time to evaluate prompt in nanoseconds
+	EvalCount          *int            `json:"eval_count,omitempty"`           // Number of tokens generated
+	EvalDuration       *int64          `json:"eval_duration,omitempty"`        // Time to generate response in nanoseconds
+	Logprobs           []OllamaLogprob `json:"logprobs,omitempty"`             // Token log probabilities
 }
 
 type OllamaEmbeddingInput struct {
@@ -120,17 +142,18 @@ type OllamaEmbeddingInput struct {
 // OllamaEmbeddingRequest represents an Ollama embedding request.
 // See: https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings
 type OllamaEmbeddingRequest struct {
-	Model     string               `json:"model"`                // Required: Name of the embedding model
-	Input     OllamaEmbeddingInput `json:"input"`                // Required: Text to embed (string or []string)
-	Truncate  *bool                `json:"truncate,omitempty"`   // Optional: Truncate input to fit context length
-	Options   *OllamaOptions       `json:"options,omitempty"`    // Optional: Model parameters
-	KeepAlive *string              `json:"keep_alive,omitempty"` // Optional: How long to keep model loaded
+	Model      string               `json:"model"`                  // Required: Name of the embedding model
+	Input      OllamaEmbeddingInput `json:"input"`                  // Required: Text to embed (string or []string)
+	Truncate   *bool                `json:"truncate,omitempty"`     // Optional: Truncate input to fit context length
+	Dimensions *int                 `json:"dimensions,omitempty"`   // Optional: Number of dimensions for the embedding
+	Options    *OllamaOptions       `json:"options,omitempty"`      // Optional: Model parameters
+	KeepAlive  *string              `json:"keep_alive,omitempty"`   // Optional: How long to keep model loaded
 }
 
 // OllamaEmbeddingResponse represents an Ollama embedding response.
 type OllamaEmbeddingResponse struct {
 	Model           string      `json:"model"`                       // Model used for embedding
-	Embeddings      [][]float64 `json:"embeddings"`                  // Generated embeddings
+	Embeddings      [][]float32 `json:"embeddings"`                  // Generated embeddings
 	TotalDuration   *int64      `json:"total_duration,omitempty"`    // Total time in nanoseconds
 	LoadDuration    *int64      `json:"load_duration,omitempty"`     // Time to load model in nanoseconds
 	PromptEvalCount *int        `json:"prompt_eval_count,omitempty"` // Number of tokens processed
@@ -175,15 +198,16 @@ type OllamaError struct {
 // OllamaStreamResponse represents a single streaming chunk from Ollama.
 // It's the same structure as OllamaChatResponse but used during streaming.
 type OllamaStreamResponse struct {
-	Model              string         `json:"model"`
-	CreatedAt          string         `json:"created_at"`
-	Message            *OllamaMessage `json:"message,omitempty"`
-	Done               bool           `json:"done"`
-	DoneReason         *string        `json:"done_reason,omitempty"`
-	TotalDuration      *int64         `json:"total_duration,omitempty"`
-	LoadDuration       *int64         `json:"load_duration,omitempty"`
-	PromptEvalCount    *int           `json:"prompt_eval_count,omitempty"`
-	PromptEvalDuration *int64         `json:"prompt_eval_duration,omitempty"`
-	EvalCount          *int           `json:"eval_count,omitempty"`
-	EvalDuration       *int64         `json:"eval_duration,omitempty"`
+	Model              string          `json:"model"`
+	CreatedAt          string          `json:"created_at"`
+	Message            *OllamaMessage  `json:"message,omitempty"`
+	Done               bool            `json:"done"`
+	DoneReason         *string         `json:"done_reason,omitempty"`
+	TotalDuration      *int64          `json:"total_duration,omitempty"`
+	LoadDuration       *int64          `json:"load_duration,omitempty"`
+	PromptEvalCount    *int            `json:"prompt_eval_count,omitempty"`
+	PromptEvalDuration *int64          `json:"prompt_eval_duration,omitempty"`
+	EvalCount          *int            `json:"eval_count,omitempty"`
+	EvalDuration       *int64          `json:"eval_duration,omitempty"`
+	Logprobs           []OllamaLogprob `json:"logprobs,omitempty"`
 }

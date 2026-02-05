@@ -40,6 +40,11 @@ func ToOllamaEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Olla
 			ollamaReq.KeepAlive = keepAlive
 		}
 
+		// Dimensions for embedding
+		if dimensions, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["dimensions"]); ok {
+			ollamaReq.Dimensions = dimensions
+		}
+
 		// Model options
 		options := &OllamaOptions{}
 		hasOptions := false
@@ -101,16 +106,10 @@ func (r *OllamaEmbeddingResponse) ToBifrostEmbeddingResponse(model string) *sche
 
 	// Convert embeddings to Bifrost format
 	for i, embedding := range r.Embeddings {
-		// Convert []float64 to []float32
-		embeddingFloat32 := make([]float32, len(embedding))
-		for j, v := range embedding {
-			embeddingFloat32[j] = float32(v)
-		}
-
 		response.Data = append(response.Data, schemas.EmbeddingData{
 			Object: "embedding",
 			Embedding: schemas.EmbeddingStruct{
-				EmbeddingArray: embeddingFloat32,
+				EmbeddingArray: embedding,
 			},
 			Index: i,
 		})

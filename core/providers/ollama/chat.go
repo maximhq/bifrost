@@ -4,10 +4,52 @@ package ollama
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// UnmarshalJSON implements custom JSON unmarshaling for OllamaThinkValue.
+// Accepts both bool (true/false) and string ("low"/"medium"/"high").
+func (t *OllamaThinkValue) UnmarshalJSON(b []byte) error {
+	var boolVal bool
+	if err := json.Unmarshal(b, &boolVal); err == nil {
+		t.BoolVal = &boolVal
+		t.StringVal = nil
+		return nil
+	}
+
+	var strVal string
+	if err := json.Unmarshal(b, &strVal); err == nil {
+		t.BoolVal = nil
+		t.StringVal = &strVal
+		return nil
+	}
+
+	return fmt.Errorf("ollama think value must be bool or string")
+}
+
+// MarshalJSON implements custom JSON marshaling for OllamaThinkValue.
+func (t OllamaThinkValue) MarshalJSON() ([]byte, error) {
+	if t.BoolVal != nil {
+		return json.Marshal(*t.BoolVal)
+	}
+	if t.StringVal != nil {
+		return json.Marshal(*t.StringVal)
+	}
+	return json.Marshal(nil)
+}
+
+// NewThinkBool creates an OllamaThinkValue from a bool.
+func NewThinkBool(v bool) *OllamaThinkValue {
+	return &OllamaThinkValue{BoolVal: &v}
+}
+
+// NewThinkString creates an OllamaThinkValue from a string.
+func NewThinkString(v string) *OllamaThinkValue {
+	return &OllamaThinkValue{StringVal: &v}
+}
 
 // ToOllamaChatRequest converts a Bifrost chat request to Ollama native format.
 func ToOllamaChatRequest(bifrostReq *schemas.BifrostChatRequest) *OllamaChatRequest {
@@ -126,9 +168,29 @@ func ToOllamaChatRequest(bifrostReq *schemas.BifrostChatRequest) *OllamaChatRequ
 				ollamaReq.KeepAlive = keepAlive
 			}
 
+			// Min-p sampling
+			if minP, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["min_p"]); ok {
+				options.MinP = minP
+				hasOptions = true
+			}
+
 			// Enable thinking mode (for thinking-specific models)
-			if think, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["think"]); ok {
-				ollamaReq.Think = think
+			// Supports bool (true/false) or string ("low"/"medium"/"high" for GPT-OSS)
+			if think, exists := bifrostReq.Params.ExtraParams["think"]; exists && think != nil {
+				switch v := think.(type) {
+				case bool:
+					ollamaReq.Think = NewThinkBool(v)
+				case string:
+					ollamaReq.Think = NewThinkString(v)
+				}
+			}
+
+			// Log probabilities
+			if logprobs, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["logprobs"]); ok {
+				ollamaReq.Logprobs = logprobs
+			}
+			if topLogprobs, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_logprobs"]); ok {
+				ollamaReq.TopLogprobs = topLogprobs
 			}
 		}
 
@@ -255,14 +317,19 @@ func (r *OllamaChatResponse) ToBifrostChatResponse(model string) *schemas.Bifros
 	if r.Message != nil {
 		var toolCalls []schemas.ChatAssistantMessageToolCall
 		if len(r.Message.ToolCalls) > 0 {
-			for i, tc := range r.Message.ToolCalls {
+			for _, tc := range r.Message.ToolCalls {
 				args, _ := json.Marshal(tc.Function.Arguments)
+				// Use Ollama's tool call ID if provided, otherwise fall back to function name
+				id := tc.Function.Name
+				if tc.ID != "" {
+					id = tc.ID
+				}
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Index: uint16(i),
+					Index: uint16(tc.Function.Index),
 					Type:  schemas.Ptr("function"),
-					ID:    schemas.Ptr(tc.Function.Name), // Ollama doesn't provide IDs, use name
+					ID:    schemas.Ptr(id),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &tc.Function.Name,
+						Name:      schemas.Ptr(tc.Function.Name),
 						Arguments: string(args),
 					},
 				})
@@ -396,14 +463,19 @@ func (r *OllamaStreamResponse) ToBifrostStreamResponse(chunkIndex int) (*schemas
 	if r.Message != nil {
 		var toolCalls []schemas.ChatAssistantMessageToolCall
 		if len(r.Message.ToolCalls) > 0 {
-			for i, tc := range r.Message.ToolCalls {
+			for _, tc := range r.Message.ToolCalls {
 				args, _ := json.Marshal(tc.Function.Arguments)
+				// Use Ollama's tool call ID if provided, otherwise fall back to function name
+				id := tc.Function.Name
+				if tc.ID != "" {
+					id = tc.ID
+				}
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Index: uint16(i),
+					Index: uint16(tc.Function.Index),
 					Type:  schemas.Ptr("function"),
-					ID:    schemas.Ptr(tc.Function.Name),
+					ID:    schemas.Ptr(id),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &tc.Function.Name,
+						Name:      schemas.Ptr(tc.Function.Name),
 						Arguments: string(args),
 					},
 				})
