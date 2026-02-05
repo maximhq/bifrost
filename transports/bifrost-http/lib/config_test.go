@@ -776,6 +776,10 @@ func (m *MockConfigStore) GetAllRedactedKeys(ctx context.Context, ids []string) 
 	return nil, nil
 }
 
+func (m *MockConfigStore) UpdateModelDiscoveryStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error {
+	return nil
+}
+
 // Session
 func (m *MockConfigStore) GetSession(ctx context.Context, token string) (*tables.SessionsTable, error) {
 	return nil, nil
@@ -14934,9 +14938,9 @@ var enterpriseSchemaPaths = map[string]bool{
 var excludedGoFields = map[string]map[string]bool{
 	// ClientConfig - MCP fields are managed at MCP level, not client level
 	"configstore.ClientConfig": {
-		"ConfigHash":              true,
-		"allowed_headers":         true, // Internal use
-		"mcp_agent_depth":         true, // Managed via MCP config
+		"ConfigHash":                  true,
+		"allowed_headers":             true, // Internal use
+		"mcp_agent_depth":             true, // Managed via MCP config
 		"mcp_code_mode_binding_level": true,
 		"mcp_tool_execution_timeout":  true,
 		"mcp_tool_sync_interval":      true,
@@ -14996,18 +15000,18 @@ var excludedGoFields = map[string]map[string]bool{
 		"tool_sync_interval": true, // Internal
 	},
 	"schemas.MCPClientConfig": {
-		"client_id":            true, // Internal ID
-		"state":                true, // Runtime state
-		"is_code_mode_client":  true, // Internal
-		"auth_type":            true, // Internal
-		"oauth_config_id":      true, // Internal
-		"is_ping_available":    true, // Runtime state
-		"tool_sync_interval":   true, // Internal
-		"tool_pricing":         true, // Internal
+		"client_id":             true, // Internal ID
+		"state":                 true, // Runtime state
+		"is_code_mode_client":   true, // Internal
+		"auth_type":             true, // Internal
+		"oauth_config_id":       true, // Internal
+		"is_ping_available":     true, // Runtime state
+		"tool_sync_interval":    true, // Internal
+		"tool_pricing":          true, // Internal
 		"tools_to_auto_execute": true, // Internal
-		"tools_to_execute":     true, // Moved to VK MCP config
-		"connection_string":    true, // Use specific config types instead
-		"headers":              true, // Internal
+		"tools_to_execute":      true, // Moved to VK MCP config
+		"connection_string":     true, // Use specific config types instead
+		"headers":               true, // Internal
 	},
 	"schemas.MCPToolManagerConfig": {
 		"code_mode_binding_level": true, // Internal

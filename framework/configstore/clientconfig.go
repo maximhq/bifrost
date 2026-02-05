@@ -233,6 +233,8 @@ type ProviderConfig struct {
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
+	ModelDiscoveryStatus     string                            `json:"model_discovery_status,omitempty"`      // Model discovery status for keyless providers
+	ModelDiscoveryError      string                            `json:"model_discovery_error,omitempty"`       // Model discovery error message for keyless providers
 }
 
 // Redacted returns a redacted copy of the provider configuration.
@@ -245,6 +247,8 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawResponse:      p.SendBackRawResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		ConfigHash:               p.ConfigHash,
+		ModelDiscoveryStatus:     p.ModelDiscoveryStatus,
+		ModelDiscoveryError:      p.ModelDiscoveryError,
 	}
 
 	if p.ProxyConfig != nil {
@@ -276,6 +280,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
 		}
+
+		// Add model discovery status and error
+		redactedConfig.Keys[i].ModelDiscoveryStatus = key.ModelDiscoveryStatus
+		redactedConfig.Keys[i].ModelDiscoveryError = key.ModelDiscoveryError
 
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {

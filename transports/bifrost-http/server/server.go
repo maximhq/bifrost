@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -434,58 +435,78 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 	return nil
 }
 
-// ReloadProvider reloads a provider from the database into in-memory store
-// If usage was modified (e.g., reset due to config change), syncs it back to DB
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
-	// Sync model level budgets in governance plugin
+	// Load provider from DB
 	providerInfo, err := s.Config.ConfigStore.GetProvider(ctx, provider)
 	if err != nil {
 		logger.Error("failed to load provider: %v", err)
 		return nil, err
 	}
-	governancePlugin, err := s.getGovernancePlugin()
-	if err != nil {
-		return nil, err
-	}
-	// Update in memory and get back the potentially modified provider
-	updatedProvider := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(providerInfo)
-	if updatedProvider == nil {
-		return providerInfo, nil
-	}
-	// Sync updated usage values back to database if they changed
-	if updatedProvider.Budget != nil && providerInfo.Budget != nil {
-		if updatedProvider.Budget.CurrentUsage != providerInfo.Budget.CurrentUsage {
-			if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
-				logger.Error("failed to sync budget usage to database: %v", err)
+
+	// Initialize updatedProvider
+	updatedProvider := providerInfo
+
+	// Sync model level budgets in governance plugin (if governance is enabled)
+	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
+		governancePlugin, err := s.getGovernancePlugin()
+		if err != nil {
+			logger.Warn("governance plugin found but failed to get: %v", err)
+		} else {
+			// Update in memory and get back the potentially modified provider
+			govUpdated := governancePlugin.GetGovernanceStore().UpdateProviderInMemory(providerInfo)
+			if govUpdated != nil {
+				updatedProvider = govUpdated
+			}
+
+			// Sync updated usage values back to database if they changed
+			if updatedProvider.Budget != nil && providerInfo.Budget != nil {
+				if updatedProvider.Budget.CurrentUsage != providerInfo.Budget.CurrentUsage {
+					if err := s.Config.ConfigStore.UpdateBudgetUsage(ctx, updatedProvider.Budget.ID, updatedProvider.Budget.CurrentUsage); err != nil {
+						logger.Error("failed to sync budget usage to database: %v", err)
+					}
+				}
+			}
+			if updatedProvider.RateLimit != nil && providerInfo.RateLimit != nil {
+				tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != providerInfo.RateLimit.TokenCurrentUsage
+				requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != providerInfo.RateLimit.RequestCurrentUsage
+				if tokenUsageChanged || requestUsageChanged {
+					if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
+						logger.Error("failed to sync rate limit usage to database: %v", err)
+					}
+				}
 			}
 		}
 	}
-	if updatedProvider.RateLimit != nil && providerInfo.RateLimit != nil {
-		tokenUsageChanged := updatedProvider.RateLimit.TokenCurrentUsage != providerInfo.RateLimit.TokenCurrentUsage
-		requestUsageChanged := updatedProvider.RateLimit.RequestCurrentUsage != providerInfo.RateLimit.RequestCurrentUsage
-		if tokenUsageChanged || requestUsageChanged {
-			if err := s.Config.ConfigStore.UpdateRateLimitUsage(ctx, updatedProvider.RateLimit.ID, updatedProvider.RateLimit.TokenCurrentUsage, updatedProvider.RateLimit.RequestCurrentUsage); err != nil {
-				logger.Error("failed to sync rate limit usage to database: %v", err)
-			}
-		}
-	}
-	// Syncing models
+
+	// Syncing models (this part always runs regardless of governance)
 	if s.Config == nil || s.Config.ModelCatalog == nil {
 		return nil, fmt.Errorf("pricing manager not found")
 	}
 	if s.Client == nil {
 		return nil, fmt.Errorf("bifrost client not found")
 	}
+
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	defer bfCtx.Cancel()
+
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 		Provider: provider,
 	})
+	allModelsJSON, _ := sonic.MarshalIndent(allModels, "", "  ")
+	logger.Debug("all models: %s", string(allModelsJSON))
+	if allModels != nil && len(allModels.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+		s.updateKeyModelDiscoveryStatus(ctx, allModels.KeyStatuses)
+	}
 	if bifrostErr != nil {
 		return nil, fmt.Errorf("failed to update provider model catalog: failed to list all models: %s", bifrost.GetErrorMessage(bifrostErr))
 	}
+
+	if allModels == nil {
+		return nil, fmt.Errorf("failed to update provider model catalog: empty model list")
+	}
 	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
 	s.Config.ModelCatalog.AddModelDataToPool(allModels)
+
 	return updatedProvider, nil
 }
 
@@ -1071,7 +1092,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
 	logger.Info("bifrost client initialized")
-	// List all models and add to model catalog
+	// List all models and add to model catalog with per-provider status tracking
 	logger.Info("listing all models and adding to model catalog")
 	modelData, listModelsErr := s.Client.ListAllModels(s.Ctx, nil)
 	if listModelsErr != nil {
@@ -1080,10 +1101,18 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		} else {
 			logger.Error("failed to list all models: %v", listModelsErr)
 		}
-	} else if s.Config.ModelCatalog != nil {
+	}
+
+	// Group key statuses by provider and update each provider's status
+	if modelData != nil && len(modelData.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+		s.updateKeyModelDiscoveryStatus(ctx, modelData.KeyStatuses)
+	}
+
+	// Add models to catalog and store per-provider discovery status
+	if s.Config.ModelCatalog != nil && modelData != nil {
 		s.Config.ModelCatalog.AddModelDataToPool(modelData)
 	}
-	// Add pricing data to the client
+
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes

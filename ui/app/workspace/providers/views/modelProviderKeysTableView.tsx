@@ -15,11 +15,12 @@ import { CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useUpdateProviderMutation } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
+import { AlertCircle, EllipsisIcon, PencilIcon, PlusIcon, TrashIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import AddNewKeySheet from "../dialogs/addNewKeySheet";
@@ -105,6 +106,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 					<TableHeader className="w-full">
 						<TableRow>
 							<TableHead>API Key</TableHead>
+							<TableHead>Status</TableHead>
 							<TableHead>Weight</TableHead>
 							<TableHead>Enabled</TableHead>
 							<TableHead className="text-right"></TableHead>
@@ -113,7 +115,7 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 					<TableBody>
 						{provider.keys.length === 0 && (
 							<TableRow>
-								<TableCell colSpan={4} className="py-6 text-center">
+								<TableCell colSpan={5} className="py-6 text-center">
 									No keys found.
 								</TableCell>
 							</TableRow>
@@ -127,6 +129,20 @@ export default function ModelProviderKeysTableView({ provider, className }: Prop
 											<span className="font-mono text-sm">{key.name}</span>
 										</div>
 									</TableCell>
+								<TableCell>
+									<div className="flex items-center">
+										{key.model_discovery_status === "failed" && (
+											<Tooltip>
+												<TooltipTrigger>
+													<AlertCircle className="text-destructive h-4 w-4" />
+												</TooltipTrigger>
+												<TooltipContent>
+													{key.model_discovery_error || "Model discovery failed for this key"}
+												</TooltipContent>
+											</Tooltip>
+										)}
+									</div>
+								</TableCell>
 									<TableCell>
 										<div className="flex items-center space-x-2">
 											<span className="font-mono text-sm">{key.weight}</span>

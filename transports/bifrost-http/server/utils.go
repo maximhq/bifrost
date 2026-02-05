@@ -148,3 +148,31 @@ func MarshalPluginConfig[T any](source any) (*T, error) {
 	}
 	return nil, fmt.Errorf("invalid config type")
 }
+
+// updateKeyModelDiscoveryStatus updates the model discovery status for keys or providers based on key statuses.
+// For keyed providers: updates individual key status
+// For keyless providers: updates provider-level status
+func (s *BifrostHTTPServer) updateKeyModelDiscoveryStatus(
+	ctx context.Context,
+	keyStatuses []schemas.KeyStatus,
+) {
+	if s.Config == nil || s.Config.ConfigStore == nil || len(keyStatuses) == 0 {
+		return
+	}
+
+	// Update each key/provider status individually
+	for _, ks := range keyStatuses {
+		errorMsg := ""
+		if ks.Error != nil && ks.Error.Error != nil {
+			errorMsg = ks.Error.Error.Message
+		}
+
+		if err := s.Config.ConfigStore.UpdateModelDiscoveryStatus(ctx, ks.Provider, ks.KeyID, ks.Status, errorMsg); err != nil {
+			target := ks.KeyID
+			if target == "" {
+				target = string(ks.Provider)
+			}
+			logger.Error("failed to update model discovery status for %s: %v", target, err)
+		}
+	}
+}

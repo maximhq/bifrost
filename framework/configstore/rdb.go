@@ -240,6 +240,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			ConfigHash:               providerConfig.ConfigHash,
+			ModelDiscoveryStatus:     providerConfig.ModelDiscoveryStatus,
+			ModelDiscoveryError:      providerConfig.ModelDiscoveryError,
 		}
 
 		// Upsert provider (create or update if exists)
@@ -267,19 +269,21 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:         dbProvider.Name,
-				ProviderID:       dbProvider.ID,
-				KeyID:            key.ID,
-				Name:             key.Name,
-				Value:            key.Value,
-				Models:           key.Models,
-				Weight:           &key.Weight,
-				Enabled:          key.Enabled,
-				UseForBatchAPI:   key.UseForBatchAPI,
-				AzureKeyConfig:   key.AzureKeyConfig,
-				VertexKeyConfig:  key.VertexKeyConfig,
-				BedrockKeyConfig: key.BedrockKeyConfig,
-				ConfigHash:       keyHash,
+				Provider:             dbProvider.Name,
+				ProviderID:           dbProvider.ID,
+				KeyID:                key.ID,
+				Name:                 key.Name,
+				Value:                key.Value,
+				Models:               key.Models,
+				Weight:               &key.Weight,
+				Enabled:              key.Enabled,
+				UseForBatchAPI:       key.UseForBatchAPI,
+				AzureKeyConfig:       key.AzureKeyConfig,
+				VertexKeyConfig:      key.VertexKeyConfig,
+				BedrockKeyConfig:     key.BedrockKeyConfig,
+				ConfigHash:           keyHash,
+				ModelDiscoveryStatus: key.ModelDiscoveryStatus,
+				ModelDiscoveryError:  key.ModelDiscoveryError,
 			}
 
 			// Handle Azure config
@@ -329,6 +333,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.ID = existingKey.ID                 // Keep the same database ID
 				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
 				dbKey.Enabled = existingKey.Enabled       // Preserve the existing Enabled status
+				dbKey.ModelDiscoveryStatus = existingKey.ModelDiscoveryStatus
+				dbKey.ModelDiscoveryError = existingKey.ModelDiscoveryError
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -341,6 +347,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.KeyID = existingKey.KeyID // Preserve original KeyID
 					dbKey.ProviderID = existingKey.ProviderID
 					dbKey.Enabled = existingKey.Enabled
+					dbKey.ModelDiscoveryStatus = existingKey.ModelDiscoveryStatus
+					dbKey.ModelDiscoveryError = existingKey.ModelDiscoveryError
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -420,19 +428,21 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       keyHash,
+			Provider:             dbProvider.Name,
+			ProviderID:           dbProvider.ID,
+			KeyID:                key.ID,
+			Name:                 key.Name,
+			Value:                key.Value,
+			Models:               key.Models,
+			Weight:               &key.Weight,
+			Enabled:              key.Enabled,
+			UseForBatchAPI:       key.UseForBatchAPI,
+			AzureKeyConfig:       key.AzureKeyConfig,
+			VertexKeyConfig:      key.VertexKeyConfig,
+			BedrockKeyConfig:     key.BedrockKeyConfig,
+			ConfigHash:           keyHash,
+			ModelDiscoveryStatus: key.ModelDiscoveryStatus,
+			ModelDiscoveryError:  key.ModelDiscoveryError,
 		}
 
 		// Handle Azure config
@@ -475,6 +485,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			// not when updating via UI (so DB updates aren't overwritten on restart)
 			dbKey.ID = existingKey.ID
 			dbKey.ConfigHash = existingKey.ConfigHash
+			dbKey.ModelDiscoveryStatus = existingKey.ModelDiscoveryStatus
+			dbKey.ModelDiscoveryError = existingKey.ModelDiscoveryError
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -534,19 +546,21 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       key.ConfigHash,
+			Provider:             dbProvider.Name,
+			ProviderID:           dbProvider.ID,
+			KeyID:                key.ID,
+			Name:                 key.Name,
+			Value:                key.Value,
+			Models:               key.Models,
+			Weight:               &key.Weight,
+			Enabled:              key.Enabled,
+			UseForBatchAPI:       key.UseForBatchAPI,
+			AzureKeyConfig:       key.AzureKeyConfig,
+			VertexKeyConfig:      key.VertexKeyConfig,
+			BedrockKeyConfig:     key.BedrockKeyConfig,
+			ConfigHash:           key.ConfigHash,
+			ModelDiscoveryStatus: key.ModelDiscoveryStatus,
+			ModelDiscoveryError:  key.ModelDiscoveryError,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -649,17 +663,19 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
 			keys[i] = schemas.Key{
-				ID:               dbKey.KeyID,
-				Name:             dbKey.Name,
-				Value:            dbKey.Value,
-				Models:           dbKey.Models,
-				Weight:           getWeight(dbKey.Weight),
-				Enabled:          dbKey.Enabled,
-				UseForBatchAPI:   dbKey.UseForBatchAPI,
-				AzureKeyConfig:   dbKey.AzureKeyConfig,
-				VertexKeyConfig:  dbKey.VertexKeyConfig,
-				BedrockKeyConfig: dbKey.BedrockKeyConfig,
-				ConfigHash:       dbKey.ConfigHash,
+				ID:                   dbKey.KeyID,
+				Name:                 dbKey.Name,
+				Value:                dbKey.Value,
+				Models:               dbKey.Models,
+				Weight:               getWeight(dbKey.Weight),
+				Enabled:              dbKey.Enabled,
+				UseForBatchAPI:       dbKey.UseForBatchAPI,
+				AzureKeyConfig:       dbKey.AzureKeyConfig,
+				VertexKeyConfig:      dbKey.VertexKeyConfig,
+				BedrockKeyConfig:     dbKey.BedrockKeyConfig,
+				ConfigHash:           dbKey.ConfigHash,
+				ModelDiscoveryStatus: dbKey.ModelDiscoveryStatus,
+				ModelDiscoveryError:  dbKey.ModelDiscoveryError,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -671,6 +687,8 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			ConfigHash:               dbProvider.ConfigHash,
+			ModelDiscoveryStatus:     dbProvider.ModelDiscoveryStatus,
+			ModelDiscoveryError:      dbProvider.ModelDiscoveryError,
 		}
 		processedProviders[provider] = providerConfig
 	}
@@ -690,17 +708,19 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
 		keys[i] = schemas.Key{
-			ID:               dbKey.KeyID,
-			Name:             dbKey.Name,
-			Value:            dbKey.Value,
-			Models:           dbKey.Models,
-			Weight:           getWeight(dbKey.Weight),
-			Enabled:          dbKey.Enabled,
-			UseForBatchAPI:   dbKey.UseForBatchAPI,
-			AzureKeyConfig:   dbKey.AzureKeyConfig,
-			VertexKeyConfig:  dbKey.VertexKeyConfig,
-			BedrockKeyConfig: dbKey.BedrockKeyConfig,
-			ConfigHash:       dbKey.ConfigHash,
+			ID:                   dbKey.KeyID,
+			Name:                 dbKey.Name,
+			Value:                dbKey.Value,
+			Models:               dbKey.Models,
+			Weight:               getWeight(dbKey.Weight),
+			Enabled:              dbKey.Enabled,
+			UseForBatchAPI:       dbKey.UseForBatchAPI,
+			AzureKeyConfig:       dbKey.AzureKeyConfig,
+			VertexKeyConfig:      dbKey.VertexKeyConfig,
+			BedrockKeyConfig:     dbKey.BedrockKeyConfig,
+			ConfigHash:           dbKey.ConfigHash,
+			ModelDiscoveryStatus: dbKey.ModelDiscoveryStatus,
+			ModelDiscoveryError:  dbKey.ModelDiscoveryError,
 		}
 	}
 	return &ProviderConfig{
@@ -712,6 +732,8 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		ConfigHash:               dbProvider.ConfigHash,
+		ModelDiscoveryStatus:     dbProvider.ModelDiscoveryStatus,
+		ModelDiscoveryError:      dbProvider.ModelDiscoveryError,
 	}, nil
 }
 
@@ -746,6 +768,49 @@ func (s *RDBConfigStore) GetProviderByName(ctx context.Context, name string) (*t
 		return nil, err
 	}
 	return &provider, nil
+}
+
+// UpdateModelDiscoveryStatus updates the model discovery status for either a key or provider.
+// - If keyID is non-empty: updates the key's status (for keyed providers)
+// - If keyID is empty and provider is non-empty: updates the provider's status (for keyless providers)
+func (s *RDBConfigStore) UpdateModelDiscoveryStatus(ctx context.Context, provider schemas.ModelProvider, keyID string, status, errorMsg string) error {
+	// Update key-level status (for keyed providers)
+	if keyID != "" {
+		result := s.db.WithContext(ctx).
+			Model(&tables.TableKey{}).
+			Where("key_id = ?", keyID).
+			Updates(map[string]interface{}{
+				"model_discovery_status": status,
+				"model_discovery_error":  errorMsg,
+			})
+		if result.Error != nil {
+			return s.parseGormError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	// Update provider-level status (for keyless providers)
+	if provider != "" {
+		result := s.db.WithContext(ctx).
+			Model(&tables.TableProvider{}).
+			Where("name = ?", string(provider)).
+			Updates(map[string]interface{}{
+				"model_discovery_status": status,
+				"model_discovery_error":  errorMsg,
+			})
+		if result.Error != nil {
+			return s.parseGormError(result.Error)
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	return fmt.Errorf("either keyID or provider must be non-empty")
 }
 
 // GetMCPConfig retrieves the MCP configuration from the database.
