@@ -142,6 +142,7 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
+    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
@@ -405,6 +406,11 @@ bifrost:
       #   enabled: true
       #   config: {}
 
+  # Audit logs configuration for CADF-compliant activity logging
+  auditLogs:
+    disabled: false
+    hmacKey: ""
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
@@ -424,12 +430,18 @@ storage:
     enabled: true
     # Backend type for config store. Empty string uses storage.mode as default
     type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    # PostgreSQL connection pool tuning (only applies when type is postgres)
+    # maxIdleConns: 5
+    # maxOpenConns: 50
 
   # Logs store settings
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
     type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    # PostgreSQL connection pool tuning (only applies when type is postgres)
+    # maxIdleConns: 5
+    # maxOpenConns: 50
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:

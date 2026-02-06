@@ -326,7 +326,7 @@ false
 {{- if hasKey .Values.bifrost.governance.authConfig "disableAuthOnInference" }}
 {{- $_ := set $authConfig "disable_auth_on_inference" .Values.bifrost.governance.authConfig.disableAuthOnInference }}
 {{- end }}
-{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled $authConfig.disable_auth_on_inference }}
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
@@ -351,7 +351,10 @@ false
 {{- if hasKey .Values.bifrost.authConfig "isEnabled" }}
 {{- $_ := set $authConfig "is_enabled" .Values.bifrost.authConfig.isEnabled }}
 {{- end }}
-{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled }}
+{{- if hasKey .Values.bifrost.authConfig "disableAuthOnInference" }}
+{{- $_ := set $authConfig "disable_auth_on_inference" .Values.bifrost.authConfig.disableAuthOnInference }}
+{{- end }}
+{{- if or $authConfig.admin_username $authConfig.admin_password $authConfig.is_enabled $authConfig.disable_auth_on_inference }}
 {{- $_ := set $config "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
@@ -466,6 +469,12 @@ false
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
 {{- if eq $configStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- if .Values.storage.configStore.maxIdleConns }}
+{{- $_ := set $pgConfig "max_idle_conns" (.Values.storage.configStore.maxIdleConns | int) }}
+{{- end }}
+{{- if .Values.storage.configStore.maxOpenConns }}
+{{- $_ := set $pgConfig "max_open_conns" (.Values.storage.configStore.maxOpenConns | int) }}
+{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
@@ -478,6 +487,12 @@ false
 {{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
 {{- if eq $logsStoreType "postgres" }}
 {{- $pgConfig := dict "host" (include "bifrost.postgresql.host" .) "port" (include "bifrost.postgresql.port" .) "db_name" (include "bifrost.postgresql.database" .) "user" (include "bifrost.postgresql.username" .) "password" (include "bifrost.postgresql.password" .) "ssl_mode" (include "bifrost.postgresql.sslMode" .) }}
+{{- if .Values.storage.logsStore.maxIdleConns }}
+{{- $_ := set $pgConfig "max_idle_conns" (.Values.storage.logsStore.maxIdleConns | int) }}
+{{- end }}
+{{- if .Values.storage.logsStore.maxOpenConns }}
+{{- $_ := set $pgConfig "max_open_conns" (.Values.storage.logsStore.maxOpenConns | int) }}
+{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "logs_store" $logsStore }}
 {{- else }}
@@ -674,6 +689,19 @@ false
 {{- end }}
 {{- if $plugins }}
 {{- $_ := set $config "plugins" $plugins }}
+{{- end }}
+{{- /* Audit Logs */ -}}
+{{- if .Values.bifrost.auditLogs }}
+{{- $auditLogs := dict }}
+{{- if hasKey .Values.bifrost.auditLogs "disabled" }}
+{{- $_ := set $auditLogs "disabled" .Values.bifrost.auditLogs.disabled }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.hmacKey }}
+{{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
+{{- end }}
+{{- if or (hasKey $auditLogs "disabled") $auditLogs.hmac_key }}
+{{- $_ := set $config "audit_logs" $auditLogs }}
+{{- end }}
 {{- end }}
 {{- $config | toJson }}
 {{- end }}
