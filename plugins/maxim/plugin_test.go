@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/maxim-go/logging"
 )
 
 // getPlugin initializes and returns a Plugin instance for testing purposes.
@@ -254,5 +256,119 @@ func TestPluginName(t *testing.T) {
 	}
 	if PluginName != "maxim" {
 		t.Errorf("Expected PluginName constant to be 'maxim', got '%s'", PluginName)
+	}
+}
+
+// TestImageGenerationLogging tests the image generation logging functionality
+// The plugin should correctly extract and log image generation prompts and metadata
+func TestImageGenerationLogging(t *testing.T) {
+	ctx := context.Background()
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bifrostCtx.SetValue(LogRepoIDKey, "test-repo")
+
+	plugin := &Plugin{
+		defaultLogRepoID: "test-repo",
+		loggers:          make(map[string]*logging.Logger),
+		loggerMutex:      &sync.RWMutex{},
+		logger:           bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	// Create a test image generation request
+	prompt := "A beautiful landscape with mountains"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "dall-e-3",
+			Input: &schemas.ImageGenerationInput{
+				Prompt: prompt,
+			},
+			Params: &schemas.ImageGenerationParameters{
+				N:    bifrost.Ptr(1),
+				Size: bifrost.Ptr("1024x1024"),
+			},
+		},
+	}
+
+	// Call PreLLMHook
+	returnedReq, shortCircuit, err := plugin.PreLLMHook(bifrostCtx, req)
+
+	// Verify that no error occurred
+	if err != nil {
+		t.Errorf("PreLLMHook returned an error: %v", err)
+	}
+
+	// Verify that the request was not short-circuited
+	if shortCircuit != nil {
+		t.Error("PreLLMHook should not short-circuit for image generation")
+	}
+
+	// Verify that the request is unchanged
+	if returnedReq != req {
+		t.Error("PreLLMHook should return the original request")
+	}
+
+	// Verify that a generation ID was set
+	if _, ok := bifrostCtx.Value(GenerationIDKey).(string); !ok {
+		t.Error("GenerationID should be set in context after PreLLMHook")
+	}
+}
+
+// TestImageEditLogging tests the image edit logging functionality
+func TestImageEditLogging(t *testing.T) {
+	ctx := context.Background()
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bifrostCtx.SetValue(LogRepoIDKey, "test-repo")
+
+	plugin := &Plugin{
+		defaultLogRepoID: "test-repo",
+		loggers:          make(map[string]*logging.Logger),
+		loggerMutex:      &sync.RWMutex{},
+		logger:           bifrost.NewDefaultLogger(schemas.LogLevelDebug),
+	}
+
+	// Create a test image edit request
+	prompt := "Add a sunset to the sky"
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ImageEditRequest,
+		ImageEditRequest: &schemas.BifrostImageEditRequest{
+			Provider: schemas.OpenAI,
+			Model:    "dall-e-3",
+			Input: &schemas.ImageEditInput{
+				Prompt: prompt,
+				Images: []schemas.ImageInput{
+					{
+						Image: []byte("fake-image-data"),
+					},
+				},
+			},
+			Params: &schemas.ImageEditParameters{
+				N:    bifrost.Ptr(1),
+				Size: bifrost.Ptr("1024x1024"),
+			},
+		},
+	}
+
+	// Call PreLLMHook
+	returnedReq, shortCircuit, err := plugin.PreLLMHook(bifrostCtx, req)
+
+	// Verify that no error occurred
+	if err != nil {
+		t.Errorf("PreLLMHook returned an error: %v", err)
+	}
+
+	// Verify that the request was not short-circuited
+	if shortCircuit != nil {
+		t.Error("PreLLMHook should not short-circuit for image edit")
+	}
+
+	// Verify that the request is unchanged
+	if returnedReq != req {
+		t.Error("PreLLMHook should return the original request")
+	}
+
+	// Verify that a generation ID was set
+	if _, ok := bifrostCtx.Value(GenerationIDKey).(string); !ok {
+		t.Error("GenerationID should be set in context after PreLLMHook")
 	}
 }

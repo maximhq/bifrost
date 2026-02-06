@@ -3,12 +3,12 @@
 package maxim
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -307,9 +307,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.TextCompletionRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.TextCompletionRequest.Params)
+			jsonData, err := sonic.Marshal(req.TextCompletionRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
@@ -341,9 +341,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.ChatRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.ChatRequest.Params)
+			jsonData, err := sonic.Marshal(req.ChatRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
@@ -384,9 +384,65 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 		if req.ResponsesRequest.Params != nil {
 			// Convert the struct to a map using reflection or JSON marshaling
-			jsonData, err := json.Marshal(req.ResponsesRequest.Params)
+			jsonData, err := sonic.Marshal(req.ResponsesRequest.Params)
 			if err == nil {
-				json.Unmarshal(jsonData, &modelParams)
+				sonic.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Input != nil {
+			latestMessage = req.ImageGenerationRequest.Input.Prompt
+			// Log the image generation prompt as a user message
+			messages = append(messages, logging.CompletionRequest{
+				Role: string(schemas.ChatMessageRoleUser),
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &latestMessage,
+				},
+			})
+		}
+
+		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := sonic.Marshal(req.ImageGenerationRequest.Params)
+			if err == nil {
+				sonic.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+		if req.ImageEditRequest != nil && req.ImageEditRequest.Input != nil {
+			latestMessage = req.ImageEditRequest.Input.Prompt
+			// Log the image edit prompt as a user message
+			messages = append(messages, logging.CompletionRequest{
+				Role: string(schemas.ChatMessageRoleUser),
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &latestMessage,
+				},
+			})
+		}
+
+		if req.ImageEditRequest != nil && req.ImageEditRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := sonic.Marshal(req.ImageEditRequest.Params)
+			if err == nil {
+				sonic.Unmarshal(jsonData, &modelParams)
+			}
+		}
+	case schemas.ImageVariationRequest:
+		// Image variation doesn't have a prompt, use a descriptive placeholder
+		latestMessage = "Image Variation Generation"
+		// Log image variation as a user message
+		messages = append(messages, logging.CompletionRequest{
+			Role: string(schemas.ChatMessageRoleUser),
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &latestMessage,
+			},
+		})
+
+		if req.ImageVariationRequest != nil && req.ImageVariationRequest.Params != nil {
+			// Convert the struct to a map using reflection or JSON marshaling
+			jsonData, err := sonic.Marshal(req.ImageVariationRequest.Params)
+			if err == nil {
+				sonic.Unmarshal(jsonData, &modelParams)
 			}
 		}
 	}
@@ -573,6 +629,22 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
 					} else {
 						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
+					}
+				case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ImageGenerationResponse)
+					} else if result.ImageGenerationResponse != nil {
+						logger.AddResultToGeneration(generationID, result.ImageGenerationResponse)
+					}
+				case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+					if streamResponse != nil {
+						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ImageGenerationResponse)
+					} else if result.ImageGenerationResponse != nil {
+						logger.AddResultToGeneration(generationID, result.ImageGenerationResponse)
+					}
+				case schemas.ImageVariationRequest:
+					if result.ImageGenerationResponse != nil {
+						logger.AddResultToGeneration(generationID, result.ImageGenerationResponse)
 					}
 				}
 				if streamResponse != nil && isFinalChunk {
