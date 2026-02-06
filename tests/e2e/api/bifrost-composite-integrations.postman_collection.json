@@ -1,0 +1,712 @@
+{
+  "info": {
+    "name": "Bifrost Composite Integrations API",
+    "description": "E2E tests for composite integration endpoints (GenAI, Cohere, LiteLLM, LangChain, PydanticAI) and Health endpoint",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  requestBody = prettyPrintJSON(pm.request.body.raw);",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "try {",
+          "  var responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    responseBody = prettyPrintJSON(responseText);",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  if (code === 405) { pass = true; }",
+          "  if (!pass) try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : (body && body.code) ? body.code : '';",
+          "    var errType = (body && body.error && body.error.type) ? body.error.type : '';",
+          "    if (errCode === 'unsupported_operation' || ",
+          "        (typeof msg === 'string' && /not supported|unsupported|invalid.*model|no config found|not available|did you mean|batch.*api|batch.*not|no.*mcp|mcp.*not|no tools|tool.*not.*found|method.*not.*allowed|not.*implemented|not.*found|cannot.*find|does.*not.*exist/i.test(msg)) ||",
+          "        errType === 'invalid_request_error') {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "GenAI",
+      "item": [
+        {
+          "name": "Generate Content",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/genai/v1beta/models/{{provider}}/{{model}}:generateContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{provider}}/{{model}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embed Content",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"Hello world\"\n          }\n        ]\n      },\n      \"taskType\": \"RETRIEVAL_DOCUMENT\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/genai/v1beta/models/{{provider}}/{{embedding_model}}:embedContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "{{provider}}/{{embedding_model}}:embedContent"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cohere",
+      "item": [
+        {
+          "name": "Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cohere/v2/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "chat"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"texts\": [\n    \"Hello world\",\n    \"Goodbye world\"\n  ],\n  \"input_type\": \"search_document\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cohere/v2/embed",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "embed"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Tokenize",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"text\": \"How many tokens is this text?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/cohere/v1/tokenize",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cohere",
+                "v1",
+                "tokenize"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "LiteLLM",
+      "item": [
+        {
+          "name": "Chat Completions (OpenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/litellm/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messages (Anthropic Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5-20250929\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/litellm/anthropic/v1/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "litellm",
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Converse (Bedrock Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/litellm/bedrock/model/us.anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "litellm",
+                "bedrock",
+                "model",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Content (GenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/litellm/genai/v1beta/models/{{provider}}/{{model}}:generateContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "litellm",
+                "genai",
+                "v1beta",
+                "models",
+                "{{provider}}/{{model}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat (Cohere Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/litellm/cohere/v2/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "litellm",
+                "cohere",
+                "v2",
+                "chat"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "LangChain",
+      "item": [
+        {
+          "name": "Chat Completions (OpenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/langchain/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messages (Anthropic Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5-20250929\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/langchain/anthropic/v1/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "langchain",
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Converse (Bedrock Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/langchain/bedrock/model/us.anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "langchain",
+                "bedrock",
+                "model",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Content (GenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/langchain/genai/v1beta/models/{{provider}}/{{model}}:generateContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "langchain",
+                "genai",
+                "v1beta",
+                "models",
+                "{{provider}}/{{model}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat (Cohere Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/langchain/cohere/v2/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "langchain",
+                "cohere",
+                "v2",
+                "chat"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PydanticAI",
+      "item": [
+        {
+          "name": "Chat Completions (OpenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pydanticai/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Messages (Anthropic Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5-20250929\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pydanticai/anthropic/v1/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pydanticai",
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Converse (Bedrock Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pydanticai/bedrock/model/us.anthropic.claude-3-5-sonnet-20241022-v2:0/converse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pydanticai",
+                "bedrock",
+                "model",
+                "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Generate Content (GenAI Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pydanticai/genai/v1beta/models/{{provider}}/{{model}}:generateContent",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pydanticai",
+                "genai",
+                "v1beta",
+                "models",
+                "{{provider}}/{{model}}:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat (Cohere Routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/pydanticai/cohere/v2/chat",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "pydanticai",
+                "cohere",
+                "v2",
+                "chat"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

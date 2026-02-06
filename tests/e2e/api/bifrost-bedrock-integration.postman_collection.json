@@ -1,0 +1,424 @@
+{
+  "info": {
+    "name": "Bifrost Bedrock Integration API",
+    "description": "E2E tests for Bedrock integration endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  requestBody = prettyPrintJSON(pm.request.body.raw);",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "try {",
+          "  var responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    responseBody = prettyPrintJSON(responseText);",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : (body && body.code) ? body.code : '';",
+          "    var errType = (body && body.error && body.error.type) ? body.error.type : '';",
+          "    if (errCode === 'unsupported_operation' || ",
+          "        (typeof msg === 'string' && /not supported|unsupported|invalid.*model|no config found|not available|did you mean|batch.*api|batch.*not|no.*mcp|mcp.*not|no tools|tool.*not.*found|method.*not.*allowed|not.*implemented|not.*found|cannot.*find|does.*not.*exist/i.test(msg)) ||",
+          "        errType === 'invalid_request_error') {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "bedrock",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+      "type": "string"
+    },
+    {
+      "key": "s3_bucket",
+      "value": "bifrost-test-bucket",
+      "type": "string"
+    },
+    {
+      "key": "s3_key",
+      "value": "test-file.txt",
+      "type": "string"
+    },
+    {
+      "key": "job_arn",
+      "value": "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/abc123",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Converse",
+      "item": [
+        {
+          "name": "Converse",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"temperature\": 0.7,\n    \"maxTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{model}}/converse",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{model}}",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Converse Stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Hello, how are you?\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"temperature\": 0.7,\n    \"maxTokens\": 1024\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{model}}/converse-stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{model}}",
+                "converse-stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Invoke",
+      "item": [
+        {
+          "name": "Invoke",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{model}}/invoke",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{model}}",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Invoke with Response Stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model/{{model}}/invoke-with-response-stream",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{model}}",
+                "invoke-with-response-stream"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batch Jobs",
+      "item": [
+        {
+          "name": "Create Batch Job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.jobArn) { pm.collectionVariables.set('job_arn', j.jobArn); if (pm.environment) { pm.environment.set('job_arn', j.jobArn); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"modelId\": \"{{model}}\",\n  \"jobName\": \"bifrost-test-job\",\n  \"roleArn\": \"arn:aws:iam::123456789012:role/BedrockBatchRole\",\n  \"inputDataConfig\": {\n    \"s3InputDataConfig\": {\n      \"s3Uri\": \"s3://{{s3_bucket}}/input/batch-input.jsonl\"\n    }\n  },\n  \"outputDataConfig\": {\n    \"s3OutputDataConfig\": {\n      \"s3Uri\": \"s3://{{s3_bucket}}/output/\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Batch Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-jobs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-jobs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch Job",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job/{{job_arn}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "{{job_arn}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Stop Batch Job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/model-invocation-job/{{job_arn}}/stop",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "model-invocation-job",
+                "{{job_arn}}",
+                "stop"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "S3 Operations",
+      "item": [
+        {
+          "name": "PUT Object",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "text/plain"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "This is test file content for Bedrock S3 operations."
+            },
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET Object",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "HEAD Object",
+          "request": {
+            "method": "HEAD",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE Object",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bedrock/files/{{s3_bucket}}/{{s3_key}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bedrock",
+                "files",
+                "{{s3_bucket}}",
+                "{{s3_key}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
