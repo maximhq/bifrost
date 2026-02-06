@@ -3,6 +3,7 @@
 package ollama
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 
@@ -230,8 +231,12 @@ func convertMessagesFromOllama(messages []OllamaMessage) []schemas.ChatMessage {
 			}
 
 			// Add images
+			// Note: Ollama stores images as raw base64 without MIME type information.
+			// We use magic-number sniffing to detect the actual image format (JPEG, PNG, GIF, WebP).
+			// Falls back to "application/octet-stream" if the format cannot be determined.
 			for _, img := range msg.Images {
-				dataURL := "data:image/jpeg;base64," + img
+				mimeType := detectImageMIMEType(img)
+				dataURL := "data:" + mimeType + ";base64," + img
 				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
 					Type: schemas.ChatContentBlockTypeImage,
 					ImageURLStruct: &schemas.ChatInputImage{
@@ -354,6 +359,70 @@ func extractBase64Image(url string) string {
 	// Assume it's raw base64 - return as-is
 	// Ollama will handle validation on its end
 	return url
+}
+
+// detectImageMIMEType detects the MIME type of an image from its base64-encoded data.
+// Uses magic number (file signature) detection on the decoded bytes.
+// Returns "application/octet-stream" if the format cannot be determined.
+//
+// Supported formats:
+//   - JPEG: starts with FF D8 FF
+//   - PNG:  starts with 89 50 4E 47 0D 0A 1A 0A
+//   - GIF:  starts with 47 49 46 38 (GIF8)
+//   - WebP: starts with 52 49 46 46 ... 57 45 42 50 (RIFF...WEBP)
+func detectImageMIMEType(base64Data string) string {
+	// Decode enough bytes to check magic numbers (first 12 bytes is sufficient)
+	// We only need a small prefix, so limit decoding to avoid unnecessary work
+	dataToCheck := base64Data
+	if len(dataToCheck) > 16 { // 16 base64 chars = 12 bytes
+		dataToCheck = base64Data[:16]
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(dataToCheck)
+	if err != nil {
+		// Try with padding if needed
+		padded := dataToCheck
+		for len(padded)%4 != 0 {
+			padded += "="
+		}
+		decoded, err = base64.StdEncoding.DecodeString(padded)
+		if err != nil {
+			return "application/octet-stream"
+		}
+	}
+
+	if len(decoded) < 3 {
+		return "application/octet-stream"
+	}
+
+	// Check magic numbers
+	// JPEG: FF D8 FF
+	if decoded[0] == 0xFF && decoded[1] == 0xD8 && decoded[2] == 0xFF {
+		return "image/jpeg"
+	}
+
+	// PNG: 89 50 4E 47 0D 0A 1A 0A (first 8 bytes)
+	if len(decoded) >= 8 &&
+		decoded[0] == 0x89 && decoded[1] == 0x50 && decoded[2] == 0x4E && decoded[3] == 0x47 &&
+		decoded[4] == 0x0D && decoded[5] == 0x0A && decoded[6] == 0x1A && decoded[7] == 0x0A {
+		return "image/png"
+	}
+
+	// GIF: 47 49 46 38 (GIF8)
+	if len(decoded) >= 4 &&
+		decoded[0] == 0x47 && decoded[1] == 0x49 && decoded[2] == 0x46 && decoded[3] == 0x38 {
+		return "image/gif"
+	}
+
+	// WebP: RIFF....WEBP (bytes 0-3 = RIFF, bytes 8-11 = WEBP)
+	if len(decoded) >= 12 &&
+		decoded[0] == 0x52 && decoded[1] == 0x49 && decoded[2] == 0x46 && decoded[3] == 0x46 &&
+		decoded[8] == 0x57 && decoded[9] == 0x45 && decoded[10] == 0x42 && decoded[11] == 0x50 {
+		return "image/webp"
+	}
+
+	// Unknown format - use generic binary MIME type
+	return "application/octet-stream"
 }
 
 // ==================== TOOL CONVERSION UTILITIES ====================

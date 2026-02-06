@@ -1,6 +1,7 @@
 package ollama
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -395,4 +396,62 @@ func TestConvertMessagesFromOllama_ToolCalls(t *testing.T) {
 			t.Errorf("Expected Name 'getWeather'")
 		}
 	})
+}
+
+func TestDetectImageMIMEType(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string // base64 encoded data
+		expected string
+	}{
+		{
+			name:     "JPEG image",
+			input:    base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}),
+			expected: "image/jpeg",
+		},
+		{
+			name:     "PNG image",
+			input:    base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00}),
+			expected: "image/png",
+		},
+		{
+			name:     "GIF image",
+			input:    base64.StdEncoding.EncodeToString([]byte{0x47, 0x49, 0x46, 0x38, 0x39, 0x61}),
+			expected: "image/gif",
+		},
+		{
+			name:     "WebP image",
+			input:    base64.StdEncoding.EncodeToString([]byte{0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50}),
+			expected: "image/webp",
+		},
+		{
+			name:     "unknown format",
+			input:    base64.StdEncoding.EncodeToString([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}),
+			expected: "application/octet-stream",
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "application/octet-stream",
+		},
+		{
+			name:     "invalid base64",
+			input:    "not-valid-base64!@#$%",
+			expected: "application/octet-stream",
+		},
+		{
+			name:     "too short data",
+			input:    base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8}),
+			expected: "application/octet-stream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detectImageMIMEType(tt.input)
+			if result != tt.expected {
+				t.Errorf("detectImageMIMEType() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
 }
