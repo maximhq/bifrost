@@ -220,6 +220,8 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		return fmt.Errorf("failed to sync pricing data: %w", err)
 	}
 
+	// Rebuild model pool from updated pricing data
+	mc.populateModelPoolFromPricingData()
 	return nil
 }
 
@@ -516,7 +518,7 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 	if len(modelData.Data) == 0 && len(allowedModels) == 0 {
 		mc.modelPool[provider] = providerModels
 		return
-	}	
+	}
 	// Here we make sure that we still keep the backup for model catalog intact
 	// So we start with a existing model pool and add the new models from incoming data
 	finalModelList := make([]string, 0)

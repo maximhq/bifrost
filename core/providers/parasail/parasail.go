@@ -70,7 +70,6 @@ func (provider *ParasailProvider) ListModels(ctx *schemas.BifrostContext, keys [
 		schemas.Parasail,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

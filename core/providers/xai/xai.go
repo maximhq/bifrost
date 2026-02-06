@@ -73,7 +73,6 @@ func (provider *XAIProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

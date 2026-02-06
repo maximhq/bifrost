@@ -20,7 +20,7 @@ const (
 	BifrostMCPClientName                = "BifrostClient"   // Name for internal Bifrost MCP client
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
-	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
+	MCPClientConnectionEstablishTimeout = 60 * time.Second  // Timeout for MCP client connection establishment
 
 	// Context keys for client filtering in requests
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).

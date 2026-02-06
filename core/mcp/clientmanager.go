@@ -38,7 +38,8 @@ func (m *MCPManager) GetClients() []schemas.MCPClientState {
 
 // ReconnectClient attempts to reconnect an MCP client if it is disconnected.
 // It validates that the client exists and then establishes a new connection using
-// the client's existing configuration.
+// the client's existing configuration. Retry logic is handled internally by
+// connectToMCPClient (5 retries, 1-30 seconds per step).
 //
 // Parameters:
 //   - id: ID of the client to reconnect
@@ -55,10 +56,10 @@ func (m *MCPManager) ReconnectClient(id string) error {
 	config := client.ExecutionConfig
 	m.mu.Unlock()
 
-	// connectToMCPClient handles locking internally
-	err := m.connectToMCPClient(config)
-	if err != nil {
-		return fmt.Errorf("failed to connect to MCP client %s: %w", id, err)
+	// Reconnect using the client's configuration
+	// Retry logic is handled internally by connectToMCPClient
+	if err := m.connectToMCPClient(config); err != nil {
+		return fmt.Errorf("failed to reconnect MCP client %s: %w", id, err)
 	}
 
 	return nil
@@ -450,7 +451,8 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 // ============================================================================
 
 // connectToMCPClient establishes a connection to an external MCP server and
-// registers its available tools with the manager.
+// registers its available tools with the manager. Uses exponential backoff
+// retry logic (5 retries, 1-30 seconds) for connection establishment.
 func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	// First lock: Initialize or validate client entry
 	m.mu.Lock()
@@ -485,26 +487,6 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 	var connectionInfo *schemas.MCPClientConnectionInfo
 	var err error
 
-	// Create appropriate transport based on connection type
-	m.logger.Debug("%s [%s] Creating %s connection...", MCPLogPrefix, config.Name, config.ConnectionType)
-	switch config.ConnectionType {
-	case schemas.MCPConnectionTypeHTTP:
-		externalClient, connectionInfo, err = m.createHTTPConnection(m.ctx, config)
-	case schemas.MCPConnectionTypeSTDIO:
-		externalClient, connectionInfo, err = m.createSTDIOConnection(m.ctx, config)
-	case schemas.MCPConnectionTypeSSE:
-		externalClient, connectionInfo, err = m.createSSEConnection(m.ctx, config)
-	case schemas.MCPConnectionTypeInProcess:
-		externalClient, connectionInfo, err = m.createInProcessConnection(m.ctx, config)
-	default:
-		return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to create connection: %w", err)
-	}
-	m.logger.Debug("%s [%s] Connection created successfully", MCPLogPrefix, config.Name)
-
 	// Initialize the external client with timeout
 	// For SSE and STDIO connections, we need a long-lived context for the connection
 	// but use a timeout context for the initialization phase to prevent indefinite hangs
@@ -527,13 +509,66 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		defer cancel()
 	}
 
-	// Start the transport first (required for STDIO and SSE clients)
+	// Start the transport first (required for STDIO and SSE clients) with retry logic
+	// Each retry attempt uses a fresh client instance to avoid resource leaks
 	m.logger.Debug("%s [%s] Starting transport...", MCPLogPrefix, config.Name)
-	if err := externalClient.Start(ctx); err != nil {
+	transportRetryConfig := DefaultRetryConfig
+	err = ExecuteWithRetry(
+		m.ctx,
+		func() error {
+			// Close previous client if this is a retry attempt
+			if externalClient != nil {
+				if closeErr := externalClient.Close(); closeErr != nil {
+					m.logger.Warn("%s Failed to close external client during retry: %v", MCPLogPrefix, closeErr)
+				}
+			}
+			// Create a fresh client for this attempt
+			var createErr error
+			switch config.ConnectionType {
+			case schemas.MCPConnectionTypeHTTP:
+				externalClient, connectionInfo, createErr = m.createHTTPConnection(m.ctx, config)
+			case schemas.MCPConnectionTypeSTDIO:
+				externalClient, connectionInfo, createErr = m.createSTDIOConnection(m.ctx, config)
+			case schemas.MCPConnectionTypeSSE:
+				externalClient, connectionInfo, createErr = m.createSSEConnection(m.ctx, config)
+			case schemas.MCPConnectionTypeInProcess:
+				externalClient, connectionInfo, createErr = m.createInProcessConnection(m.ctx, config)
+			default:
+				return fmt.Errorf("unknown connection type: %s", config.ConnectionType)
+			}
+			if createErr != nil {
+				return createErr
+			}
+			// Create per-attempt timeout context for Start operation
+			// Each attempt has a deadline to prevent indefinite hangs
+			var perAttemptCtx context.Context
+			var perAttemptCancel context.CancelFunc
+			if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+				// Create timeout context for Start phase only
+				perAttemptCtx, perAttemptCancel = context.WithTimeout(longLivedCtx, MCPClientConnectionEstablishTimeout)
+				defer perAttemptCancel()
+				m.logger.Debug("%s [%s] Starting transport with %v timeout...", MCPLogPrefix, config.Name, MCPClientConnectionEstablishTimeout)
+			} else {
+				// HTTP already has timeout
+				perAttemptCtx = ctx
+			}
+			// Start the fresh client with the per-attempt timeout
+			return externalClient.Start(perAttemptCtx)
+		},
+		transportRetryConfig,
+		m.logger,
+	)
+	if err != nil {
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
 			cancel() // Cancel long-lived context on error
 		}
-		return fmt.Errorf("failed to start MCP client transport %s: %v", config.Name, err)
+		// Close external client connection to prevent transport/goroutine leaks
+		if externalClient != nil {
+			if closeErr := externalClient.Close(); closeErr != nil {
+				m.logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, closeErr)
+			}
+		}
+		return fmt.Errorf("failed to start MCP client transport %s after %d retries: %v", config.Name, transportRetryConfig.MaxRetries, err)
 	}
 	m.logger.Debug("%s [%s] Transport started successfully", MCPLogPrefix, config.Name)
 
@@ -564,12 +599,28 @@ func (m *MCPManager) connectToMCPClient(config *schemas.MCPClientConfig) error {
 		initCtx = ctx
 	}
 
-	_, err = externalClient.Initialize(initCtx, extInitRequest)
+	// Initialize client with retry logic
+	initRetryConfig := DefaultRetryConfig
+	err = ExecuteWithRetry(
+		m.ctx,
+		func() error {
+			_, initErr := externalClient.Initialize(initCtx, extInitRequest)
+			return initErr
+		},
+		initRetryConfig,
+		m.logger,
+	)
 	if err != nil {
 		if config.ConnectionType == schemas.MCPConnectionTypeSSE || config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
 			cancel() // Cancel long-lived context on error
 		}
-		return fmt.Errorf("failed to initialize MCP client %s: %v", config.Name, err)
+		// Close external client connection to prevent transport/goroutine leaks
+		if externalClient != nil {
+			if closeErr := externalClient.Close(); closeErr != nil {
+				m.logger.Warn("%s Failed to close external client during cleanup: %v", MCPLogPrefix, closeErr)
+			}
+		}
+		return fmt.Errorf("failed to initialize MCP client %s after %d retries: %v", config.Name, initRetryConfig.MaxRetries, err)
 	}
 	m.logger.Debug("%s [%s] Client initialized successfully", MCPLogPrefix, config.Name)
 

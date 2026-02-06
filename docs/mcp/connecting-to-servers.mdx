@@ -608,6 +608,115 @@ When a client disconnects:
 
 ---
 
+## Connection Resilience and Retry Logic
+
+Bifrost automatically implements **exponential backoff retry logic** to handle transient network failures and temporary service unavailability. This ensures that brief connection issues don't immediately cause tool unavailability.
+
+<Warning>
+**Important:** Bifrost only retries on transient errors (network failures, timeouts, temporary service unavailability). Permanent errors like authentication failures, configuration errors, and missing commands fail immediately without retry.
+</Warning>
+
+### Automatic Retry Strategy
+
+Bifrost retries failed operations using the following strategy, as implemented by `ExecuteWithRetry` and `DefaultRetryConfig` in the MCP layer:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| **Max Retries** (`DefaultRetryConfig.MaxRetries`) | 5 | Retries after the initial attempt (6 attempts total) |
+| **Initial Backoff** (`DefaultRetryConfig.InitialBackoff`) | 1 second | Starting backoff duration before doubling |
+| **Max Backoff** (`DefaultRetryConfig.MaxBackoff`) | 30 seconds | Maximum wait time between retries |
+| **Backoff Multiplier** | 2x | Exponential growth between attempts |
+
+**Backoff Progression** (matches `ExecuteWithRetry` with `DefaultRetryConfig`):
+- Attempt 1: Initial attempt (no wait)
+- Attempt 2: Wait 1s, then retry (and double backoff to 2s)
+- Attempt 3: Wait 2s, then retry (and double backoff to 4s)
+- Attempt 4: Wait 4s, then retry (and double backoff to 8s)
+- Attempt 5: Wait 8s, then retry (and double backoff to 16s)
+- Attempt 6: Wait 16s, then retry (backoff capped at 30s max)
+
+### Error Classification
+
+Bifrost intelligently classifies errors as either **transient** (retryable) or **permanent** (fail immediately):
+
+**Transient Errors (Retried):**
+- Connection timeouts or refused connections
+- Network unreachable errors
+- DNS resolution failures
+- HTTP 5xx errors (500, 502, 503, 504)
+- HTTP 429 (Too Many Requests)
+- I/O errors and broken pipes
+- Temporary service unavailability
+
+**Permanent Errors (Fail Immediately - No Retry):**
+- **Context deadline exceeded or cancelled** - Retrying won't help if time limit is reached
+- Authentication failures (401, 403)
+- Authorization denied
+- Configuration errors (invalid auth, invalid config)
+- File or command not found (e.g., "command not found: npx")
+- Bad request errors (400, 405, 422)
+- Command execution permission denied
+- Invalid credentials
+
+### What Operations Are Retried
+
+Bifrost applies retry logic to these critical operations:
+
+1. **Connection Creation** - Establishing initial connection to the MCP server (with error classification)
+2. **Transport Start** - Starting the transport layer (STDIO, HTTP, SSE)
+3. **Client Initialization** - Initializing the MCP client protocol
+4. **Tool Discovery** - Retrieving available tools from the server
+5. **Automatic Reconnection** - When health checks detect disconnection
+
+### Reconnection on Health Check Failure
+
+When a client reaches 5 consecutive health check failures:
+
+1. Client state changes to `disconnected`
+2. Bifrost automatically attempts reconnection **in the background**
+3. Reconnection uses the same exponential backoff retry logic
+4. Once reconnected, health checks resume normal operation
+5. Tools become available again without manual intervention
+
+This automatic reconnection happens asynchronously and doesn't block other operations.
+
+### Manual Reconnection
+
+You can also trigger manual reconnection at any time:
+
+<Tabs>
+<Tab title="Gateway API">
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/{id}/reconnect
+```
+
+Manual reconnection also uses the retry logic for robustness.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+// Reconnect with automatic retry logic
+err := client.ReconnectMCPClient("filesystem")
+if err != nil {
+    log.Printf("Reconnection failed after retries: %v", err)
+}
+```
+
+</Tab>
+</Tabs>
+
+### Benefits
+
+- **Handles transient failures**: Brief network hiccups won't cause tool unavailability
+- **Prevents server overload**: Exponential backoff prevents hammering servers
+- **Automatic recovery**: Disconnected clients reconnect automatically
+- **Production-ready**: No manual intervention needed for temporary issues
+- **Transparent logging**: Detailed retry attempts logged for debugging
+
+---
+
 ## Naming Conventions
 
 MCP client names have specific requirements:

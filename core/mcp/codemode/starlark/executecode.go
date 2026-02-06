@@ -10,17 +10,12 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/mark3labs/mcp-go/mcp"
+
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 )
-
-// toolBinding represents a tool binding for the interpreter
-type toolBinding struct {
-	toolName   string
-	clientName string
-}
 
 // ExecutionResult represents the result of code execution
 type ExecutionResult struct {

@@ -1529,7 +1529,6 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 func extractSuccessfulListModelsResponses(
 	results chan schemas.ListModelsByKeyResult,
 	providerName schemas.ModelProvider,
-	logger schemas.Logger,
 ) ([]*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	var successfulResponses []*schemas.BifrostListModelsResponse
 	var lastError *schemas.BifrostError
@@ -1571,7 +1570,6 @@ func HandleMultipleListModelsRequests(
 	keys []schemas.Key,
 	request *schemas.BifrostListModelsRequest,
 	listModelsByKey func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
-	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	startTime := time.Now()
 
@@ -1592,7 +1590,7 @@ func HandleMultipleListModelsRequests(
 	wg.Wait()
 	close(results)
 
-	successfulResponses, err := extractSuccessfulListModelsResponses(results, request.Provider, logger)
+	successfulResponses, err := extractSuccessfulListModelsResponses(results, request.Provider)
 	if err != nil {
 		return nil, err
 	}

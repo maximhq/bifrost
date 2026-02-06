@@ -77,7 +77,6 @@ func (provider *SGLProvider) ListModels(ctx *schemas.BifrostContext, keys []sche
 		schemas.SGL,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

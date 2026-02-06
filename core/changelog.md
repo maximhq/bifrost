@@ -6,3 +6,4 @@
 - fix: missing and duplicated tool results in Bedrock - [@hhieuu](https://github.com/hhieuu)
 - fix: support HuggingFace model names without an explicit provider prefix
 - feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID
+- feat: adds retry logic to MCP client connection establishment and tool retrieval

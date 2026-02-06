@@ -1449,7 +1449,7 @@ func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
 // loadAuthConfigFromFile loads auth config from file.
 // File config (configData) always takes precedence over DB config.
 func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
-	hasFileConfig := configData != nil && configData.AuthConfig != nil	
+	hasFileConfig := configData != nil && configData.AuthConfig != nil
 	if !hasFileConfig && (config.GovernanceConfig == nil || config.GovernanceConfig.AuthConfig == nil) {
 		return
 	}
@@ -1759,9 +1759,10 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 	// Use default modelcatalog initialization when no enterprise overrides are provided
 	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
-		logger.Warn("failed to initialize pricing manager: %v", err)
+		logger.Error("failed to initialize pricing manager: %v", err)
+	} else {
+		config.ModelCatalog = pricingManager
 	}
-	config.ModelCatalog = pricingManager
 
 	// Initialize MCP catalog
 	mcpCatalog, err := mcpcatalog.Init(ctx, &mcpcatalog.Config{
@@ -2113,13 +2114,14 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 	}
 
 	// Initialize pricing manager
-	var pricingManager *modelcatalog.ModelCatalog
+	var modelCatalog *modelcatalog.ModelCatalog
 	// Use default modelcatalog initialization when no enterprise overrides are provided
-	pricingManager, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
+	modelCatalog, err = modelcatalog.Init(ctx, pricingConfig, config.ConfigStore, nil, logger)
 	if err != nil {
-		logger.Warn("failed to initialize pricing manager: %v", err)
+		logger.Error("failed to initialize model catalog: %v", err)
+	} else {
+		config.ModelCatalog = modelCatalog
 	}
-	config.ModelCatalog = pricingManager
 
 	// Initialize MCP catalog
 	var mcpCatalog *mcpcatalog.MCPCatalog

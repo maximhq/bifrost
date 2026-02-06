@@ -555,7 +555,6 @@ func (provider *BedrockProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 

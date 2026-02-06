@@ -69,7 +69,6 @@ func (provider *CerebrasProvider) ListModels(ctx *schemas.BifrostContext, keys [
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

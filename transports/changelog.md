@@ -13,4 +13,6 @@
 - fix: errored request logs are now not counted in missing cost filter
 - feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID
 - fix: if governance is disabled set enforce virtual key header to false
+- feat: adds retry logic to MCP client connection establishment and tool retrieval
+- fix: force reload pricing now correctly resets the model pool and adds new models to the catalog
 - fix: tool sync interval in mcp catalog

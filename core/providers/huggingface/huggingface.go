@@ -430,7 +430,6 @@ func (provider *HuggingFaceProvider) ListModels(ctx *schemas.BifrostContext, key
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 
 }

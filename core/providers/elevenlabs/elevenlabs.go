@@ -136,7 +136,6 @@ func (provider *ElevenlabsProvider) ListModels(ctx *schemas.BifrostContext, keys
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 
@@ -736,7 +735,7 @@ func (provider *ElevenlabsProvider) ImageVariation(ctx *schemas.BifrostContext, 
 func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
 	baseURL := provider.networkConfig.BaseURL
 	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
-	
+
 	var finalURL string
 	if isCompleteURL {
 		finalURL = requestPath

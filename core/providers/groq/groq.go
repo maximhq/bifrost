@@ -74,7 +74,6 @@ func (provider *GroqProvider) ListModels(ctx *schemas.BifrostContext, keys []sch
 		schemas.Groq,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

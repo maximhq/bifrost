@@ -3,17 +3,33 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// RetryConfig defines the retry behavior with exponential backoff
+type RetryConfig struct {
+	MaxRetries     int           // Maximum number of retry attempts (not including the initial attempt)
+	InitialBackoff time.Duration // Initial backoff duration
+	MaxBackoff     time.Duration // Maximum backoff duration
+}
+
+var DefaultRetryConfig = RetryConfig{
+	MaxRetries:     5,
+	InitialBackoff: 1 * time.Second,
+	MaxBackoff:     30 * time.Second,
+}
 
 // GetClientForTool safely finds a client that has the specified tool.
 // Returns a copy of the client state to avoid data races. Callers should be aware
@@ -122,10 +138,156 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 	return nil
 }
 
+// isTransientError determines if an error is transient and should be retried.
+// Permanent errors (auth failures, config errors, context deadline, etc.) return false.
+// Transient errors (network issues, temporary timeouts, etc.) return true.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Context errors are NEVER retryable - they indicate the operation exceeded its deadline
+	// If context is cancelled or deadline exceeded, the issue is permanent (not transient)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if strings.Contains(errStr, "context canceled") || strings.Contains(errStr, "context deadline exceeded") {
+		return false
+	}
+
+	// Permanent errors that should NOT be retried
+	permanentErrors := []string{
+		// Authentication/authorization errors
+		"401", "403", "unauthorized", "forbidden", "invalid auth", "invalid credential",
+		// HTTP client errors
+		"400", "405", "422", "bad request", "method not allowed",
+		// Configuration errors
+		"command not found", "no such file", "not found", "permission denied",
+		"invalid config",
+		// Command execution errors
+		"executable file not found", "permission denied", "command failed",
+		// Timeout errors - if something times out, retrying won't help
+		"timeout", "deadline exceeded", "waiting for endpoint",
+	}
+
+	for _, permanentErr := range permanentErrors {
+		if strings.Contains(strings.ToLower(errStr), permanentErr) {
+			return false
+		}
+	}
+
+	// Transient errors that SHOULD be retried
+	transientErrors := []string{
+		// Network errors
+		"connection refused", "connection reset", "broken pipe",
+		"network is unreachable", "no route to host",
+		// Timeout errors
+		"timeout", "deadline exceeded", "i/o timeout",
+		// DNS errors
+		"no such host", "name resolution failed",
+		// HTTP errors
+		"503", "502", "504", "429", "500", // Service Unavailable, Bad Gateway, Gateway Timeout, Too Many Requests, Internal Server Error
+		// Connection errors
+		"connection error", "connection lost", "connection failed",
+		// I/O errors
+		"i/o error", "read error", "write error",
+		// Temporary errors
+		"temporary failure", "try again",
+	}
+
+	for _, transientErr := range transientErrors {
+		if strings.Contains(strings.ToLower(errStr), transientErr) {
+			return true
+		}
+	}
+
+	// Check for net.Error types (timeout-related errors)
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		// Timeout errors are transient and should be retried
+		if netErr.Timeout() {
+			return true
+		}
+	}
+
+	// Default: treat as transient to be safe (connection-related errors)
+	// This ensures we retry unknown errors that are likely transient
+	return true
+}
+
+// ExecuteWithRetry executes a function with exponential backoff retry logic.
+// Only retries on transient errors; permanent errors (auth, config) fail immediately.
+// It returns the error from the last attempt if all retries fail.
+//
+// Parameters:
+//   - ctx: Context for cancellation
+//   - fn: Function to execute with retry logic
+//   - config: Retry configuration
+//   - logger: Logger for logging retries
+//
+// Returns:
+//   - error: The last error if all retries failed, nil if successful
+func ExecuteWithRetry(
+	ctx context.Context,
+	fn func() error,
+	config RetryConfig,
+	logger schemas.Logger,
+) error {
+	var lastErr error
+	backoff := config.InitialBackoff
+
+	for attempt := 0; attempt <= config.MaxRetries; attempt++ {
+		// Check context before attempting
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("retry context cancelled: %w", ctx.Err())
+		default:
+		}
+
+		// Execute the function
+		lastErr = fn()
+		if lastErr == nil {
+			return nil // Success on this attempt
+		}
+
+		// Check if error is transient - if not, fail immediately without retrying
+		if !isTransientError(lastErr) {
+			logger.Debug("%s permanent error (not retrying): %v", MCPLogPrefix, lastErr)
+			return lastErr
+		}
+
+		// If this was the last attempt, return the error
+		if attempt == config.MaxRetries {
+			return lastErr
+		}
+
+		logger.Debug("%s retrying after %s for attempt %d/%d (transient error): %v", MCPLogPrefix, backoff, attempt+1, config.MaxRetries, lastErr)
+
+		// Wait before next attempt (with context cancellation support)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("retry context cancelled: %w", ctx.Err())
+		case <-time.After(backoff):
+			// Continue to next attempt
+		}
+
+		// Update backoff for next iteration
+		backoff = time.Duration(float64(backoff) * 2)
+		if backoff > config.MaxBackoff {
+			backoff = config.MaxBackoff
+		}
+	}
+
+	return lastErr
+}
+
 // retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
+// Uses exponential backoff retry logic (5 retries, 1-30 seconds) for tool retrieval.
 // Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
 func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (map[string]schemas.ChatTool, map[string]string, error) {
-	// Get available tools from external server
+	// Get available tools from external server with retry logic
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
 			Request: mcp.Request{
@@ -134,9 +296,20 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 		},
 	}
 
-	toolsResponse, err := client.ListTools(ctx, listRequest)
+	var toolsResponse *mcp.ListToolsResult
+	retryConfig := DefaultRetryConfig
+	err := ExecuteWithRetry(
+		ctx,
+		func() error {
+			var retrieveErr error
+			toolsResponse, retrieveErr = client.ListTools(ctx, listRequest)
+			return retrieveErr
+		},
+		retryConfig,
+		logger,
+	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to list tools: %v", err)
+		return nil, nil, fmt.Errorf("failed to list tools after %d retries: %v", retryConfig.MaxRetries, err)
 	}
 
 	if toolsResponse == nil {

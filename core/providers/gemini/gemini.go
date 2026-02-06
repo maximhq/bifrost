@@ -202,7 +202,6 @@ func (provider *GeminiProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
@@ -686,10 +687,42 @@ func (s *BifrostHTTPServer) ReloadPricingManager(ctx context.Context) error {
 
 // ForceReloadPricing triggers an immediate pricing sync and resets the sync timer
 func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return fmt.Errorf("pricing manager not found")
+	if s.Config == nil {
+		return fmt.Errorf("server config not initialized")
 	}
-	return s.Config.ModelCatalog.ForceReloadPricing(ctx)
+	if s.Config.ModelCatalog == nil {
+		if s.Config.FrameworkConfig == nil || s.Config.FrameworkConfig.Pricing == nil {
+			return fmt.Errorf("framework pricing config not initialized")
+		}
+		// Create a new model catalog
+		modelCatalog, err := modelcatalog.Init(ctx, s.Config.FrameworkConfig.Pricing, s.Config.ConfigStore, nil, logger)
+		if err != nil {
+			return fmt.Errorf("failed to initialize new model catalog: %w", err)
+		}
+		s.Config.ModelCatalog = modelCatalog
+	} else {
+		if err := s.Config.ModelCatalog.ForceReloadPricing(ctx); err != nil {
+			return fmt.Errorf("failed to force reload pricing: %w", err)
+		}
+		// Fetching keys for all providers and allowed models first
+		// Based on allowed models we will set the data in the model catalog
+		for provider, providerConfig := range s.Config.Providers {
+			modelData, listModelsErr := s.Client.ListModelsRequest(s.Ctx, &schemas.BifrostListModelsRequest{
+				Provider: provider,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, listModelsErr)
+			}
+			allowedModels := make([]schemas.Model, 0)
+			for _, key := range providerConfig.Keys {
+				allowedModels = append(allowedModels, schemas.Model{
+					ID: string(provider) + "/" + key.ID,
+				})
+			}
+			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+		}
+	}
+	return nil
 }
 
 // ReloadProxyConfig reloads the proxy configuration
