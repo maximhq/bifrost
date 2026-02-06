@@ -713,7 +713,7 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 
 // convertBifrostToolsToGemini converts Bifrost tools to Gemini format
 func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
-	var geminiTools []Tool
+	geminiTool := Tool{}
 
 	for _, tool := range bifrostTools {
 		if tool.Type == "" {
@@ -729,14 +729,14 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) []Tool {
 			if tool.Function.Description != nil {
 				fd.Description = *tool.Function.Description
 			}
-			geminiTool := Tool{
-				FunctionDeclarations: []*FunctionDeclaration{fd},
-			}
-			geminiTools = append(geminiTools, geminiTool)
+			geminiTool.FunctionDeclarations = append(geminiTool.FunctionDeclarations, fd)
 		}
 	}
 
-	return geminiTools
+	if len(geminiTool.FunctionDeclarations) > 0 {
+		return []Tool{geminiTool}
+	}
+	return []Tool{}
 }
 
 // convertFunctionParametersToSchema converts Bifrost function parameters to Gemini Schema

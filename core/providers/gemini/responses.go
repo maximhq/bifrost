@@ -27,25 +27,26 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest() *schemas.Bif
 
 	params := request.convertGenerationConfigToResponsesParameters()
 
+	// Convert SystemInstruction to system messages first
+	var inputMessages []schemas.ResponsesMessage
+	if request.SystemInstruction != nil && len(request.SystemInstruction.Parts) > 0 {
+		systemMsg := convertGeminiSystemInstructionToResponsesMessage(request.SystemInstruction)
+		if systemMsg != nil {
+			inputMessages = append(inputMessages, *systemMsg)
+		}
+	}
+
 	// Convert Contents to Input messages
 	if len(request.Contents) > 0 {
-		bifrostReq.Input = convertGeminiContentsToResponsesMessages(request.Contents)
-	}
-
-	if request.SystemInstruction != nil {
-		var systemInstructionText string
-		if len(request.SystemInstruction.Parts) > 0 {
-			for _, part := range request.SystemInstruction.Parts {
-				if part.Text != "" {
-					systemInstructionText += part.Text
-				}
-			}
-		}
-		if systemInstructionText != "" {
-			params.Instructions = &systemInstructionText
+		contentsMessages := convertGeminiContentsToResponsesMessages(request.Contents)
+		if len(contentsMessages) > 0 {
+			inputMessages = append(inputMessages, contentsMessages...)
 		}
 	}
 
+	if len(inputMessages) > 0 {
+		bifrostReq.Input = inputMessages
+	}
 	if len(request.Tools) > 0 {
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
 	}
@@ -1362,6 +1363,48 @@ func FinalizeGeminiResponsesStream(state *GeminiResponsesStreamState, usage *Gen
 	return closeGeminiOpenItems(state, usage, sequenceNumber)
 }
 
+// convertGeminiSystemInstructionToResponsesMessage converts Gemini SystemInstruction to a system role message
+func convertGeminiSystemInstructionToResponsesMessage(systemInstruction *Content) *schemas.ResponsesMessage {
+	if systemInstruction == nil || len(systemInstruction.Parts) == 0 {
+		return nil
+	}
+
+	var contentBlocks []schemas.ResponsesMessageContentBlock
+	var hasTextContent bool
+
+	for _, part := range systemInstruction.Parts {
+		if part.Text != "" {
+			contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesInputMessageContentBlockTypeText,
+				Text: &part.Text,
+			})
+			hasTextContent = true
+		}
+	}
+
+	if !hasTextContent {
+		return nil
+	}
+
+	// If single text block, use ContentStr
+	if len(contentBlocks) == 1 {
+		return &schemas.ResponsesMessage{
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: contentBlocks[0].Text,
+			},
+		}
+	}
+
+	// Multiple blocks, use ContentBlocks
+	return &schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: contentBlocks,
+		},
+	}
+}
+
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 	// Track function call IDs by name to match with responses
@@ -1455,11 +1498,6 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 							ResponsesToolCallOutputStr: &responseStr,
 						},
 					},
-				}
-
-				// Also set the tool name if present (Gemini associates on name)
-				if name := strings.TrimSpace(part.FunctionResponse.Name); name != "" {
-					msg.ResponsesToolMessage.Name = schemas.Ptr(name)
 				}
 
 				messages = append(messages, msg)
