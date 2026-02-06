@@ -221,28 +221,6 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="space-y-4">
-							{/* Model Name */}
-							<FormField
-								control={form.control}
-								name="modelName"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Model Name</FormLabel>
-										<FormControl>
-											<ModelMultiselect
-												provider={form.watch("provider") || undefined}
-												value={field.value}
-												onChange={field.onChange}
-												placeholder="Select a model..."
-												isSingleSelect
-												loadModelsOnEmptyProvider="base_models"
-											/>
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-
 							{/* Provider */}
 							<FormField
 								control={form.control}
@@ -275,6 +253,28 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												))}
 											</SelectContent>
 										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Model Name */}
+							<FormField
+								control={form.control}
+								name="modelName"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Model Name</FormLabel>
+										<FormControl>
+											<ModelMultiselect
+												provider={form.watch("provider") || undefined}
+												value={field.value}
+												onChange={field.onChange}
+												placeholder="Select a model..."
+												isSingleSelect
+												loadModelsOnEmptyProvider="base_models"
+											/>
+										</FormControl>
 										<FormMessage />
 									</FormItem>
 								)}
