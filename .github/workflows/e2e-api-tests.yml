@@ -1,0 +1,107 @@
+# E2E API tests (Newman/Postman) – runs on every PR.
+# Requires provider API keys to be set in the repository secrets (or environment).
+name: E2E API Tests
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-api-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e-api-tests:
+    name: E2E API (Newman)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Newman
+        run: npm install -g newman
+
+      - name: Start Docker services (PostgreSQL)
+        run: |
+          docker compose -f .github/workflows/configs/docker-compose.yml up -d postgres
+          echo "Waiting for Postgres..."
+          timeout 60 bash -c 'until docker exec $(docker compose -f .github/workflows/configs/docker-compose.yml ps -q postgres) pg_isready -U bifrost -d bifrost; do sleep 2; done'
+
+      - name: Build UI
+        run: make build-ui
+
+      - name: Build hello-world plugin
+        run: |
+          cd examples/plugins/hello-world && make build && cd ../../..
+
+      - name: Build bifrost-http binary
+        run: |
+          mkdir -p tmp
+          cd transports/bifrost-http && go build -o ../../tmp/bifrost-http . && cd ../..
+
+      - name: Make E2E API scripts executable
+        run: |
+          chmod +x .github/workflows/scripts/test-e2e-api.sh
+          chmod +x tests/e2e/api/run-all-integration-tests.sh
+          chmod +x tests/e2e/api/run-newman-tests.sh
+          chmod +x tests/e2e/api/run-newman-api-tests.sh
+          chmod +x tests/e2e/api/run-newman-openai-integration.sh
+          chmod +x tests/e2e/api/run-newman-anthropic-integration.sh
+          chmod +x tests/e2e/api/run-newman-bedrock-integration.sh
+          chmod +x tests/e2e/api/run-newman-composite-integration.sh
+
+      - name: Run E2E API tests
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: bifrost
+          POSTGRES_PASSWORD: bifrost_password
+          POSTGRES_DB: bifrost
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_ARN: ${{ secrets.AWS_ARN }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          BEDROCK_API_KEY: ${{ secrets.BEDROCK_API_KEY }}
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_API_KEY: ${{ secrets.AZURE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PARASAIL_API_KEY: ${{ secrets.PARASAIL_API_KEY }}
+          PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
+          VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
+          GOOGLE_LOCATION: ${{ secrets.GOOGLE_LOCATION }}
+          HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+        run: |
+          ./.github/workflows/scripts/test-e2e-api.sh ./tmp/bifrost-http 8080
+
+      - name: Upload Newman reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newman-reports
+          path: tests/e2e/api/newman-reports/
+          retention-days: 7
+          if-no-files-found: ignore
