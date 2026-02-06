@@ -60,7 +60,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
-			tool_sync_interval: mcpClient.config.tool_sync_interval,
+			tool_sync_interval: mcpClient.config.tool_sync_interval ?? 0,
 		},
 	});
 
@@ -74,7 +74,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_execute: mcpClient.config.tools_to_execute || [],
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
-			tool_sync_interval: mcpClient.config.tool_sync_interval,
+			tool_sync_interval: mcpClient.config.tool_sync_interval ?? 0,
 		});
 	}, [form, mcpClient]);
 
@@ -90,7 +90,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					tools_to_execute: data.tools_to_execute,
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
-					tool_sync_interval: data.tool_sync_interval,
+					tool_sync_interval: data.tool_sync_interval ?? 0,
 				},
 			}).unwrap();
 

@@ -409,7 +409,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 
 	}
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
-	// Dereference IsPingAvailable pointer, defaulting to true if nil
 	isPingAvailable := true
 	if req.IsPingAvailable != nil {
 		isPingAvailable = *req.IsPingAvailable
@@ -418,14 +417,14 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		ID:                 req.ClientID,
 		Name:               req.Name,
 		IsCodeModeClient:   req.IsCodeModeClient,
-		ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
-		ConnectionString:   req.ConnectionString,
-		StdioConfig:        req.StdioConfig,
+		ConnectionType:     existingConfig.ConnectionType,
+		ConnectionString:   existingConfig.ConnectionString,
+		StdioConfig:        existingConfig.StdioConfig,
 		ToolsToExecute:     req.ToolsToExecute,
 		ToolsToAutoExecute: req.ToolsToAutoExecute,
 		Headers:            req.Headers,
-		AuthType:           schemas.MCPAuthType(req.AuthType),
-		OauthConfigID:      req.OauthConfigID,
+		AuthType:           existingConfig.AuthType,
+		OauthConfigID:      existingConfig.OauthConfigID,
 		IsPingAvailable:    isPingAvailable,
 		ToolSyncInterval:   toolSyncInterval,
 		ToolPricing:        req.ToolPricing,
@@ -436,6 +435,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v please restart bifrost to keep core and database in sync", err))
 		return
 	}
+
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client edited successfully",
@@ -585,24 +585,25 @@ func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, 
 		}
 	}
 
-	// Handle Headers - for each header, check if it's redacted and unchanged
-	if incoming.Headers != nil && oldRaw.Headers != nil && oldRedacted.Headers != nil {
-		merged.Headers = make(map[string]schemas.EnvVar, len(incoming.Headers))
-		for key, incomingValue := range incoming.Headers {
-			if oldRedactedValue, existsInRedacted := oldRedacted.Headers[key]; existsInRedacted {
-				if oldRawValue, existsInRaw := oldRaw.Headers[key]; existsInRaw {
-					// If incoming value is redacted and equals old redacted value, use old raw value
-					if incomingValue.IsRedacted() && incomingValue.Equals(&oldRedactedValue) {
-						merged.Headers[key] = oldRawValue
-					} else {
-						merged.Headers[key] = incomingValue
+	// Handle Headers - merge incoming with old, preserving redacted values
+	if incoming.Headers != nil {
+		incomingHeaders := incoming.Headers
+		merged.Headers = make(map[string]schemas.EnvVar, len(incomingHeaders))
+		for key, incomingValue := range incomingHeaders {
+			if oldRaw.Headers != nil && oldRedacted.Headers != nil {
+				if oldRedactedValue, existsInRedacted := oldRedacted.Headers[key]; existsInRedacted {
+					if oldRawValue, existsInRaw := oldRaw.Headers[key]; existsInRaw {
+						if incomingValue.IsRedacted() && incomingValue.Equals(&oldRedactedValue) {
+							merged.Headers[key] = oldRawValue
+							continue
+						}
 					}
-					continue
 				}
 			}
-			// New header or changed header
 			merged.Headers[key] = incomingValue
 		}
+	} else if oldRaw.Headers != nil {
+		merged.Headers = oldRaw.Headers
 	}
 
 	// Preserve IsPingAvailable if not explicitly set in incoming request
