@@ -80,7 +80,6 @@ func (provider *OllamaProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 

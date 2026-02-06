@@ -112,7 +112,6 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		providerName,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
 	)
 }
 
@@ -198,7 +197,6 @@ func HandleOpenAIListModelsRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
-	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		return listModelsByKey(ctx, client, url, schemas.Key{}, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
@@ -211,7 +209,6 @@ func HandleOpenAIListModelsRequest(
 		keys,
 		request,
 		listModelsByKeyWrapper,
-		logger,
 	)
 }
 
