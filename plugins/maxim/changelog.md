@@ -1,1 +1,2 @@
 - feat: added support for image generation, image editing, and image variation requests and responses
+- feat: added support for tool calls logs for mcp
