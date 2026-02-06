@@ -2,7 +2,6 @@ package bedrock
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1744,12 +1743,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
+			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
+				delete(bedrockReq.ExtraParams, "stop")
 				inferenceConfig.StopSequences = stop
 			}
 
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
 					bedrockReq.AdditionalModelRequestFields = orderedFields
 				}
 			}
@@ -1767,6 +1769,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 					if len(stringFields) > 0 {
 						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
 					}
+				}
+				if len(bedrockReq.AdditionalModelResponseFieldPaths) > 0 {
+					delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
 				}
 			}
 		}
@@ -2170,6 +2175,17 @@ func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments stri
 
 // RegisterToolResult registers a tool result
 func (m *ToolCallStateManager) RegisterToolResult(callID string, content []BedrockContentBlock, status string) {
+	// Attemp to deduplicate the result similar to tool call. Need to check in 2 places, since after moving
+	// on from pendingResults into a completed toolCall, the same ID might come again.
+	if _, ok := m.pendingResults[callID]; ok {
+		return
+	}
+
+	if toolCall, exists := m.toolCalls[callID]; exists && toolCall.Result != nil {
+		// Tool result already processed for this call ID, skip
+		return
+	}
+
 	result := &ToolResult{
 		CallID:  callID,
 		Content: content,
@@ -2402,42 +2418,12 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 				// Convert result content to Bedrock format
 				if msg.ResponsesToolMessage.Output != nil {
 					if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						// Try to parse as JSON, otherwise treat as text
-						var parsed interface{}
-						if err := json.Unmarshal([]byte(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), &parsed); err != nil {
-							resultContent = append(resultContent, BedrockContentBlock{
-								Text: msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr,
-							})
-						} else {
-							// Bedrock does not accept primitives or arrays directly in the json field
-							switch v := parsed.(type) {
-							case map[string]any:
-								// Objects are valid as-is
-								resultContent = append(resultContent, BedrockContentBlock{
-									JSON: v,
-								})
-							case []any:
-								// Arrays need to be wrapped
-								resultContent = append(resultContent, BedrockContentBlock{
-									JSON: map[string]any{"results": v},
-								})
-							default:
-								// Primitives (string, number, boolean, null) need to be wrapped
-								resultContent = append(resultContent, BedrockContentBlock{
-									JSON: map[string]any{"value": v},
-								})
-							}
-						}
+						resultContent = append(resultContent, tryParseJSONIntoContentBlock(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr))
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							switch block.Type {
-							case schemas.ResponsesOutputMessageContentTypeText:
-								if block.Text != nil {
-									resultContent = append(resultContent, BedrockContentBlock{
-										Text: block.Text,
-									})
-								}
+							if block.Text != nil {
+								resultContent = append(resultContent, tryParseJSONIntoContentBlock(*block.Text))
 							}
 						}
 					}

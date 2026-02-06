@@ -1,6 +1,10 @@
 package vertex
 
-import "time"
+import (
+	"time"
+
+	"github.com/bytedance/sonic"
+)
 
 // Vertex AI Embedding API types
 
@@ -69,6 +73,21 @@ type VertexAudioConfig struct {
 	EffectsProfileID []string `json:"effectsProfileId,omitempty"`
 }
 
+type VertexRequestBody struct {
+	RequestBody map[string]interface{} `json:"-"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (r *VertexRequestBody) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// MarshalJSON implements custom JSON marshalling for VertexRequestBody.
+// It marshals the RequestBody field directly without wrapping.
+func (r *VertexRequestBody) MarshalJSON() ([]byte, error) {
+	return sonic.Marshal(r.RequestBody)
+}
+
 // VertexAdvancedVoiceOptions represents advanced voice options for TTS synthesis.
 type VertexAdvancedVoiceOptions struct {
 	LowLatencyJourneySynthesis bool `json:"lowLatencyJourneySynthesis,omitempty"`
@@ -89,8 +108,13 @@ type VertexEmbeddingParameters struct {
 
 // VertexEmbeddingRequest represents the complete embedding request to Vertex AI
 type VertexEmbeddingRequest struct {
-	Instances  []VertexEmbeddingInstance  `json:"instances"`            // List of embedding instances
-	Parameters *VertexEmbeddingParameters `json:"parameters,omitempty"` // Optional parameters
+	Instances   []VertexEmbeddingInstance  `json:"instances"`            // List of embedding instances
+	Parameters  *VertexEmbeddingParameters `json:"parameters,omitempty"` // Optional parameters
+	ExtraParams map[string]interface{}     `json:"-"`                    // Optional: Extra parameters
+}
+
+func (r *VertexEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // VertexEmbeddingStatistics represents statistics computed from the input text

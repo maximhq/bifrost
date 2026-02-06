@@ -167,6 +167,9 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		req.filterUnsupportedTools()
 	}
 
+	if bifrostReq.Params != nil {
+		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 	return req
 }
 

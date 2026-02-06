@@ -39,9 +39,10 @@ type ConfigStore interface {
 
 	// MCP config CRUD
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
+	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
-	CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error
-	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error
+	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
+	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
 
 	// Vector store config CRUD
@@ -115,6 +116,15 @@ type ConfigStore interface {
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
 	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
 
+	// Routing Rules CRUD
+	GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error)
+	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)
+	GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
+	GetRedactedRoutingRules(ctx context.Context, ids []string) ([]tables.TableRoutingRule, error) // leave ids empty to get all
+	CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
+	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
+	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
+
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)
@@ -181,6 +191,20 @@ type ConfigStore interface {
 	// CleanupExpiredLocks removes all locks that have expired.
 	// Returns the number of locks cleaned up.
 	CleanupExpiredLocks(ctx context.Context) (int64, error)
+
+	// OAuth config CRUD
+	GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error)
+	GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error)
+	GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error)
+	CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+	UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error
+
+	// OAuth token CRUD
+	GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error)
+	GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error)
+	CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
+	UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error
+	DeleteOauthToken(ctx context.Context, id string) error
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)

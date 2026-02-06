@@ -18,16 +18,20 @@ import {
 	KeyRound,
 	Landmark,
 	Layers,
+	LayoutGrid,
 	LogOut,
 	Logs,
+	Network,
 	PanelLeftClose,
 	Puzzle,
 	ScrollText,
 	Settings,
 	Settings2Icon,
 	Shield,
+	ShieldUser,
 	Shuffle,
 	Telescope,
+	ToolCase,
 	User,
 	UserRoundCheck,
 	Users,
@@ -169,6 +173,7 @@ const SidebarItemView = ({
 	router,
 	isSidebarCollapsed,
 	expandSidebar,
+	isGovernanceEnabled,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
@@ -181,6 +186,7 @@ const SidebarItemView = ({
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
 	expandSidebar: () => void;
+	isGovernanceEnabled: boolean;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -226,14 +232,13 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
 				tooltip={item.title}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isActive || isAnySubItemActive
-						? "bg-sidebar-accent text-primary border-primary/20"
-						: isAllowed && item.hasAccess
-							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
-				onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isActive || isAnySubItemActive
+					? "bg-sidebar-accent text-primary border-primary/20"
+					: isAllowed && item.hasAccess
+						? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+						: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					} `}
+				onClick={hasSubItems ? handleClick : (item.hasAccess ? () => handleNavigation(item.url) : undefined)}
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
@@ -263,19 +268,20 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
+						// Hide governance-dependent subitems when governance is disabled
+						if ((subItem.url === "/workspace/model-limits" || subItem.url === "/workspace/routing-rules") && !isGovernanceEnabled) return null;
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
 						const SubItemIcon = subItem.icon;
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemActive
-											? "bg-sidebar-accent text-primary font-medium"
-											: subItem.hasAccess === false
-												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemActive
+										? "bg-sidebar-accent text-primary font-medium"
+										: subItem.hasAccess === false
+											? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+											: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										}`}
 									onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem))}
 								>
 									<div className="flex items-center gap-2">
@@ -356,6 +362,7 @@ export default function AppSidebar() {
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
@@ -378,10 +385,17 @@ export default function AppSidebar() {
 					hasAccess: hasObservabilityAccess,
 				},
 				{
-					title: "Logs",
+					title: "LLM Logs",
 					url: "/workspace/logs",
 					icon: Logs,
-					description: "Request logs & monitoring",
+					description: "LLM request logs & monitoring",
+					hasAccess: hasLogsAccess,
+				},
+				{
+					title: "MCP Logs",
+					url: "/workspace/mcp-logs",
+					icon: MCPIcon,
+					description: "MCP tool execution logs",
 					hasAccess: hasLogsAccess,
 				},
 				{
@@ -405,14 +419,60 @@ export default function AppSidebar() {
 			url: "/workspace/providers",
 			icon: BoxIcon,
 			description: "Configure models",
-			hasAccess: hasModelProvidersAccess,
+			hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess || hasGovernanceAccess,
+			subItems: [
+				{
+					title: "Configurations",
+					url: "/workspace/providers",
+					icon: Cog,
+					description: "Configure models",
+					hasAccess: hasModelProvidersAccess,
+				},
+				{
+					title: "Budgets & Limits",
+					url: "/workspace/model-limits",
+					icon: Gauge,
+					description: "Model limits",
+					hasAccess: hasGovernanceAccess,
+				},
+				{
+					title: "Routing Rules",
+					url: "/workspace/routing-rules",
+					icon: Network,
+					description: "Intelligent routing rules",
+					hasAccess: hasRoutingRulesAccess,
+				},
+			],
 		},
 		{
 			title: "MCP Gateway",
-			url: "/workspace/mcp-gateway",
 			icon: MCPIcon,
 			description: "MCP configuration",
+			url: "/workspace/mcp-gateway",
 			hasAccess: hasMCPGatewayAccess,
+			subItems: [
+				{
+					title: "MCP Catalog",
+					url: "/workspace/mcp-registry",
+					icon: LayoutGrid,
+					description: "MCP tool catalog",
+					hasAccess: hasMCPGatewayAccess,
+				},
+				{
+					title: "Tool groups",
+					url: "/workspace/mcp-tool-groups",
+					icon: ToolCase,
+					description: "MCP tool groups",
+					hasAccess: hasMCPGatewayAccess,
+				},
+				{
+					title: "Auth Config",
+					url: "/workspace/mcp-auth-config",
+					icon: ShieldUser,
+					description: "MCP auth config",
+					hasAccess: hasMCPGatewayAccess,
+				},
+			],
 		},
 		{
 			title: "Plugins",
@@ -428,7 +488,13 @@ export default function AppSidebar() {
 			icon: Landmark,
 			description: "Govern access",
 			hasAccess:
-				hasVirtualKeysAccess || hasGovernanceAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
+				hasGovernanceAccess ||
+				hasVirtualKeysAccess ||
+				hasCustomersAccess ||
+				hasTeamsAccess ||
+				hasUserProvisioningAccess ||
+				hasRbacAccess ||
+				hasAuditLogsAccess,
 			subItems: [
 				{
 					title: "Virtual Keys",
@@ -812,6 +878,7 @@ export default function AppSidebar() {
 										router={router}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
+										isGovernanceEnabled={isGovernanceEnabled}
 									/>
 								);
 							})}

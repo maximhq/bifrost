@@ -9,154 +9,88 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 type MCPManager interface {
-	AddMCPClient(ctx context.Context, clientConfig schemas.MCPClientConfig) error
+	AddMCPClient(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	RemoveMCPClient(ctx context.Context, id string) error
-	EditMCPClient(ctx context.Context, id string, updatedConfig schemas.MCPClientConfig) error
+	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
+	ReconnectMCPClient(ctx context.Context, id string) error
 }
 
 // MCPHandler manages HTTP requests for MCP tool operations
 type MCPHandler struct {
-	client     *bifrost.Bifrost
-	store      *lib.Config
-	mcpManager MCPManager
+	client       *bifrost.Bifrost
+	store        *lib.Config
+	mcpManager   MCPManager
+	oauthHandler *OAuthHandler
 }
 
 // NewMCPHandler creates a new MCP handler instance
-func NewMCPHandler(mcpManager MCPManager, client *bifrost.Bifrost, store *lib.Config) *MCPHandler {
+func NewMCPHandler(mcpManager MCPManager, client *bifrost.Bifrost, store *lib.Config, oauthHandler *OAuthHandler) *MCPHandler {
 	return &MCPHandler{
-		client:     client,
-		store:      store,
-		mcpManager: mcpManager,
+		client:       client,
+		store:        store,
+		mcpManager:   mcpManager,
+		oauthHandler: oauthHandler,
 	}
 }
 
 // RegisterRoutes registers all MCP-related routes
 func (h *MCPHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// MCP tool execution endpoint
-	r.POST("/v1/mcp/tool/execute", lib.ChainMiddlewares(h.executeTool, middlewares...))
 	r.GET("/api/mcp/clients", lib.ChainMiddlewares(h.getMCPClients, middlewares...))
 	r.POST("/api/mcp/client", lib.ChainMiddlewares(h.addMCPClient, middlewares...))
-	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.editMCPClient, middlewares...))
-	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.removeMCPClient, middlewares...))
+	r.PUT("/api/mcp/client/{id}", lib.ChainMiddlewares(h.updateMCPClient, middlewares...))
+	r.DELETE("/api/mcp/client/{id}", lib.ChainMiddlewares(h.deleteMCPClient, middlewares...))
 	r.POST("/api/mcp/client/{id}/reconnect", lib.ChainMiddlewares(h.reconnectMCPClient, middlewares...))
+	r.POST("/api/mcp/client/{id}/complete-oauth", lib.ChainMiddlewares(h.completeMCPClientOAuth, middlewares...))
 }
 
-// executeTool handles POST /v1/mcp/tool/execute - Execute MCP tool
-func (h *MCPHandler) executeTool(ctx *fasthttp.RequestCtx) {
-	// Check format query parameter
-	format := strings.ToLower(string(ctx.QueryArgs().Peek("format")))
-	switch format {
-	case "chat", "":
-		h.executeChatMCPTool(ctx)
-	case "responses":
-		h.executeResponsesMCPTool(ctx)
-	default:
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid format value, must be 'chat' or 'responses'")
-		return
-	}
-}
-
-// executeChatMCPTool handles POST /v1/mcp/tool/execute?format=chat - Execute MCP tool
-func (h *MCPHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ChatAssistantMessageToolCall
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
-	}
-
-	// Validate required fields
-	if req.Function.Name == nil || *req.Function.Name == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Tool function name is required")
-		return
-	}
-
-	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
-	defer cancel() // Ensure cleanup on function exit
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
-		return
-	}
-
-	// Execute MCP tool
-	toolMessage, bifrostErr := h.client.ExecuteChatMCPTool(bifrostCtx, req)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	// Send successful response
-	SendJSON(ctx, toolMessage)
-}
-
-// executeResponsesMCPTool handles POST /v1/mcp/tool/execute?format=responses - Execute MCP tool
-func (h *MCPHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) {
-	var req schemas.ResponsesToolMessage
-	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
-	}
-
-	// Validate required fields
-	if req.Name == nil || *req.Name == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Tool function name is required")
-		return
-	}
-
-	// Convert context
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, h.store.GetHeaderFilterConfig())
-	defer cancel() // Ensure cleanup on function exit
-	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
-		return
-	}
-
-	// Execute MCP tool
-	toolMessage, bifrostErr := h.client.ExecuteResponsesMCPTool(bifrostCtx, &req)
-	if bifrostErr != nil {
-		SendBifrostError(ctx, bifrostErr)
-		return
-	}
-
-	// Send successful response
-	SendJSON(ctx, toolMessage)
+// MCPClientResponse represents the response structure for MCP clients
+type MCPClientResponse struct {
+	Config *schemas.MCPClientConfig   `json:"config"`
+	Tools  []schemas.ChatToolFunction `json:"tools"`
+	State  schemas.MCPConnectionState `json:"state"`
 }
 
 // getMCPClients handles GET /api/mcp/clients - Get all MCP clients
 func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendJSON(ctx, []MCPClientResponse{})
+		return
+	}
 	// Get clients from store config
 	configsInStore := h.store.MCPConfig
 	if configsInStore == nil {
-		SendJSON(ctx, []schemas.MCPClient{})
+		SendJSON(ctx, []MCPClientResponse{})
 		return
 	}
-
 	// Get actual connected clients from Bifrost
 	clientsInBifrost, err := h.client.GetMCPClients()
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP clients from Bifrost: %v", err))
 		return
 	}
-
 	// Create a map of connected clients for quick lookup
 	connectedClientsMap := make(map[string]schemas.MCPClient)
 	for _, client := range clientsInBifrost {
 		connectedClientsMap[client.Config.ID] = client
 	}
-
 	// Build the final client list, including errored clients
-	clients := make([]schemas.MCPClient, 0, len(configsInStore.ClientConfigs))
+	clients := make([]MCPClientResponse, 0, len(configsInStore.ClientConfigs))
 
 	for _, configClient := range configsInStore.ClientConfigs {
+		// Redact sensitive fields before sending to UI
+		redactedConfig := h.store.RedactMCPClientConfig(configClient)
 		if connectedClient, exists := connectedClientsMap[configClient.ID]; exists {
 			// Sort tools alphabetically by name
 			sortedTools := make([]schemas.ChatToolFunction, len(connectedClient.Tools))
@@ -165,86 +99,86 @@ func (h *MCPHandler) getMCPClients(ctx *fasthttp.RequestCtx) {
 				return sortedTools[i].Name < sortedTools[j].Name
 			})
 
-			clients = append(clients, schemas.MCPClient{
-				Config: h.store.RedactMCPClientConfig(connectedClient.Config),
+			clients = append(clients, MCPClientResponse{
+				Config: redactedConfig,
 				Tools:  sortedTools,
-				State:  connectedClient.State, // Use the state from MCPClientState
+				State:  connectedClient.State,
 			})
 		} else {
 			// Client is in config but not connected, mark as errored
-			clients = append(clients, schemas.MCPClient{
-				Config: h.store.RedactMCPClientConfig(configClient),
+			clients = append(clients, MCPClientResponse{
+				Config: redactedConfig,
 				Tools:  []schemas.ChatToolFunction{}, // No tools available since connection failed
 				State:  schemas.MCPConnectionStateError,
 			})
 		}
 	}
-
 	SendJSON(ctx, clients)
 }
 
 // reconnectMCPClient handles POST /api/mcp/client/{id}/reconnect - Reconnect an MCP client
 func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-
-	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
-	if clients, err := h.client.GetMCPClients(); err == nil && len(clients) > 0 {
-		for _, client := range clients {
-			if client.Config.ID == id {
-				if err := h.client.ReconnectMCPClient(id); err != nil {
-					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client: %v", err))
-					return
-				} else {
-					SendJSON(ctx, map[string]any{
-						"status":  "success",
-						"message": "MCP client reconnected successfully",
-					})
-					return
-				}
-			}
-		}
-	}
-
-	// Config exists in store, but not in Bifrost (can happen if client initialization failed)
-	clientConfig, err := h.store.GetMCPClient(id)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get MCP client config: %v", err))
+	if err := h.mcpManager.ReconnectMCPClient(ctx, id); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client: %v", err))
 		return
 	}
-
-	if err := h.client.AddMCPClient(*clientConfig); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add MCP client: %v", err))
-		return
-	}
-
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client reconnected successfully",
 	})
 }
 
+// OAuthConfigRequest represents OAuth configuration in the request
+type OAuthConfigRequest struct {
+	ClientID        string   `json:"client_id"`
+	ClientSecret    string   `json:"client_secret"`
+	AuthorizeURL    string   `json:"authorize_url"`
+	TokenURL        string   `json:"token_url"`
+	RegistrationURL string   `json:"registration_url"`
+	Scopes          []string `json:"scopes"`
+}
+
+// MCPClientRequest represents the full MCP client creation request with OAuth support
+type MCPClientRequest struct {
+	configstoreTables.TableMCPClient
+	OauthConfig *OAuthConfigRequest `json:"oauth_config,omitempty"`
+}
+
 // addMCPClient handles POST /api/mcp/client - Add a new MCP client
 func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
-	var req schemas.MCPClientConfig
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	var req MCPClientRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
+
+	// Generate a unique client ID if not provided
+	if req.ClientID == "" {
+		req.ClientID = uuid.New().String()
+	}
+
 	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
 		return
 	}
-
 	// Auto-clear tools_to_auto_execute if tools_to_execute is empty
 	// If no tools are allowed to execute, no tools can be auto-executed
 	if len(req.ToolsToExecute) == 0 {
 		req.ToolsToAutoExecute = []string{}
 	}
-
 	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
@@ -253,75 +187,283 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
-	if err := h.mcpManager.AddMCPClient(ctx, req); err != nil {
+
+	// Check if OAuth flow is needed
+	if req.AuthType == "oauth" {
+		if req.OauthConfig == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "OAuth configuration is required when auth_type is 'oauth'")
+			return
+		}
+
+		// Validate: Either client_id must be provided, OR we need a server URL for discovery + dynamic registration
+		// Client ID can be empty if the OAuth provider supports dynamic client registration (RFC 7591)
+		if req.OauthConfig.ClientID == "" {
+			// If no client_id, we need server URL for discovery
+			if req.ConnectionString.GetValue() == "" {
+				SendError(ctx, fasthttp.StatusBadRequest, "Either client_id must be provided, or server URL must be set for OAuth discovery and dynamic client registration")
+				return
+			}
+			// Note: The InitiateOAuthFlow will check if registration_endpoint is available
+			// and return a clear error if dynamic registration is not supported
+		}
+
+		// Build redirect URI - use Bifrost's own callback endpoint
+		// Extract the base URL from the current request
+		scheme := "http"
+		if ctx.IsTLS() {
+			scheme = "https"
+		}
+		host := string(ctx.Host())
+		redirectURI := fmt.Sprintf("%s://%s/api/oauth/callback", scheme, host)
+
+		// Initiate OAuth flow
+		// ServerURL comes from ConnectionString (MCP server URL for OAuth discovery)
+		// ClientID is optional - will be obtained via dynamic registration if not provided
+		flowInitiation, err := h.oauthHandler.InitiateOAuthFlow(ctx, OAuthInitiationRequest{
+			ClientID:        req.OauthConfig.ClientID,        // Optional: auto-generated if empty
+			ClientSecret:    req.OauthConfig.ClientSecret,    // Optional: for PKCE or dynamic registration
+			AuthorizeURL:    req.OauthConfig.AuthorizeURL,    // Optional: discovered if empty
+			TokenURL:        req.OauthConfig.TokenURL,        // Optional: discovered if empty
+			RegistrationURL: req.OauthConfig.RegistrationURL, // Optional: discovered if empty
+			RedirectURI:     redirectURI,                     // Use server's own callback URL
+			Scopes:          req.OauthConfig.Scopes,          // Optional: discovered if empty
+			ServerURL:       req.ConnectionString.GetValue(), // MCP server URL for OAuth discovery
+		})
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate OAuth flow: %v", err))
+			return
+		}
+
+		// Store MCP client config in OAuth provider memory (not in database)
+		// It will be stored in database only after OAuth completion
+		pendingConfig := schemas.MCPClientConfig{
+			ID:                 req.ClientID,
+			Name:               req.Name,
+			IsCodeModeClient:   req.IsCodeModeClient,
+			ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
+			ConnectionString:   req.ConnectionString,
+			StdioConfig:        req.StdioConfig,
+			AuthType:           schemas.MCPAuthType(req.AuthType),
+			OauthConfigID:      &flowInitiation.OauthConfigID,
+			ToolsToExecute:     req.ToolsToExecute,
+			ToolsToAutoExecute: req.ToolsToAutoExecute,
+			Headers:            req.Headers,
+		}
+
+		// Store pending config in database (associated with oauth_config_id for multi-instance support)
+		if err := h.oauthHandler.StorePendingMCPClient(flowInitiation.OauthConfigID, pendingConfig); err != nil {
+			logger.Error(fmt.Sprintf("[Add MCP Client] Failed to store pending MCP client: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to store pending MCP client: %v", err))
+			return
+		}
+
+		// Return OAuth flow initiation response
+		SendJSON(ctx, map[string]any{
+			"status":          "pending_oauth",
+			"message":         "OAuth authorization required",
+			"oauth_config_id": flowInitiation.OauthConfigID,
+			"authorize_url":   flowInitiation.AuthorizeURL,
+			"expires_at":      flowInitiation.ExpiresAt,
+			"mcp_client_id":   req.ClientID,
+		})
+		return
+	}
+
+	toolSyncInterval := 10 * time.Minute
+	if req.ToolSyncInterval != 0 {
+		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+	} else {
+		config, err := h.store.ConfigStore.GetClientConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
+			return
+		}
+		if config != nil {
+			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+		}
+
+	}
+	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
+	// Dereference IsPingAvailable pointer, defaulting to true if nil (new clients default to ping available)
+	isPingAvailable := true
+	if req.IsPingAvailable != nil {
+		isPingAvailable = *req.IsPingAvailable
+	}
+	schemasConfig := &schemas.MCPClientConfig{
+		ID:                 req.ClientID,
+		Name:               req.Name,
+		IsCodeModeClient:   req.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
+		ConnectionString:   req.ConnectionString,
+		StdioConfig:        req.StdioConfig,
+		ToolsToExecute:     req.ToolsToExecute,
+		ToolsToAutoExecute: req.ToolsToAutoExecute,
+		Headers:            req.Headers,
+		AuthType:           schemas.MCPAuthType(req.AuthType),
+		OauthConfigID:      req.OauthConfigID,
+		IsPingAvailable:    isPingAvailable,
+		ToolSyncInterval:   toolSyncInterval,
+		ToolPricing:        req.ToolPricing,
+	}
+
+	// Creating MCP client config in config store
+	if h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to create MCP config: %v", err))
+			return
+		}
+	}
+	if err := h.mcpManager.AddMCPClient(ctx, schemasConfig); err != nil {
+		// Delete the created config from config store
+		if h.store.ConfigStore != nil {
+			if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, schemasConfig.ID); err != nil {
+				logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", err))
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", err))
+				return
+			}
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
 		return
 	}
+
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client connected successfully",
 	})
 }
 
-// editMCPClient handles PUT /api/mcp/client/{id} - Edit MCP client
-func (h *MCPHandler) editMCPClient(ctx *fasthttp.RequestCtx) {
+// updateMCPClient handles PUT /api/mcp/client/{id} - Edit MCP client
+func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-
-	var req schemas.MCPClientConfig
+	// Accept the full table client config to support tool_pricing
+	var req *configstoreTables.TableMCPClient
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
-
+	req.ClientID = id
 	// Validate tools_to_execute
 	if err := validateToolsToExecute(req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_execute: %v", err))
 		return
 	}
-
 	// Auto-clear tools_to_auto_execute if tools_to_execute is empty
 	// If no tools are allowed to execute, no tools can be auto-executed
 	if len(req.ToolsToExecute) == 0 {
 		req.ToolsToAutoExecute = []string{}
 	}
-
 	// Validate tools_to_auto_execute
 	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
 		return
 	}
-
 	// Validate client name
 	if err := validateMCPClientName(req.Name); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid client name: %v", err))
 		return
 	}
-
-	if err := h.mcpManager.EditMCPClient(ctx, id, req); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to edit MCP client: %v", err))
+	// Get existing config to handle redacted values
+	var existingConfig *schemas.MCPClientConfig
+	if h.store.MCPConfig != nil {
+		for i, client := range h.store.MCPConfig.ClientConfigs {
+			if client.ID == id {
+				existingConfig = h.store.MCPConfig.ClientConfigs[i]
+				break
+			}
+		}
+	}
+	if existingConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
 
+	// Merge redacted values - preserve old values if incoming values are redacted and unchanged
+	req = mergeMCPRedactedValues(req, existingConfig, h.store.RedactMCPClientConfig(existingConfig))
+	// Persist changes to config store
+	if h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, req); err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
+			return
+		}
+	}
+	toolSyncInterval := 10 * time.Minute
+	if req.ToolSyncInterval != 0 {
+		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+	} else {
+		config, err := h.store.ConfigStore.GetClientConfig(ctx)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
+			return
+		}
+		if config != nil {
+			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+		}
+
+	}
+	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
+	// Dereference IsPingAvailable pointer, defaulting to true if nil
+	isPingAvailable := true
+	if req.IsPingAvailable != nil {
+		isPingAvailable = *req.IsPingAvailable
+	}
+	schemasConfig := &schemas.MCPClientConfig{
+		ID:                 req.ClientID,
+		Name:               req.Name,
+		IsCodeModeClient:   req.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
+		ConnectionString:   req.ConnectionString,
+		StdioConfig:        req.StdioConfig,
+		ToolsToExecute:     req.ToolsToExecute,
+		ToolsToAutoExecute: req.ToolsToAutoExecute,
+		Headers:            req.Headers,
+		AuthType:           schemas.MCPAuthType(req.AuthType),
+		OauthConfigID:      req.OauthConfigID,
+		IsPingAvailable:    isPingAvailable,
+		ToolSyncInterval:   toolSyncInterval,
+		ToolPricing:        req.ToolPricing,
+	}
+	// Update MCP client in memory
+	if err := h.mcpManager.UpdateMCPClient(ctx, id, schemasConfig); err != nil {
+		logger.Error(fmt.Sprintf("Failed to update MCP client: %v. please restart bifrost to keep core and database in sync", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client: %v please restart bifrost to keep core and database in sync", err))
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client edited successfully",
 	})
 }
 
-// removeMCPClient handles DELETE /api/mcp/client/{id} - Remove an MCP client
-func (h *MCPHandler) removeMCPClient(ctx *fasthttp.RequestCtx) {
+// deleteMCPClient handles DELETE /api/mcp/client/{id} - Remove an MCP client
+func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
 	id, err := getIDFromCtx(ctx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid id: %v", err))
 		return
 	}
 	if err := h.mcpManager.RemoveMCPClient(ctx, id); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to remove MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to remove MCP client: %v", err))
 		return
+	}
+	// Deleting MCP client config from config store
+	if h.store.ConfigStore != nil {
+		if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
+			logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v. please restart bifrost to keep core and database in sync", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete MCP config: %v please restart bifrost to keep core and database in sync", err))
+			return
+		}
 	}
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
@@ -408,6 +550,7 @@ func validateToolsToAutoExecute(toolsToAutoExecute []string, toolsToExecute []st
 	return nil
 }
 
+// validateMCPClientName validates the name of an MCP client
 func validateMCPClientName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("client name is required")
@@ -427,4 +570,111 @@ func validateMCPClientName(name string) error {
 		return fmt.Errorf("client name cannot start with a number")
 	}
 	return nil
+}
+
+// mergeMCPRedactedValues merges incoming MCP client config with existing config,
+// preserving old values when incoming values are redacted and unchanged.
+// This follows the same pattern as provider config updates.
+func mergeMCPRedactedValues(incoming *configstoreTables.TableMCPClient, oldRaw, oldRedacted *schemas.MCPClientConfig) *configstoreTables.TableMCPClient {
+	merged := incoming
+
+	// Handle ConnectionString - if incoming is redacted and equals old redacted, keep old raw value
+	if incoming.ConnectionString != nil && oldRaw.ConnectionString != nil && oldRedacted.ConnectionString != nil {
+		if incoming.ConnectionString.IsRedacted() && incoming.ConnectionString.Equals(oldRedacted.ConnectionString) {
+			merged.ConnectionString = oldRaw.ConnectionString
+		}
+	}
+
+	// Handle Headers - for each header, check if it's redacted and unchanged
+	if incoming.Headers != nil && oldRaw.Headers != nil && oldRedacted.Headers != nil {
+		merged.Headers = make(map[string]schemas.EnvVar, len(incoming.Headers))
+		for key, incomingValue := range incoming.Headers {
+			if oldRedactedValue, existsInRedacted := oldRedacted.Headers[key]; existsInRedacted {
+				if oldRawValue, existsInRaw := oldRaw.Headers[key]; existsInRaw {
+					// If incoming value is redacted and equals old redacted value, use old raw value
+					if incomingValue.IsRedacted() && incomingValue.Equals(&oldRedactedValue) {
+						merged.Headers[key] = oldRawValue
+					} else {
+						merged.Headers[key] = incomingValue
+					}
+					continue
+				}
+			}
+			// New header or changed header
+			merged.Headers[key] = incomingValue
+		}
+	}
+
+	// Preserve IsPingAvailable if not explicitly set in incoming request
+	// This prevents the zero-value (false) from overwriting the existing DB value
+	if incoming.IsPingAvailable == nil {
+		merged.IsPingAvailable = bifrost.Ptr(oldRaw.IsPingAvailable)
+	}
+
+	return merged
+}
+
+// completeMCPClientOAuth handles POST /api/mcp/client/{id}/complete-oauth - Complete MCP client creation after OAuth authorization
+// The {id} parameter is the oauth_config_id returned from the initial addMCPClient call
+func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
+	if h.store.ConfigStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP operations unavailable: config store is disabled")
+		return
+	}
+	oauthConfigID, err := getIDFromCtx(ctx)
+	if err != nil {
+		logger.Error(fmt.Sprintf("[OAuth Complete] Invalid oauth_config_id: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid oauth_config_id: %v", err))
+		return
+	}
+
+	logger.Debug(fmt.Sprintf("[OAuth Complete] Completing OAuth for oauth_config_id: %s", oauthConfigID))
+
+	// Check if OAuth flow is authorized
+	oauthConfig, err := h.store.ConfigStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get OAuth config: %v", err))
+		return
+	}
+
+	if oauthConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "OAuth config not found")
+		return
+	}
+
+	if oauthConfig.Status != "authorized" {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("OAuth not authorized yet. Current status: %s", oauthConfig.Status))
+		return
+	}
+
+	// Get MCP client config from database (stored with oauth_config for multi-instance support)
+	mcpClientConfig, err := h.oauthHandler.GetPendingMCPClient(oauthConfigID)
+	if err != nil {
+		logger.Error(fmt.Sprintf("[OAuth Complete] Failed to get pending MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get pending MCP client: %v", err))
+		return
+	}
+	if mcpClientConfig == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found in pending OAuth clients. The OAuth flow may have expired or already been completed.")
+		return
+	}
+
+	// Add MCP client to Bifrost (this will save to database and connect)
+	if err := h.mcpManager.AddMCPClient(ctx, mcpClientConfig); err != nil {
+		logger.Error(fmt.Sprintf("[OAuth Complete] Failed to connect MCP client: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to connect MCP client: %v", err))
+		return
+	}
+
+	// Clear pending MCP client config from oauth_config (cleanup)
+	if err := h.oauthHandler.RemovePendingMCPClient(oauthConfigID); err != nil {
+		logger.Warn(fmt.Sprintf("[OAuth Complete] Failed to clear pending MCP client config: %v", err))
+		// Don't fail the request - the MCP client was successfully created
+	}
+
+	logger.Debug(fmt.Sprintf("[OAuth Complete] MCP client connected successfully: %s", mcpClientConfig.ID))
+	SendJSON(ctx, map[string]any{
+		"status":  "success",
+		"message": "MCP client connected successfully with OAuth",
+	})
 }

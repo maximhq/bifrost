@@ -21,9 +21,6 @@ func init() {
 	mockSleep = func(d time.Duration) {
 		// Do nothing in tests to avoid real delays
 	}
-
-	// Setup test logger to avoid nil pointer dereference
-	logger = NewDefaultLogger(schemas.LogLevelError) // Use error level to keep tests quiet
 }
 
 // Helper function to create test config with specific retry settings
@@ -53,6 +50,7 @@ func createBifrostError(message string, statusCode *int, errorType *string, isBi
 func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 	config := createTestConfig(3, 100*time.Millisecond, 1*time.Second)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	logger := NewDefaultLogger(schemas.LogLevelError)
 	// Adding dummy tracer to the context
 	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
 	// Test immediate success
@@ -71,6 +69,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			schemas.OpenAI,
 			"gpt-4",
 			nil,
+			logger,
 		)
 
 		if callCount != 1 {
@@ -105,6 +104,7 @@ func TestExecuteRequestWithRetries_SuccessScenarios(t *testing.T) {
 			schemas.OpenAI,
 			"gpt-4",
 			nil,
+			logger,
 		)
 
 		if callCount != 3 {
@@ -124,6 +124,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 	config := createTestConfig(2, 100*time.Millisecond, 1*time.Second)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
 	t.Run("ExceedsMaxRetries", func(t *testing.T) {
 		callCount := 0
 		handler := func() (string, *schemas.BifrostError) {
@@ -140,6 +141,7 @@ func TestExecuteRequestWithRetries_RetryLimits(t *testing.T) {
 			schemas.OpenAI,
 			"gpt-4",
 			nil,
+			logger,
 		)
 
 		// Should try: initial + 2 retries = 3 total attempts
@@ -187,7 +189,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 			error: createBifrostError("invalid model", nil, nil, false),
 		},
 	}
-
+	logger := NewDefaultLogger(schemas.LogLevelError)
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			callCount := 0
@@ -204,6 +206,7 @@ func TestExecuteRequestWithRetries_NonRetryableErrors(t *testing.T) {
 				schemas.OpenAI,
 				"gpt-4",
 				nil,
+				logger,
 			)
 
 			if callCount != 1 {
@@ -261,6 +264,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 			error: createBifrostError("some error", nil, Ptr("rate_limit"), false),
 		},
 	}
+	logger := NewDefaultLogger(schemas.LogLevelError)
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -278,6 +282,7 @@ func TestExecuteRequestWithRetries_RetryableConditions(t *testing.T) {
 				schemas.OpenAI,
 				"gpt-4",
 				nil,
+				logger,
 			)
 
 			// Should try: initial + 1 retry = 2 total attempts
@@ -498,6 +503,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 		// Third call succeeds
 		return "success", nil
 	}
+	logger := NewDefaultLogger(schemas.LogLevelError)
 
 	result, err := executeRequestWithRetries(
 		ctx,
@@ -507,6 +513,7 @@ func TestExecuteRequestWithRetries_LoggingAndCounting(t *testing.T) {
 		schemas.OpenAI,
 		"gpt-4",
 		nil,
+		logger,
 	)
 
 	// Verify call progression

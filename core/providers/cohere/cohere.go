@@ -119,7 +119,11 @@ func (provider *CohereProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *CohereProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // completeRequest sends a request to Cohere's API and handles the response.
@@ -181,20 +185,29 @@ func (provider *CohereProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Build query parameters
-	params := url.Values{}
-	params.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
+	// Build base URL first
+	baseURL := provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest)
+	
+	// Parse and add query parameters
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to parse request URL", err, providerName)
+	}
+	
+	q := u.Query()
+	q.Set("page_size", strconv.Itoa(schemas.DefaultPageSize))
 	if request.ExtraParams != nil {
 		if endpoint, ok := request.ExtraParams["endpoint"].(string); ok && endpoint != "" {
-			params.Set("endpoint", endpoint)
+			q.Set("endpoint", endpoint)
 		}
 		if defaultOnly, ok := request.ExtraParams["default_only"].(bool); ok && defaultOnly {
-			params.Set("default_only", "true")
+			q.Set("default_only", "true")
 		}
 	}
+	u.RawQuery = q.Encode()
 
-	// Build URL
-	req.SetRequestURI(provider.buildRequestURL(ctx, fmt.Sprintf("/v1/models?%s", params.Encode()), schemas.ListModelsRequest))
+	// Set the final URL
+	req.SetRequestURI(u.String())
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -289,7 +302,9 @@ func (provider *CohereProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereChatCompletionRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereChatCompletionRequest(request)
+		},
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -347,7 +362,7 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody, err := ToCohereChatCompletionRequest(request)
 			if err != nil {
 				return nil, err
@@ -542,7 +557,9 @@ func (provider *CohereProvider) Responses(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereResponsesRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereResponsesRequest(request)
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -602,7 +619,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody, err := ToCohereResponsesRequest(request)
 			if err != nil {
 				return nil, err
@@ -818,7 +835,9 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereEmbeddingRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereEmbeddingRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -894,6 +913,21 @@ func (provider *CohereProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
+// ImageEdit is not supported by the Cohere provider.
+func (provider *CohereProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+}
+
+// ImageEditStream is not supported by the Cohere provider.
+func (provider *CohereProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Cohere provider.
+func (provider *CohereProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by Cohere provider.
 func (provider *CohereProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
@@ -955,7 +989,9 @@ func (provider *CohereProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToCohereCountTokensRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereCountTokensRequest(request)
+		},
 		providerName,
 	)
 	if bifrostErr != nil {

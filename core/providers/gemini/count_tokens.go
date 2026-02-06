@@ -21,7 +21,7 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 			continue
 		}
 		inputTokens += int(m.TokenCount)
-		mod := strings.ToLower(m.Modality)
+		mod := strings.ToLower(string(m.Modality))
 		// handle audio modality
 		if strings.Contains(mod, "audio") {
 			inputDetails.AudioTokens += int(m.TokenCount)
@@ -39,7 +39,7 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 				continue
 			}
 			cachedSum += int(m.TokenCount)
-			if strings.Contains(strings.ToLower(m.Modality), "audio") {
+			if strings.Contains(strings.ToLower(string(m.Modality)), "audio") {
 				// also populate audio tokens from cache into AudioTokens (additive)
 				inputDetails.AudioTokens += int(m.TokenCount)
 			}

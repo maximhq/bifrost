@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -27,10 +28,34 @@ import (
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
-var logger schemas.Logger
+// logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
+var logger atomic.Pointer[schemas.Logger]
 
+// noopLogger is a no-op implementation of schemas.Logger.
+type noopLogger struct{}
+
+func (noopLogger) Debug(string, ...any)                   {}
+func (noopLogger) Info(string, ...any)                    {}
+func (noopLogger) Warn(string, ...any)                    {}
+func (noopLogger) Error(string, ...any)                   {}
+func (noopLogger) Fatal(string, ...any)                   {}
+func (noopLogger) SetLevel(schemas.LogLevel)              {}
+func (noopLogger) SetOutputType(schemas.LoggerOutputType) {}
+
+// Initialize with noop logger
+func init() {
+	var noop schemas.Logger = &noopLogger{}
+	logger.Store(&noop)
+}
+
+// SetLogger sets the logger for the provider utils (thread-safe).
 func SetLogger(l schemas.Logger) {
-	logger = l
+	logger.Store(&l)
+}
+
+// getLogger returns the current logger (thread-safe).
+func getLogger() schemas.Logger {
+	return *logger.Load()
 }
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
@@ -130,14 +155,14 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		return client
 	case schemas.HTTPProxy:
 		if proxyConfig.URL == "" {
-			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
+			getLogger().Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
 		proxyURL := proxyConfig.URL
 		if proxyConfig.Username != "" && proxyConfig.Password != "" {
 			parsedURL, err := url.Parse(proxyConfig.URL)
 			if err != nil {
-				logger.Warn("Invalid proxy configuration: invalid HTTP proxy URL")
+				getLogger().Warn("Invalid proxy configuration: invalid HTTP proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
@@ -147,7 +172,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL == "" {
-			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
+			getLogger().Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
 		proxyURL := proxyConfig.URL
@@ -155,7 +180,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		if proxyConfig.Username != "" && proxyConfig.Password != "" {
 			parsedURL, err := url.Parse(proxyConfig.URL)
 			if err != nil {
-				logger.Warn("Invalid proxy configuration: invalid SOCKS5 proxy URL")
+				getLogger().Warn("Invalid proxy configuration: invalid SOCKS5 proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
@@ -167,7 +192,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		// Use environment variables for proxy configuration
 		dialFunc = fasthttpproxy.FasthttpProxyHTTPDialer()
 	default:
-		logger.Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+		getLogger().Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 		return client
 	}
 
@@ -179,7 +204,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	if proxyConfig.CACertPEM != "" {
 		tlsConfig, err := createTLSConfigWithCA(proxyConfig.CACertPEM)
 		if err != nil {
-			logger.Warn("Failed to configure custom CA certificate: %v", err)
+			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
 		} else {
 			client.TLSConfig = tlsConfig
 		}
@@ -274,26 +299,41 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
-func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) string {
-	// If path set in context, return it
+// It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
+// If the boolean is false, the returned string is a path (leading slash ensured).
+func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
+	// If path/url set in context, return it.
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
-		return pathInContext
+		trimmed := strings.TrimSpace(pathInContext)
+		if u, err := url.Parse(trimmed); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			return trimmed, true
+		}
+		return trimmed, false
 	}
-	// If path override set in custom provider config, return it
+
+	// If path override set in custom provider config, return it.
 	if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
-			pathOverride := strings.TrimSpace(raw)
-			if pathOverride == "" {
-				return defaultPath
+			override := strings.TrimSpace(raw)
+			if override == "" {
+				return defaultPath, false
 			}
-			if !strings.HasPrefix(pathOverride, "/") {
-				pathOverride = "/" + pathOverride
+
+			// Treat absolute URLs with scheme+host as full URLs.
+			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+				return override, true
 			}
-			return pathOverride
+
+			// Otherwise treat as a path override (ensure leading slash).
+			if !strings.HasPrefix(override, "/") {
+				override = "/" + override
+			}
+			return override, false
 		}
 	}
-	// Return default path
-	return defaultPath
+
+	// Return default path.
+	return defaultPath, false
 }
 
 type RequestBodyGetter interface {
@@ -308,7 +348,26 @@ func CheckAndGetRawRequestBody(ctx context.Context, request RequestBodyGetter) (
 	return nil, false
 }
 
-type RequestBodyConverter func() (any, error)
+type RequestBodyWithExtraParams interface {
+	GetExtraParams() map[string]interface{}
+}
+
+type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
+
+// MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
+func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) {
+	for k, v := range extraParams {
+		if existingVal, exists := jsonMap[k]; exists {
+			if existingMap, ok := existingVal.(map[string]interface{}); ok {
+				if newMap, ok := v.(map[string]interface{}); ok {
+					MergeExtraParams(existingMap, newMap)
+					continue
+				}
+			}
+		}
+		jsonMap[k] = v
+	}
+}
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
@@ -321,9 +380,29 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
+
 		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+		}
+		// Merge ExtraParams into the JSON if passthrough is enabled
+		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			extraParams := convertedBody.GetExtraParams()
+			if len(extraParams) > 0 {
+				var jsonMap map[string]interface{}
+				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+				}
+
+				// Merge ExtraParams recursively (handles nested maps)
+				MergeExtraParams(jsonMap, extraParams)
+
+				// Re-marshal the merged map
+				jsonBody, err = sonic.MarshalIndent(jsonMap, "", "  ")
+				if err != nil {
+					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+				}
+			}
 		}
 		return jsonBody, nil
 	} else {
@@ -480,7 +559,7 @@ func EnrichError(
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
 		var rawRequest interface{}
 		if err := sonic.Unmarshal(requestBody, &rawRequest); err != nil {
-			logger.Warn("Failed to parse raw request for error: %v", err)
+			getLogger().Warn("Failed to parse raw request for error: %v", err)
 			return bifrostErr
 		}
 		bifrostErr.ExtraFields.RawRequest = rawRequest
@@ -493,7 +572,7 @@ func EnrichError(
 			// We have a responseBody to set
 			var rawResponse interface{}
 			if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-				logger.Warn("Failed to parse raw response for error: %v", err)
+				getLogger().Warn("Failed to parse raw response for error: %v", err)
 				return bifrostErr
 			}
 			bifrostErr.ExtraFields.RawResponse = rawResponse
@@ -622,7 +701,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	var rawRequest interface{}
 	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
-		logger.Warn("Failed to parse raw request: %v", err)
+		getLogger().Warn("Failed to parse raw request: %v", err)
 	} else {
 		extraFields.RawRequest = rawRequest
 	}
@@ -663,13 +742,20 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 }
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
+// It returns a copy of the body to avoid race conditions when the response is released
+// back to fasthttp's buffer pool.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
 	switch contentEncoding {
 	case "gzip":
+		// BodyGunzip already returns a new slice, so it's safe
 		return resp.BodyGunzip()
 	default:
-		return resp.Body(), nil
+		// Copy the body to avoid race conditions when response is released back to pool
+		body := resp.Body()
+		result := make([]byte, len(body))
+		copy(result, body)
+		return result, nil
 	}
 }
 
@@ -1078,8 +1164,8 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 		case <-ctx.Done():
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil && logger != nil {
-					logger.Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+				if err := closer.Close(); err != nil {
+					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
 			}
 		case <-done:
@@ -1293,7 +1379,7 @@ func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
 	}
 	if bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream {
 		if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
-			logger.Warn("Error in stream: " + bifrostErr.Error.Message)
+			getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
 		}
 		return true
 	}
@@ -1447,7 +1533,7 @@ func extractSuccessfulListModelsResponses(
 
 	for result := range results {
 		if result.Err != nil {
-			logger.Debug(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, result.Err.Error.Message))
+			getLogger().Debug(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, result.Err.Error.Message))
 			lastError = result.Err
 			continue
 		}
@@ -1723,7 +1809,7 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 			if !ok || len(availableProviders) == 0 {
 				return ""
 			}
-			logger.Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
+			getLogger().Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
 			if slices.Contains(availableProviders, defaultProvider) {
 				return defaultProvider
 			}

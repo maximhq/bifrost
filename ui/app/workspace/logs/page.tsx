@@ -33,14 +33,6 @@ import { AlertCircle, BarChart, CheckCircle, Clock, DollarSign, Hash } from "luc
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// Calculate default timestamps once at module level to prevent constant recalculation
-const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
-const DEFAULT_START_TIME = (() => {
-	const date = new Date();
-	date.setHours(date.getHours() - 24);
-	return Math.floor(date.getTime() / 1000);
-})();
-
 export default function LogsPage() {
 	const [logs, setLogs] = useState<LogEntry[]>([]);
 	const [totalItems, setTotalItems] = useState(0); // changes with filters
@@ -67,6 +59,19 @@ export default function LogsPage() {
 	// Debouncing for streaming updates (client-side)
 	const streamingUpdateTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+	// Track if user has manually modified the time range
+	const userModifiedTimeRange = useRef<boolean>(false);
+
+	// Capture initial defaults on mount to detect shared URLs with custom time ranges
+	const initialDefaults = useRef(dateUtils.getDefaultTimeRange());
+
+	// Memoize default time range to prevent recalculation on every render
+	// This is crucial to avoid triggering refetches when the sheet opens/closes
+	const defaultTimeRange = useMemo(() => dateUtils.getDefaultTimeRange(), []);
+
+	// Get fresh default time range for refresh logic
+	const getDefaultTimeRange = () => dateUtils.getDefaultTimeRange();
+
 	// URL state management with nuqs - all filters and pagination in URL
 	const [urlState, setUrlState] = useQueryStates(
 		{
@@ -76,9 +81,10 @@ export default function LogsPage() {
 			objects: parseAsArrayOf(parseAsString).withDefault([]),
 			selected_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			virtual_key_ids: parseAsArrayOf(parseAsString).withDefault([]),
+			routing_rule_ids: parseAsArrayOf(parseAsString).withDefault([]),
 			content_search: parseAsString.withDefault(""),
-			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
-			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
+			start_time: parseAsInteger.withDefault(defaultTimeRange.startTime),
+			end_time: parseAsInteger.withDefault(defaultTimeRange.endTime),
 			limit: parseAsInteger.withDefault(25), // Default fallback, actual value calculated based on table height
 			offset: parseAsInteger.withDefault(0),
 			sort_by: parseAsString.withDefault("timestamp"),
@@ -92,6 +98,55 @@ export default function LogsPage() {
 		},
 	);
 
+	// Refresh time range defaults on page focus/visibility
+	useEffect(() => {
+		const refreshDefaultsIfStale = () => {
+			// Skip refresh if user has manually modified the time range
+			if (userModifiedTimeRange.current) {
+				return;
+			}
+
+			// Check if current time range matches the initial defaults (within tolerance)
+			const startTimeDiff = Math.abs(urlState.start_time - initialDefaults.current.startTime);
+			const endTimeDiff = Math.abs(urlState.end_time - initialDefaults.current.endTime);
+			const tolerance = 5; // 5 seconds tolerance for slight timing differences
+
+			// Only refresh if current values match the initial defaults
+			// This preserves shared URLs with custom time ranges
+			if (startTimeDiff <= tolerance && endTimeDiff <= tolerance) {
+				const defaults = getDefaultTimeRange();
+				const currentEndDiff = Math.abs(urlState.end_time - defaults.endTime);
+				// If end time is more than 5 minutes old, refresh both
+				if (currentEndDiff > 300) {
+					setUrlState({
+						start_time: defaults.startTime,
+						end_time: defaults.endTime,
+					});
+					// Update baseline so subsequent focus events compare against refreshed defaults
+					initialDefaults.current.startTime = defaults.startTime;
+					initialDefaults.current.endTime = defaults.endTime;
+				}
+			}
+		};
+
+		const handleVisibilityChange = () => {
+			if (!document.hidden) {
+				refreshDefaultsIfStale();
+			}
+		};
+
+		const handleFocus = () => {
+			refreshDefaultsIfStale();
+		};
+
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		window.addEventListener("focus", handleFocus);
+		return () => {
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+			window.removeEventListener("focus", handleFocus);
+		};
+	}, [urlState.start_time, urlState.end_time, setUrlState]);
+
 	// Convert URL state to filters and pagination for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
@@ -101,6 +156,7 @@ export default function LogsPage() {
 			objects: urlState.objects,
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
+			routing_rule_ids: urlState.routing_rule_ids,
 			content_search: urlState.content_search,
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
@@ -124,6 +180,11 @@ export default function LogsPage() {
 	// Helper to update filters in URL
 	const setFilters = useCallback(
 		(newFilters: LogFilters) => {
+			// Mark time range as user-modified only if start_time or end_time actually changed
+			if (newFilters.start_time !== filters.start_time || newFilters.end_time !== filters.end_time) {
+				userModifiedTimeRange.current = true;
+			}
+
 			setUrlState({
 				providers: newFilters.providers || [],
 				models: newFilters.models || [],
@@ -131,6 +192,7 @@ export default function LogsPage() {
 				objects: newFilters.objects || [],
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
+				routing_rule_ids: newFilters.routing_rule_ids || [],
 				content_search: newFilters.content_search || "",
 				start_time: newFilters.start_time ? dateUtils.toUnixTimestamp(new Date(newFilters.start_time)) : undefined,
 				end_time: newFilters.end_time ? dateUtils.toUnixTimestamp(new Date(newFilters.end_time)) : undefined,
@@ -560,8 +622,15 @@ export default function LogsPage() {
 		if (filters.selected_key_ids?.length && !filters.selected_key_ids.includes(log.selected_key_id)) {
 			return false;
 		}
-		if (filters.virtual_key_ids?.length && log.virtual_key_id && !filters.virtual_key_ids.includes(log.virtual_key_id)) {
-			return false;
+		if (filters.virtual_key_ids?.length) {
+			if (!log.virtual_key_id || !filters.virtual_key_ids.includes(log.virtual_key_id)) {
+				return false;
+			}
+		}
+		if (filters.routing_rule_ids?.length) {
+			if (!log.routing_rule_id || !filters.routing_rule_ids.includes(log.routing_rule_id)) {
+				return false;
+			}
 		}
 		if (filters.start_time && new Date(log.timestamp) < new Date(filters.start_time)) {
 			return false;

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -17,13 +17,13 @@ func TestAzure(t *testing.T) {
 		t.Skip("Skipping Azure tests because AZURE_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.Azure,
 		ChatModel:      "gpt-4o-backup",
 		VisionModel:    "gpt-4o",
@@ -37,8 +37,9 @@ func TestAzure(t *testing.T) {
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		TranscriptionModel:   "whisper",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "gpt-image-1",
 
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -60,14 +61,18 @@ func TestAzure(t *testing.T) {
 			TranscriptionStream:   false, // Not properly supported yet by Azure
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
-			StructuredOutputs:     true, // Structured outputs with nullable enum support
-			ImageGeneration:       true,
-			ImageGenerationStream: true,
+			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			ImageGeneration:       false, // Skipped for Azure
+			ImageGenerationStream: false, // Skipped for Azure
+			ImageEdit:             false, // Model not deployed on Azure endpoint
+			ImageEditStream:       false, // Model not deployed on Azure endpoint
+			ImageVariation:        false, // Not supported by Azure
 		},
+		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}
 
 	t.Run("AzureTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

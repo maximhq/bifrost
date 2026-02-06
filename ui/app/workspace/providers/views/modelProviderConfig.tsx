@@ -1,9 +1,10 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isKnownProvider, ModelProvider } from "@/lib/types/config";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
@@ -14,7 +15,7 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) => {
+const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, isGovernanceEnabled: boolean) => {
 	const availableTabs = [];
 	// Custom Settings tab is available for custom providers
 	if (provider?.custom_provider_config) {
@@ -39,6 +40,14 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 		id: "performance",
 		label: "Performance tuning",
 	});
+
+	// Governance tab for budgets and rate limits (requires Governance permission and feature enabled)
+	if (hasGovernanceAccess && isGovernanceEnabled) {
+		availableTabs.push({
+			id: "governance",
+			label: "Governance",
+		});
+	}
 	return availableTabs;
 };
 
@@ -47,9 +56,11 @@ export default function ModelProviderConfig({ provider }: Props) {
 	const [accordionValue, setAccordionValue] = useState<string | undefined>(undefined);
 	const isCustomProvider = !isKnownProvider(provider.name);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const isGovernanceEnabled = coreConfig?.client_config?.enable_governance || false;
 	const tabs = useMemo(() => {
-		return availableTabs(provider, hasGovernanceAccess);
-	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess]);
+		return availableTabs(provider, hasGovernanceAccess, isGovernanceEnabled);
+	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess, isGovernanceEnabled]);
 
 	const showApiKeys = useMemo(() => {
 		if (provider.custom_provider_config) {
@@ -98,9 +109,9 @@ export default function ModelProviderConfig({ provider }: Props) {
 								<TabsContent value="performance">
 									<PerformanceFormFragment provider={provider} />
 								</TabsContent>
-								{/* <TabsContent value="governance">
+								<TabsContent value="governance">
 									<GovernanceFormFragment provider={provider} />
-								</TabsContent> */}
+								</TabsContent>
 							</Tabs>
 						</div>
 					</AccordionContent>
@@ -112,7 +123,7 @@ export default function ModelProviderConfig({ provider }: Props) {
 					<ModelProviderKeysTableView className="mt-4" provider={provider} />
 				</>
 			)}
-			{hasGovernanceAccess ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
+			{hasGovernanceAccess && isGovernanceEnabled ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
 		</div>
 	);
 }

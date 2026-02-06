@@ -55,6 +55,8 @@ func (p *LoggerPlugin) updateLogEntry(
 	latency int64,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	data *UpdateLogData,
@@ -71,6 +73,12 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -199,6 +207,8 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	selectedKeyName string,
 	virtualKeyID string,
 	virtualKeyName string,
+	routingRuleID string,
+	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
 	streamResponse *streaming.ProcessedStreamResponse,
@@ -213,6 +223,12 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if virtualKeyName != "" {
 		updates["virtual_key_name"] = virtualKeyName
+	}
+	if routingRuleID != "" {
+		updates["routing_rule_id"] = routingRuleID
+	}
+	if routingRuleName != "" {
+		updates["routing_rule_name"] = routingRuleName
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
@@ -431,6 +447,58 @@ func (p *LoggerPlugin) GetAvailableVirtualKeys(ctx context.Context) []KeyPair {
 		}
 		return KeyPair{}
 	})
+}
+
+func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
+	result, err := p.store.FindAll(ctx, "routing_rule_id IS NOT NULL AND routing_rule_id != '' AND routing_rule_name IS NOT NULL AND routing_rule_name != ''", "routing_rule_id, routing_rule_name")
+	if err != nil {
+		p.logger.Error("failed to get available routing rules: %w", err)
+		return []KeyPair{}
+	}
+	return p.extractUniqueKeyPairs(result, func(log *logstore.Log) KeyPair {
+		if log.RoutingRuleID != nil && log.RoutingRuleName != nil {
+			return KeyPair{
+				ID:   *log.RoutingRuleID,
+				Name: *log.RoutingRuleName,
+			}
+		}
+		return KeyPair{}
+	})
+}
+
+// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
+func (p *LoggerPlugin) GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair {
+	result, err := p.store.GetAvailableMCPVirtualKeys(ctx)
+	if err != nil {
+		p.logger.Error("failed to get available virtual keys from MCP logs: %w", err)
+		return []KeyPair{}
+	}
+	return p.extractUniqueMCPKeyPairs(result, func(log *logstore.MCPToolLog) KeyPair {
+		if log.VirtualKeyID != nil && log.VirtualKeyName != nil {
+			return KeyPair{
+				ID:   *log.VirtualKeyID,
+				Name: *log.VirtualKeyName,
+			}
+		}
+		return KeyPair{}
+	})
+}
+
+// extractUniqueMCPKeyPairs extracts unique non-empty key pairs from MCP logs using the provided extractor function
+func (p *LoggerPlugin) extractUniqueMCPKeyPairs(logs []logstore.MCPToolLog, extractor func(*logstore.MCPToolLog) KeyPair) []KeyPair {
+	uniqueSet := make(map[string]KeyPair)
+	for i := range logs {
+		pair := extractor(&logs[i])
+		if pair.ID != "" && pair.Name != "" {
+			uniqueSet[pair.ID] = pair
+		}
+	}
+
+	result := make([]KeyPair, 0, len(uniqueSet))
+	for _, pair := range uniqueSet {
+		result = append(result, pair)
+	}
+	return result
 }
 
 // extractUniqueKeyPairs extracts unique non-empty key pairs from logs using the provided extractor function

@@ -86,10 +86,16 @@ from .utils.common import (
     # Embeddings utilities
     EMBEDDINGS_SINGLE_TEXT,
     FILE_DATA_BASE64,
+    BASE64_IMAGE,
     IMAGE_BASE64_MESSAGES,
     IMAGE_URL_MESSAGES,
     # Image Generation utilities
     IMAGE_GENERATION_SIMPLE_PROMPT,
+    # Image Edit utilities
+    IMAGE_EDIT_SIMPLE_PROMPT,
+    IMAGE_EDIT_PROMPT_OUTPAINT,
+    assert_valid_image_edit_response,
+    create_simple_mask_image,
     INPUT_TOKENS_LONG_TEXT,
     # Input Tokens utilities
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -1272,6 +1278,134 @@ class TestOpenAIIntegration:
         # Validate response structure
         assert_valid_image_generation_response(response, "openai")
         assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    # =========================================================================
+    # IMAGE EDIT TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53a_image_edit_simple(self, test_config, provider, model, vk_enabled):
+        """Test Case 53a: Simple image edit with inpainting"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        # Create test image and mask
+        base_image_b64 = BASE64_IMAGE  # 64x64 red pixel for minimum size requirements
+        mask_b64 = create_simple_mask_image(64, 64)
+        
+        # Decode base64 to bytes for API
+        import base64
+        image_bytes = base64.b64decode(base_image_b64)
+        mask_bytes = base64.b64decode(mask_b64)
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024"
+        )
+
+        # Validate response structure
+        assert_valid_image_edit_response(response, "openai")
+        assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53b_image_edit_no_mask(self, test_config, provider, model, vk_enabled):
+        """Test Case 53b: Image edit without mask (outpainting/general edit)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Some providers support editing without explicit mask
+        if provider not in ["openai", "gemini", "huggingface"]:
+            pytest.skip(f"Provider {provider} requires explicit mask for edits")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            prompt=IMAGE_EDIT_PROMPT_OUTPAINT,
+            n=1,
+            size="1024x1024"
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53c_image_edit_quality(self, test_config, provider, model, vk_enabled):
+        """Test Case 53c: Image edit with quality parameter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+        if provider != "openai" or model not in ["gpt-image-1", "gpt-image-1.5", "gpt-image-1.5-mini"]:
+            pytest.skip("Quality parameter supported by OpenAI gpt-image models")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        mask_bytes = base64.b64decode(create_simple_mask_image(64, 64))
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024",
+            quality="low"  # For faster testing
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53d_image_edit_different_sizes(self, test_config, provider, model, vk_enabled):
+        """Test Case 53d: Image edit with different output sizes"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        mask_bytes = base64.b64decode(create_simple_mask_image(64, 64))
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024"
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+        assert len(response.data) == 1
 
     @skip_if_no_api_key("openai")
     def test_31_list_models(self, openai_client, test_config):

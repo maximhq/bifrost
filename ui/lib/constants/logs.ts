@@ -42,6 +42,9 @@ export const RequestTypes = [
 	"transcription_stream",
 	"image_generation",
 	"image_generation_stream",
+	"image_edit",
+	"image_edit_stream",
+	"image_variation",
 	"count_tokens",
 	// Container operations
 	"container_create",
@@ -134,6 +137,9 @@ export const RequestTypeLabels = {
 
 	image_generation: "Image Generation",
 	image_generation_stream: "Image Generation Stream",
+	image_edit: "Image Edit",
+	image_edit_stream: "Image Edit Stream",
+	image_variation: "Image Variation",
 
 	count_tokens: "Count Tokens",
 
@@ -196,6 +202,9 @@ export const RequestTypeColors = {
 
 	image_generation: "bg-indigo-100 text-indigo-800",
 	image_generation_stream: "bg-sky-100 text-sky-800",
+	image_edit: "bg-emerald-100 text-emerald-800",
+	image_edit_stream: "bg-teal-100 text-teal-800",
+	image_variation: "bg-violet-100 text-violet-800",
 
 	count_tokens: "bg-cyan-100 text-cyan-800",
 

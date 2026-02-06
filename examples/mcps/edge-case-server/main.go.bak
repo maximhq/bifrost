@@ -1,0 +1,293 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+	// Create MCP server
+	s := server.NewMCPServer(
+		"edge-case-server",
+		"1.0.0",
+		server.WithToolCapabilities(true),
+	)
+
+	// Register all tools
+	registerReturnUnicodeTool(s)
+	registerReturnBinaryTool(s)
+	registerReturnLargePayloadTool(s)
+	registerReturnNestedStructureTool(s)
+	registerReturnNullTool(s)
+	registerReturnSpecialCharsTool(s)
+
+	// Start STDIO server
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// ============================================================================
+// TOOL 1: return_unicode
+// ============================================================================
+
+func registerReturnUnicodeTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_unicode",
+		mcp.WithDescription("Returns unicode strings of various types"),
+		mcp.WithString("type",
+			mcp.Required(),
+			mcp.Description("Type of unicode to return"),
+			mcp.Enum("emoji"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			Type string `json:"type"`
+		}
+
+		argsBytes, ok := request.Params.Arguments.(string)
+		if !ok {
+			return mcp.NewToolResultError("Invalid arguments type"), nil
+		}
+		if err := json.Unmarshal([]byte(argsBytes), &args); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid arguments: %v", err)), nil
+		}
+
+		var text string
+		switch args.Type {
+		case "emoji":
+			text = "Hello 👋 World 🌍! Testing emoji: 🎉 🚀 💻 ❤️ 🔥"
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("Unknown type: %s", args.Type)), nil
+		}
+
+		response := map[string]interface{}{
+			"type":   args.Type,
+			"text":   text,
+			"length": len([]rune(text)),
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}
+
+// ============================================================================
+// TOOL 2: return_binary
+// ============================================================================
+
+func registerReturnBinaryTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_binary",
+		mcp.WithDescription("Returns binary data in specified encoding"),
+		mcp.WithNumber("size",
+			mcp.Required(),
+			mcp.Description("Size of binary data in bytes"),
+		),
+		mcp.WithString("encoding",
+			mcp.Required(),
+			mcp.Description("Encoding for binary data"),
+			mcp.Enum("base64", "hex"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			Size     int    `json:"size"`
+			Encoding string `json:"encoding"`
+		}
+
+		if err := json.Unmarshal([]byte(request.Params.Arguments.(string)), &args); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid arguments: %v", err)), nil
+		}
+
+		// Generate binary data (repeating pattern)
+		data := make([]byte, args.Size)
+		for i := range data {
+			data[i] = byte(i % 256)
+		}
+
+		var encoded string
+		switch args.Encoding {
+		case "base64":
+			encoded = base64.StdEncoding.EncodeToString(data)
+		case "hex":
+			encoded = hex.EncodeToString(data)
+		default:
+			return mcp.NewToolResultError(fmt.Sprintf("Unknown encoding: %s", args.Encoding)), nil
+		}
+
+		response := map[string]interface{}{
+			"size":     args.Size,
+			"encoding": args.Encoding,
+			"data":     encoded,
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}
+
+// ============================================================================
+// TOOL 3: return_large_payload
+// ============================================================================
+
+func registerReturnLargePayloadTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_large_payload",
+		mcp.WithDescription("Returns a large JSON payload"),
+		mcp.WithNumber("size_kb",
+			mcp.Required(),
+			mcp.Description("Approximate size in kilobytes"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			SizeKB int `json:"size_kb"`
+		}
+
+		if err := json.Unmarshal([]byte(request.Params.Arguments.(string)), &args); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid arguments: %v", err)), nil
+		}
+
+		// Generate array of objects to reach target size
+		targetSize := args.SizeKB * 1024
+		items := []map[string]interface{}{}
+		currentSize := 0
+
+		for currentSize < targetSize {
+			item := map[string]interface{}{
+				"id":          len(items),
+				"name":        fmt.Sprintf("Item-%d", len(items)),
+				"description": "This is a test item with some text to increase the payload size.",
+				"value":       len(items) * 100,
+				"active":      len(items)%2 == 0,
+				"tags":        []string{"tag1", "tag2", "tag3"},
+			}
+			items = append(items, item)
+
+			// Rough estimate of current size
+			itemJSON, _ := json.Marshal(item)
+			currentSize += len(itemJSON)
+		}
+
+		response := map[string]interface{}{
+			"requested_size_kb": args.SizeKB,
+			"item_count":        len(items),
+			"items":             items,
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}
+
+// ============================================================================
+// TOOL 4: return_nested_structure
+// ============================================================================
+
+func registerReturnNestedStructureTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_nested_structure",
+		mcp.WithDescription("Returns deeply nested JSON structure"),
+		mcp.WithNumber("depth",
+			mcp.Required(),
+			mcp.Description("Depth of nesting"),
+		),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			Depth int `json:"depth"`
+		}
+
+		if err := json.Unmarshal([]byte(request.Params.Arguments.(string)), &args); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Invalid arguments: %v", err)), nil
+		}
+
+		// Build nested structure
+		nested := buildNestedStructure(args.Depth)
+
+		response := map[string]interface{}{
+			"depth": args.Depth,
+			"data":  nested,
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}
+
+func buildNestedStructure(depth int) map[string]interface{} {
+	if depth <= 0 {
+		return map[string]interface{}{
+			"level": 0,
+			"value": "leaf node",
+		}
+	}
+
+	return map[string]interface{}{
+		"level": depth,
+		"child": buildNestedStructure(depth - 1),
+		"data": map[string]interface{}{
+			"id":   depth,
+			"name": fmt.Sprintf("Level %d", depth),
+		},
+	}
+}
+
+// ============================================================================
+// TOOL 5: return_null
+// ============================================================================
+
+func registerReturnNullTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_null",
+		mcp.WithDescription("Returns null/empty values in various forms"),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		response := map[string]interface{}{
+			"null_value":   nil,
+			"empty_string": "",
+			"empty_array":  []interface{}{},
+			"empty_object": map[string]interface{}{},
+			"zero":         0,
+			"false":        false,
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}
+
+// ============================================================================
+// TOOL 6: return_special_chars
+// ============================================================================
+
+func registerReturnSpecialCharsTool(s *server.MCPServer) {
+	tool := mcp.NewTool("return_special_chars",
+		mcp.WithDescription("Returns strings with special characters and escape sequences"),
+	)
+
+	s.AddTool(tool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		response := map[string]interface{}{
+			"quotes":         `He said "Hello" and she said 'Hi'`,
+			"backslashes":    `C:\Users\Test\Path`,
+			"newlines":       "Line 1\nLine 2\nLine 3",
+			"tabs":           "Col1\tCol2\tCol3",
+			"mixed":          "Special: \t\n\r\\ \" ' / @ # $ % & * ( )",
+			"unicode_escape": "\u0041\u0042\u0043", // ABC
+			"control_chars":  "\x00\x01\x02",
+		}
+
+		jsonResult, _ := json.Marshal(response)
+		return mcp.NewToolResultText(string(jsonResult)), nil
+	})
+}

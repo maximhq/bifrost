@@ -31,6 +31,9 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 	batchRequest := &GeminiBatchEmbeddingRequest{
 		Requests: make([]GeminiEmbeddingRequest, len(texts)),
 	}
+	if bifrostReq.Params != nil {
+		batchRequest.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 
 	// Create individual embedding requests for each text
 	for i, text := range texts {
@@ -54,9 +57,11 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Gemi
 			// Handle extra parameters
 			if bifrostReq.Params.ExtraParams != nil {
 				if taskType, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["taskType"]); ok {
+					delete(batchRequest.ExtraParams, "taskType")
 					embeddingReq.TaskType = taskType
 				}
 				if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+					delete(batchRequest.ExtraParams, "title")
 					embeddingReq.Title = title
 				}
 			}

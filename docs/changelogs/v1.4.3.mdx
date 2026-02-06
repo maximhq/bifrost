@@ -1,0 +1,86 @@
+---
+title: "v1.4.3"
+description: "v1.4.3 changelog - 2026-01-26"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.3
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.3
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.3
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.3">
+- feat: pinecone vector db support
+- feat: configurable MCP health check method (ping or listTools)
+- feat: adds new streaming callback for plugins
+- fix: fixes streaming chunks coming in batches. adds test cases for detecting the same.
+- fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
+- fix: duplicate error when adding first MCP server
+
+</Update>
+<Update label="Core" description="1.3.14">
+- fix: fixes race condition in shutdown core
+- feat: add is_ping_available configuration for MCP health checks
+- fix: allow flat $defs and propertyOrdering in jsonschema and forward it to Gemini
+- feat: adds beta feature for Anthropic
+  - deferLoading
+  - strict
+  - allowedCallers
+  - inputExamples
+  - add IsError to tool_result content
+  - add "none" option to ToolChoice.Type
+- fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
+- fix: duplicate error when adding first MCP server
+
+</Update>
+<Update label="Framework" description="1.2.16">
+- feat: add is_ping_available column to MCP clients table
+- feat: adds Pinecone vector db support
+- chore: upgrades core to 1.3.14
+
+</Update>
+<Update label="governance" description="1.4.17">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="jsonparser" description="1.4.16">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="litellmcompat" description="0.0.6">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="logging" description="1.4.16">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="maxim" description="1.5.15">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="mocker" description="1.4.16">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="otel" description="1.1.16">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="semanticcache" description="1.4.15">
+- feat: semantic search now support Pinecone DB
+- chore: updated semantic search test cases to consider all dbs
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>
+<Update label="telemetry" description="1.4.17">
+- chore: upgrades core to 1.3.14 and framework to 1.2.16
+
+</Update>

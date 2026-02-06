@@ -1,7 +1,7 @@
 services:
     # Weaviate instance for basic tests
     weaviate:
-        image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+        image: semitechnologies/weaviate:1.32.4
         command:
             - --host
             - 0.0.0.0
@@ -56,6 +56,22 @@ services:
         networks:
             bifrost_network:
                 ipv4_address: 172.28.0.14
+
+    # Pinecone Local instance for vector store tests
+    pinecone-local:
+        image: ghcr.io/pinecone-io/pinecone-index:latest
+        environment:
+            PORT: 5081
+            INDEX_TYPE: serverless
+            VECTOR_TYPE: dense
+            DIMENSION: 1536
+            METRIC: cosine
+        ports:
+            - "5081:5081"
+        platform: linux/amd64
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.15
 
 networks:
     bifrost_network:

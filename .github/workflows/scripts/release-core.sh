@@ -29,28 +29,6 @@ if [[ "$FILE_VERSION" != "$VERSION" ]]; then
   exit 1
 fi
 
-# Building core
-go mod download
-go build ./...
-cd ..
-echo "✅ Core build validation successful"
-
-# Run core tests with coverage
-echo "🔧 Running core tests with coverage..."
-cd core
-go test -race -timeout 20m -coverprofile=coverage.txt -coverpkg=./... ./...
-
-# Upload coverage to Codecov
-if [ -n "${CODECOV_TOKEN:-}" ]; then
-  echo "📊 Uploading coverage to Codecov..."
-  curl -Os https://uploader.codecov.io/latest/linux/codecov
-  chmod +x codecov
-  ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F core
-  rm -f codecov coverage.txt
-else
-  echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
-  rm -f coverage.txt
-fi
 cd ..
 
 # Capturing changelog

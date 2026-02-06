@@ -39,8 +39,8 @@ github.com/mailru/easyjson v0.9.1 h1:LbtsOm5WAswyWbvTEOqhypdPeZzHavpZx96/n553mR8
 github.com/mailru/easyjson v0.9.1/go.mod h1:1+xMtQp2MRNVL/V1bOzuP3aP8VNwRW55fQUto+XFtTU=
 github.com/mark3labs/mcp-go v0.43.2 h1:21PUSlWWiSbUPQwXIJ5WKlETixpFpq+WBpbMGDSVy/I=
 github.com/mark3labs/mcp-go v0.43.2/go.mod h1:YnJfOL382MIWDx1kMY+2zsRHU/q78dBg9aFb8W6Thdw=
-github.com/maximhq/bifrost/core v1.3.12 h1:tr+kV8qCtTtAWWbKYcToT88zJd5K/IfpdeYKHZyviR4=
-github.com/maximhq/bifrost/core v1.3.12/go.mod h1:bWb7gzr8D3yaRb28SxzzwL5qlQAW12N71CxSzm2pW60=
+github.com/maximhq/bifrost/core v1.4.0 h1:1RvhQJXTQ+BP0HWoEeCVTDwVnseef8KeFj02VibEKsc=
+github.com/maximhq/bifrost/core v1.4.0/go.mod h1:658dDpcnkKso1zkuBKxZSAENgXjQloM8+phgoQRToTg=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=

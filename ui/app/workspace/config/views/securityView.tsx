@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { AuthConfig, CoreConfig } from "@/lib/types/config";
+import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -18,31 +18,12 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
-const defaultConfig: CoreConfig = {
-	drop_excess_requests: false,
-	initial_pool_size: 1000,
-	prometheus_labels: [],
-	enable_logging: true,
-	disable_content_logging: false,
-	enable_governance: true,
-	enforce_governance_header: false,
-	allow_direct_keys: false,
-	allowed_origins: [],
-	allowed_headers: [],
-	max_request_body_size_mb: 100,
-	enable_litellm_fallbacks: false,
-	log_retention_days: 365,
-	mcp_agent_depth: 10,
-	mcp_tool_execution_timeout: 30,
-	mcp_code_mode_binding_level: "server",
-};
-
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
-	const [localConfig, setLocalConfig] = useState<CoreConfig>(defaultConfig);
+	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
 	const hideAuthDashboard = IS_ENTERPRISE;
 
 	const [localValues, setLocalValues] = useState<{
@@ -78,34 +59,34 @@ export default function SecurityView() {
 		const localOrigins = localConfig.allowed_origins?.slice().sort().join(",");
 		const serverOrigins = config.allowed_origins?.slice().sort().join(",");
 		const originsChanged = localOrigins !== serverOrigins;
-	
+
 		const localHeaders = localConfig.allowed_headers?.slice().sort().join(",");
 		const serverHeaders = config.allowed_headers?.slice().sort().join(",");
 		const headersChanged = localHeaders !== serverHeaders;
-	
+
 		const authChanged =
 			authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
 			authConfig.admin_username !== bifrostConfig?.auth_config?.admin_username ||
 			authConfig.admin_password !== bifrostConfig?.auth_config?.admin_password ||
 			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
-	
+
 		const enforceVirtualKeyChanged = localConfig.enforce_governance_header !== config.enforce_governance_header;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
-	
+
 		return originsChanged || headersChanged || authChanged || enforceVirtualKeyChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const needsRestart = useMemo(() => {
 		if (!config) return false;
-		
+
 		const localOrigins = localConfig.allowed_origins?.slice().sort().join(",");
 		const serverOrigins = config.allowed_origins?.slice().sort().join(",");
 		const originsChanged = localOrigins !== serverOrigins;
-	
+
 		const localHeaders = localConfig.allowed_headers?.slice().sort().join(",");
 		const serverHeaders = config.allowed_headers?.slice().sort().join(",");
 		const headersChanged = localHeaders !== serverHeaders;
-	
+
 		return originsChanged || headersChanged;
 	}, [config, localConfig]);
 
@@ -123,26 +104,17 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
-	const handleAuthToggle = useCallback(
-		(checked: boolean) => {
-			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
-		},
-		[],
-	);
+	const handleAuthToggle = useCallback((checked: boolean) => {
+		setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
+	}, []);
 
-	const handleDisableAuthOnInferenceToggle = useCallback(
-		(checked: boolean) => {
-			setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
-		},
-		[],
-	);
+	const handleDisableAuthOnInferenceToggle = useCallback((checked: boolean) => {
+		setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
+	}, []);
 
-	const handleAuthFieldChange = useCallback(
-		(field: "admin_username" | "admin_password", value: string) => {
-			setAuthConfig((prev) => ({ ...prev, [field]: value }));
-		},
-		[],
-	);
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: string) => {
+		setAuthConfig((prev) => ({ ...prev, [field]: value }));
+	}, []);
 
 	const handleSave = useCallback(async () => {
 		try {
@@ -269,7 +241,11 @@ export default function SecurityView() {
 								Enforce Virtual Keys
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
+								Enforce the use of a virtual key for all requests. If enabled, requests without the virtual key header will be rejected. See{" "}
+								<Link href="https://docs.getbifrost.ai/features/governance/virtual-keys" target="_blank" rel="noopener noreferrer" className="text-primary underline">
+									documentation
+								</Link>{" "}
+								for header details.
 							</p>
 						</div>
 						<Switch
@@ -326,9 +302,7 @@ export default function SecurityView() {
 							<label htmlFor="allowed-headers" className="text-sm font-medium">
 								Allowed Headers
 							</label>
-							<p className="text-muted-foreground text-sm">
-								Comma-separated list of allowed headers for CORS.
-							</p>
+							<p className="text-muted-foreground text-sm">Comma-separated list of allowed headers for CORS.</p>
 						</div>
 						<Textarea
 							id="allowed-headers"

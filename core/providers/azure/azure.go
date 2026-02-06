@@ -83,8 +83,10 @@ func (provider *AzureProvider) getAzureAuthHeaders(ctx *schemas.BifrostContext, 
 			return nil, providerUtils.NewBifrostOperationError("failed to get or create Azure authentication", err, schemas.Azure)
 		}
 
+		scopes := getAzureScopes(key.AzureKeyConfig.Scopes)
+
 		token, err := cred.GetToken(ctx, policy.TokenRequestOptions{
-			Scopes: []string{DefaultAzureScope},
+			Scopes: scopes,
 		})
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("failed to get Azure access token", err, schemas.Azure)
@@ -350,7 +352,9 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return openai.ToOpenAITextCompletionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return openai.ToOpenAITextCompletionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -459,7 +463,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			if schemas.IsAnthropicModel(deployment) {
 				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
 				if err != nil {
@@ -470,7 +474,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 				}
 				return reqBody, nil
 			} else {
-				return openai.ToOpenAIChatRequest(request), nil
+				return openai.ToOpenAIChatRequest(ctx, request), nil
 			}
 		},
 		provider.GetProviderKey())
@@ -567,7 +571,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (any, error) {
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
 				if err != nil {
 					return nil, err
@@ -656,7 +660,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (any, error) {
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				reqBody := openai.ToOpenAIResponsesRequest(request)
 				if reqBody != nil {
 					reqBody.Model = deployment
@@ -826,7 +830,9 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return openai.ToOpenAIEmbeddingRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return openai.ToOpenAIEmbeddingRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -976,7 +982,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody := openai.ToOpenAISpeechRequest(request)
 			if reqBody != nil {
 				reqBody.StreamFormat = schemas.Ptr("sse")
@@ -1047,6 +1053,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		// We can't use bufio.Scanner because MP3 data contains 0x0a bytes which get interpreted as newlines
 		readBuffer := make([]byte, 64*1024) // 64KB read chunks
 		var accumulated []byte
+		doneReceived := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1058,18 +1065,28 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 			if n > 0 {
 				accumulated = append(accumulated, readBuffer[:n]...)
 
-				// Process complete SSE events (separated by \n\n)
+				// Process complete SSE events (separated by \r\n\r\n or \n\n)
 				for {
-					// Find the next double-newline separator
-					idx := bytes.Index(accumulated, []byte("\n\n"))
+					// Find the next double-newline separator (try CRLF first, then LF)
+					var idx int
+					var separatorLen int
+					idx = bytes.Index(accumulated, []byte("\r\n\r\n"))
+					if idx != -1 {
+						separatorLen = 4 // \r\n\r\n
+					} else {
+						idx = bytes.Index(accumulated, []byte("\n\n"))
+						if idx != -1 {
+							separatorLen = 2 // \n\n
+						}
+					}
 					if idx == -1 {
 						// No complete event yet, need more data
 						break
 					}
 
-					// Extract the event (everything up to \n\n)
+					// Extract the event (everything up to the separator)
 					event := accumulated[:idx]
-					accumulated = accumulated[idx+2:] // Skip the \n\n
+					accumulated = accumulated[idx+separatorLen:] // Skip the separator
 
 					// Skip empty events and comments
 					if len(event) == 0 || bytes.HasPrefix(event, []byte(":")) {
@@ -1082,50 +1099,60 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					// Check if this has "data: " prefix (standard SSE format)
 					if bytes.HasPrefix(event, []byte("data: ")) {
 						audioData = event[6:] // Skip "data: " prefix
-						// Check for [DONE] marker
+						// Check for [DONE] marker - break out of loops to send final response
 						if bytes.Equal(audioData, []byte("[DONE]")) {
-							return
+							doneReceived = true
+							break
 						}
 					} else {
 						// Raw data without prefix (shouldn't happen with Azure, but handle it)
 						audioData = event
 					}
 
-					// First, try to parse as JSON error response (these would be valid JSON text)
-					var bifrostErr schemas.BifrostError
-					if err := sonic.Unmarshal(audioData, &bifrostErr); err == nil {
-						if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-							bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-								Provider:       provider.GetProviderKey(),
-								ModelRequested: request.Model,
-								RequestType:    schemas.SpeechStreamRequest,
-							}
-							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
-							return
-						}
+					// Skip empty data
+					if len(audioData) == 0 {
+						continue
 					}
 
-					// Skip empty audio data
-					if len(audioData) == 0 {
+					// Azure sends JSON-wrapped responses for speech streaming
+					// Parse the JSON to extract the response type and audio data
+					var response schemas.BifrostSpeechStreamResponse
+					if err := sonic.Unmarshal(audioData, &response); err != nil {
+						// If JSON parsing fails, check if this might be an error response
+						var bifrostErr schemas.BifrostError
+						if errParseErr := sonic.Unmarshal(audioData, &bifrostErr); errParseErr == nil {
+							if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+								bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+									Provider:       provider.GetProviderKey(),
+									ModelRequested: request.Model,
+									RequestType:    schemas.SpeechStreamRequest,
+								}
+								ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+								providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
+								return
+							}
+						}
+						// If it's not valid JSON, log and skip
+						provider.logger.Warn("failed to parse speech stream response: %v", err)
+						continue
+					}
+
+					// Check for completion event - skip if no audio data
+					if response.Type == schemas.SpeechStreamResponseTypeDone || len(response.Audio) == 0 {
+						// This is a control event or empty response - skip
 						continue
 					}
 
 					chunkIndex++
 
-					// Create response with raw audio data
-					// Azure sends raw binary MP3 frames (starting with 0xff 0xf3 or 0xff 0xfb)
-					response := schemas.BifrostSpeechStreamResponse{
-						Type:  schemas.SpeechStreamResponseTypeDelta,
-						Audio: audioData,
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:     schemas.SpeechStreamRequest,
-							Provider:        provider.GetProviderKey(),
-							ModelRequested:  request.Model,
-							ModelDeployment: deployment,
-							ChunkIndex:      chunkIndex,
-							Latency:         time.Since(lastChunkTime).Milliseconds(),
-						},
+					// Set extra fields for the response
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:     schemas.SpeechStreamRequest,
+						Provider:        provider.GetProviderKey(),
+						ModelRequested:  request.Model,
+						ModelDeployment: deployment,
+						ChunkIndex:      chunkIndex,
+						Latency:         time.Since(lastChunkTime).Milliseconds(),
 					}
 					lastChunkTime = time.Now()
 
@@ -1134,6 +1161,11 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					}
 
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
+				}
+
+				// Check if we received [DONE] marker - break outer loop to send final response
+				if doneReceived {
+					break
 				}
 			}
 
@@ -1335,6 +1367,112 @@ func (provider *AzureProvider) ImageGenerationStream(
 		provider.logger,
 	)
 
+}
+
+// ImageEdit performs an image edit request to Azure's API.
+func (provider *AzureProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, deployment, apiVersion.GetValue())
+	response, err := openai.HandleOpenAIImageEditRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		false,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		provider.logger,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
+
+	return response, err
+}
+
+// ImageEditStream performs a streaming image edit request to Azure's API.
+func (provider *AzureProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Validate api key configs
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment := key.AzureKeyConfig.Deployments[request.Model]
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("deployment not found for model %s", request.Model), provider.GetProviderKey())
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionImageEditDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	postResponseConverter := func(resp *schemas.BifrostImageGenerationStreamResponse) *schemas.BifrostImageGenerationStreamResponse {
+		if resp != nil {
+			resp.ExtraFields.ModelDeployment = deployment
+		}
+		return resp
+	}
+
+	url := fmt.Sprintf("%s/openai/deployments/%s/images/edits?api-version=%s", endpoint, deployment, apiVersion.GetValue())
+
+	authHeader, err := provider.getAzureAuthHeaders(ctx, key, false)
+	if err != nil {
+		return nil, err
+	}
+
+	// Azure is OpenAI-compatible
+	return openai.HandleOpenAIImageEditStreamRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		authHeader,
+		provider.networkConfig.ExtraHeaders,
+		false,
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		postHookRunner,
+		nil,
+		nil,
+		postResponseConverter,
+		provider.logger,
+	)
+
+}
+
+// ImageVariation is not supported by the Azure provider.
+func (provider *AzureProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
 // validateKeyConfig validates the key configuration.

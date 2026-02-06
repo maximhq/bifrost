@@ -37,11 +37,16 @@ type CohereChatRequest struct {
 	StrictToolChoice *bool                   `json:"strict_tool_choice,omitempty"` // Optional: Strict tool choice
 	Thinking         *CohereThinking         `json:"thinking,omitempty"`           // Optional: Reasoning configuration
 	ResponseFormat   *CohereResponseFormat   `json:"response_format,omitempty"`    // Optional: Format for the response
+	ExtraParams      map[string]interface{}  `json:"-"`                            // Optional: Extra parameters
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *CohereChatRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
+}
+
+func (r *CohereChatRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 type CohereChatRequestTool struct {
@@ -243,8 +248,13 @@ type CohereTool struct {
 
 // CohereCountTokensRequest represents a Cohere tokenize request
 type CohereCountTokensRequest struct {
-	Model string `json:"model"` // Required: Model whose tokenizer should be used
-	Text  string `json:"text"`  // Required: Text to tokenize (1-65536 chars)
+	Model       string                 `json:"model"` // Required: Model whose tokenizer should be used
+	Text        string                 `json:"text"`  // Required: Text to tokenize (1-65536 chars)
+	ExtraParams map[string]interface{} `json:"-"`     // Optional: Extra parameters
+}
+
+func (r *CohereCountTokensRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // CohereEmbeddingRequest represents a Cohere embedding request
@@ -258,6 +268,11 @@ type CohereEmbeddingRequest struct {
 	OutputDimension *int                   `json:"output_dimension,omitempty"` // Optional: Embedding dimensions (256, 512, 1024, 1536)
 	EmbeddingTypes  []string               `json:"embedding_types,omitempty"`  // Optional: Types of embeddings to return
 	Truncate        *string                `json:"truncate,omitempty"`         // Optional: How to handle long inputs
+	ExtraParams     map[string]interface{} `json:"-"`                          // Optional: Extra parameters
+}
+
+func (r *CohereEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // CohereEmbeddingInput represents a mixed text/image input

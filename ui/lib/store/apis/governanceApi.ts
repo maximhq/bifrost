@@ -35,7 +35,7 @@ export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Virtual Keys
 		getVirtualKeys: builder.query<GetVirtualKeysResponse, void>({
-			query: () => "/governance/virtual-keys",
+			query: () => ({ url: "/governance/virtual-keys", params: { from_memory: true } }),
 			providesTags: ["VirtualKeys"],
 		}),
 
@@ -234,7 +234,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		// Model Configs
 		getModelConfigs: builder.query<GetModelConfigsResponse, void>({
-			query: () => "/governance/model-configs",
+			query: () => ({ url: "/governance/model-configs", params: { from_memory: true } }),
 			providesTags: ["ModelConfigs"],
 		}),
 
@@ -271,7 +271,7 @@ export const governanceApi = baseApi.injectEndpoints({
 
 		// Provider Governance
 		getProviderGovernance: builder.query<GetProviderGovernanceResponse, void>({
-			query: () => "/governance/providers",
+			query: () => ({ url: "/governance/providers", params: { from_memory: true } }),
 			providesTags: ["ProviderGovernance"],
 		}),
 

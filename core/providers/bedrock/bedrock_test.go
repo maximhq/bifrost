@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -92,7 +92,7 @@ func TestBedrock(t *testing.T) {
 		t.Skip("Skipping Bedrock tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestBedrock(t *testing.T) {
 		}
 	}
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
 		ChatModel:   "claude-4-sonnet",
 		VisionModel: "claude-4-sonnet",
@@ -126,12 +126,14 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:     "cohere.embed-v4:0",
-		ReasoningModel:     "claude-4.5-sonnet",
-		PromptCachingModel: "claude-4.5-sonnet",
-		BatchExtraParams:   batchExtraParams,
-		FileExtraParams:    fileExtraParams,
-		Scenarios: testutil.TestScenarios{
+		EmbeddingModel:      "cohere.embed-v4:0",
+		ReasoningModel:      "claude-4.5-sonnet",
+		PromptCachingModel:  "claude-4.5-sonnet",
+		ImageEditModel:      "amazon.nova-canvas-v1:0",
+		ImageVariationModel: "amazon.nova-canvas-v1:0",
+		BatchExtraParams:    batchExtraParams,
+		FileExtraParams:     fileExtraParams,
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -163,12 +165,14 @@ func TestBedrock(t *testing.T) {
 			FileContent:           true,
 			FileBatchInput:        true,
 			CountTokens:           false, // Not supported
+			ImageEdit:             true,
+			ImageVariation:        true,
 			StructuredOutputs:     true,
 		},
 	}
 
 	t.Run("BedrockTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }
@@ -2170,6 +2174,125 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
 
+// TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
+// Tests only Responses API.
+func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
+	tests := []struct {
+		name                string
+		toolResultContent   string
+		expectedContentType string // "text" or "json"
+		expectedJSON        map[string]any
+		expectedText        *string
+	}{
+		{
+			name:                "PlainTextResult",
+			toolResultContent:   "Hello there! This is plain text, not JSON.",
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr("Hello there! This is plain text, not JSON."),
+		},
+		{
+			name:                "InvalidJSONResult",
+			toolResultContent:   "{invalid json syntax",
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr("{invalid json syntax"),
+		},
+		{
+			name:                "JSONObjectResult",
+			toolResultContent:   `{"location":"NYC","temperature":72}`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"location": "NYC", "temperature": float64(72)},
+		},
+		{
+			name:                "JSONArrayResult",
+			toolResultContent:   `[{"period":"now","weather":"sunny"},{"period":"next_1_hour","weather":"cloudy"}]`,
+			expectedContentType: "json",
+			expectedJSON: map[string]any{
+				"results": []any{
+					map[string]any{"period": "now", "weather": "sunny"},
+					map[string]any{"period": "next_1_hour", "weather": "cloudy"},
+				},
+			},
+		},
+		{
+			name:                "JSONPrimitiveNumberResult",
+			toolResultContent:   `42`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": float64(42)},
+		},
+		{
+			name:                "JSONPrimitiveStringResult",
+			toolResultContent:   `"hello world"`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": "hello world"},
+		},
+		{
+			name:                "JSONPrimitiveBooleanResult",
+			toolResultContent:   `true`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": true},
+		},
+		{
+			name:                "JSONPrimitiveNullResult",
+			toolResultContent:   `null`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": nil},
+		},
+		{
+			name:                "EmptyJSONObjectResult",
+			toolResultContent:   `{}`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{},
+		},
+		{
+			name:                "EmptyJSONArrayResult",
+			toolResultContent:   `[]`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"results": []any{}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a Responses API message with function call output (tool result)
+			input := []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("tooluse_test_123"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesToolCallOutputStr: schemas.Ptr(tt.toolResultContent),
+						},
+					},
+				},
+			}
+
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+			require.NoError(t, err)
+			require.Len(t, messages, 1)
+
+			// The tool result should be in a user message
+			toolResultMsg := messages[0]
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, toolResultMsg.Role)
+			require.Len(t, toolResultMsg.Content, 1)
+
+			toolResult := toolResultMsg.Content[0].ToolResult
+			require.NotNil(t, toolResult)
+			assert.Equal(t, "tooluse_test_123", toolResult.ToolUseID)
+			require.Len(t, toolResult.Content, 1)
+
+			resultContent := toolResult.Content[0]
+			if tt.expectedContentType == "text" {
+				assert.NotNil(t, resultContent.Text, "Expected text content")
+				assert.Nil(t, resultContent.JSON, "Expected no JSON content")
+				assert.Equal(t, tt.expectedText, resultContent.Text)
+			} else {
+				assert.Nil(t, resultContent.Text, "Expected no text content")
+				assert.Equal(t, tt.expectedJSON, resultContent.JSON)
+			}
+		})
+	}
+}
+
 // TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_EmptyBlocks tests that
 // empty ContentBlocks are not created when required fields are missing, preventing the Bedrock API error:
 // "ContentBlock object at messages.1.content.0 must set one of the following keys: text, image, toolUse, toolResult, document, video, cachePoint, reasoningContent, citationsContent, searchResult."
@@ -2458,4 +2581,128 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 			}
 		})
 	}
+}
+
+// TestToolResultDeduplication tests that duplicate tool results are properly handled
+func TestToolResultDeduplication(t *testing.T) {
+	t.Run("DuplicateResultInPendingResults", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// tool call and result
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("First result")}}
+		manager.RegisterToolResult("call-123", content1, "success")
+
+		// duplicate result with different content
+		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate result")}}
+		manager.RegisterToolResult("call-123", content2, "success")
+
+		// Deduplicated regardless of content. Practically same ID should not ever has diff content.
+		results := manager.GetPendingResults()
+		require.Len(t, results, 1)
+		require.NotNil(t, results["call-123"])
+		assert.Equal(t, "First result", *results["call-123"].Content[0].Text)
+	})
+
+	t.Run("DuplicateResultAfterEmission", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// Register and emit a tool call
+		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`)
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		manager.MarkToolCallsEmitted(callIDs, 0)
+
+		// register and emit the result
+		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("3")}}
+		manager.RegisterToolResult("call-456", content1, "success")
+		manager.MarkResultsEmitted([]string{"call-456"})
+
+		// Register a duplicate
+		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate")}}
+		manager.RegisterToolResult("call-456", content2, "success")
+
+		// Not added due to it being duplicated with the emitted result
+		results := manager.GetPendingResults()
+		assert.Empty(t, results)
+	})
+
+	t.Run("MultipleToolCallsWithDuplicateResults", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// Register multiple tool calls
+		manager.RegisterToolCall("call-a", "tool_a", `{}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{}`)
+
+		// Register results for both
+		contentA := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
+		contentB := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
+		manager.RegisterToolResult("call-a", contentA, "success")
+		manager.RegisterToolResult("call-b", contentB, "success")
+
+		// Try to register duplicates
+		contentADup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
+		contentBDup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
+		manager.RegisterToolResult("call-a", contentADup, "success")
+		manager.RegisterToolResult("call-b", contentBDup, "success")
+
+		// Verify original results are preserved
+		results := manager.GetPendingResults()
+		require.Len(t, results, 2)
+		assert.Equal(t, "Result A", *results["call-a"].Content[0].Text)
+		assert.Equal(t, "Result B", *results["call-b"].Content[0].Text)
+	})
+}
+
+// TestToolCallDeduplication tests that duplicate tool calls are properly handled
+func TestToolCallDeduplication(t *testing.T) {
+	t.Run("DuplicateToolCallIgnored", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+
+		// Deduplicated regardless of content.
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		assert.Equal(t, "call-123", callIDs[0])
+	})
+
+	t.Run("MultipleDistinctToolCalls", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// initial registration
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+
+		// duplications
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+
+		// no duplicates
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 3)
+		assert.Contains(t, callIDs, "call-a")
+		assert.Contains(t, callIDs, "call-b")
+		assert.Contains(t, callIDs, "call-c")
+	})
+
+	t.Run("DuplicateToolCallAfterEmission", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// register and emit a tool call
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		manager.MarkToolCallsEmitted(callIDs, 0)
+
+		// register the same tool call again after emission
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+
+		// duplicate was rejected
+		newCallIDs := manager.EmitPendingToolCalls()
+		assert.Empty(t, newCallIDs)
+	})
 }

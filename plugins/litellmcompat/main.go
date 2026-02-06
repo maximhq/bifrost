@@ -78,10 +78,10 @@ func (p *LiteLLMCompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostC
 	return chunk, nil
 }
 
-// PreHook intercepts requests and applies LiteLLM-compatible transformations.
+// PreLLMHook intercepts requests and applies LiteLLM-compatible transformations.
 // For text completion requests on models that don't support text completion,
 // it converts them to chat completion requests.
-func (p *LiteLLMCompatPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (p *LiteLLMCompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	tc := &TransformContext{}
 
 	// Apply request transforms in sequence
@@ -93,10 +93,10 @@ func (p *LiteLLMCompatPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.
 	return req, nil, nil
 }
 
-// PostHook processes responses and applies LiteLLM-compatible transformations.
+// PostLLMHook processes responses and applies LiteLLM-compatible transformations.
 // If a text completion request was converted to chat, this converts the
 // chat response back to text completion format.
-func (p *LiteLLMCompatPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *LiteLLMCompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	// Retrieve the transform context
 	transformCtxValue := ctx.Value(TransformContextKey)
 	if transformCtxValue == nil {

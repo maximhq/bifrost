@@ -111,10 +111,12 @@
                   "providers/supported-providers/xai"
                 ]
               },
+              "providers/routing-rules",
               "providers/provider-routing",
               "providers/reasoning",
               "providers/performance",
-              "providers/custom-providers"
+              "providers/custom-providers",
+              "providers/request-options"
             ]
           },
           {
@@ -164,6 +166,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/oauth",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
@@ -378,25 +381,32 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.4.2",
-          "changelogs/v1.4.1",
-          "changelogs/v1.4.0",
-          "changelogs/v1.4.0-prerelease10",
-          "changelogs/v1.4.0-prerelease9",
-          "changelogs/v1.4.0-prerelease8",
-          "changelogs/v1.4.0-prerelease7",
-          "changelogs/v1.4.0-prerelease6",
-          "changelogs/v1.4.0-prerelease5",
-          "changelogs/v1.4.0-prerelease4",
-          "changelogs/v1.4.0-prerelease3",
-          "changelogs/v1.3.63",
-          "changelogs/v1.3.62",
-          "changelogs/v1.3.61",
-          "changelogs/v1.3.60",
-          "changelogs/v1.3.59",
-          "changelogs/v1.3.58",
-          "changelogs/v1.3.57",
-          "changelogs/v1.3.56",
+          "changelogs/v1.4.4",
+          {
+            "group": "January 2026",
+            "pages": [
+              "changelogs/v1.4.3",
+              "changelogs/v1.4.2",
+              "changelogs/v1.4.1",
+              "changelogs/v1.4.0",
+              "changelogs/v1.4.0-prerelease10",
+              "changelogs/v1.4.0-prerelease9",
+              "changelogs/v1.4.0-prerelease8",
+              "changelogs/v1.4.0-prerelease7",
+              "changelogs/v1.4.0-prerelease6",
+              "changelogs/v1.4.0-prerelease5",
+              "changelogs/v1.4.0-prerelease4",
+              "changelogs/v1.4.0-prerelease3",
+              "changelogs/v1.3.63",
+              "changelogs/v1.3.62",
+              "changelogs/v1.3.61",
+              "changelogs/v1.3.60",
+              "changelogs/v1.3.59",
+              "changelogs/v1.3.58",
+              "changelogs/v1.3.57",
+              "changelogs/v1.3.56"
+            ]
+          },
           {
             "group": "December 2025",
             "pages": [
@@ -490,6 +500,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/providers/supported-headers",
+      "destination": "/providers/request-options"
+    },
     {
       "source": "/features/unified-interface",
       "destination": "/providers/supported-providers/overview"

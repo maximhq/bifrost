@@ -36,5 +36,8 @@ func ToOpenAISpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *OpenAISpee
 		openaiReq.SpeechParameters = *params
 	}
 
+	if bifrostReq.Params != nil {
+		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 	return openaiReq
 }

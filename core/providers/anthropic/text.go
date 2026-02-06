@@ -37,7 +37,9 @@ func ToAnthropicTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionR
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 
 		if bifrostReq.Params.ExtraParams != nil {
+			anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
+				delete(anthropicReq.ExtraParams, "top_k")
 				anthropicReq.TopK = topK
 			}
 		}

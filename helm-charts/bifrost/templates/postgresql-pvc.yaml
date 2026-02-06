@@ -1,4 +1,4 @@
-{{- if and (eq .Values.storage.mode "postgres") .Values.postgresql.enabled (not .Values.postgresql.external.enabled) }}
+{{- if and (eq .Values.storage.mode "postgres") .Values.postgresql.enabled (not .Values.postgresql.external.enabled) .Values.postgresql.primary.persistence.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

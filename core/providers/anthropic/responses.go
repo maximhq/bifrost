@@ -1854,13 +1854,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 }
 
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
-func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
+func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
+	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
 		Model:     model,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 
 	// Convert basic parameters
@@ -1868,42 +1868,47 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		ExtraParams: make(map[string]interface{}),
 	}
 
-	if request.MaxTokens > 0 {
-		params.MaxOutputTokens = &request.MaxTokens
+	if req.MaxTokens > 0 {
+		params.MaxOutputTokens = &req.MaxTokens
 	}
-	if request.Temperature != nil {
-		params.Temperature = request.Temperature
+	if req.Temperature != nil {
+		params.Temperature = req.Temperature
 	}
-	if request.TopP != nil {
-		params.TopP = request.TopP
+	if req.TopP != nil {
+		params.TopP = req.TopP
 	}
-	if request.Metadata != nil && request.Metadata.UserID != nil {
-		params.User = request.Metadata.UserID
+	if req.Metadata != nil && req.Metadata.UserID != nil {
+		params.User = req.Metadata.UserID
 	}
-	if request.TopK != nil {
-		params.ExtraParams["top_k"] = *request.TopK
+	if req.TopK != nil {
+		params.ExtraParams["top_k"] = *req.TopK
 	}
-	if request.StopSequences != nil {
-		params.ExtraParams["stop"] = request.StopSequences
+	if req.StopSequences != nil {
+		params.ExtraParams["stop"] = req.StopSequences
 	}
-	if request.OutputFormat != nil {
-		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(request.OutputFormat)
+	if req.OutputFormat != nil {
+		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(req.OutputFormat)
+	} else if req.OutputConfig != nil && req.OutputConfig.Format != nil {
+		// GA structured outputs - OutputConfig.Format has same structure as OutputFormat
+		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(req.OutputConfig.Format)
 	}
-	if request.Thinking != nil {
-		if request.Thinking.Type == "enabled" {
+	if req.Thinking != nil {
+		if req.Thinking.Type == "enabled" {
 			var summary *string
-			if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
+			if summaryValue, ok := schemas.SafeExtractStringPointer(req.ExtraParams["reasoning_summary"]); ok {
 				summary = summaryValue
 			}
 			// check if user agent in ctx is claude-cli
-			if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-				if strings.Contains(userAgent, "claude-cli") {
-					summary = schemas.Ptr("detailed")
+			if ctx != nil {
+				if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
+					if strings.Contains(userAgent, "claude-cli") {
+						summary = schemas.Ptr("detailed")
+					}
 				}
 			}
 			params.Reasoning = &schemas.ResponsesParametersReasoning{
-				Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*request.Thinking.BudgetTokens, MinimumReasoningMaxTokens, AnthropicDefaultMaxTokens)),
-				MaxTokens: request.Thinking.BudgetTokens,
+				Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*req.Thinking.BudgetTokens, MinimumReasoningMaxTokens, AnthropicDefaultMaxTokens)),
+				MaxTokens: req.Thinking.BudgetTokens,
 				Summary:   summary,
 			}
 		} else {
@@ -1912,13 +1917,13 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 			}
 		}
 	}
-	if include, ok := schemas.SafeExtractStringSlice(request.ExtraParams["include"]); ok {
+	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
 
 	// Add trucation parameter if computer tool is being used
-	if provider == schemas.OpenAI && request.Tools != nil {
-		for _, tool := range request.Tools {
+	if provider == schemas.OpenAI && req.Tools != nil {
+		for _, tool := range req.Tools {
 			if tool.Type != nil && (*tool.Type == AnthropicToolTypeComputer20250124 || *tool.Type == AnthropicToolTypeComputer20251124) {
 				params.Truncation = schemas.Ptr("auto")
 			} else if tool.Type != nil && (*tool.Type == AnthropicToolTypeWebSearch20250305) {
@@ -1934,13 +1939,13 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Convert regular messages using the new conversion method
-	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, request.Messages, request.System, false, provider == schemas.Bedrock)
+	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, req.Messages, req.System, false, provider == schemas.Bedrock)
 	bifrostMessages = append(bifrostMessages, convertedMessages...)
 
 	// Convert tools if present
-	if request.Tools != nil {
+	if req.Tools != nil {
 		var bifrostTools []schemas.ResponsesTool
-		for _, tool := range request.Tools {
+		for _, tool := range req.Tools {
 			bifrostTool := convertAnthropicToolToBifrost(&tool)
 			if bifrostTool != nil {
 				bifrostTools = append(bifrostTools, *bifrostTool)
@@ -1951,9 +1956,9 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		}
 	}
 
-	if request.MCPServers != nil {
+	if req.MCPServers != nil {
 		var bifrostMCPTools []schemas.ResponsesTool
-		for _, mcpServer := range request.MCPServers {
+		for _, mcpServer := range req.MCPServers {
 			bifrostMCPTool := convertAnthropicMCPServerToBifrostTool(&mcpServer)
 			if bifrostMCPTool != nil {
 				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
@@ -1965,8 +1970,8 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	}
 
 	// Convert tool choice if present
-	if request.ToolChoice != nil {
-		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(request.ToolChoice)
+	if req.ToolChoice != nil {
+		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(req.ToolChoice)
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
@@ -2048,7 +2053,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 				}
 				if !hasCitationsEnabled {
-					anthropicReq.OutputFormat = convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+					// Use GA structured outputs (output_config.format) instead of beta (output_format)
+					outputFormat := convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+					if outputFormat != nil {
+						anthropicReq.OutputConfig = &AnthropicOutputConfig{
+							Format: outputFormat,
+						}
+					}
 				}
 			}
 		}
@@ -2086,12 +2097,18 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 			}
 		}
+		// Convert service tier
+		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+
 		if bifrostReq.Params.ExtraParams != nil {
+			anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
+				delete(anthropicReq.ExtraParams, "top_k")
 				anthropicReq.TopK = topK
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
+				delete(anthropicReq.ExtraParams, "stop")
 				anthropicReq.StopSequences = stop
 			}
 		}

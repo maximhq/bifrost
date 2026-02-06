@@ -55,14 +55,14 @@ func BenchmarkMockerPlugin_PreHook_SimpleRule(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Convert to BifrostRequest for PreHook compatibility
+	// Convert to BifrostRequest for PreLLMHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(ctx, bifrostReq)
+		_, _, _ = plugin.PreLLMHook(ctx, bifrostReq)
 	}
 }
 
@@ -112,14 +112,14 @@ func BenchmarkMockerPlugin_PreHook_RegexRule(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Convert to BifrostRequest for PreHook compatibility
+	// Convert to BifrostRequest for PreLLMHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(ctx, bifrostReq)
+		_, _, _ = plugin.PreLLMHook(ctx, bifrostReq)
 	}
 }
 
@@ -191,14 +191,14 @@ func BenchmarkMockerPlugin_PreHook_MultipleRules(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Convert to BifrostRequest for PreHook compatibility
+	// Convert to BifrostRequest for PreLLMHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(ctx, bifrostReq)
+		_, _, _ = plugin.PreLLMHook(ctx, bifrostReq)
 	}
 }
 
@@ -249,14 +249,14 @@ func BenchmarkMockerPlugin_PreHook_NoMatch(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Convert to BifrostRequest for PreHook compatibility
+	// Convert to BifrostRequest for PreLLMHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(ctx, bifrostReq)
+		_, _, _ = plugin.PreLLMHook(ctx, bifrostReq)
 	}
 }
 
@@ -304,13 +304,13 @@ func BenchmarkMockerPlugin_PreHook_Template(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 
-	// Convert to BifrostRequest for PreHook compatibility
+	// Convert to BifrostRequest for PreLLMHook compatibility
 	bifrostReq := &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: req,
 	}
 
 	for i := 0; i < b.N; i++ {
-		_, _, _ = plugin.PreHook(ctx, bifrostReq)
+		_, _, _ = plugin.PreLLMHook(ctx, bifrostReq)
 	}
 }

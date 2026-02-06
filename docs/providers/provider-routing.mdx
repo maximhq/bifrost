@@ -1247,6 +1247,190 @@ This separation is what makes the two-level architecture so powerful!
 
 ---
 
+## Routing Rules (Dynamic Expression-Based Routing)
+
+<Info>
+**Position in routing pipeline**: Routing Rules execute **before governance provider selection** and can override it. They are evaluated before adaptive load balancing, enabling dynamic provider/model overrides based on runtime conditions like headers, parameters, capacity metrics, and organizational hierarchy.
+</Info>
+
+### Overview
+
+Routing Rules provide sophisticated, expression-based control over request routing using CEL expressions. Unlike governance routing (static weights), routing rules evaluate conditions dynamically at request time.
+
+### When Routing Rules Execute
+
+```mermaid
+flowchart TD
+    Start["Request: model + provider"]
+
+    subgraph Rules["1. Routing Rules Layer (Evaluated First)"]
+        RuleMatch{"CEL Expression<br/>Matches?"}
+        RuleDecision["Override:<br/>New provider/model/fallbacks"]
+        NoMatch["No match:<br/>Continue to Governance"]
+    end
+
+    subgraph Gov["2. Governance Layer (if no routing rule matched)"]
+        VKValidation["Virtual Key Validation"]
+        GovRouting["Provider Governance Routing<br/>(weighted random)"]
+    end
+
+    subgraph LB["3. Load Balancing Layer"]
+        LB1["Level 1: Provider Selection"]
+        LB2["Level 2: Key Selection"]
+    end
+
+    Start --> RuleMatch
+    RuleMatch -->|Yes| RuleDecision --> LB1
+    RuleMatch -->|No| NoMatch --> VKValidation --> GovRouting --> LB1
+    LB1 --> LB2 --> Execute["Execute with<br/>selected provider + key"]
+```
+
+### How It Works
+
+1. **Routing rules evaluate first** in scope precedence order (VirtualKey → Team → Customer → Global)
+2. **If a routing rule matches**: provider/model/fallbacks are overridden, governance provider_configs are skipped
+3. **If no routing rule matches**: governance provider selection runs (weighted random)
+4. **Load balancing Level 1**: skipped if provider already determined (has "/" prefix)
+5. **Load balancing Level 2** (key selection): always runs to select the best key within the determined provider
+
+### Available CEL Variables
+
+Routing rules access request context through CEL variables:
+
+```cel
+// Request context
+model                      // Requested model
+provider                   // Current provider
+
+// Headers and parameters (case-insensitive)
+headers["x-tier"]          // Request header
+params["region"]           // Query parameter
+
+// Organization context
+virtual_key_id             // VirtualKey ID
+team_name                  // Team name
+customer_id                // Customer ID
+
+// Capacity metrics (0-100 percentage)
+budget_used                // Budget usage %
+tokens_used                // Token rate limit usage %
+request                    // Request rate limit usage %
+```
+
+### Examples
+
+#### Route based on user tier
+```cel
+headers["x-tier"] == "premium"   // → openai/gpt-4o
+```
+
+#### Route to fallback when budget high
+```cel
+budget_used > 85                 // → groq/llama-2 (cheaper)
+```
+
+#### Route by team
+```cel
+team_name == "ml-research"       // → anthropic/claude-3-opus
+```
+
+#### Complex multi-condition routing
+```cel
+headers["x-environment"] == "production" &&
+tokens_used < 75 &&
+team_name == "ai-platform"       // → openai/gpt-4o
+```
+
+### Scope Hierarchy
+
+Rules are evaluated in organizational precedence order (first-match-wins):
+
+```
+1. VirtualKey scope (highest priority)
+2. Team scope
+3. Customer scope
+4. Global scope (lowest priority)
+```
+
+Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
+
+### Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **CEL Expressions** | Powerful, composable condition language with multiple operators |
+| **Scope Hierarchy** | Rules at VirtualKey/Team/Customer/Global levels with proper precedence |
+| **Dynamic Override** | Override provider and/or model based on runtime conditions |
+| **Fallback Chains** | Define multiple fallback providers for automatic failover |
+| **Priority Ordering** | Lower priority evaluated first within same scope |
+| **Capacity Awareness** | Access real-time budget and rate limit usage percentages |
+
+### Integration with Governance
+
+Routing Rules execute **before** governance provider selection and can override it:
+
+**If a routing rule matches**:
+```
+Routing Rules evaluate
+                    ↓
+Rule matches: budget_used > 85
+                    ↓
+Override: groq/llama-2 (cheaper provider)
+                    ↓
+Governance provider_configs SKIPPED
+                    ↓
+Load Balancing selects best key
+```
+
+**If no routing rule matches**:
+```
+Routing Rules evaluate
+                    ↓
+No matching rule
+                    ↓
+Governance decides: azure/gpt-4o (70% weight)
+                    ↓
+Load Balancing selects best key
+```
+
+**Key Insight**: Routing rules have higher precedence than governance provider_configs. If a routing rule matches, governance provider_configs are bypassed entirely.
+
+### Integration with Load Balancing
+
+Routing Rules work **before** load balancing:
+
+```
+Routing Rules decide: openai/gpt-4o
+                    ↓
+Load Balancing Level 1: Skipped (provider already determined)
+                    ↓
+Load Balancing Level 2: Selects best OpenAI key based on performance
+```
+
+Even when routing rules determine the provider, load balancing Level 2 still optimizes which API key to use within that provider.
+
+### Use Cases
+
+- **Tier-based routing**: Premium users → fast providers
+- **Capacity failover**: High budget usage → cheaper providers
+- **Team preferences**: Different teams → different providers
+- **A/B testing**: Route subset of traffic to test models
+- **Regional routing**: EU users → EU providers (data residency)
+- **Complex logic**: Combine multiple conditions for sophisticated routing
+
+### Dashboard & API
+
+Routing rules can be configured through:
+
+- **Dashboard**: Visual rule builder with CEL expression editor
+- **API**: `POST /api/governance/routing-rules` and related endpoints
+- **Scope**: Create rules at global, customer, team, or virtual key levels
+- **Priority**: Order rules within scope with numeric priority
+
+For complete documentation, see [Routing Rules Documentation](/providers/routing-rules).
+
+---
+
 ## Choosing the Right Approach
 
 1. **Use Governance When:**
@@ -1257,7 +1441,15 @@ This separation is what makes the two-level architecture so powerful!
    ✅ **Environment separation**: Different teams/apps need different provider access
    ✅ **Rate limit management**: Need to respect provider-specific rate limits
 
-2. **Use Load Balancing When:**
+2. **Use Routing Rules When:**
+
+   ✅ **Dynamic routing**: Route based on runtime request context (headers, parameters)
+   ✅ **Capacity-aware routing**: Switch to fallback when budget/rate limits high
+   ✅ **Organization-based routing**: Different rules for teams/customers
+   ✅ **A/B testing**: Route subset of traffic to test new models
+   ✅ **Complex conditions**: Multiple criteria (e.g., tier + capacity + team)
+
+3. **Use Load Balancing When:**
 
    ✅ **Performance optimization**: Want automatic routing to best-performing providers
    ✅ **Minimal configuration**: Prefer hands-off operation with intelligent defaults
@@ -1265,11 +1457,11 @@ This separation is what makes the two-level architecture so powerful!
    ✅ **Automatic failover**: Need instant adaptation to provider issues
    ✅ **Multi-provider redundancy**: Want seamless provider switching based on availability
 
-3. **Use Both When:**
+4. **Use All Three Together:**
 
-   ✅ **Hybrid requirements**: Some Virtual Keys need governance, others can use load balancing
-   ✅ **Progressive rollout**: Start with governance, gradually adopt load balancing
-   ✅ **Selective optimization**: Governance for sensitive workloads, load balancing for others
+   ✅ **Complete solution**: Governance provides base routing, routing rules add dynamic override, load balancing optimizes keys
+   ✅ **Maximum flexibility**: Different Virtual Keys use different strategies (governance vs routing rules vs load balancing)
+   ✅ **Enterprise deployments**: Complex organizations with multiple requirements per layer
 
 ---
 
@@ -1278,6 +1470,9 @@ This separation is what makes the two-level architecture so powerful!
 <CardGroup cols={2}>
   <Card title="Governance Routing" icon="shield-check" href="/features/governance/routing">
     Configuration instructions for setting up governance routing via Virtual Keys (Web UI, API, config.json)
+  </Card>
+  <Card title="Routing Rules" icon="sliders" href="/providers/routing-rules">
+    Dynamic, expression-based routing using CEL expressions for runtime conditions
   </Card>
   <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
     Technical implementation details: scoring algorithms, weight calculations, and performance characteristics

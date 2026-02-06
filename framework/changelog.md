@@ -1,2 +1,3 @@
-- feat: add is_ping_available column to MCP clients table
-- feat: adds Pinecone vector db support
+- feat: add base_model support to model catalog for cross-provider model matching
+- feat: add GetBaseModelName, IsSameModel, and GetDistinctBaseModelNames methods to ModelCatalog for resolving model aliases and checking model equivalence
+- feat: add database migration for base_model column on model pricing table

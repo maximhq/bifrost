@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -154,7 +155,31 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddDisableDBPingsInHealthColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddIsPingAvailableColumn(ctx, db); err != nil {
+	if err := migrationAddIsPingAvailableColumnToMCPClientTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddToolPricingJSONColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationRemoveServerPrefixFromMCPTools(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddOAuthTables(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddToolSyncIntervalColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMCPClientConfigToOAuthConfig(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddBaseModelPricingColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddAzureScopesColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -163,7 +188,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 // migrationInit is the first migration
 func migrationInit(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "init",		
+		ID: "init",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			migrator := tx.Migrator()
@@ -196,6 +221,16 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			}
 			if !migrator.HasTable(&tables.TableModel{}) {
 				if err := migrator.CreateTable(&tables.TableModel{}); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasTable(&tables.TableOauthConfig{}) {
+				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasTable(&tables.TableOauthToken{}) {
+				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
 					return err
 				}
 			}
@@ -318,7 +353,7 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 			}
 			return nil
 		},
-	}})	
+	}})
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running db migration: %s", err.Error())
@@ -2284,6 +2319,461 @@ func migrationAddAzureClientIDAndClientSecretAndTenantIDColumns(ctx context.Cont
 	return nil
 }
 
+func migrationAddToolPricingJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_tool_pricing_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_pricing_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
+					return fmt.Errorf("failed to add tool_pricing_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_pricing_json"); err != nil {
+				return fmt.Errorf("failed to drop tool_pricing_json column: %w", err)
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationRemoveServerPrefixFromMCPTools removes the server name prefix from tool names
+// in tools_to_execute_json, tools_to_auto_execute_json, and tool_pricing_json columns
+// in both config_mcp_clients and governance_virtual_key_mcp_configs tables.
+//
+// This migration converts:
+//   - tools_to_execute_json: ["calculator_add", "calculator_subtract"] → ["add", "subtract"]
+//   - tools_to_auto_execute_json: ["calculator_multiply"] → ["multiply"]
+//   - tool_pricing_json: {"calculator_add": 0.001, "calculator_subtract": 0.001} → {"add": 0.001, "subtract": 0.001}
+func migrationRemoveServerPrefixFromMCPTools(ctx context.Context, db *gorm.DB) error {
+	// Helper function to check if a tool name has a prefix matching the client name
+	// Handles both exact matches and legacy normalized forms
+	hasClientPrefix := func(toolName, clientName string) (bool, string) {
+		prefix := clientName + "_"
+		if strings.HasPrefix(toolName, prefix) {
+			return true, strings.TrimPrefix(toolName, prefix)
+		}
+		// Legacy prefix: normalize the substring before first underscore
+		if idx := strings.IndexByte(toolName, '_'); idx > 0 {
+			toolPrefix := toolName[:idx]
+			unprefixed := toolName[idx+1:]
+			if normalizeMCPClientName(toolPrefix) == clientName {
+				return true, unprefixed
+			}
+		}
+		return false, ""
+	}
+
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "remove_server_prefix_from_mcp_tools",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// ============================================================
+			// Step 1: Migrate config_mcp_clients table
+			// ============================================================
+
+			// Fetch all MCP clients
+			var mcpClients []tables.TableMCPClient
+			if err := tx.Find(&mcpClients).Error; err != nil {
+				return fmt.Errorf("failed to fetch MCP clients: %w", err)
+			}
+
+			// Process each MCP client
+			for i := range mcpClients {
+				client := &mcpClients[i]
+				clientName := client.Name
+				needsUpdate := false
+
+				// Process tools_to_execute_json
+				var toolsToExecute []string
+				if client.ToolsToExecuteJSON != "" && client.ToolsToExecuteJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolsToExecuteJSON), &toolsToExecute); err != nil {
+						return fmt.Errorf("failed to unmarshal tools_to_execute_json for client %s: %w", clientName, err)
+					}
+
+					// Strip prefix from each tool
+					updatedTools := make([]string, 0, len(toolsToExecute))
+					seenTools := make(map[string]bool)
+					for _, tool := range toolsToExecute {
+						// Check if tool has client prefix (handles both current and legacy normalized forms)
+						if hasPrefix, unprefixedTool := hasClientPrefix(tool, clientName); hasPrefix {
+							// Check for collision: if unprefixed tool already exists in the list
+							if seenTools[unprefixedTool] {
+								log.Printf("Collision detected when stripping prefix from tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
+								needsUpdate = true
+								continue
+							}
+							seenTools[unprefixedTool] = true
+							updatedTools = append(updatedTools, unprefixedTool)
+							needsUpdate = true
+						} else {
+							// Tool already unprefixed or is wildcard "*"
+							if seenTools[tool] {
+								log.Printf("Duplicate tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
+								continue
+							}
+							seenTools[tool] = true
+							updatedTools = append(updatedTools, tool)
+						}
+					}
+
+					// Update the JSON
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(updatedTools)
+						if err != nil {
+							return fmt.Errorf("failed to marshal updated tools_to_execute for client %s: %w", clientName, err)
+						}
+						client.ToolsToExecuteJSON = string(updatedJSON)
+					}
+				}
+
+				// Process tools_to_auto_execute_json
+				var toolsToAutoExecute []string
+				if client.ToolsToAutoExecuteJSON != "" && client.ToolsToAutoExecuteJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolsToAutoExecuteJSON), &toolsToAutoExecute); err != nil {
+						return fmt.Errorf("failed to unmarshal tools_to_auto_execute_json for client %s: %w", clientName, err)
+					}
+
+					// Strip prefix from each tool
+					updatedAutoTools := make([]string, 0, len(toolsToAutoExecute))
+					seenAutoTools := make(map[string]bool)
+					for _, tool := range toolsToAutoExecute {
+						// Check if tool has client prefix (handles both current and legacy normalized forms)
+						if hasPrefix, unprefixedTool := hasClientPrefix(tool, clientName); hasPrefix {
+							// Check for collision: if unprefixed tool already exists in the list
+							if seenAutoTools[unprefixedTool] {
+								log.Printf("Collision detected when stripping prefix from auto-execute tool '%s' for client '%s': unprefixed name '%s' already exists. Keeping unprefixed value.", tool, clientName, unprefixedTool)
+								needsUpdate = true
+								continue
+							}
+							seenAutoTools[unprefixedTool] = true
+							updatedAutoTools = append(updatedAutoTools, unprefixedTool)
+							needsUpdate = true
+						} else {
+							// Tool already unprefixed or is wildcard "*"
+							if seenAutoTools[tool] {
+								log.Printf("Duplicate auto-execute tool name '%s' found for client '%s'. Keeping first occurrence.", tool, clientName)
+								continue
+							}
+							seenAutoTools[tool] = true
+							updatedAutoTools = append(updatedAutoTools, tool)
+						}
+					}
+
+					// Update the JSON
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(updatedAutoTools)
+						if err != nil {
+							return fmt.Errorf("failed to marshal updated tools_to_auto_execute for client %s: %w", clientName, err)
+						}
+						client.ToolsToAutoExecuteJSON = string(updatedJSON)
+					}
+				}
+
+				// Process tool_pricing_json
+				var toolPricing map[string]float64
+				if client.ToolPricingJSON != "" && client.ToolPricingJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolPricingJSON), &toolPricing); err != nil {
+						return fmt.Errorf("failed to unmarshal tool_pricing_json for client %s: %w", clientName, err)
+					}
+
+					// Strip prefix from each tool name key
+					updatedPricing := make(map[string]float64)
+					for toolName, price := range toolPricing {
+						// Check if tool has client prefix (handles both current and legacy normalized forms)
+						if hasPrefix, unprefixedTool := hasClientPrefix(toolName, clientName); hasPrefix {
+							// Check for collision: if unprefixed key already exists
+							if existingPrice, exists := updatedPricing[unprefixedTool]; exists {
+								log.Printf("Collision detected when stripping prefix from pricing key '%s' for client '%s': unprefixed key '%s' already exists with price %.6f. Keeping existing unprefixed value (%.6f), discarding prefixed value (%.6f).", toolName, clientName, unprefixedTool, existingPrice, existingPrice, price)
+								needsUpdate = true
+								continue
+							}
+							updatedPricing[unprefixedTool] = price
+							needsUpdate = true
+						} else {
+							// Check for collision: if unprefixed key already exists (from a previously processed prefixed entry)
+							if existingPrice, exists := updatedPricing[toolName]; exists {
+								log.Printf("Collision detected for pricing key '%s' for client '%s': key already exists with price %.6f. Keeping first value (%.6f), discarding duplicate (%.6f).", toolName, clientName, existingPrice, existingPrice, price)
+								continue
+							}
+							updatedPricing[toolName] = price
+						}
+					}
+
+					// Update the JSON
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(updatedPricing)
+						if err != nil {
+							return fmt.Errorf("failed to marshal updated tool_pricing for client %s: %w", clientName, err)
+						}
+						client.ToolPricingJSON = string(updatedJSON)
+					}
+				}
+
+				// Save the updated client if any changes were made
+				if needsUpdate {
+					// Use Model + Updates to ensure changes are persisted
+					result := tx.Model(&tables.TableMCPClient{}).Where("id = ?", client.ID).Updates(map[string]interface{}{
+						"tools_to_execute_json":      client.ToolsToExecuteJSON,
+						"tools_to_auto_execute_json": client.ToolsToAutoExecuteJSON,
+						"tool_pricing_json":          client.ToolPricingJSON,
+					})
+
+					if result.Error != nil {
+						return fmt.Errorf("failed to save updated MCP client %s: %w", clientName, result.Error)
+					}
+				}
+			}
+
+			// ============================================================
+			// Step 2: Migrate governance_virtual_key_mcp_configs table
+			// ============================================================
+
+			// Fetch all virtual key MCP configs with their associated MCP client
+			var vkMCPConfigs []tables.TableVirtualKeyMCPConfig
+			if err := tx.Preload("MCPClient").Find(&vkMCPConfigs).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual key MCP configs: %w", err)
+			}
+
+			// Process each VK MCP config
+			for i := range vkMCPConfigs {
+				vkConfig := &vkMCPConfigs[i]
+				if vkConfig.MCPClient.Name == "" {
+					// Skip if MCP client is not loaded
+					continue
+				}
+
+				clientName := vkConfig.MCPClient.Name
+				needsUpdate := false
+
+				// Process tools_to_execute (this is a JSON array stored in GORM's serializer format)
+				if len(vkConfig.ToolsToExecute) > 0 {
+					updatedTools := make([]string, 0, len(vkConfig.ToolsToExecute))
+					seen := make(map[string]bool, len(vkConfig.ToolsToExecute))
+
+					for _, tool := range vkConfig.ToolsToExecute {
+						var finalTool string
+						// Check if tool has client prefix (handles both current and legacy normalized forms)
+						if hasPrefix, unprefixedTool := hasClientPrefix(tool, clientName); hasPrefix {
+							finalTool = unprefixedTool
+						} else {
+							finalTool = tool
+						}
+
+						// Skip if we've already added this tool (collision detection)
+						if !seen[finalTool] {
+							seen[finalTool] = true
+							updatedTools = append(updatedTools, finalTool)
+						}
+					}
+
+					// Only update if the final list differs from the original
+					needsUpdate = len(updatedTools) != len(vkConfig.ToolsToExecute)
+					if !needsUpdate {
+						// Check if any tools actually changed
+						for j, tool := range vkConfig.ToolsToExecute {
+							if tool != updatedTools[j] {
+								needsUpdate = true
+								break
+							}
+						}
+					}
+
+					if needsUpdate {
+						vkConfig.ToolsToExecute = updatedTools
+					}
+				}
+
+				// Save the updated VK config if any changes were made
+				if needsUpdate {
+					if err := tx.Save(vkConfig).Error; err != nil {
+						return fmt.Errorf("failed to save updated VK MCP config ID %d: %w", vkConfig.ID, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is complex because we need to re-add the prefix
+			// This requires knowing the client name for each tool
+			tx = tx.WithContext(ctx)
+
+			// ============================================================
+			// Step 1: Rollback config_mcp_clients table
+			// ============================================================
+
+			var mcpClients []tables.TableMCPClient
+			if err := tx.Find(&mcpClients).Error; err != nil {
+				return fmt.Errorf("failed to fetch MCP clients for rollback: %w", err)
+			}
+
+			for _, client := range mcpClients {
+				clientName := client.Name
+				needsUpdate := false
+
+				// Rollback tools_to_execute_json
+				var toolsToExecute []string
+				if client.ToolsToExecuteJSON != "" && client.ToolsToExecuteJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolsToExecuteJSON), &toolsToExecute); err != nil {
+						return fmt.Errorf("failed to unmarshal tools_to_execute_json for rollback: %w", err)
+					}
+
+					prefixedTools := make([]string, 0, len(toolsToExecute))
+					for _, tool := range toolsToExecute {
+						// Skip wildcard
+						if tool == "*" {
+							prefixedTools = append(prefixedTools, tool)
+							continue
+						}
+						// Add prefix if not already present
+						prefix := clientName + "_"
+						if !strings.HasPrefix(tool, prefix) {
+							prefixedTools = append(prefixedTools, prefix+tool)
+							needsUpdate = true
+						} else {
+							prefixedTools = append(prefixedTools, tool)
+						}
+					}
+
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(prefixedTools)
+						if err != nil {
+							return fmt.Errorf("failed to marshal rollback tools_to_execute: %w", err)
+						}
+						client.ToolsToExecuteJSON = string(updatedJSON)
+					}
+				}
+
+				// Rollback tools_to_auto_execute_json
+				var toolsToAutoExecute []string
+				if client.ToolsToAutoExecuteJSON != "" && client.ToolsToAutoExecuteJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolsToAutoExecuteJSON), &toolsToAutoExecute); err != nil {
+						return fmt.Errorf("failed to unmarshal tools_to_auto_execute_json for rollback: %w", err)
+					}
+
+					prefixedAutoTools := make([]string, 0, len(toolsToAutoExecute))
+					for _, tool := range toolsToAutoExecute {
+						if tool == "*" {
+							prefixedAutoTools = append(prefixedAutoTools, tool)
+							continue
+						}
+						prefix := clientName + "_"
+						if !strings.HasPrefix(tool, prefix) {
+							prefixedAutoTools = append(prefixedAutoTools, prefix+tool)
+							needsUpdate = true
+						} else {
+							prefixedAutoTools = append(prefixedAutoTools, tool)
+						}
+					}
+
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(prefixedAutoTools)
+						if err != nil {
+							return fmt.Errorf("failed to marshal rollback tools_to_auto_execute: %w", err)
+						}
+						client.ToolsToAutoExecuteJSON = string(updatedJSON)
+					}
+				}
+
+				// Rollback tool_pricing_json
+				var toolPricing map[string]float64
+				if client.ToolPricingJSON != "" && client.ToolPricingJSON != "null" {
+					if err := json.Unmarshal([]byte(client.ToolPricingJSON), &toolPricing); err != nil {
+						return fmt.Errorf("failed to unmarshal tool_pricing_json for rollback: %w", err)
+					}
+
+					prefixedPricing := make(map[string]float64)
+					for toolName, price := range toolPricing {
+						prefix := clientName + "_"
+						if !strings.HasPrefix(toolName, prefix) {
+							prefixedPricing[prefix+toolName] = price
+							needsUpdate = true
+						} else {
+							prefixedPricing[toolName] = price
+						}
+					}
+
+					if needsUpdate {
+						updatedJSON, err := json.Marshal(prefixedPricing)
+						if err != nil {
+							return fmt.Errorf("failed to marshal rollback tool_pricing: %w", err)
+						}
+						client.ToolPricingJSON = string(updatedJSON)
+					}
+				}
+
+				if needsUpdate {
+					if err := tx.Save(&client).Error; err != nil {
+						return fmt.Errorf("failed to save rollback MCP client: %w", err)
+					}
+				}
+			}
+
+			// ============================================================
+			// Step 2: Rollback governance_virtual_key_mcp_configs table
+			// ============================================================
+
+			var vkMCPConfigs []tables.TableVirtualKeyMCPConfig
+			if err := tx.Preload("MCPClient").Find(&vkMCPConfigs).Error; err != nil {
+				return fmt.Errorf("failed to fetch virtual key MCP configs for rollback: %w", err)
+			}
+
+			for _, vkConfig := range vkMCPConfigs {
+				if vkConfig.MCPClient.Name == "" {
+					continue
+				}
+
+				clientName := vkConfig.MCPClient.Name
+				needsUpdate := false
+
+				if len(vkConfig.ToolsToExecute) > 0 {
+					prefixedTools := make([]string, 0, len(vkConfig.ToolsToExecute))
+					for _, tool := range vkConfig.ToolsToExecute {
+						if tool == "*" {
+							prefixedTools = append(prefixedTools, tool)
+							continue
+						}
+						prefix := clientName + "_"
+						if !strings.HasPrefix(tool, prefix) {
+							prefixedTools = append(prefixedTools, prefix+tool)
+							needsUpdate = true
+						} else {
+							prefixedTools = append(prefixedTools, tool)
+						}
+					}
+
+					if needsUpdate {
+						vkConfig.ToolsToExecute = prefixedTools
+					}
+				}
+
+				if needsUpdate {
+					if err := tx.Save(&vkConfig).Error; err != nil {
+						return fmt.Errorf("failed to save rollback VK MCP config: %w", err)
+					}
+				}
+			}
+
+			return nil
+		},
+	}})
+
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running migration to remove server prefix from MCP tools: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddDistributedLocksTable adds the distributed_locks table for distributed locking
 func migrationAddDistributedLocksTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -2497,8 +2987,8 @@ func migrationAddDisableDBPingsInHealthColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-// migrationAddIsPingAvailableColumn adds the is_ping_available column to the config_mcp_clients table
-func migrationAddIsPingAvailableColumn(ctx context.Context, db *gorm.DB) error {
+// migrationAddIsPingAvailableColumnToMCPClientTable adds the is_ping_available column to the config_mcp_clients table
+func migrationAddIsPingAvailableColumnToMCPClientTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_is_ping_available_column",
 		Migrate: func(tx *gorm.DB) error {
@@ -2529,6 +3019,245 @@ func migrationAddIsPingAvailableColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running is_ping_available migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRoutingRulesTable adds the routing rules table for intelligent request routing
+func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_rules_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasTable(&tables.TableRoutingRule{}) {
+				if err := migrator.CreateTable(&tables.TableRoutingRule{}); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropTable(&tables.TableRoutingRule{}); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running routing_rules_table migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOAuthTables creates the oauth_configs and oauth_tokens tables
+func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_oauth_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()			
+			// Create oauth_configs table FIRST (before adding FK columns that reference it)
+			if !migrator.HasTable(&tables.TableOauthConfig{}) {
+				if err := migrator.CreateTable(&tables.TableOauthConfig{}); err != nil {
+					return fmt.Errorf("failed to create oauth_configs table: %w", err)
+				}
+			}
+			// Create oauth_tokens table
+			if !migrator.HasTable(&tables.TableOauthToken{}) {
+				if err := migrator.CreateTable(&tables.TableOauthToken{}); err != nil {
+					return fmt.Errorf("failed to create oauth_tokens table: %w", err)
+				}
+			}
+			// IF MCPClient table is not present, create it first
+			if !migrator.HasTable(&tables.TableMCPClient{}) {
+				if err := migrator.CreateTable(&tables.TableMCPClient{}); err != nil {
+					return fmt.Errorf("failed to create mcp_clients table: %w", err)
+				}
+			}
+			// Now update MCPClient table to add auth_type, oauth_config_id columns
+			// (oauth_config_id has FK constraint to oauth_configs table created above)
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "auth_type") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "auth_type"); err != nil {
+					return fmt.Errorf("failed to add auth_type column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "oauth_config_id") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "oauth_config_id"); err != nil {
+					return fmt.Errorf("failed to add oauth_config_id column: %w", err)
+				}
+			}
+			// Set default value for auth_type column
+			if err := tx.Model(&tables.TableMCPClient{}).Where("auth_type IS NULL").Update("auth_type", "headers").Error; err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop tables in reverse order
+			if migrator.HasTable(&tables.TableOauthToken{}) {
+				if err := migrator.DropTable(&tables.TableOauthToken{}); err != nil {
+					return fmt.Errorf("failed to drop oauth_tokens table: %w", err)
+				}
+			}
+
+			if migrator.HasTable(&tables.TableOauthConfig{}) {
+				if err := migrator.DropTable(&tables.TableOauthConfig{}); err != nil {
+					return fmt.Errorf("failed to drop oauth_configs table: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running oauth tables migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolSyncIntervalColumns adds the tool_sync_interval columns to config_client and config_mcp_clients tables
+func migrationAddToolSyncIntervalColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_tool_sync_interval_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			// Add mcp_tool_sync_interval column to config_client table (global setting)
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
+					return err
+				}
+			}
+			// Add tool_sync_interval column to config_mcp_clients table (per-client setting)
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "tool_sync_interval") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if err := migrator.DropColumn(&tables.TableClientConfig{}, "mcp_tool_sync_interval"); err != nil {
+				return err
+			}
+			if err := migrator.DropColumn(&tables.TableMCPClient{}, "tool_sync_interval"); err != nil {
+				return err
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running tool sync interval migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientConfigToOAuthConfig adds the mcp_client_config_json column to oauth_configs table
+// This enables multi-instance support by storing pending MCP client config in the database
+// instead of in-memory, so OAuth callbacks can be handled by any server instance
+func migrationAddMCPClientConfigToOAuthConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_config_to_oauth_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				if err := migrator.AddColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableOauthConfig{}, "mcp_client_config_json") {
+				if err := migrator.DropColumn(&tables.TableOauthConfig{}, "mcp_client_config_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running mcp client config oauth migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBaseModelPricingColumn adds the base_model column to the model_pricing table
+func migrationAddBaseModelPricingColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_base_model_pricing_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				if err := migrator.AddColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
+					return fmt.Errorf("failed to add column base_model: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableModelPricing{}, "base_model") {
+				if err := migrator.DropColumn(&tables.TableModelPricing{}, "base_model"); err != nil {
+					return fmt.Errorf("failed to drop column base_model: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddAzureScopesColumn adds the azure_scopes column to the key table for Entra ID OAuth scopes
+func migrationAddAzureScopesColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_azure_scopes_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "azure_scopes") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "azure_scopes"); err != nil {
+					return fmt.Errorf("failed to add azure_scopes column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "azure_scopes") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "azure_scopes"); err != nil {
+					return fmt.Errorf("failed to drop azure_scopes column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running azure_scopes migration: %s", err.Error())
 	}
 	return nil
 }

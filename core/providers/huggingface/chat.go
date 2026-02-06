@@ -100,6 +100,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 				hfReq.ToolChoice = hfToolChoice
 			}
 		}
+		hfReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 
 	return hfReq, nil

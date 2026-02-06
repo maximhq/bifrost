@@ -38,6 +38,9 @@ func createBedrockConverseRouteConfig(pathPrefix string, handlerStore lib.Handle
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockConverseRequest{}
 		},
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if bedrockReq, ok := req.(*bedrock.BedrockConverseRequest); ok {
 				bifrostReq, err := bedrockReq.ToBifrostResponsesRequest(ctx)
@@ -67,6 +70,9 @@ func createBedrockConverseStreamRouteConfig(pathPrefix string, handlerStore lib.
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/converse-stream",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ResponsesRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockConverseRequest{}
 		},
@@ -112,6 +118,9 @@ func createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix string, handler
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/invoke-with-response-stream",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.TextCompletionRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockTextCompletionRequest{}
 		},
@@ -157,6 +166,9 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model/{modelId}/invoke",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.TextCompletionRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockTextCompletionRequest{}
 		},
@@ -197,6 +209,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model-invocation-job",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCreateRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchJobRequest{}
 		},
@@ -296,6 +311,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model-invocation-jobs",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchListRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchListRequest{}
 		},
@@ -338,6 +356,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model-invocation-job/{job_arn}",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchRetrieveRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchRetrieveRequest{}
 		},
@@ -380,6 +401,9 @@ func createBedrockBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/model-invocation-job/{job_arn}/stop",
 		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCancelRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockBatchCancelRequest{}
 		},
@@ -589,6 +613,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/{bucket}/{key:*}",
 		Method: "PUT",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileUploadRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileUploadRequest{}
 		},
@@ -643,6 +670,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/{bucket}/{key:*}",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileContentRequest{}
 		},
@@ -675,6 +705,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/{bucket}/{key:*}",
 		Method: "HEAD",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileRetrieveRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileRetrieveRequest{}
 		},
@@ -721,6 +754,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/{bucket}/{key:*}",
 		Method: "DELETE",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileDeleteRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileDeleteRequest{}
 		},
@@ -767,6 +803,9 @@ func createBedrockFilesRouteConfigs(pathPrefix string, handlerStore lib.HandlerS
 		Type:   RouteConfigTypeBedrock,
 		Path:   pathPrefix + "/{bucket}",
 		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileListRequest
+		},
 		GetRequestTypeInstance: func() interface{} {
 			return &bedrock.BedrockFileListRequest{}
 		},

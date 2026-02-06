@@ -25,7 +25,7 @@ const (
 	startTimeKey schemas.BifrostContextKey = "bf-prom-start-time"
 )
 
-// PrometheusPlugin implements the schemas.Plugin interface for Prometheus metrics.
+// PrometheusPlugin implements the schemas.LLMPlugin interface for Prometheus metrics.
 // It tracks metrics for upstream provider requests, including:
 //   - Total number of requests
 //   - Request latency
@@ -100,6 +100,8 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"method",
 		"virtual_key_id",
 		"virtual_key_name",
+		"routing_rule_id",
+		"routing_rule_name",
 		"selected_key_id",
 		"selected_key_name",
 		"number_of_retries",
@@ -296,28 +298,30 @@ func (p *PrometheusPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 	return chunk, nil
 }
 
-// PreHook records the start time of the request in the context.
-// This time is used later in PostHook to calculate request duration.
-func (p *PrometheusPlugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+// PreLLMHook records the start time of the request in the context.
+// This time is used later in PostLLMHook to calculate request duration.
+func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
 	return req, nil, nil
 }
 
-// PostHook calculates duration and records upstream metrics for successful requests.
+// PostLLMHook calculates duration and records upstream metrics for successful requests.
 // It records:
 //   - Request latency
 //   - Total request count
-func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	requestType, provider, model := bifrost.GetResponseFields(result, bifrostErr)
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
 	if !ok {
-		p.logger.Warn("Warning: startTime not found in context for Prometheus PostHook")
+		p.logger.Warn("Warning: startTime not found in context for Prometheus PostLLMHook")
 		return result, bifrostErr, nil
 	}
 
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 
 	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
@@ -325,10 +329,10 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
 
-	teamID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-id"))
-	teamName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-team-name"))
-	customerID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-id"))
-	customerName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-customer-name"))
+	teamID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
@@ -337,6 +341,8 @@ func (p *PrometheusPlugin) PostHook(ctx *schemas.BifrostContext, result *schemas
 		"method":            string(requestType),
 		"virtual_key_id":    virtualKeyID,
 		"virtual_key_name":  virtualKeyName,
+		"routing_rule_id":   routingRuleID,
+		"routing_rule_name": routingRuleName,
 		"selected_key_id":   selectedKeyID,
 		"selected_key_name": selectedKeyName,
 		"number_of_retries": strconv.Itoa(numberOfRetries),

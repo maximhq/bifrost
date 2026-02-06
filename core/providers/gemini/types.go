@@ -81,6 +81,7 @@ type GeminiGenerationRequest struct {
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
 	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is an image generation request
+	IsImageEdit       bool                     `json:"-"` // Internal field to track if this is an image edit request
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Imagen-specific fields for :predict endpoint
@@ -88,12 +89,19 @@ type GeminiGenerationRequest struct {
 	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
-	Fallbacks []string `json:"fallbacks,omitempty"`
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // ImagenInstance represents a single instance in an Imagen request
 type ImagenInstance struct {
-	Prompt string `json:"prompt,omitempty"`
+	Prompt          string                 `json:"prompt,omitempty"`
+	ReferenceImages []ImagenReferenceImage `json:"referenceImages,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1098,16 +1106,28 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
-	Requests []GeminiEmbeddingRequest `json:"requests,omitempty"`
+	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
+	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
-	Content              *Content `json:"content,omitempty"`
-	TaskType             *string  `json:"taskType,omitempty"`
-	Title                *string  `json:"title,omitempty"`
-	OutputDimensionality *int     `json:"outputDimensionality,omitempty"`
-	Model                string   `json:"model,omitempty"`
+	Content              *Content               `json:"content,omitempty"`
+	TaskType             *string                `json:"taskType,omitempty"`
+	Title                *string                `json:"title,omitempty"`
+	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // Content contains the multi-part content of a message.
@@ -1760,7 +1780,7 @@ type GenerateContentResponsePromptFeedback struct {
 // ModalityTokenCount represents token counting info for a single modality.
 type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
-	Modality string `json:"modality,omitempty"`
+	Modality Modality `json:"modality,omitempty"`
 	// Number of tokens.
 	TokenCount int32 `json:"tokenCount,omitempty"`
 }
@@ -2117,22 +2137,33 @@ type GeminiCountTokensResponse struct {
 }
 
 type GeminiImagenRequest struct {
-	Instances  []ImagenInstance       `json:"instances"`
-	Parameters GeminiImagenParameters `json:"parameters"`
+	Instances   []ImagenInstance       `json:"instances"`
+	Parameters  GeminiImagenParameters `json:"parameters"`
+	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+func (r *GeminiImagenRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 type GeminiImagenParameters struct {
-	AddWatermark     *bool                `json:"addWatermark,omitempty"`     // Whether to add a watermark to the image
-	SampleCount      *int                 `json:"sampleCount,omitempty"`      // 1 - 4
-	SampleImageSize  *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K", "4K"
-	AspectRatio      *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
-	PersonGeneration *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
-	Seed             *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
-	NegativePrompt   *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
-	Language         *string              `json:"language,omitempty"`         // Language code for the prompt
-	EnhancePrompt    *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
-	SafetySettings   []SafetySetting      `json:"safetySettings,omitempty"`   // Safety settings for content filtering
-	OutputOptions    *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+	AddWatermark            *bool                `json:"addWatermark,omitempty"`     // Whether to add a watermark to the image
+	SampleCount             *int                 `json:"sampleCount,omitempty"`      // 1 - 4
+	SampleImageSize         *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K"
+	AspectRatio             *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
+	PersonGeneration        *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+	Seed                    *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
+	NegativePrompt          *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
+	Language                *string              `json:"language,omitempty"`         // Language code for the prompt
+	EnhancePrompt           *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
+	SafetySettings          []SafetySetting      `json:"safetySettings,omitempty"`   // Safety settings for content filtering
+	OutputOptions           *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+	BaseSteps               *int                 `json:"baseSteps,omitempty"`        // 1 - 100
+	EditMode                *string              `json:"editMode,omitempty"`
+	GuidanceScale           *int                 `json:"guidanceScale,omitempty"`
+	IncludeRaiReason        *bool                `json:"includeRaiReason,omitempty"`        // Whether to include the RAI filtered reason
+	IncludeSafetyAttributes *bool                `json:"includeSafetyAttributes,omitempty"` // Whether to include safety attributes
+	StorageUri              *string              `json:"storageUri,omitempty"`              // Storage URI for the image
 }
 
 type ImagenOutputOptions struct {
@@ -2150,6 +2181,26 @@ type GeminiImagenPrediction struct {
 // GeminiImagenResponse represents the complete response from imagen
 type GeminiImagenResponse struct {
 	Predictions []GeminiImagenPrediction `json:"predictions"` // List of Imagen predictions
+}
+
+// ImagenReferenceImage represents a reference image for editing
+type ImagenReferenceImage struct {
+	ReferenceType   string                 `json:"referenceType"` // "REFERENCE_TYPE_RAW", "REFERENCE_TYPE_MASK"
+	ReferenceID     int                    `json:"referenceId"`
+	ReferenceImage  ImagenReferenceData    `json:"referenceImage"`
+	MaskImageConfig *ImagenMaskImageConfig `json:"maskImageConfig,omitempty"`
+}
+
+// ImagenReferenceData contains the base64 encoded image data
+type ImagenReferenceData struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded"`
+}
+
+// ImagenMaskImageConfig contains mask configuration
+type ImagenMaskImageConfig struct {
+	MaskMode    string   `json:"maskMode"`              // "MASK_MODE_USER_PROVIDED", "MASK_MODE_BACKGROUND", "MASK_MODE_FOREGROUND", "MASK_MODE_SEMANTIC"
+	Dilation    *float64 `json:"dilation,omitempty"`    // Range [0, 1]. Percentage of image width to dilate (grow) the mask by
+	MaskClasses []int    `json:"maskClasses,omitempty"` // Mask classes for MASK_MODE_SEMANTIC mode
 }
 
 var GeminiRequestSuffixPaths = []string{

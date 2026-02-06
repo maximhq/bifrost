@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/valyala/fasthttp"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -76,6 +78,23 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
 		}
+		// Merge ExtraParams into the JSON if passthrough is enabled
+		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			extraParams := reqBody.GetExtraParams()
+			if len(extraParams) > 0 {
+				var jsonMap map[string]interface{}
+				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+				// Merge ExtraParams recursively (handles nested maps)
+				providerUtils.MergeExtraParams(jsonMap, extraParams)
+				// Re-marshal the merged map
+				jsonBody, err = sonic.Marshal(jsonMap)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+			}
+		}
 	}
 	return jsonBody, nil
 }
@@ -137,6 +156,22 @@ func appendUniqueHeader(slice []string, item string) []string {
 		}
 	}
 	return append(slice, item)
+}
+
+// appendBetaHeader appends a beta header to the request, preserving any existing beta headers
+func appendBetaHeader(req *fasthttp.Request, betaHeader string) {
+	existing := string(req.Header.Peek("anthropic-beta"))
+	if existing == "" {
+		req.Header.Set("anthropic-beta", betaHeader)
+		return
+	}
+	// Check if header already present
+	for _, h := range strings.Split(existing, ",") {
+		if strings.TrimSpace(h) == betaHeader {
+			return
+		}
+	}
+	req.Header.Set("anthropic-beta", existing+","+betaHeader)
 }
 
 // convertChatResponseFormatToTool converts a response_format config to an Anthropic tool for structured output
@@ -1014,6 +1049,8 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 	}
 
 	// Build the flattened Anthropic-compatible output_format structure
+	// Note: name, description, and strict are NOT included as they are not permitted
+	// in Anthropic's GA structured outputs API (output_config.format)
 	outputFormat := map[string]interface{}{
 		"type": formatType,
 	}

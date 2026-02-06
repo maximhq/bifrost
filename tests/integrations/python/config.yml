@@ -43,6 +43,7 @@ providers:
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
     image_generation: "gpt-image-1"
+    image_edit: "gpt-image-1"
     streaming: "gpt-4o-mini"
     thinking: "gpt-5.1"
     batch_file_upload: "gpt-4o-mini"
@@ -93,17 +94,18 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.5-flash"
-    vision: "gemini-2.5-flash"
-    tools: "gemini-2.5-flash"
+    chat: "gemini-3-flash-preview"
+    vision: "gemini-3-flash-preview"
+    tools: "gemini-3-flash-preview"
     file: "gemini-2.5-flash"
     thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
     image_generation: "gemini-2.5-flash-image"
+    image_edit: "gemini-3-pro-image-preview"
     imagen: "imagen-4.0-generate-001"
-    streaming: "gemini-2.5-flash"
+    streaming: "gemini-3-flash-preview"
     batch_create: "gemini-2.5-flash"
     batch_inline: "gemini-2.5-flash"
     batch_file_upload: "gemini-2.5-flash"
@@ -131,6 +133,7 @@ providers:
     thinking: "gemini-3-pro-preview"
     embeddings: "gemini-embedding-001"
     image_generation: "imagen-4.0-generate-001"
+    image_edit: "imagen-3.0-capability-001"
     imagen: "imagen-4.0-generate-001"
     streaming: "gemini-2.5-flash"
     count_tokens: "claude-sonnet-4-5"
@@ -145,6 +148,7 @@ providers:
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "global.cohere.embed-v4:0"
     batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    image_edit: "amazon.nova-canvas-v1:0"
     batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_retrieve: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_cancel: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -169,6 +173,7 @@ providers:
   
   huggingface:
     image_generation: "fal-ai/fal-ai/flux/dev"
+    image_edit: "fal-ai/fal-ai/flux-2/edit"
   
   nebius:
     image_generation: "black-forest-labs/flux-schnell"
@@ -207,6 +212,7 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     image_generation: true
+    image_edit: true
     thinking: true
     prompt_caching: false
     citations: false
@@ -313,7 +319,9 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     image_generation: true  # Gemini image generation via responseModalities
+    image_edit: true  # Gemini image editing
     imagen: true  # Imagen via :predict endpoint
+    imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
     prompt_caching: false
     citations: false
@@ -356,7 +364,9 @@ provider_scenarios:
     transcription_streaming: false
     embeddings: true
     image_generation: true
+    image_edit: true
     imagen: true  # Imagen via :predict endpoint
+    imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
     prompt_caching: false
     list_models: true
@@ -420,6 +430,7 @@ provider_scenarios:
     file_retrieve: true  # Bedrock retrieves S3 object metadata
     file_delete: true  # Bedrock deletes S3 objects
     file_content: true  # Bedrock downloads S3 object content
+    image_edit: true  # Bedrock supports image editing via Nova Canvas
     
   cohere:
     simple_chat: true
@@ -463,6 +474,7 @@ provider_scenarios:
   
   huggingface:
     image_generation: true
+    image_edit: true
   
   nebius:
     image_generation: true
@@ -492,7 +504,9 @@ scenario_capabilities:
   transcription_streaming: "transcription"
   embeddings: "embeddings"
   image_generation: "image_generation"  # Uses image_generation model
+  image_edit: "image_edit"  # Uses image_edit model
   imagen: "imagen"  # Uses imagen model (Gemini/Vertex)
+  imagen_edit: "image_edit"  # Uses image_edit model for Imagen editing
   thinking: "thinking"
   prompt_caching: "chat"
   citations: "chat"

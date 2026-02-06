@@ -8,7 +8,7 @@ PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
 LOG_LEVEL ?= info
 TEST_REPORTS_DIR ?= test-reports
-GOTESTSUM_FORMAT ?= testname
+GOTESTSUM_FORMAT ?= standard-verbose
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
@@ -48,7 +48,7 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
-	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: testname)"
+	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: standard-verbose)"
 	@echo "  TESTCASE          Exact test name to run (e.g., TestVirtualKeyTokenRateLimit)"
 	@echo "  PATTERN           Substring pattern to filter tests (alternative to TESTCASE)"
 
@@ -725,6 +725,153 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 			echo "$(GREEN)                 ALL TESTS PASSED ✓                       $(NC)"; \
 			echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"; \
 			echo ""; \
+		fi; \
+	fi; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		exit 1; \
+	fi
+
+setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScript)
+	@echo "$(GREEN)Building MCP test servers...$(NC)"
+	@FAILED=0; \
+	for mcp_dir in examples/mcps/*/; do \
+		if [ -d "$$mcp_dir" ]; then \
+			mcp_name=$$(basename $$mcp_dir); \
+			if [ -f "$$mcp_dir/go.mod" ]; then \
+				echo "$(CYAN)Building $$mcp_name (Go)...$(NC)"; \
+				mkdir -p "$$mcp_dir/bin"; \
+				if cd "$$mcp_dir" && GOWORK=off go build -o bin/$$mcp_name . && cd - > /dev/null; then \
+					echo "$(GREEN)  ✓ $$mcp_name$(NC)"; \
+				else \
+					echo "$(RED)  ✗ $$mcp_name failed$(NC)"; \
+					FAILED=1; \
+					cd - > /dev/null 2>&1 || true; \
+				fi; \
+			elif [ -f "$$mcp_dir/package.json" ]; then \
+				echo "$(CYAN)Building $$mcp_name (TypeScript)...$(NC)"; \
+				if cd "$$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then \
+					echo "$(GREEN)  ✓ $$mcp_name$(NC)"; \
+				else \
+					echo "$(RED)  ✗ $$mcp_name failed$(NC)"; \
+					FAILED=1; \
+					cd - > /dev/null 2>&1 || true; \
+				fi; \
+			fi; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		echo "$(RED)Some MCP test servers failed to build$(NC)"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "$(GREEN)✓ All MCP test servers built$(NC)"
+
+test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-mcp [TYPE=connection] [TESTCASE=TestName] [PATTERN=substring])
+	@echo "$(GREEN)Running MCP tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
+		exit 1; \
+	fi
+	@if [ ! -d "core/internal/mcptests" ]; then \
+		echo "$(RED)Error: MCP tests directory not found$(NC)"; \
+		exit 1; \
+	fi
+	@TEST_FAILED=0; \
+	REPORT_FILE=""; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(TYPE)" ]; then \
+		TYPE_CLEAN=$$(echo $(TYPE) | sed 's/_test\.go$$//'); \
+		TEST_FILE="core/internal/mcptests/$${TYPE_CLEAN}_test.go"; \
+		if [ ! -f "$$TEST_FILE" ]; then \
+			echo "$(RED)Error: Test file '$$TEST_FILE' not found$(NC)"; \
+			echo "$(YELLOW)Available test types:$(NC)"; \
+			ls -1 core/internal/mcptests/*_test.go 2>/dev/null | sed 's|core/internal/mcptests/||' | sed 's|_test\.go$$||' | sed 's/^/  - /'; \
+			exit 1; \
+		fi; \
+		TEST_PATTERN=$$(grep -h "^func Test" $$TEST_FILE 2>/dev/null | sed 's/func \(Test[^(]*\).*/\1/' | paste -sd '|' - || echo "^Test"); \
+		if [ -n "$(TESTCASE)" ]; then \
+			echo "$(CYAN)Running $(TYPE) test: $(TESTCASE)...$(NC)"; \
+			SAFE_TESTCASE=$$(echo "$(TESTCASE)" | sed 's|/|_|g'); \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_TESTCASE.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "^$(TESTCASE)$$" . || TEST_FAILED=1; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running $(TYPE) tests matching '$(PATTERN)'...$(NC)"; \
+			SAFE_PATTERN=$$(echo "$(PATTERN)" | sed 's|/|_|g'); \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_PATTERN.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run ".*$(PATTERN).*" . || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running all $(TYPE) tests (pattern: $$TEST_PATTERN)...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "$$TEST_PATTERN" . || TEST_FAILED=1; \
+		fi; \
+		cd ../../..; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	else \
+		if [ -n "$(TESTCASE)" ]; then \
+			echo "$(CYAN)Running test case: $(TESTCASE) across all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(TESTCASE).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running tests matching '$(PATTERN)' across all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(PATTERN).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race || TEST_FAILED=1; \
+		fi; \
+		cd ../../..; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
 		fi; \
 	fi; \
 	if [ $$TEST_FAILED -eq 1 ]; then \

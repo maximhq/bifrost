@@ -1,6 +1,7 @@
 // Types for the logs interface based on BifrostResponse schema
 
 import { DBKey, VirtualKey } from "./governance";
+import { RoutingRule } from "./routingRules";
 
 // Speech and Transcription types
 export interface VoiceConfig {
@@ -289,7 +290,7 @@ export interface Annotation {
 // Main LogEntry interface matching backend
 export interface LogEntry {
 	id: string;
-	object: string; // text.completion, chat.completion, embedding, audio.speech, or audio.transcription
+	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
 	model: string;
@@ -297,8 +298,10 @@ export interface LogEntry {
 	fallback_index: number;
 	selected_key_id: string;
 	virtual_key_id?: string;
+	routing_rule_id?: string;
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
+	routing_rule?: RoutingRule;
 	input_history: ChatMessage[];
 	responses_input_history: ResponsesMessage[];
 	output_message?: ChatMessage;
@@ -330,6 +333,7 @@ export interface LogFilters {
 	models?: string[];
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
+	routing_rule_ids?: string[];
 	status?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
@@ -683,6 +687,73 @@ export interface WebSocketLogMessage {
 	payload: LogEntry;
 }
 
+// ============================================================================
+// MCP Tool Log Types (separate table from LLM logs)
+// ============================================================================
+
+// MCP Tool Log Entry - represents a single MCP tool execution
+export interface MCPToolLogEntry {
+	id: string;
+	llm_request_id?: string; // Links to the LLM request that triggered this tool call
+	timestamp: string; // ISO string format
+	tool_name: string;
+	server_label?: string; // MCP server that provided the tool
+	virtual_key_id?: string;
+	virtual_key_name?: string;
+	arguments?: Record<string, unknown> | string; // JSON parsed tool arguments
+	result?: Record<string, unknown> | string; // JSON parsed tool result
+	error_details?: BifrostError;
+	latency?: number; // Execution time in milliseconds
+	cost?: number; // Cost in dollars (per execution cost)
+	status: string; // "processing", "success", or "error"
+	created_at: string; // ISO string format
+	virtual_key?: VirtualKey;
+}
+
+// MCP Tool Log Filters
+export interface MCPToolLogFilters {
+	tool_names?: string[];
+	server_labels?: string[];
+	status?: string[];
+	virtual_key_ids?: string[];
+	llm_request_ids?: string[];
+	start_time?: string; // RFC3339 format
+	end_time?: string; // RFC3339 format
+	min_latency?: number;
+	max_latency?: number;
+	content_search?: string;
+}
+
+// MCP Tool Log Statistics
+export interface MCPToolLogStats {
+	total_executions: number;
+	success_rate: number;
+	average_latency: number;
+	total_cost: number; // Total cost in dollars
+}
+
+// MCP Tool Log Search Response
+export interface MCPToolLogsResponse {
+	logs: MCPToolLogEntry[];
+	pagination: Pagination;
+	stats: MCPToolLogStats;
+	has_logs: boolean;
+}
+
+// MCP Tool Log Filter Data Response
+export interface MCPToolLogFilterData {
+	tool_names: string[];
+	server_labels: string[];
+	virtual_keys: VirtualKey[];
+}
+
+// WebSocket message types for MCP tool logs
+export interface WebSocketMCPToolLogMessage {
+	type: "mcp_log";
+	operation: "create" | "update";
+	payload: MCPToolLogEntry;
+}
+
 // Date utility functions for URL state management
 export const dateUtils = {
 	/**
@@ -723,5 +794,17 @@ export const dateUtils = {
 	toISOString: (timestamp: number | undefined): string | undefined => {
 		if (timestamp === undefined) return undefined;
 		return new Date(timestamp * 1000).toISOString();
+	},
+
+	/**
+	 * Gets default time range (last 24 hours to now) as Unix timestamps
+	 * Returns fresh timestamps on each call to avoid stale defaults
+	 */
+	getDefaultTimeRange: (): { startTime: number; endTime: number } => {
+		const endTime = Math.floor(Date.now() / 1000);
+		const date = new Date();
+		date.setHours(date.getHours() - 24);
+		const startTime = Math.floor(date.getTime() / 1000);
+		return { startTime, endTime };
 	},
 };

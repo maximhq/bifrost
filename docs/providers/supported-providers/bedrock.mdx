@@ -18,14 +18,14 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 
 ### Model Family Support
 
-| Family | Chat | Responses | Text | Embeddings | Image Generation |
-|--------|------|-----------|------|------------|------------|
-| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ | ✅ |
-| **Mistral** | ✅ | ✅ | ✅ | ❌ | ❌ |
-| **Llama** | ✅ | ✅ | ❌ | ❌ | ❌ |
-| **Cohere** | ✅ | ✅ | ❌ | ✅ | ❌ |
-| **Titan** | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Family | Chat | Responses | Text | Embeddings | Image Generation | Image Edit | Image Variation |
+|--------|------|-----------|------|------------|------------|------------|------------|
+| **Claude (Anthropic)** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Nova (Anthropic)** | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Mistral** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Llama** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Cohere** | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| **Titan** | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
 
 ### Supported Operations
 
@@ -39,6 +39,8 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 | Batch | ✅ | - | `batch` |
 | List Models | ✅ | - | `listFoundationModels` |
 | Image Generation | ✅ | ❌ | `invoke` |
+| Image Edit | ✅ | ❌ | `invoke` |
+| Image Variation | ✅ | ❌ | `invoke` |
 | Speech (TTS) | ❌ | ❌ | - |
 | Transcriptions (STT) | ❌ | ❌ | - |
 
@@ -531,9 +533,21 @@ Supported image generation models: **Titan Image Generator v1**, **Titan Image G
 | `n` | `imageGenerationConfig.numberOfImages` |
 | `negativePrompt` | `textToImageParams.negativeText` |
 | `seed` | `imageGenerationConfig.seed` |
-| `quality` | `imageGenerationConfig.quality` |
+| `quality` | `imageGenerationConfig.quality` (see [Quality Mapping](#quality-mapping)) |
 | `style` | `textToImageParams.style` |
 | `size` | `imageGenerationConfig.width` & `imageGenerationConfig.height` |
+
+### Quality Mapping
+
+The `quality` parameter is automatically mapped to Bedrock's expected format:
+
+| Input Value | Bedrock Value | Notes |
+|-------------|---------------|-------|
+| `"low"` | `"standard"` | Mapped automatically |
+| `"medium"` | `"standard"` | Mapped automatically |
+| `"high"` | `"premium"` | Mapped automatically |
+| `"default"` | `"standard"` | Passed through (case-insensitive) |
+| `"premium"` | `"premium"` | Passed through (case-insensitive) |
 
 ## Response Conversion
 
@@ -583,7 +597,139 @@ resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationR
 </Tab>
 </Tabs>
 
-# 6. Batch API
+---
+
+# 6. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Supported image edit models: **Titan Image Generator v1**, **Titan Image Generator v2**, **Nova Canvas v1**
+
+Bedrock supports three image edit task types: **INPAINTING**, **OUTPAINTING**, and **BACKGROUND_REMOVAL**. The `type` field is required and must be one of these values.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (must be Titan or Nova Canvas model) |
+| `type` | string | ✅ | Edit type: `"inpainting"`, `"outpainting"`, or `"background_removal"` |
+| `prompt` | string | ❌ | Text description of the edit (required for inpainting/outpainting) |
+| `image[]` | binary | ✅ | Image file(s) to edit (only first image used) |
+| `mask` | binary | ❌ | Mask image file (for inpainting/outpainting) |
+| `n` | int | ❌ | Number of images to generate (1-10, for inpainting/outpainting only) |
+| `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`, for inpainting/outpainting only) |
+| `quality` | string | ❌ | Image quality (for inpainting/outpainting only). See [Quality Mapping](#quality-mapping) for supported values. |
+| `cfgScale` | float | ❌ | CFG scale (via `ExtraParams["cfgScale"]`, for inpainting/outpainting only) |
+| `negative_text` | string | ❌ | Negative prompt (via `ExtraParams["negative_text"]`, for inpainting/outpainting only) |
+| `mask_prompt` | string | ❌ | Mask prompt (via `ExtraParams["mask_prompt"]`, for inpainting/outpainting only) |
+| `return_mask` | bool | ❌ | Return mask in response (via `ExtraParams["return_mask"]`, for inpainting/outpainting only) |
+| `outpainting_mode` | string | ❌ | Outpainting mode (via `ExtraParams["outpainting_mode"]`, outpainting only): `"DEFAULT"` or `"PRECISE"` |
+
+---
+
+**Request Conversion**
+
+- **Task Type Mapping**: `Params.Type` is mapped to `taskType`:
+  - `"inpainting"` → `"INPAINTING"`
+  - `"outpainting"` → `"OUTPAINTING"`
+  - `"background_removal"` → `"BACKGROUND_REMOVAL"`
+  - Any other value returns an error: `"unsupported type for Bedrock"`
+- **Image Conversion**: First image in `Input.Images` is converted to base64: `image.Image` → base64 string
+- **Task-Specific Parameters**:
+  - **INPAINTING**: Uses `inPaintingParams`:
+    - `prompt` → `inPaintingParams.text`
+    - `image` (base64) → `inPaintingParams.image`
+    - `mask` (if present) → `inPaintingParams.maskImage` (base64)
+    - `negative_text` (via `ExtraParams`) → `inPaintingParams.negativeText`
+    - `mask_prompt` (via `ExtraParams`) → `inPaintingParams.maskPrompt`
+    - `return_mask` (via `ExtraParams`) → `inPaintingParams.returnMask`
+  - **OUTPAINTING**: Uses `outPaintingParams`:
+    - `prompt` → `outPaintingParams.text`
+    - `image` (base64) → `outPaintingParams.image`
+    - `mask` (if present) → `outPaintingParams.maskImage` (base64)
+    - `negative_text` (via `ExtraParams`) → `outPaintingParams.negativeText`
+    - `mask_prompt` (via `ExtraParams`) → `outPaintingParams.maskPrompt`
+    - `return_mask` (via `ExtraParams`) → `outPaintingParams.returnMask`
+    - `outpainting_mode` (via `ExtraParams`, validated to `"DEFAULT"` or `"PRECISE"`) → `outPaintingParams.outPaintingMode`
+  - **BACKGROUND_REMOVAL**: Uses `backgroundRemovalParams`:
+    - `image` (base64) → `backgroundRemovalParams.image`
+    - No other parameters supported
+- **Image Generation Config** (for INPAINTING and OUTPAINTING only):
+  - `n` → `imageGenerationConfig.numberOfImages`
+  - `size` → `imageGenerationConfig.width` and `imageGenerationConfig.height` (parsed from `"WxH"` format)
+  - `quality` → `imageGenerationConfig.quality` (see [Quality Mapping](#quality-mapping))
+  - `cfgScale` (via `ExtraParams["cfgScale"]`) → `imageGenerationConfig.cfgScale`
+
+**Response Conversion**
+
+- Uses the same response structure as image generation: `BedrockImageGenerationResponse` → `BifrostImageGenerationResponse`
+- Response includes:
+  - `images[]`: Array of base64-encoded images
+  - `maskImage`: Base64-encoded mask image (if `return_mask` was true)
+  - `error`: Error message (if present)
+
+**Endpoint**: Same as image generation: `invoke` endpoint
+
+**Streaming**: Image edit streaming is not supported by Bedrock.
+
+---
+
+# 7. Image Variation
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Supported image variation models: **Titan Image Generator v1**, **Titan Image Generator v2**, **Nova Canvas v1**
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (must be Titan or Nova Canvas model) |
+| `image` | binary | ✅ | Image file to create variations from (supports multiple images via `image[]`) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`) |
+| `quality` | string | ❌ | Image quality. See [Quality Mapping](#quality-mapping) for supported values. |
+| `cfgScale` | float | ❌ | CFG scale (via `ExtraParams["cfgScale"]`) |
+| `prompt` | string | ❌ | Prompt/text for variation (via `ExtraParams["prompt"]`) |
+| `negativeText` | string | ❌ | Negative prompt (via `ExtraParams["negativeText"]`) |
+| `similarityStrength` | float | ❌ | Similarity strength (via `ExtraParams["similarityStrength"]`): Range 0.2 to 1.0 |
+
+---
+
+**Request Conversion**
+
+- **Task Type**: `taskType` is set to `"IMAGE_VARIATION"`
+- **Image Conversion**: All images are converted to base64 strings:
+  - Primary image: `Input.Image.Image` → base64 string → `imageVariationParams.images[0]`
+  - Additional images: `ExtraParams["images"]` (stored as `[][]byte` by HTTP handler) → base64 strings → appended to `imageVariationParams.images[]`
+- **Image Variation Parameters**:
+  - `prompt` (via `ExtraParams["prompt"]`) → `imageVariationParams.text`
+  - `negativeText` (via `ExtraParams["negativeText"]`) → `imageVariationParams.negativeText`
+  - `similarityStrength` (via `ExtraParams["similarityStrength"]`) → `imageVariationParams.similarityStrength` (validated to range [0.2, 1.0])
+- **Image Generation Config**:
+  - `n` → `imageGenerationConfig.numberOfImages`
+  - `size` → `imageGenerationConfig.width` and `imageGenerationConfig.height` (parsed from `"WxH"` format)
+  - `quality` (via `ExtraParams["quality"]`) → `imageGenerationConfig.quality` (see [Quality Mapping](#quality-mapping))
+  - `cfgScale` (via `ExtraParams["cfgScale"]`) → `imageGenerationConfig.cfgScale`
+
+**Response Conversion**
+
+- Uses the same response structure as image generation: `BedrockImageGenerationResponse` → `BifrostImageGenerationResponse`
+- Response includes:
+  - `images[]`: Array of base64-encoded image variations
+  - `error`: Error message (if present)
+
+**Endpoint**: Same as image generation: `invoke` endpoint
+
+**Streaming**: Image variation streaming is not supported by Bedrock.
+
+---
+
+# 8. Batch API
 
 **Request formats**: `requests` array (CustomID + Params) or `input_file_id`
 
@@ -612,7 +758,7 @@ resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationR
 
 ---
 
-# 7. Files API
+# 9. Files API
 
 <Note>
 S3-backed file operations. Files are stored in S3 buckets integrated with Bedrock.
@@ -638,7 +784,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 ---
 
-# 8. List Models
+# 10. List Models
 
 **Request**: GET `/v1/models` (no body)
 
@@ -658,7 +804,7 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 ---
 
-# 9. AWS Authentication & Configuration
+# 11. AWS Authentication & Configuration
 
 Bifrost automatically handles AWS Bedrock authentication via multiple methods including explicit credentials, IAM roles, and bearer tokens with automatic Signature Version 4 (SigV4) signing.
 
@@ -687,7 +833,7 @@ See **[Provider-Specific Authentication - AWS Bedrock](../../quickstart/go-sdk/p
 
 ---
 
-# 10. Error Handling
+# 12. Error Handling
 
 **HTTP Status Mapping**:
 

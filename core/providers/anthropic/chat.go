@@ -25,6 +25,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
+		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if bifrostReq.Params.MaxCompletionTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
@@ -34,7 +35,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
+			delete(anthropicReq.ExtraParams, "top_k")
 			anthropicReq.TopK = topK
+
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex doesn't support native structured outputs, so convert to tool
@@ -49,7 +52,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				}
 			} else {
-				anthropicReq.OutputFormat = convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
+				// Use GA structured outputs (output_config.format) instead of beta (output_format)
+				outputFormat := convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
+				if outputFormat != nil {
+					anthropicReq.OutputConfig = &AnthropicOutputConfig{
+						Format: outputFormat,
+					}
+				}
 			}
 		}
 
@@ -177,6 +186,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 		}
+
+		// Convert service tier
+		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
 	}
 
 	// Convert messages - group consecutive tool messages into single user messages
@@ -513,6 +525,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			},
 			TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens,
 		}
+		// Forward service tier from usage to response
+		if response.Usage.ServiceTier != nil {
+			bifrostResponse.ServiceTier = response.Usage.ServiceTier
+		}
 	}
 
 	return bifrostResponse
@@ -544,6 +560,10 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		}
 		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.CompletionTokensDetails.CachedTokens
+		}
+		// Forward service tier
+		if bifrostResp.ServiceTier != nil {
+			anthropicResp.Usage.ServiceTier = bifrostResp.ServiceTier
 		}
 	}
 

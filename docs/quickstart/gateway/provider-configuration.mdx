@@ -191,7 +191,7 @@ Distribute requests across multiple API keys or providers based on custom weight
 
 ![Weighted Load Balancing Interface](../../media/ui-multi-key-for-models.png)
 
-1. Navigate to **"Model Providers"** → **"OpenAI"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"**
 2. Click **"Add Key"** to add multiple keys
 3. Set weight values (0.7 and 0.3)
 4. Save configuration
@@ -263,7 +263,7 @@ Use different API keys for specific models, allowing you to manage access contro
 
 ![Model-Specific Keys Interface](../../media/ui-multi-key-for-models.png)
 
-1. Navigate to **"Model Providers"** → **"OpenAI"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"**
 2. Add first key with models: `["gpt-4o", "gpt-4o-mini"]`
 3. Add premium key with models: `["o1-preview", "o1-mini"]`
 4. Save configuration
@@ -335,7 +335,7 @@ Override the default API endpoint for a provider. This is useful for connecting 
 
 ![Base URL Configuration Interface](../../media/ui-base-url.png)
 
-1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Set **Base URL**: `http://localhost:8000/v1`
 3. Save configuration
 
@@ -404,7 +404,7 @@ Configure retry behavior for handling temporary failures and rate limits. This e
 
 ![Retry Configuration Interface](../../media/ui-concurrency-timeout.png)
 
-1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Set **Max Retries**: `5`
 3. Set **Initial Backoff**: `1` ms
 4. Set **Max Backoff**: `10000` ms
@@ -475,7 +475,7 @@ Fine-tune performance by adjusting worker concurrency and queue sizes per provid
 
 ![Concurrency Configuration Interface](../../media/ui-concurrency-buffer-size.png)
 
-1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
 2. Set **Concurrency**: Worker count (100 for OpenAI, 25 for Anthropic)
 3. Set **Buffer Size**: Queue size (500 for OpenAI, 100 for Anthropic)
 4. Save configuration
@@ -581,7 +581,7 @@ Configure headers that are automatically included in every request to a specific
 
 ![Extra Headers Configuration Interface](../../media/ui-extra-headers.png)
 
-1. Navigate to **"Model Providers"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"OpenAI"** → **"Provider level configuration"** → **"Network config"**
 2. Add headers in the **"Extra Headers"** section
 3. Save configuration
 
@@ -700,7 +700,7 @@ Route requests through proxies for compliance, security, or geographic requireme
 
 ![Proxy Configuration Interface](../../media/ui-proxy-setup.png)
 
-1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Proxy config"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **{Provider}** → **"Provider level configuration"** → **"Proxy config"**
 2. Select **Proxy Type**: HTTP or SOCKS5
 3. Set **Proxy URL**: `http://localhost:8000`
 4. Add credentials if needed (username/password)
@@ -807,7 +807,7 @@ Include the original provider response alongside Bifrost's standardized response
 
 ![Raw Response Configuration Interface](../../media/ui-raw-response.png)
 
-1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
 2. Toggle **"Include Raw Response"** to enabled
 3. Save configuration
 
@@ -883,7 +883,7 @@ Include the original request sent to the provider alongside Bifrost's response. 
 
 ![Raw Request Configuration Interface](../../media/ui-raw-request.png)
 
-1. Navigate to **"Model Providers"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **{Provider}** → **"Provider level configuration"** → **"Performance tuning"**
 2. Toggle **"Include Raw Request"** to enabled
 3. Save configuration
 
@@ -953,6 +953,38 @@ When enabled, the raw provider request appears in `extra_fields.raw_request`:
 You can enable both `send_back_raw_request` and `send_back_raw_response` together to see the complete request-response cycle for debugging purposes.
 </Tip>
 
+### Passthrough Extra Parameters
+
+Enable passthrough mode for extra parameters. When enabled, any parameters in the `extra_params` field (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider, bypassing Bifrost's parameter filtering.
+
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'Content-Type: application/json' \
+--header 'x-bf-passthrough-extra-params: true' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [
+        {"role": "user", "content": "Hello!"}
+    ],
+    "extra_params": {
+        "custom_param": "value",
+        "another_param": 123,
+        "nested_param": {
+            "nested_key": "nested_value"
+        }
+    }
+}'
+```
+
+When enabled, the extra parameters are merged into the JSON request body sent to the provider. This allows you to pass provider-specific parameters that Bifrost doesn't natively support.
+
+<Note>
+- This feature only works for JSON requests, not multipart/form-data requests
+- Parameters already handled by Bifrost (like `addWatermark`, `enhancePrompt`) are not duplicated - they appear in their proper location
+- Nested parameters (e.g., `parameters.custom_field`) are merged recursively with existing nested structures
+- See [Supported Headers](../../providers/supported-headers) for a complete list of all Bifrost headers
+</Note>
+
 ## Provider-Specific Authentication
 
 Enterprise cloud providers require additional configuration beyond API keys. Configure Azure, AWS Bedrock, and Google Vertex with platform-specific authentication details.
@@ -969,7 +1001,7 @@ Azure supports two authentication methods:
 
 ![Azure Configuration Interface](../../media/ui-azure-config.png)
 
-1. Navigate to **"Model Providers"** → **"Azure"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Leave **API Key** empty for Service Principal auth
 3. Set **Client ID**: Your Azure Entra ID client ID
 4. Set **Client Secret**: Your Azure Entra ID client secret
@@ -999,6 +1031,7 @@ curl --location 'http://localhost:8080/api/providers' \
                 "client_id": "env.AZURE_CLIENT_ID",
                 "client_secret": "env.AZURE_CLIENT_SECRET",
                 "tenant_id": "env.AZURE_TENANT_ID",
+                "scopes": ["https://cognitiveservices.azure.com/.default"],
                 "deployments": {
                     "gpt-4o": "gpt-4o-deployment",
                     "gpt-4o-mini": "gpt-4o-mini-deployment"
@@ -1029,6 +1062,7 @@ curl --location 'http://localhost:8080/api/providers' \
                         "client_id": "env.AZURE_CLIENT_ID",
                         "client_secret": "env.AZURE_CLIENT_SECRET",
                         "tenant_id": "env.AZURE_TENANT_ID",
+                        "scopes": ["https://cognitiveservices.azure.com/.default"],
                         "deployments": {
                             "gpt-4o": "gpt-4o-deployment",
                             "gpt-4o-mini": "gpt-4o-mini-deployment"
@@ -1056,7 +1090,7 @@ For simpler use cases, provide the authentication credential directly in the `va
 
 ![Azure Configuration Interface](../../media/ui-azure-config.png)
 
-1. Navigate to **"Model Providers"** → **"Azure"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Azure"**
 2. Set **API Key**: Your Azure API key
 3. Set **Endpoint**: Your Azure endpoint URL
 4. Configure **Deployments**: Map model names to deployment names
@@ -1138,7 +1172,7 @@ AWS Bedrock supports both explicit credentials and IAM role authentication:
 
 ![AWS Bedrock Configuration Interface](../../media/ui-bedrock-config.png)
 
-1. Navigate to **"Model Providers"** → **"AWS Bedrock"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"AWS Bedrock"**
 2. Set **API Key**: AWS API Key (or leave empty if using IAM role authentication)
 3. Set **Access Key**: AWS Access Key ID (or leave empty to use IAM in environment)
 4. Set **Secret Key**: AWS Secret Access Key (or leave empty to use IAM in environment)
@@ -1226,7 +1260,7 @@ Google Vertex requires project configuration and authentication credentials:
 
 ![Google Vertex Configuration Interface](../../media/ui-vertex-config.png)
 
-1. Navigate to **"Model Providers"** → **"Google Vertex"**
+1. Navigate to **"Model Providers"** → **"Configurations"** → **"Google Vertex"**
 2. Set **API Key**: Your Vertex API key
 3. Set **Project ID**: Your Google Cloud project ID
 4. Set **Region**: e.g., `us-central1`

@@ -28,6 +28,7 @@ export const azureKeyConfigSchema = z
 		client_id: envVarSchema.optional(),
 		client_secret: envVarSchema.optional(),
 		tenant_id: envVarSchema.optional(),
+		scopes: z.array(z.string()).optional(),
 	})
 	.refine(
 		(data) => {
@@ -346,6 +347,9 @@ export const allowedRequestsSchema = z.object({
 	transcription_stream: z.boolean(),
 	image_generation: z.boolean(),
 	image_generation_stream: z.boolean(),
+	image_edit: z.boolean(),
+	image_edit_stream: z.boolean(),
+	image_variation: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 });
@@ -622,7 +626,7 @@ export const mcpClientUpdateSchema = z.object({
 		.refine((val) => !val.includes("-"), { message: "Client name cannot contain hyphens" })
 		.refine((val) => !val.includes(" "), { message: "Client name cannot contain spaces" })
 		.refine((val) => !/^[0-9]/.test(val), { message: "Client name cannot start with a number" }),
-	headers: z.record(z.string(), envVarSchema).optional(),
+	headers: z.record(z.string(), envVarSchema).optional().nullable(),
 	tools_to_execute: z
 		.array(z.string())
 		.optional()
@@ -659,6 +663,8 @@ export const mcpClientUpdateSchema = z.object({
 			},
 			{ message: "Duplicate tool names are not allowed" },
 		),
+	tool_pricing: z.record(z.string(), z.number().min(0, "Cost must be non-negative")).optional(),
+	tool_sync_interval: z.number().optional(), // -1 = disabled, 0 = use global, >0 = custom interval in minutes
 });
 
 // Global proxy type schema
@@ -729,6 +735,25 @@ export const globalHeaderFilterFormSchema = z.object({
 	header_filter_config: globalHeaderFilterConfigSchema,
 });
 
+// Routing rule creation schema
+export const routingRuleSchema = z
+	.object({
+		name: z.string().min(1, "Rule name is required").max(255, "Rule name must be less than 255 characters"),
+		description: z.string().max(1000, "Description must be less than 1000 characters").optional(),
+		cel_expression: z.string().optional(),
+		provider: z.string().min(1, "Provider is required"),
+		model: z.string().optional(),
+		fallbacks: z.array(z.string()).optional().default([]),
+		scope: z.enum(["global", "team", "customer", "virtual_key"]),
+		scope_id: z.string().optional(),
+		priority: z.number().min(0, "Priority must be 0 or greater").max(1000, "Priority must be 1000 or less"),
+		enabled: z.boolean().default(true),
+	})
+	.refine((data) => data.scope === "global" || (data.scope_id != null && data.scope_id.trim() !== ""), {
+		message: "Scope ID is required when scope is not global",
+		path: ["scope_id"],
+	});
+
 // Export type inference helpers
 export type EnvVar = z.infer<typeof envVarSchema>;
 export type MCPClientUpdateSchema = z.infer<typeof mcpClientUpdateSchema>;
@@ -749,3 +774,4 @@ export type GlobalProxyConfigSchema = z.infer<typeof globalProxyConfigSchema>;
 export type GlobalProxyFormSchema = z.infer<typeof globalProxyFormSchema>;
 export type GlobalHeaderFilterConfigSchema = z.infer<typeof globalHeaderFilterConfigSchema>;
 export type GlobalHeaderFilterFormSchema = z.infer<typeof globalHeaderFilterFormSchema>;
+export type RoutingRuleSchema = z.infer<typeof routingRuleSchema>;

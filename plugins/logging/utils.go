@@ -51,6 +51,9 @@ type LogManager interface {
 	// GetAvailableVirtualKeys returns all unique virtual key ID-Name pairs from logs
 	GetAvailableVirtualKeys(ctx context.Context) []KeyPair
 
+	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
+	GetAvailableRoutingRules(ctx context.Context) []KeyPair
+
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
 
@@ -59,6 +62,25 @@ type LogManager interface {
 
 	// RecalculateCosts recomputes missing costs for logs matching the filters
 	RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error)
+
+	// MCP Tool Log methods
+	// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
+	SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error)
+
+	// GetMCPToolLogStats calculates statistics for MCP tool logs matching the given filters
+	GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
+
+	// GetAvailableToolNames returns all unique tool names from MCP tool logs
+	GetAvailableToolNames(ctx context.Context) ([]string, error)
+
+	// GetAvailableServerLabels returns all unique server labels from MCP tool logs
+	GetAvailableServerLabels(ctx context.Context) ([]string, error)
+
+	// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
+	GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair
+
+	// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
+	DeleteMCPToolLogs(ctx context.Context, ids []string) error
 }
 
 // PluginLogManager implements LogManager interface wrapping the plugin
@@ -127,6 +149,11 @@ func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context) []KeyPai
 	return p.plugin.GetAvailableVirtualKeys(ctx)
 }
 
+// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
+func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
+	return p.plugin.GetAvailableRoutingRules(ctx)
+}
+
 // DeleteLog deletes a log from the log store
 func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
@@ -148,6 +175,54 @@ func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logsto
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.RecalculateCosts(ctx, *filters, limit)
+}
+
+// SearchMCPToolLogs searches for MCP tool log entries based on filters and pagination
+func (p *PluginLogManager) SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error) {
+	if filters == nil || pagination == nil {
+		return nil, fmt.Errorf("filters and pagination cannot be nil")
+	}
+	return p.plugin.store.SearchMCPToolLogs(ctx, *filters, *pagination)
+}
+
+// GetMCPToolLogStats calculates statistics for MCP tool logs matching the given filters
+func (p *PluginLogManager) GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.store.GetMCPToolLogStats(ctx, *filters)
+}
+
+// GetAvailableToolNames returns all unique tool names from MCP tool logs
+func (p *PluginLogManager) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableToolNames(ctx)
+}
+
+// GetAvailableServerLabels returns all unique server labels from MCP tool logs
+func (p *PluginLogManager) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+	if p == nil || p.plugin == nil || p.plugin.store == nil {
+		return []string{}, nil
+	}
+	return p.plugin.store.GetAvailableServerLabels(ctx)
+}
+
+// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs
+func (p *PluginLogManager) GetAvailableMCPVirtualKeys(ctx context.Context) []KeyPair {
+	if p == nil || p.plugin == nil {
+		return []KeyPair{}
+	}
+	return p.plugin.GetAvailableMCPVirtualKeys(ctx)
+}
+
+// DeleteMCPToolLogs deletes multiple MCP tool log entries by their IDs
+func (p *PluginLogManager) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
+	if p.plugin == nil || p.plugin.store == nil {
+		return fmt.Errorf("log store not initialized")
+	}
+	return p.plugin.store.DeleteMCPToolLogs(ctx, ids)
 }
 
 // GetPluginLogManager returns a LogManager interface for this plugin

@@ -342,6 +342,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			}
 			return true
 		}
+		// Parent request ID header (for linking MCP tool calls to parent LLM requests)
+		if keyStr == "x-bf-parent-request-id" {
+			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
+				bifrostCtx.SetValue(schemas.BifrostMCPAgentOriginalRequestID, valueStr)
+			}
+			return true
+		}
+		// Add passthrough extra params header support
+		if keyStr == "x-bf-passthrough-extra-params" {
+			if valueStr := string(value); valueStr == "true" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			return true
+		}
 		return true
 	})
 

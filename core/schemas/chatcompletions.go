@@ -21,6 +21,13 @@ func (cr *BifrostChatRequest) GetRawRequestBody() []byte {
 	return cr.RawRequestBody
 }
 
+func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
+	if cr.Params == nil {
+		return make(map[string]interface{}, 0)
+	}
+	return cr.Params.ExtraParams
+}
+
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
 	ID                string                     `json:"id"`
@@ -32,6 +39,7 @@ type BifrostChatResponse struct {
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -152,31 +160,34 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 
 // ChatParameters represents the parameters for a chat completion.
 type ChatParameters struct {
-	Audio               *ChatAudioParameters `json:"audio,omitempty"`                 // Audio parameters
-	FrequencyPenalty    *float64             `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
-	LogitBias           *map[string]float64  `json:"logit_bias,omitempty"`            // Bias for logit values
-	LogProbs            *bool                `json:"logprobs,omitempty"`              // Number of logprobs to return
-	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
-	Metadata            *map[string]any      `json:"metadata,omitempty"`              // Metadata to be returned with the response
-	Modalities          []string             `json:"modalities,omitempty"`            // Modalities to be returned with the response
-	ParallelToolCalls   *bool                `json:"parallel_tool_calls,omitempty"`
-	PresencePenalty     *float64             `json:"presence_penalty,omitempty"`  // Penalizes repeated tokens
-	PromptCacheKey      *string              `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning           *ChatReasoning       `json:"reasoning,omitempty"`         // Reasoning parameters
-	ResponseFormat      *interface{}         `json:"response_format,omitempty"`   // Format for the response
-	SafetyIdentifier    *string              `json:"safety_identifier,omitempty"` // Safety identifier
-	Seed                *int                 `json:"seed,omitempty"`
-	ServiceTier         *string              `json:"service_tier,omitempty"`
-	StreamOptions       *ChatStreamOptions   `json:"stream_options,omitempty"`
-	Stop                []string             `json:"stop,omitempty"`
-	Store               *bool                `json:"store,omitempty"`
-	Temperature         *float64             `json:"temperature,omitempty"`
-	TopLogProbs         *int                 `json:"top_logprobs,omitempty"`
-	TopP                *float64             `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice          *ChatToolChoice      `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools               []ChatTool           `json:"tools,omitempty"`       // Tools to use
-	User                *string              `json:"user,omitempty"`        // User identifier for tracking
-	Verbosity           *string              `json:"verbosity,omitempty"`   // "low" | "medium" | "high"
+	Audio                *ChatAudioParameters  `json:"audio,omitempty"`                 // Audio parameters
+	FrequencyPenalty     *float64              `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
+	LogitBias            *map[string]float64   `json:"logit_bias,omitempty"`            // Bias for logit values
+	LogProbs             *bool                 `json:"logprobs,omitempty"`              // Number of logprobs to return
+	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
+	Metadata             *map[string]any       `json:"metadata,omitempty"`              // Metadata to be returned with the response
+	Modalities           []string              `json:"modalities,omitempty"`            // Modalities to be returned with the response
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
+	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
+	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
+	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
+	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in-memory" or "24h")
+	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
+	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
+	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
+	Seed                 *int                  `json:"seed,omitempty"`
+	ServiceTier          *string               `json:"service_tier,omitempty"`
+	StreamOptions        *ChatStreamOptions    `json:"stream_options,omitempty"`
+	Stop                 []string              `json:"stop,omitempty"`
+	Store                *bool                 `json:"store,omitempty"`
+	Temperature          *float64              `json:"temperature,omitempty"`
+	TopLogProbs          *int                  `json:"top_logprobs,omitempty"`
+	TopP                 *float64              `json:"top_p,omitempty"`              // Controls diversity via nucleus sampling
+	ToolChoice           *ChatToolChoice       `json:"tool_choice,omitempty"`        // Whether to call a tool
+	Tools                []ChatTool            `json:"tools,omitempty"`              // Tools to use
+	User                 *string               `json:"user,omitempty"`               // User identifier for tracking
+	Verbosity            *string               `json:"verbosity,omitempty"`          // "low" | "medium" | "high"
+	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI only)
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -238,6 +249,33 @@ type ChatAudioParameters struct {
 type ChatReasoning struct {
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
+}
+
+// ChatPrediction represents predicted output content for the model to reference (OpenAI only).
+// Providing prediction content can significantly reduce latency for certain models.
+type ChatPrediction struct {
+	Type    string      `json:"type"`    // Always "content"
+	Content interface{} `json:"content"` // String or array of content parts
+}
+
+// ChatWebSearchOptions represents web search options for chat completions (OpenAI only).
+type ChatWebSearchOptions struct {
+	SearchContextSize *string                           `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation      *ChatWebSearchOptionsUserLocation `json:"user_location,omitempty"`
+}
+
+// ChatWebSearchOptionsUserLocation represents user location for web search.
+type ChatWebSearchOptionsUserLocation struct {
+	Type        string                                       `json:"type"` // "approximate"
+	Approximate *ChatWebSearchOptionsUserLocationApproximate `json:"approximate,omitempty"`
+}
+
+// ChatWebSearchOptionsUserLocationApproximate represents approximate user location details.
+type ChatWebSearchOptionsUserLocationApproximate struct {
+	City     *string `json:"city,omitempty"`
+	Country  *string `json:"country,omitempty"`  // Two-letter ISO country code (e.g., "US")
+	Region   *string `json:"region,omitempty"`   // e.g., "California"
+	Timezone *string `json:"timezone,omitempty"` // IANA timezone (e.g., "America/Los_Angeles")
 }
 
 // ChatStreamOptions represents the stream options for a chat completion.

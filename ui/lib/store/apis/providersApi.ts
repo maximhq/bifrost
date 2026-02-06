@@ -21,6 +21,16 @@ export interface GetModelsRequest {
 	limit?: number;
 }
 
+export interface GetBaseModelsRequest {
+	query?: string;
+	limit?: number;
+}
+
+export interface ListBaseModelsResponse {
+	models: string[];
+	total: number;
+}
+
 export const providersApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get all providers
@@ -32,7 +42,7 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get single provider
 		getProvider: builder.query<ModelProvider, string>({
-			query: (provider) => `/providers/${provider}`,
+			query: (provider) => `/providers/${encodeURIComponent(provider)}`,
 			providesTags: (result, error, provider) => [{ type: "Providers", id: provider }],
 		}),
 
@@ -49,7 +59,7 @@ export const providersApi = baseApi.injectEndpoints({
 		// Update existing provider
 		updateProvider: builder.mutation<ModelProvider, ModelProvider>({
 			query: (provider) => ({
-				url: `/providers/${provider.name}`,
+				url: `/providers/${encodeURIComponent(provider.name)}`,
 				method: "PUT",
 				body: provider,
 			}),
@@ -59,7 +69,7 @@ export const providersApi = baseApi.injectEndpoints({
 		// Delete provider
 		deleteProvider: builder.mutation<ModelProviderName, string>({
 			query: (provider) => ({
-				url: `/providers/${provider}`,
+				url: `/providers/${encodeURIComponent(provider)}`,
 				method: "DELETE",
 			}),
 			invalidatesTags: ["Providers"],
@@ -83,6 +93,17 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 			providesTags: ["Models"],
 		}),
+
+		// Get distinct base model names from the catalog
+		getBaseModels: builder.query<ListBaseModelsResponse, GetBaseModelsRequest>({
+			query: ({ query, limit }) => {
+				const params = new URLSearchParams();
+				if (query) params.append("query", query);
+				if (limit !== undefined) params.append("limit", limit.toString());
+				return `/models/base?${params.toString()}`;
+			},
+			providesTags: ["BaseModels"],
+		}),
 	}),
 });
 
@@ -94,8 +115,10 @@ export const {
 	useDeleteProviderMutation,
 	useGetAllKeysQuery,
 	useGetModelsQuery,
+	useGetBaseModelsQuery,
 	useLazyGetProvidersQuery,
 	useLazyGetProviderQuery,
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
+	useLazyGetBaseModelsQuery,
 } = providersApi;

@@ -33,9 +33,10 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 
 	if bifrostReq.Params != nil {
 		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
-
+		cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if bifrostReq.Params.ExtraParams != nil {
 			if maxTokens, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["max_tokens"]); ok {
+				delete(cohereReq.ExtraParams, "max_tokens")
 				cohereReq.MaxTokens = maxTokens
 			}
 		}
@@ -45,18 +46,21 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Cohe
 	if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
 		// Input type
 		if inputType, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["input_type"]); ok {
+			delete(cohereReq.ExtraParams, "input_type")
 			cohereReq.InputType = inputType
 		}
 
 		// Embedding types
 		if embeddingTypes, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["embedding_types"]); ok {
 			if len(embeddingTypes) > 0 {
+				delete(cohereReq.ExtraParams, "embedding_types")
 				cohereReq.EmbeddingTypes = embeddingTypes
 			}
 		}
 
 		// Truncate
 		if truncate, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["truncate"]); ok {
+			delete(cohereReq.ExtraParams, "truncate")
 			cohereReq.Truncate = truncate
 		}
 	}

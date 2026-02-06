@@ -28,6 +28,7 @@ type LoggingHandler struct {
 type RedactedKeysManager interface {
 	GetAllRedactedKeys(ctx context.Context, ids []string) []schemas.Key
 	GetAllRedactedVirtualKeys(ctx context.Context, ids []string) []tables.TableVirtualKey
+	GetAllRedactedRoutingRules(ctx context.Context, ids []string) []tables.TableRoutingRule
 }
 
 // NewLoggingHandler creates a new logging handler instance
@@ -40,7 +41,7 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
-	// Log retrieval with filtering, search, and pagination
+	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
@@ -51,6 +52,12 @@ func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.GET("/api/logs/filterdata", lib.ChainMiddlewares(h.getAvailableFilterData, middlewares...))
 	r.DELETE("/api/logs", lib.ChainMiddlewares(h.deleteLogs, middlewares...))
 	r.POST("/api/logs/recalculate-cost", lib.ChainMiddlewares(h.recalculateLogCosts, middlewares...))
+
+	// MCP Tool Log retrieval with filtering, search, and pagination
+	r.GET("/api/mcp-logs", lib.ChainMiddlewares(h.getMCPLogs, middlewares...))
+	r.GET("/api/mcp-logs/stats", lib.ChainMiddlewares(h.getMCPLogsStats, middlewares...))
+	r.GET("/api/mcp-logs/filterdata", lib.ChainMiddlewares(h.getMCPLogsFilterData, middlewares...))
+	r.DELETE("/api/mcp-logs", lib.ChainMiddlewares(h.deleteMCPLogs, middlewares...))
 }
 
 // getLogs handles GET /api/logs - Get logs with filtering, search, and pagination via query parameters
@@ -77,6 +84,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -178,12 +188,16 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	selectedKeyIDs := make(map[string]struct{})
 	virtualKeyIDs := make(map[string]struct{})
+	routingRuleIDs := make(map[string]struct{})
 	for _, log := range result.Logs {
 		if log.SelectedKeyID != "" {
 			selectedKeyIDs[log.SelectedKeyID] = struct{}{}
 		}
 		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
 			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
+		}
+		if log.RoutingRuleID != nil && *log.RoutingRuleID != "" {
+			routingRuleIDs[*log.RoutingRuleID] = struct{}{}
 		}
 	}
 
@@ -200,14 +214,18 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 
 	redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, toSlice(selectedKeyIDs))
 	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+	redactedRoutingRules := h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, toSlice(routingRuleIDs))
 
-	// Add selected key and virtual key to the result
+	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+		}
+		if log.RoutingRuleID != nil && log.RoutingRuleName != nil && *log.RoutingRuleID != "" && *log.RoutingRuleName != "" {
+			result.Logs[i].RoutingRule = findRedactedRoutingRule(redactedRoutingRules, *log.RoutingRuleID, *log.RoutingRuleName)
 		}
 	}
 
@@ -237,6 +255,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -320,6 +341,9 @@ func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	}
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -431,6 +455,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
 		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
 	}
+	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
+		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -539,6 +566,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	models := h.logManager.GetAvailableModels(ctx)
 	selectedKeys := h.logManager.GetAvailableSelectedKeys(ctx)
 	virtualKeys := h.logManager.GetAvailableVirtualKeys(ctx)
+	routingRules := h.logManager.GetAvailableRoutingRules(ctx)
 
 	// Extract IDs for redaction lookup
 	selectedKeyIDs := make([]string, len(selectedKeys))
@@ -549,6 +577,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	for i, key := range virtualKeys {
 		virtualKeyIDs[i] = key.ID
 	}
+	routingRuleIDs := make([]string, len(routingRules))
+	for i, rule := range routingRules {
+		routingRuleIDs[i] = rule.ID
+	}
 
 	redactedSelectedKeys := make(map[string]schemas.Key)
 	for _, selectedKey := range h.redactedKeysManager.GetAllRedactedKeys(ctx, selectedKeyIDs) {
@@ -557,6 +589,10 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
 	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
 		redactedVirtualKeys[virtualKey.ID] = virtualKey
+	}
+	redactedRoutingRules := make(map[string]tables.TableRoutingRule)
+	for _, routingRule := range h.redactedKeysManager.GetAllRedactedRoutingRules(ctx, routingRuleIDs) {
+		redactedRoutingRules[routingRule.ID] = routingRule
 	}
 
 	// Check if all selected key ids are present in the redacted selected keys (will not be present in case a key is deleted, but we still need to show its filter)
@@ -581,6 +617,17 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Check if all routing rule ids are present in the redacted routing rules (will not be present in case a routing rule is deleted, but we still need to show its filter)
+	for _, routingRule := range routingRules {
+		if _, ok := redactedRoutingRules[routingRule.ID]; !ok {
+			// Create a new routing rule struct directly since we know it doesn't exist
+			redactedRoutingRules[routingRule.ID] = tables.TableRoutingRule{
+				ID:   routingRule.ID,
+				Name: routingRule.Name + " (deleted)",
+			}
+		}
+	}
+
 	// Convert maps to arrays for frontend consumption
 	selectedKeysArray := make([]schemas.Key, 0, len(redactedSelectedKeys))
 	for _, key := range redactedSelectedKeys {
@@ -592,7 +639,12 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		virtualKeysArray = append(virtualKeysArray, key)
 	}
 
-	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray})
+	routingRulesArray := make([]tables.TableRoutingRule, 0, len(redactedRoutingRules))
+	for _, rule := range redactedRoutingRules {
+		routingRulesArray = append(routingRulesArray, rule)
+	}
+
+	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray})
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs
@@ -718,6 +770,36 @@ func findRedactedVirtualKey(redactedVirtualKeys []tables.TableVirtualKey, id str
 	}
 }
 
+func findRedactedRoutingRule(redactedRoutingRules []tables.TableRoutingRule, id string, name string) *tables.TableRoutingRule {
+	if len(redactedRoutingRules) == 0 {
+		return &tables.TableRoutingRule{
+			ID: id,
+			Name: func() string {
+				if name != "" {
+					return name + " (deleted)"
+				} else {
+					return ""
+				}
+			}(),
+		}
+	}
+	for _, routingRule := range redactedRoutingRules {
+		if routingRule.ID == id {
+			return &routingRule
+		}
+	}
+	return &tables.TableRoutingRule{
+		ID: id,
+		Name: func() string {
+			if name != "" {
+				return name + " (deleted)"
+			} else {
+				return ""
+			}
+		}(),
+	}
+}
+
 // parseCommaSeparated splits a comma-separated string into a slice
 func parseCommaSeparated(s string) []string {
 	if s == "" {
@@ -737,4 +819,309 @@ func parseCommaSeparated(s string) []string {
 type recalculateCostRequest struct {
 	Filters logstore.SearchFilters `json:"filters"`
 	Limit   *int                   `json:"limit,omitempty"`
+}
+
+// parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
+// Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
+func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
+	filters := &logstore.MCPToolLogSearchFilters{}
+	pagination := &logstore.PaginationOptions{}
+
+	// Extract filters from query parameters
+	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {
+		filters.ToolNames = parseCommaSeparated(toolNames)
+	}
+	if serverLabels := string(ctx.QueryArgs().Peek("server_labels")); serverLabels != "" {
+		filters.ServerLabels = parseCommaSeparated(serverLabels)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
+		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
+		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339, startTime)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid start_time format: %w", err)
+		}
+		filters.StartTime = &t
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339, endTime)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid end_time format: %w", err)
+		}
+		filters.EndTime = &t
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		f, err := strconv.ParseFloat(minLatency, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid min_latency format: %w", err)
+		}
+		filters.MinLatency = &f
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		val, err := strconv.ParseFloat(maxLatency, 64)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid max_latency format: %w", err)
+		}
+		filters.MaxLatency = &val
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	// Extract pagination parameters
+	pagination.Limit = 50 // Default limit
+	if limit := string(ctx.QueryArgs().Peek("limit")); limit != "" {
+		i, err := strconv.Atoi(limit)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid limit format: %w", err)
+		}
+		if i <= 0 {
+			return nil, nil, fmt.Errorf("limit must be greater than 0")
+		}
+		if i > 1000 {
+			return nil, nil, fmt.Errorf("limit cannot exceed 1000")
+		}
+		pagination.Limit = i
+	}
+
+	pagination.Offset = 0 // Default offset
+	if offset := string(ctx.QueryArgs().Peek("offset")); offset != "" {
+		i, err := strconv.Atoi(offset)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid offset format: %w", err)
+		}
+		if i < 0 {
+			return nil, nil, fmt.Errorf("offset cannot be negative")
+		}
+		pagination.Offset = i
+	}
+
+	// Sort parameters
+	pagination.SortBy = "timestamp" // Default sort field
+	if sortBy := string(ctx.QueryArgs().Peek("sort_by")); sortBy != "" {
+		if sortBy == "timestamp" || sortBy == "latency" || sortBy == "cost" {
+			pagination.SortBy = sortBy
+		} else {
+			return nil, nil, fmt.Errorf("invalid sort_by: must be 'timestamp', 'latency' or 'cost'")
+		}
+	}
+
+	pagination.Order = "desc" // Default sort order
+	if order := string(ctx.QueryArgs().Peek("order")); order != "" {
+		if order == "asc" || order == "desc" {
+			pagination.Order = order
+		} else {
+			return nil, nil, fmt.Errorf("invalid order: must be 'asc' or 'desc'")
+		}
+	}
+
+	return filters, pagination, nil
+}
+
+// parseMCPFilters parses MCP tool log filters from query parameters (without pagination).
+// Returns an error if any required parsing fails.
+func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, error) {
+	filters := &logstore.MCPToolLogSearchFilters{}
+
+	// Extract filters from query parameters
+	if toolNames := string(ctx.QueryArgs().Peek("tool_names")); toolNames != "" {
+		filters.ToolNames = parseCommaSeparated(toolNames)
+	}
+	if serverLabels := string(ctx.QueryArgs().Peek("server_labels")); serverLabels != "" {
+		filters.ServerLabels = parseCommaSeparated(serverLabels)
+	}
+	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
+		filters.Status = parseCommaSeparated(statuses)
+	}
+	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
+		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
+	}
+	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
+		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
+	}
+	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
+		t, err := time.Parse(time.RFC3339, startTime)
+		if err != nil {
+			return nil, fmt.Errorf("invalid start_time format: %w", err)
+		}
+		filters.StartTime = &t
+	}
+	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
+		t, err := time.Parse(time.RFC3339, endTime)
+		if err != nil {
+			return nil, fmt.Errorf("invalid end_time format: %w", err)
+		}
+		filters.EndTime = &t
+	}
+	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
+		f, err := strconv.ParseFloat(minLatency, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid min_latency format: %w", err)
+		}
+		filters.MinLatency = &f
+	}
+	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
+		val, err := strconv.ParseFloat(maxLatency, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid max_latency format: %w", err)
+		}
+		filters.MaxLatency = &val
+	}
+	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
+		filters.ContentSearch = contentSearch
+	}
+
+	return filters, nil
+}
+
+// ==================== MCP TOOL LOGGING HANDLERS ====================
+
+// getMCPLogs handles GET /api/mcp-logs - Get MCP tool logs with filtering, search, and pagination via query parameters
+func (h *LoggingHandler) getMCPLogs(ctx *fasthttp.RequestCtx) {
+	filters, pagination, err := parseMCPFiltersAndPagination(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	result, err := h.logManager.SearchMCPToolLogs(ctx, filters, pagination)
+	if err != nil {
+		logger.Error("failed to search MCP tool logs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Search failed: %v", err))
+		return
+	}
+
+	// Collect unique virtual key IDs from the logs
+	virtualKeyIDs := make(map[string]struct{})
+	for _, log := range result.Logs {
+		if log.VirtualKeyID != nil && *log.VirtualKeyID != "" {
+			virtualKeyIDs[*log.VirtualKeyID] = struct{}{}
+		}
+	}
+
+	toSlice := func(m map[string]struct{}) []string {
+		if len(m) == 0 {
+			return nil
+		}
+		out := make([]string, 0, len(m))
+		for id := range m {
+			out = append(out, id)
+		}
+		return out
+	}
+
+	redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, toSlice(virtualKeyIDs))
+
+	// Add virtual key to the result
+	for i, log := range result.Logs {
+		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
+			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
+		}
+	}
+
+	SendJSON(ctx, result)
+}
+
+// getMCPLogsStats handles GET /api/mcp-logs/stats - Get statistics for MCP tool logs with filtering
+func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
+	filters, err := parseMCPFilters(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	stats, err := h.logManager.GetMCPToolLogStats(ctx, filters)
+	if err != nil {
+		logger.Error("failed to get MCP tool log stats: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Stats calculation failed: %v", err))
+		return
+	}
+
+	SendJSON(ctx, stats)
+}
+
+// getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
+func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
+	toolNames, err := h.logManager.GetAvailableToolNames(ctx)
+	if err != nil {
+		logger.Error("failed to get available tool names: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available tool names: %v", err))
+		return
+	}
+
+	serverLabels, err := h.logManager.GetAvailableServerLabels(ctx)
+	if err != nil {
+		logger.Error("failed to get available server labels: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get available server labels: %v", err))
+		return
+	}
+
+	virtualKeys := h.logManager.GetAvailableMCPVirtualKeys(ctx)
+
+	// Extract IDs for redaction lookup
+	virtualKeyIDs := make([]string, len(virtualKeys))
+	for i, key := range virtualKeys {
+		virtualKeyIDs[i] = key.ID
+	}
+
+	redactedVirtualKeys := make(map[string]tables.TableVirtualKey)
+	for _, virtualKey := range h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, virtualKeyIDs) {
+		redactedVirtualKeys[virtualKey.ID] = virtualKey
+	}
+
+	// Check if all virtual key ids are present in the redacted virtual keys (will not be present in case a virtual key is deleted, but we still need to show its filter)
+	for _, virtualKey := range virtualKeys {
+		if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
+			// Create a new virtual key struct directly since we know it doesn't exist
+			redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
+				ID:   virtualKey.ID,
+				Name: virtualKey.Name + " (deleted)",
+			}
+		}
+	}
+
+	// Convert maps to arrays for frontend consumption
+	virtualKeysArray := make([]tables.TableVirtualKey, 0, len(redactedVirtualKeys))
+	for _, key := range redactedVirtualKeys {
+		virtualKeysArray = append(virtualKeysArray, key)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"tool_names":    toolNames,
+		"server_labels": serverLabels,
+		"virtual_keys":  virtualKeysArray,
+	})
+}
+
+// deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs
+func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	if len(req.IDs) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
+		return
+	}
+
+	if err := h.logManager.DeleteMCPToolLogs(ctx, req.IDs); err != nil {
+		logger.Error("failed to delete MCP tool logs: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP tool logs")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "MCP tool logs deleted successfully",
+	})
 }

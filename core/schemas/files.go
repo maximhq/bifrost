@@ -62,6 +62,9 @@ type BifrostFileUploadRequest struct {
 	// Storage configuration (for S3/GCS backends)
 	StorageConfig *FileStorageConfig `json:"storage_config,omitempty"`
 
+	// Expiration configuration (OpenAI only)
+	ExpiresAfter *FileExpiresAfter `json:"expires_after,omitempty"`
+
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
 }
@@ -78,6 +81,12 @@ type GCSStorageConfig struct {
 	Bucket  string `json:"bucket,omitempty"`
 	Project string `json:"project,omitempty"`
 	Prefix  string `json:"prefix,omitempty"`
+}
+
+// FileExpiresAfter represents an expiration configuration for uploaded files.
+type FileExpiresAfter struct {
+	Anchor  string `json:"anchor"`  // e.g., "created_at"
+	Seconds int    `json:"seconds"` // 3600-2592000 (1 hour to 30 days)
 }
 
 // FileStorageConfig represents storage configuration for cloud storage backends.

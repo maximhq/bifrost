@@ -91,6 +91,11 @@ type HuggingFaceChatRequest struct {
 	Tools            []schemas.ChatTool         `json:"tools,omitempty"`
 	TopLogprobs      *int                       `json:"top_logprobs,omitempty"`
 	TopP             *float64                   `json:"top_p,omitempty"`
+	ExtraParams      map[string]interface{}     `json:"-"`
+}
+
+func (req *HuggingFaceChatRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 // HuggingFaceToolChoice represents the flexible `tool_choice` field which
@@ -167,16 +172,21 @@ type HuggingFaceErrorDetail struct {
 // HuggingFaceEmbeddingRequest represents the request format for HuggingFace embeddings API
 // Based on the HuggingFace Router API specification
 type HuggingFaceEmbeddingRequest struct {
-	Input               *InputsCustomType `json:"input,omitempty"`    // string or []string used by all inference providers other than hf-inference
-	Inputs              *InputsCustomType `json:"inputs,omitempty"`   // string or []string used by hf-inference provider
-	Provider            *string           `json:"provider,omitempty"` // used by all inference providers other than hf-inference
-	Model               *string           `json:"model,omitempty"`    // used by all inference providers other than hf-inference
-	Normalize           *bool             `json:"normalize,omitempty"`
-	PromptName          *string           `json:"prompt_name,omitempty"`
-	Truncate            *bool             `json:"truncate,omitempty"`
-	TruncationDirection *string           `json:"truncation_direction,omitempty"` // "left" or "right"
-	EncodingFormat      *EncodingType     `json:"encoding_format,omitempty"`
-	Dimensions          *int              `json:"dimensions,omitempty"`
+	Input               *InputsCustomType      `json:"input,omitempty"`    // string or []string used by all inference providers other than hf-inference
+	Inputs              *InputsCustomType      `json:"inputs,omitempty"`   // string or []string used by hf-inference provider
+	Provider            *string                `json:"provider,omitempty"` // used by all inference providers other than hf-inference
+	Model               *string                `json:"model,omitempty"`    // used by all inference providers other than hf-inference
+	Normalize           *bool                  `json:"normalize,omitempty"`
+	PromptName          *string                `json:"prompt_name,omitempty"`
+	Truncate            *bool                  `json:"truncate,omitempty"`
+	TruncationDirection *string                `json:"truncation_direction,omitempty"` // "left" or "right"
+	EncodingFormat      *EncodingType          `json:"encoding_format,omitempty"`
+	Dimensions          *int                   `json:"dimensions,omitempty"`
+	ExtraParams         map[string]interface{} `json:"-"`
+}
+
+func (req *HuggingFaceEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 type InputsCustomType struct {
@@ -235,11 +245,15 @@ const (
 
 // Speech request represents the inputs for Text To Speech inference.
 type HuggingFaceSpeechRequest struct {
-	Text       string                       `json:"text"`
-	Provider   string                       `json:"provider" validate:"required"`
-	Model      string                       `json:"model" validate:"required"`
-	Parameters *HuggingFaceSpeechParameters `json:"parameters,omitempty"`
-	Extra      map[string]any               `json:"-"`
+	Text        string                       `json:"text"`
+	Provider    string                       `json:"provider" validate:"required"`
+	Model       string                       `json:"model" validate:"required"`
+	Parameters  *HuggingFaceSpeechParameters `json:"parameters,omitempty"`
+	ExtraParams map[string]interface{}       `json:"-"`
+}
+
+func (req *HuggingFaceSpeechRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 // Speech parameters are additional inference parameters for Text To Speech
@@ -264,11 +278,16 @@ type HuggingFaceSpeechAudio struct {
 
 // HuggingFaceTranscriptionRequest represents the request for Automatic Speech Recognition inference
 type HuggingFaceTranscriptionRequest struct {
-	Inputs     []byte                                     `json:"inputs,omitempty"`    // raw audio bytes
-	AudioURL   string                                     `json:"audio_url,omitempty"` // URL to audio file only needed for fal ai
-	Provider   *string                                    `json:"provider,omitempty"`
-	Model      *string                                    `json:"model,omitempty"`
-	Parameters *HuggingFaceTranscriptionRequestParameters `json:"parameters,omitempty"`
+	Inputs      []byte                                     `json:"inputs,omitempty"`    // raw audio bytes
+	AudioURL    string                                     `json:"audio_url,omitempty"` // URL to audio file only needed for fal ai
+	Provider    *string                                    `json:"provider,omitempty"`
+	Model       *string                                    `json:"model,omitempty"`
+	Parameters  *HuggingFaceTranscriptionRequestParameters `json:"parameters,omitempty"`
+	ExtraParams map[string]interface{}                     `json:"-"`
+}
+
+func (req *HuggingFaceTranscriptionRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 // HuggingFaceTranscriptionRequestParameters contains additional inference parameters for Automatic Speech Recognition
@@ -353,7 +372,12 @@ type HuggingFaceEarlyStoppingUnion = HuggingFaceTranscriptionEarlyStopping
 
 // HuggingFaceHFInferenceImageGenerationRequest for hf-inference image generation
 type HuggingFaceHFInferenceImageGenerationRequest struct {
-	Inputs string `json:"inputs"`
+	Inputs      string         `json:"inputs"`
+	ExtraParams map[string]any `json:"-"`
+}
+
+func (req *HuggingFaceHFInferenceImageGenerationRequest) GetExtraParams() map[string]any {
+	return req.ExtraParams
 }
 
 // HuggingFaceFalAIImageGenerationRequest for fal-ai image generation
@@ -371,6 +395,11 @@ type HuggingFaceFalAIImageGenerationRequest struct {
 	EnableSafetyChecker   *bool                 `json:"enable_safety_checker,omitempty"`
 	Acceleration          *string               `json:"acceleration,omitempty"`
 	EnablePromptExpansion *bool                 `json:"enable_prompt_expansion,omitempty"`
+	ExtraParams           map[string]any        `json:"-"`
+}
+
+func (req *HuggingFaceFalAIImageGenerationRequest) GetExtraParams() map[string]any {
+	return req.ExtraParams
 }
 
 type HuggingFaceFalAISize struct {
@@ -416,14 +445,19 @@ type FalAITimings struct {
 
 // HuggingFaceTogetherImageGenerationRequest for together image generation
 type HuggingFaceTogetherImageGenerationRequest struct {
-	Prompt         string  `json:"prompt"`
-	Model          string  `json:"model"`
-	ResponseFormat *string `json:"response_format,omitempty"`
-	Size           *string `json:"size,omitempty"`
-	Width          *int    `json:"width,omitempty"`
-	Height         *int    `json:"height,omitempty"`
-	N              *int    `json:"n,omitempty"`
-	Steps          *int    `json:"steps,omitempty"`
+	Prompt         string         `json:"prompt"`
+	Model          string         `json:"model"`
+	ResponseFormat *string        `json:"response_format,omitempty"`
+	Size           *string        `json:"size,omitempty"`
+	Width          *int           `json:"width,omitempty"`
+	Height         *int           `json:"height,omitempty"`
+	N              *int           `json:"n,omitempty"`
+	Steps          *int           `json:"steps,omitempty"`
+	ExtraParams    map[string]any `json:"-"`
+}
+
+func (req *HuggingFaceTogetherImageGenerationRequest) GetExtraParams() map[string]any {
+	return req.ExtraParams
 }
 
 // HuggingFaceTogetherImageGenerationResponse for together image generation
@@ -459,9 +493,36 @@ type HuggingFaceFalAIImageStreamRequest struct {
 	SyncMode              *bool                 `json:"sync_mode,omitempty"`
 	EnableSafetyChecker   *bool                 `json:"enable_safety_checker,omitempty"`
 	OutputFormat          *string               `json:"output_format,omitempty"`
+	ExtraParams           map[string]any        `json:"-"`
+}
+
+func (req *HuggingFaceFalAIImageStreamRequest) GetExtraParams() map[string]any {
+	return req.ExtraParams
 }
 
 // HuggingFaceFalAIImageStreamResponse for fal-ai SSE events
 type HuggingFaceFalAIImageStreamResponse struct {
-	Images []FalAIImage `json:"images"`
+	Data   *FalAIImageData `json:"data,omitempty"`
+	Images []FalAIImage    `json:"images,omitempty"`
+}
+
+// HuggingFaceFalAIImageEditRequest for fal-ai image edit
+type HuggingFaceFalAIImageEditRequest struct {
+	Prompt              string                `json:"prompt"`
+	ImageURL            *string               `json:"image_url,omitempty"`  // For single image models
+	ImageURLs           []string              `json:"image_urls,omitempty"` // For multi-image models
+	NumImages           *int                  `json:"num_images,omitempty"`
+	ImageSize           *HuggingFaceFalAISize `json:"image_size,omitempty"`
+	GuidanceScale       *float64              `json:"guidance_scale,omitempty"`
+	NumInferenceSteps   *int                  `json:"num_inference_steps,omitempty"`
+	SyncMode            *bool                 `json:"sync_mode,omitempty"`
+	Seed                *int                  `json:"seed,omitempty"`
+	OutputFormat        *string               `json:"output_format,omitempty"`
+	EnableSafetyChecker *bool                 `json:"enable_safety_checker,omitempty"`
+	Acceleration        *string               `json:"acceleration,omitempty"`
+	ExtraParams         map[string]any        `json:"-"`
+}
+
+func (req *HuggingFaceFalAIImageEditRequest) GetExtraParams() map[string]any {
+	return req.ExtraParams
 }

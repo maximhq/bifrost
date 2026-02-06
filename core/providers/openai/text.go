@@ -20,6 +20,9 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.TextCompletionParameters.User = SanitizeUserField(openaiReq.TextCompletionParameters.User)
 	}
+	if bifrostReq.Params != nil {
+		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 	return openaiReq
 }
 

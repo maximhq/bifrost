@@ -61,13 +61,16 @@ func (provider *NebiusProvider) ToNebiusImageGenerationRequest(bifrostReq *schem
 		}
 		// Handle extra params
 		if bifrostReq.Params.ExtraParams != nil {
+			req.ExtraParams = bifrostReq.Params.ExtraParams
 			// Map guidance_scale
 			if v, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["guidance_scale"]); ok {
+				delete(req.ExtraParams, "guidance_scale")
 				req.GuidanceScale = v
 			}
 
 			// Map loras in array format [{"url": "...", "scale": ...}]
 			if lorasValue, exists := bifrostReq.Params.ExtraParams["loras"]; exists && lorasValue != nil {
+				delete(req.ExtraParams, "loras")
 				// Check if lorasValue is an array of maps
 				if lorasArray, ok := lorasValue.([]interface{}); ok {
 					for _, item := range lorasArray {

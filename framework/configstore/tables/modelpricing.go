@@ -4,6 +4,7 @@ package tables
 type TableModelPricing struct {
 	ID                 uint    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Model              string  `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
+	BaseModel          string  `gorm:"type:varchar(255);default:null" json:"base_model,omitempty"`
 	Provider           string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"provider"`
 	InputCostPerToken  float64 `gorm:"not null" json:"input_cost_per_token"`
 	OutputCostPerToken float64 `gorm:"not null" json:"output_cost_per_token"`

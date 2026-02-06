@@ -140,14 +140,14 @@ func splitIntoModelProvider(bifrostModelName string) (inferenceProvider, string,
 		prov = inferenceProvider(before)
 		model = after
 	} else if t == 1 {
-		prov = auto
+		prov = ""
 		model = bifrostModelName
 	}
 	return prov, model, nil
 }
 
 // Defined for tasks given by https://huggingface.co/docs/inference-providers/en/index and makeURL logic at https://github.com/huggingface/huggingface.js/blob/c02dd89eff24593b304d72715247f7eef79b3b73/packages/inference/src/providers/providerHelper.ts#L111
-func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx context.Context, inferenceProvider inferenceProvider, modelName string, requestType schemas.RequestType) (string, error) {
+func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx *schemas.BifrostContext, inferenceProvider inferenceProvider, modelName string, requestType schemas.RequestType) (string, error) {
 	defaultPath := ""
 	switch inferenceProvider {
 	case falAI:
@@ -160,9 +160,9 @@ func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx context.Co
 		case schemas.SpeechRequest:
 			pipeline = "text-to-speech"
 		case schemas.ImageGenerationRequest:
-			return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), provider.customProviderConfig, requestType), nil
+			return provider.buildRequestURL(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), requestType), nil
 		case schemas.TranscriptionRequest:
-			return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), provider.customProviderConfig, requestType), nil
+			return provider.buildRequestURL(ctx, fmt.Sprintf("/hf-inference/models/%s", modelName), requestType), nil
 		default:
 			pipeline = "chat-completion"
 		}
@@ -199,7 +199,7 @@ func (provider *HuggingFaceProvider) getInferenceProviderRouteURL(ctx context.Co
 	default:
 		return "", fmt.Errorf("unsupported inference provider: %s for action: %s", inferenceProvider, requestType)
 	}
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType), nil
+	return provider.buildRequestURL(ctx, defaultPath, requestType), nil
 }
 
 // convertToInferenceProviderMappings converts HuggingFaceInferenceProviderMappingResponse to a map of HuggingFaceInferenceProviderMapping with ProviderName as key

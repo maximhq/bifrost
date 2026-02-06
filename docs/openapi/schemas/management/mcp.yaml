@@ -1,5 +1,14 @@
 # MCP API schemas
 
+MCPAuthType:
+  type: string
+  enum: [none, headers, oauth]
+  description: |
+    Authentication type for MCP connections:
+    - none: No authentication
+    - headers: Header-based authentication (API keys, custom headers, etc.)
+    - oauth: OAuth 2.0 authentication
+
 MCPConnectionType:
   type: string
   enum: [http, stdio, sse, inprocess]
@@ -28,16 +37,39 @@ MCPStdioConfig:
         type: string
       description: Environment variables required
 
-MCPClientConfig:
+MCPClientCreateRequest:
+  oneOf:
+    - $ref: '#/MCPClientCreateRequestHTTP'
+    - $ref: '#/MCPClientCreateRequestSSE'
+    - $ref: '#/MCPClientCreateRequestSTDIO'
+  discriminator:
+    propertyName: connection_type
+    mapping:
+      http: '#/MCPClientCreateRequestHTTP'
+      sse: '#/MCPClientCreateRequestSSE'
+      stdio: '#/MCPClientCreateRequestSTDIO'
+  description: |
+    MCP client configuration for creating a new client (tool_pricing not available at creation).
+    The schema varies based on connection_type:
+    - HTTP/SSE: connection_string is required
+    - STDIO: stdio_config is required
+    - InProcess: server instance must be provided programmatically (Go package only)
+
+MCPClientCreateRequestBase:
   type: object
-  description: MCP client configuration
+  required:
+    - name
+    - connection_type
   properties:
-    id:
+    client_id:
       type: string
+      description: Unique identifier for the MCP client (optional, auto-generated if not provided)
     name:
       type: string
+      description: Display name for the MCP client
     is_code_mode_client:
       type: boolean
+
     is_ping_available:
       type: boolean
       default: true
@@ -47,15 +79,28 @@ MCPClientConfig:
         If false, uses listTools method for health checks instead.
     connection_type:
       $ref: '#/MCPConnectionType'
-    connection_string:
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
       type: string
-      description: HTTP or SSE URL (required for HTTP or SSE connections)
-    stdio_config:
-      $ref: '#/MCPStdioConfig'
+      description: |
+        OAuth config ID for OAuth authentication.
+        Set after OAuth flow is completed. References the oauth_configs table.
+        Only relevant when auth_type is "oauth".
     headers:
       type: object
       additionalProperties:
         type: string
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
+    oauth_config:
+      $ref: '../../schemas/management/oauth.yaml#/OAuthConfigRequest'
+      description: |
+        OAuth configuration for initiating OAuth flow.
+        Only include this when creating a client with auth_type "oauth".
+        This will trigger the OAuth flow and return an authorization URL.
     tools_to_execute:
       type: array
       items:
@@ -70,10 +115,184 @@ MCPClientConfig:
       items:
         type: string
       description: |
-        Auto-execute list for tools.
+        List of tools that can be auto-executed without user approval.
+        Must be a subset of tools_to_execute.
+        ["*"] => all executable tools can be auto-executed
+        [] => no tools are auto-executed
+        ["tool1", "tool2"] => only specified tools can be auto-executed
+
+MCPClientCreateRequestHTTP:
+  allOf:
+    - $ref: '#/MCPClientCreateRequestBase'
+    - type: object
+      required:
+        - connection_string
+      properties:
+        connection_type:
+          type: string
+          enum: [http]
+        connection_string:
+          type: string
+          description: HTTP URL (required for HTTP connection type)
+
+MCPClientCreateRequestSSE:
+  allOf:
+    - $ref: '#/MCPClientCreateRequestBase'
+    - type: object
+      required:
+        - connection_string
+      properties:
+        connection_type:
+          type: string
+          enum: [sse]
+        connection_string:
+          type: string
+          description: SSE URL (required for SSE connection type)
+
+MCPClientCreateRequestSTDIO:
+  allOf:
+    - $ref: '#/MCPClientCreateRequestBase'
+    - type: object
+      required:
+        - stdio_config
+      properties:
+        connection_type:
+          type: string
+          enum: [stdio]
+        stdio_config:
+          $ref: '#/MCPStdioConfig'
+          description: STDIO configuration (required for STDIO connection type)
+
+MCPClientUpdateRequest:
+  type: object
+  description: MCP client configuration for updating an existing client (includes tool_pricing)
+  properties:
+    client_id:
+      type: string
+      description: Unique identifier for the MCP client
+    name:
+      type: string
+      description: Display name for the MCP client
+    is_code_mode_client:
+      type: boolean
+      description: Whether this client is available in code mode
+    connection_type:
+      $ref: '#/MCPConnectionType'
+    connection_string:
+      type: string
+      description: HTTP or SSE URL (required for HTTP or SSE connections)
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
+      type: string
+      description: |
+        OAuth config ID for OAuth authentication.
+        References the oauth_configs table.
+        Only relevant when auth_type is "oauth".
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Include-only list for tools.
         ["*"] => all tools are included
         [] => no tools are included
-        ["tool1", "tool2"] => auto-execute only the specified tools
+        ["tool1", "tool2"] => include only the specified tools
+    tools_to_auto_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        List of tools that can be auto-executed without user approval.
+        Must be a subset of tools_to_execute.
+        ["*"] => all executable tools can be auto-executed
+        [] => no tools are auto-executed
+        ["tool1", "tool2"] => only specified tools can be auto-executed
+    tool_pricing:
+      type: object
+      additionalProperties:
+        type: number
+        format: double
+      description: |
+        Per-tool cost in USD for execution.
+        Key is the tool name, value is the cost per execution.
+        Example: {"read_file": 0.001, "write_file": 0.002}
+        Note: Only available when updating an existing client after tools have been fetched.
+
+MCPClientConfig:
+  type: object
+  description: Full MCP client configuration (used in responses)
+  properties:
+    client_id:
+      type: string
+      description: Unique identifier for the MCP client
+    name:
+      type: string
+      description: Display name for the MCP client
+    is_code_mode_client:
+      type: boolean
+      description: Whether this client is available in code mode
+    connection_type:
+      $ref: '#/MCPConnectionType'
+    connection_string:
+      type: string
+      description: HTTP or SSE URL (required for HTTP or SSE connections)
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Authentication type for the MCP connection
+    oauth_config_id:
+      type: string
+      description: |
+        OAuth config ID for OAuth authentication.
+        References the oauth_configs table.
+        Only set when auth_type is "oauth".
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: |
+        Custom headers to include in requests.
+        Only used when auth_type is "headers".
+    tools_to_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        Include-only list for tools.
+        ["*"] => all tools are included
+        [] => no tools are included
+        ["tool1", "tool2"] => include only the specified tools
+    tools_to_auto_execute:
+      type: array
+      items:
+        type: string
+      description: |
+        List of tools that can be auto-executed without user approval.
+        Must be a subset of tools_to_execute.
+        ["*"] => all executable tools can be auto-executed
+        [] => no tools are auto-executed
+        ["tool1", "tool2"] => only specified tools can be auto-executed
+    tool_pricing:
+      type: object
+      additionalProperties:
+        type: number
+        format: double
+      description: |
+        Per-tool cost in USD for execution.
+        Key is the tool name, value is the cost per execution.
+        Example: {"read_file": 0.001, "write_file": 0.002}
 
 ChatToolFunction:
   type: object

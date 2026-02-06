@@ -4,15 +4,24 @@ package governance
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
+
+// ModelMatcher provides cross-provider model name matching.
+// This is satisfied by *modelcatalog.ModelCatalog.
+type ModelMatcher interface {
+	GetBaseModelName(model string) string
+	IsSameModel(model1, model2 string) bool
+}
 
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
@@ -24,20 +33,42 @@ type LocalGovernanceStore struct {
 	rateLimits   sync.Map // string -> *RateLimit (RateLimit ID -> RateLimit)
 	modelConfigs sync.Map // string -> *ModelConfig (key: "modelName" or "modelName:provider" -> ModelConfig)
 	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
+	routingRules sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
+
+	// CEL caching layer for routing rules
+	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
+	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
 
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
+
+	// Model matcher for cross-provider model matching (optional)
+	modelMatcher ModelMatcher
+
+	// Generic event broadcaster for pushing real-time updates to connected clients
+	eventBroadcaster schemas.EventBroadcaster
 
 	// Logger
 	logger schemas.Logger
 }
 
 type GovernanceData struct {
-	VirtualKeys map[string]*configstoreTables.TableVirtualKey `json:"virtual_keys"`
-	Teams       map[string]*configstoreTables.TableTeam       `json:"teams"`
-	Customers   map[string]*configstoreTables.TableCustomer   `json:"customers"`
-	Budgets     map[string]*configstoreTables.TableBudget     `json:"budgets"`
-	RateLimits  map[string]*configstoreTables.TableRateLimit  `json:"rate_limits"`
+	VirtualKeys  map[string]*configstoreTables.TableVirtualKey  `json:"virtual_keys"`
+	Teams        map[string]*configstoreTables.TableTeam        `json:"teams"`
+	Customers    map[string]*configstoreTables.TableCustomer    `json:"customers"`
+	Budgets      map[string]*configstoreTables.TableBudget      `json:"budgets"`
+	RateLimits   map[string]*configstoreTables.TableRateLimit   `json:"rate_limits"`
+	RoutingRules map[string]*configstoreTables.TableRoutingRule `json:"routing_rules"`
+	ModelConfigs []*configstoreTables.TableModelConfig          `json:"model_configs"`
+	Providers    []*configstoreTables.TableProvider             `json:"providers"`
+}
+
+// BudgetAndRateLimitStatus represents the current budget and rate limit usage state
+// Exhaustion is determined by percent_used >= 100
+type BudgetAndRateLimitStatus struct {
+	BudgetPercentUsed           float64 `json:"budget_percent_used"`             // 0-100, >100 means exhausted
+	RateLimitTokenPercentUsed   float64 `json:"rate_limit_token_percent_used"`   // 0-100, >100 means exhausted
+	RateLimitRequestPercentUsed float64 `json:"rate_limit_request_percent_used"` // 0-100, >100 means exhausted
 }
 
 // GovernanceStore defines the interface for governance data access and policy evaluation.
@@ -92,13 +123,33 @@ type GovernanceStore interface {
 	// Provider in-memory operations
 	UpdateProviderInMemory(provider *configstoreTables.TableProvider) *configstoreTables.TableProvider
 	DeleteProviderInMemory(providerName string)
+	// Routing Rules CEL caching
+	GetRoutingProgram(rule *configstoreTables.TableRoutingRule) (cel.Program, error)
+	// Budget and rate limit status queries for routing with baseline support
+	GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
+	// Routing Rules CRUD
+	HasRoutingRules(ctx context.Context) bool
+	GetAllRoutingRules() []*configstoreTables.TableRoutingRule
+	GetScopedRoutingRules(scope string, scopeID string) []*configstoreTables.TableRoutingRule
+	UpdateRoutingRuleInMemory(rule *configstoreTables.TableRoutingRule) error
+	DeleteRoutingRuleInMemory(id string) error
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
-func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig) (*LocalGovernanceStore, error) {
+// The modelMatcher parameter is optional (can be nil) and enables cross-provider model matching
+// for governance lookups (e.g., "openai/gpt-4o" matching config for "gpt-4o").
+func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelMatcher ModelMatcher) (*LocalGovernanceStore, error) {
+	// Create singleton CEL environment once for all routing rule compilations
+	env, err := createCELEnvironment()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+
 	store := &LocalGovernanceStore{
-		configStore: configStore,
-		logger:      logger,
+		configStore:   configStore,
+		logger:        logger,
+		routingCELEnv: env,
+		modelMatcher:  modelMatcher,
 	}
 
 	if configStore != nil {
@@ -116,6 +167,40 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 	return store, nil
 }
 
+// emitBudgetUpdate broadcasts a single budget change via the event broadcaster
+func (gs *LocalGovernanceStore) emitBudgetUpdate(budgetID string, budget *configstoreTables.TableBudget) {
+	if gs.eventBroadcaster != nil {
+		cb := gs.eventBroadcaster
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					gs.logger.Warn("event broadcaster panic (budget update): %v", r)
+				}
+			}()
+			cb("governance_update", map[string]interface{}{
+				"budgets": map[string]*configstoreTables.TableBudget{budgetID: budget},
+			})
+		}()
+	}
+}
+
+// emitRateLimitUpdate broadcasts a single rate limit change via the event broadcaster
+func (gs *LocalGovernanceStore) emitRateLimitUpdate(rateLimitID string, rateLimit *configstoreTables.TableRateLimit) {
+	if gs.eventBroadcaster != nil {
+		cb := gs.eventBroadcaster
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					gs.logger.Warn("event broadcaster panic (rate limit update): %v", r)
+				}
+			}()
+			cb("governance_update", map[string]interface{}{
+				"rate_limits": map[string]*configstoreTables.TableRateLimit{rateLimitID: rateLimit},
+			})
+		}()
+	}
+}
+
 func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 	virtualKeys := make(map[string]*configstoreTables.TableVirtualKey)
 	gs.virtualKeys.Range(func(key, value interface{}) bool {
@@ -123,7 +208,46 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if !ok || vk == nil {
 			return true // continue
 		}
-		virtualKeys[key.(string)] = vk
+		// Cross-reference live budget/rate limit from standalone maps
+		// (usage updates clone into budgets/rateLimits maps, so embedded pointers go stale)
+		clone := *vk
+		if clone.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					clone.Budget = b
+				}
+			}
+		}
+		if clone.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					clone.RateLimit = rl
+				}
+			}
+		}
+		// Also fix embedded ProviderConfigs
+		if len(clone.ProviderConfigs) > 0 {
+			configs := make([]configstoreTables.TableVirtualKeyProviderConfig, len(clone.ProviderConfigs))
+			copy(configs, clone.ProviderConfigs)
+			for i := range configs {
+				if configs[i].BudgetID != nil {
+					if liveBudget, exists := gs.budgets.Load(*configs[i].BudgetID); exists && liveBudget != nil {
+						if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+							configs[i].Budget = b
+						}
+					}
+				}
+				if configs[i].RateLimitID != nil {
+					if liveRL, exists := gs.rateLimits.Load(*configs[i].RateLimitID); exists && liveRL != nil {
+						if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+							configs[i].RateLimit = rl
+						}
+					}
+				}
+			}
+			clone.ProviderConfigs = configs
+		}
+		virtualKeys[key.(string)] = &clone
 		return true // continue iteration
 	})
 	teams := make(map[string]*configstoreTables.TableTeam)
@@ -162,12 +286,87 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		rateLimits[key.(string)] = rateLimit
 		return true // continue iteration
 	})
+	routingRules := make(map[string]*configstoreTables.TableRoutingRule)
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok || rules == nil {
+			return true // continue
+		}
+		// Flatten the rules array (stored as []*TableRoutingRule by scope:scopeID)
+		for _, rule := range rules {
+			if rule != nil {
+				routingRules[rule.ID] = rule
+			}
+		}
+		return true // continue iteration
+	})
+	var modelConfigsList []*configstoreTables.TableModelConfig
+	gs.modelConfigs.Range(func(key, value interface{}) bool {
+		mc, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || mc == nil {
+			return true // continue
+		}
+		// Cross-reference live budget/rate limit from standalone maps
+		// (usage updates clone into budgets/rateLimits maps, so embedded pointers go stale)
+		clone := *mc
+		if clone.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					clone.Budget = b
+				}
+			}
+		}
+		if clone.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					clone.RateLimit = rl
+				}
+			}
+		}
+		modelConfigsList = append(modelConfigsList, &clone)
+		return true // continue iteration
+	})
+	var providersList []*configstoreTables.TableProvider
+	gs.providers.Range(func(key, value interface{}) bool {
+		p, ok := value.(*configstoreTables.TableProvider)
+		if !ok || p == nil {
+			return true // continue
+		}
+		// Cross-reference live budget/rate limit from standalone maps
+		clone := *p
+		if clone.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					clone.Budget = b
+				}
+			}
+		}
+		if clone.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					clone.RateLimit = rl
+				}
+			}
+		}
+		providersList = append(providersList, &clone)
+		return true // continue iteration
+	})
+	// Sort slice fields by CreatedAt so responses are sent in consistent order
+	sort.Slice(modelConfigsList, func(i, j int) bool {
+		return modelConfigsList[i].CreatedAt.Before(modelConfigsList[j].CreatedAt)
+	})
+	sort.Slice(providersList, func(i, j int) bool {
+		return providersList[i].CreatedAt.Before(providersList[j].CreatedAt)
+	})
 	return &GovernanceData{
-		VirtualKeys: virtualKeys,
-		Teams:       teams,
-		Customers:   customers,
-		Budgets:     budgets,
-		RateLimits:  rateLimits,
+		VirtualKeys:  virtualKeys,
+		Teams:        teams,
+		Customers:    customers,
+		Budgets:      budgets,
+		RateLimits:   rateLimits,
+		RoutingRules: routingRules,
+		ModelConfigs: modelConfigsList,
+		Providers:    providersList,
 	}
 }
 
@@ -422,6 +621,31 @@ func (gs *LocalGovernanceStore) CheckProviderRateLimit(ctx context.Context, requ
 	return nil, DecisionAllow // No rate limit violations
 }
 
+// findModelOnlyConfig looks up a model-only config (no provider) with cross-provider model name normalization.
+// Returns the matching config and the display name for error messages.
+func (gs *LocalGovernanceStore) findModelOnlyConfig(model string) (*configstoreTables.TableModelConfig, string) {
+	// If modelMatcher is available, try normalized base model name first (cross-provider matching)
+	if gs.modelMatcher != nil {
+		baseName := gs.modelMatcher.GetBaseModelName(model)
+		if baseName != model {
+			if value, exists := gs.modelConfigs.Load(baseName); exists && value != nil {
+				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
+					return mc, baseName
+				}
+			}
+		}
+	}
+
+	// Always try direct lookup by original model name as fallback
+	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
+		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
+			return mc, model
+		}
+	}
+
+	return nil, ""
+}
+
 // CheckModelBudget performs budget checking for model-level configs (lock-free for high performance)
 func (gs *LocalGovernanceStore) CheckModelBudget(ctx context.Context, request *EvaluationRequest, baselines map[string]float64) error {
 	// This is to prevent nil pointer dereference
@@ -455,12 +679,10 @@ func (gs *LocalGovernanceStore) CheckModelBudget(ctx context.Context, request *E
 	}
 
 	// Always check model-only config (if exists) - regardless of whether model+provider config exists
-	key := model
-	if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
-		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.Budget != nil {
-			modelConfigsToCheck = append(modelConfigsToCheck, mc)
-			budgetNames = append(budgetNames, fmt.Sprintf("Model:%s", model))
-		}
+	// Uses findModelOnlyConfig for cross-provider model name normalization
+	if mc, configKey := gs.findModelOnlyConfig(model); mc != nil && mc.Budget != nil {
+		modelConfigsToCheck = append(modelConfigsToCheck, mc)
+		budgetNames = append(budgetNames, fmt.Sprintf("Model:%s", configKey))
 	}
 
 	// Check each model budget
@@ -545,12 +767,10 @@ func (gs *LocalGovernanceStore) CheckModelRateLimit(ctx context.Context, request
 	}
 
 	// Always check model-only config (if exists) - regardless of whether model+provider config exists
-	key := model
-	if value, exists := gs.modelConfigs.Load(key); exists && value != nil {
-		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
-			modelConfigsToCheck = append(modelConfigsToCheck, mc)
-			rateLimitNames = append(rateLimitNames, fmt.Sprintf("Model:%s", model))
-		}
+	// Uses findModelOnlyConfig for cross-provider model name normalization
+	if mc, configKey := gs.findModelOnlyConfig(model); mc != nil && mc.RateLimitID != nil {
+		modelConfigsToCheck = append(modelConfigsToCheck, mc)
+		rateLimitNames = append(rateLimitNames, fmt.Sprintf("Model:%s", configKey))
 	}
 
 	// Check each model rate limit
@@ -769,6 +989,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyBudgetUsageInMemory(ctx context.
 				// Update the clone
 				clone.CurrentUsage += cost
 				gs.budgets.Store(budgetID, &clone)
+				gs.emitBudgetUpdate(budgetID, &clone)
 				gs.logger.Debug("UpdateVirtualKeyBudgetUsageInMemory: Updated budget %s: %.4f -> %.4f (added %.4f)",
 					budgetID, oldUsage, clone.CurrentUsage, cost)
 			}
@@ -801,6 +1022,7 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelBudgetUsageInMemory(ctx co
 				// Update the clone
 				clone.CurrentUsage += cost
 				gs.budgets.Store(budgetID, &clone)
+				gs.emitBudgetUpdate(budgetID, &clone)
 			}
 		}
 	}
@@ -827,10 +1049,9 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelBudgetUsageInMemory(ctx co
 	}
 
 	// Always check model-only config (if exists) - regardless of whether model+provider config exists
-	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
-		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.BudgetID != nil {
-			updateBudget(*mc.BudgetID)
-		}
+	// Uses findModelOnlyConfig for cross-provider model name normalization
+	if mc, _ := gs.findModelOnlyConfig(model); mc != nil && mc.BudgetID != nil {
+		updateBudget(*mc.BudgetID)
 	}
 
 	return nil
@@ -871,6 +1092,7 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx
 					clone.RequestCurrentUsage += 1
 				}
 				gs.rateLimits.Store(rateLimitID, &clone)
+				gs.emitRateLimitUpdate(rateLimitID, &clone)
 			}
 		}
 	}
@@ -897,10 +1119,9 @@ func (gs *LocalGovernanceStore) UpdateProviderAndModelRateLimitUsageInMemory(ctx
 	}
 
 	// Always check model-only config (if exists) - regardless of whether model+provider config exists
-	if value, exists := gs.modelConfigs.Load(model); exists && value != nil {
-		if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil && mc.RateLimitID != nil {
-			updateRateLimit(*mc.RateLimitID)
-		}
+	// Uses findModelOnlyConfig for cross-provider model name normalization
+	if mc, _ := gs.findModelOnlyConfig(model); mc != nil && mc.RateLimitID != nil {
+		updateRateLimit(*mc.RateLimitID)
 	}
 
 	return nil
@@ -951,6 +1172,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyRateLimitUsageInMemory(ctx conte
 					clone.RequestCurrentUsage += 1
 				}
 				gs.rateLimits.Store(rateLimitID, &clone)
+				gs.emitRateLimitUpdate(rateLimitID, &clone)
 			}
 		}
 	}
@@ -985,6 +1207,7 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 
 			// Atomically replace the entry using the original key
 			gs.budgets.Store(key, &copiedBudget)
+			gs.emitBudgetUpdate(key.(string), &copiedBudget)
 			resetBudgets = append(resetBudgets, &copiedBudget)
 
 			// Update all VKs, teams, customers, and provider configs that reference this budget
@@ -1056,6 +1279,7 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 
 			// Atomically replace the entry using the original key
 			gs.rateLimits.Store(key, &copiedRateLimit)
+			gs.emitRateLimitUpdate(key.(string), &copiedRateLimit)
 			resetRateLimits = append(resetRateLimits, &copiedRateLimit)
 
 			// Update all VKs and provider configs that reference this rate limit
@@ -1374,8 +1598,14 @@ func (gs *LocalGovernanceStore) loadFromDatabase(ctx context.Context) error {
 		return fmt.Errorf("failed to load providers: %w", err)
 	}
 
+	// Load routing rules
+	routingRules, err := gs.configStore.GetRoutingRules(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load routing rules: %w", err)
+	}
+
 	// Rebuild in-memory structures (lock-free)
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
 
 	return nil
 }
@@ -1406,6 +1636,9 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 
 	// Load providers
 	providers := config.Providers
+
+	// Load routing rules
+	routingRules := config.RoutingRules
 
 	// Populate model configs with their relationships (Budget and RateLimit)
 	for i := range modelConfigs {
@@ -1520,13 +1753,13 @@ func (gs *LocalGovernanceStore) loadFromConfigMemory(ctx context.Context, config
 	}
 
 	// Rebuild in-memory structures (lock-free)
-	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers)
+	gs.rebuildInMemoryStructures(ctx, customers, teams, virtualKeys, budgets, rateLimits, modelConfigs, providers, routingRules)
 
 	return nil
 }
 
 // rebuildInMemoryStructures rebuilds all in-memory data structures (lock-free)
-func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider) {
+func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, customers []configstoreTables.TableCustomer, teams []configstoreTables.TableTeam, virtualKeys []configstoreTables.TableVirtualKey, budgets []configstoreTables.TableBudget, rateLimits []configstoreTables.TableRateLimit, modelConfigs []configstoreTables.TableModelConfig, providers []configstoreTables.TableProvider, routingRules []configstoreTables.TableRoutingRule) {
 	// Clear existing data by creating new sync.Maps
 	gs.virtualKeys = sync.Map{}
 	gs.teams = sync.Map{}
@@ -1535,6 +1768,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 	gs.rateLimits = sync.Map{}
 	gs.modelConfigs = sync.Map{}
 	gs.providers = sync.Map{}
+	gs.routingRules = sync.Map{}
 
 	// Build customers map
 	for i := range customers {
@@ -1568,6 +1802,8 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 
 	// Build model configs map
 	// Key format: "modelName" for global configs, "modelName:provider" for provider-specific configs
+	// Model names are normalized using GetBaseModelName to prevent duplicate config leakage
+	// (e.g., "openai/gpt-4o" and "gpt-4o" both store under key "gpt-4o")
 	for i := range modelConfigs {
 		mc := &modelConfigs[i]
 		if mc.Provider != nil {
@@ -1575,8 +1811,11 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 			key := fmt.Sprintf("%s:%s", mc.ModelName, *mc.Provider)
 			gs.modelConfigs.Store(key, mc)
 		} else {
-			// Global config (applies to all providers) - store under model name only
+			// Global config (applies to all providers) - store under normalized model name
 			key := mc.ModelName
+			if gs.modelMatcher != nil {
+				key = gs.modelMatcher.GetBaseModelName(mc.ModelName)
+			}
 			gs.modelConfigs.Store(key, mc)
 		}
 	}
@@ -1587,6 +1826,43 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		provider := &providers[i]
 		gs.providers.Store(provider.Name, provider)
 	}
+
+	// Build routing rules map - O(n) single pass
+	// Key format: "scope:scopeID" (scopeID empty string for global)
+	rulesMap := make(map[string][]*configstoreTables.TableRoutingRule)
+
+	for i := range routingRules {
+		rule := &routingRules[i]
+
+		// Build key
+		key := rule.Scope + ":"
+		if rule.ScopeID != nil {
+			key += *rule.ScopeID
+		}
+
+		// Group rules by key
+		rulesMap[key] = append(rulesMap[key], rule)
+	}
+
+	// Sort each group by priority ASC (0 is highest priority, higher numbers are lower priority)
+	for key, rules := range rulesMap {
+		sort.Slice(rules, func(i, j int) bool {
+			return rules[i].Priority < rules[j].Priority
+		})
+		gs.routingRules.Store(key, rules)
+	}
+
+	// Pre-compile all routing rule programs to avoid first-request latency
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		if rules, ok := value.([]*configstoreTables.TableRoutingRule); ok {
+			for _, rule := range rules {
+				if _, err := gs.GetRoutingProgram(rule); err != nil {
+					gs.logger.Warn("Failed to pre-compile routing program for rule %s: %v", rule.ID, err)
+				}
+			}
+		}
+		return true
+	})
 }
 
 // UTILITY FUNCTIONS
@@ -2134,6 +2410,9 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(mc *configstoreTables.
 		gs.modelConfigs.Store(key, &clone)
 	} else {
 		key := clone.ModelName
+		if gs.modelMatcher != nil {
+			key = gs.modelMatcher.GetBaseModelName(clone.ModelName)
+		}
 		gs.modelConfigs.Store(key, &clone)
 	}
 
@@ -2331,4 +2610,463 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(resetRateLimit *config
 		}
 		return true // continue
 	})
+}
+
+// HasRoutingRules checks if there are any routing rules configured
+// Quick check to determine if we need to run routing evaluation at all
+func (gs *LocalGovernanceStore) HasRoutingRules(ctx context.Context) bool {
+	hasAny := false
+	gs.routingRules.Range(func(_, _ interface{}) bool {
+		hasAny = true
+		return false // stop after first entry
+	})
+	return hasAny
+}
+
+// GetAllRoutingRules gets all routing rules from in-memory cache
+func (gs *LocalGovernanceStore) GetAllRoutingRules() []*configstoreTables.TableRoutingRule {
+	var result []*configstoreTables.TableRoutingRule
+
+	// Iterate through all cached rules
+	gs.routingRules.Range(func(_, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+		result = append(result, rules...)
+		return true
+	})
+
+	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority), then created_at ASC
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+
+	return result
+}
+
+// GetScopedRoutingRules retrieves routing rules by scope and scope ID (from in-memory cache)
+// Rules are already sorted by priority ASC (0 is highest priority)
+func (gs *LocalGovernanceStore) GetScopedRoutingRules(scope string, scopeID string) []*configstoreTables.TableRoutingRule {
+	// Build cache key: "scope:scopeID" (scopeID empty string for global)
+	var key string
+	if scope == "global" {
+		key = "global:"
+	} else {
+		key = fmt.Sprintf("%s:%s", scope, scopeID)
+	}
+
+	// Load from in-memory sync.Map
+	rules, ok := gs.routingRules.Load(key)
+	if !ok {
+		return nil
+	}
+
+	rulesList, ok := rules.([]*configstoreTables.TableRoutingRule)
+	if !ok {
+		return nil
+	}
+
+	// Filter by enabled and return
+	var enabledRules []*configstoreTables.TableRoutingRule
+	for _, rule := range rulesList {
+		if rule.Enabled {
+			enabledRules = append(enabledRules, rule)
+		}
+	}
+
+	return enabledRules
+}
+
+// GetRoutingProgram compiles a CEL expression and caches the resulting program
+// Uses the singleton CEL environment for efficiency
+// Returns error if compilation fails
+func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableRoutingRule) (cel.Program, error) {
+	if rule == nil {
+		return nil, fmt.Errorf("routing rule cannot be nil")
+	}
+
+	// Check cache first to avoid recompilation
+	if prog, ok := gs.compiledRoutingPrograms.Load(rule.ID); ok {
+		if celProg, ok := prog.(cel.Program); ok {
+			return celProg, nil
+		}
+	}
+
+	// Get CEL expression, default to "true" if empty
+	expr := rule.CelExpression
+	if expr == "" {
+		expr = "true"
+	}
+
+	// Validate expression format
+	if err := validateCELExpression(expr); err != nil {
+		return nil, fmt.Errorf("invalid CEL expression: %w", err)
+	}
+
+	// Compile using singleton environment
+	ast, issues := gs.routingCELEnv.Compile(expr)
+	if issues != nil && issues.Err() != nil {
+		return nil, fmt.Errorf("CEL compile error: %s", issues.Err().Error())
+	}
+
+	// Create program
+	program, err := gs.routingCELEnv.Program(ast)
+	if err != nil {
+		return nil, fmt.Errorf("CEL program creation error: %w", err)
+	}
+
+	// Cache the compiled program
+	gs.compiledRoutingPrograms.Store(rule.ID, program)
+
+	return program, nil
+}
+
+// GetBudgetAndRateLimitStatus returns the current budget and rate limit status for provider and model combination
+// Accounts for baseline usage from remote nodes when calculating percentages
+func (gs *LocalGovernanceStore) GetBudgetAndRateLimitStatus(ctx context.Context, model string, provider schemas.ModelProvider, vk *configstoreTables.TableVirtualKey, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus {
+	// Prevent nil pointer dereferences
+	if budgetBaselines == nil {
+		budgetBaselines = map[string]float64{}
+	}
+	if tokenBaselines == nil {
+		tokenBaselines = map[string]int64{}
+	}
+	if requestBaselines == nil {
+		requestBaselines = map[string]int64{}
+	}
+
+	result := &BudgetAndRateLimitStatus{
+		BudgetPercentUsed:           0,
+		RateLimitTokenPercentUsed:   0,
+		RateLimitRequestPercentUsed: 0,
+	}
+
+	// Check model-specific rate limits and budgets (takes precedence)
+	if model != "" {
+		// Check model+provider config first (most specific)
+		key := fmt.Sprintf("%s:%s", model, string(provider))
+		if modelValue, ok := gs.modelConfigs.Load(key); ok && modelValue != nil {
+			if modelConfig, ok := modelValue.(*configstoreTables.TableModelConfig); ok && modelConfig != nil {
+				// Get rate limit status
+				if modelConfig.RateLimitID != nil {
+					if rateLimitValue, ok := gs.rateLimits.Load(*modelConfig.RateLimitID); ok && rateLimitValue != nil {
+						if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+							tokensBaseline, exists := tokenBaselines[rateLimit.ID]
+							if !exists {
+								tokensBaseline = 0
+							}
+							requestsBaseline, exists := requestBaselines[rateLimit.ID]
+							if !exists {
+								requestsBaseline = 0
+							}
+							// Calculate token percent used
+							if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+								tokenPercent := float64(rateLimit.TokenCurrentUsage+tokensBaseline) / float64(*rateLimit.TokenMaxLimit) * 100
+								if tokenPercent > result.RateLimitTokenPercentUsed {
+									result.RateLimitTokenPercentUsed = tokenPercent
+								}
+							}
+							// Calculate request percent used
+							if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+								requestPercent := float64(rateLimit.RequestCurrentUsage+requestsBaseline) / float64(*rateLimit.RequestMaxLimit) * 100
+								if requestPercent > result.RateLimitRequestPercentUsed {
+									result.RateLimitRequestPercentUsed = requestPercent
+								}
+							}
+						}
+					}
+				}
+				// Get budget status
+				if modelConfig.BudgetID != nil {
+					if budgetValue, ok := gs.budgets.Load(*modelConfig.BudgetID); ok && budgetValue != nil {
+						if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+							baseline, exists := budgetBaselines[budget.ID]
+							if !exists {
+								baseline = 0
+							}
+							if budget.MaxLimit > 0 {
+								budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+								if budgetPercent > result.BudgetPercentUsed {
+									result.BudgetPercentUsed = budgetPercent
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Fall back to model-only config (if exists)
+		// Uses findModelOnlyConfig for cross-provider model name normalization
+		if modelConfig, _ := gs.findModelOnlyConfig(model); modelConfig != nil {
+			// Get rate limit status
+			if modelConfig.RateLimitID != nil {
+				if rateLimitValue, ok := gs.rateLimits.Load(*modelConfig.RateLimitID); ok && rateLimitValue != nil {
+					if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+						// Calculate token percent used
+						tokensBaseline, exists := tokenBaselines[rateLimit.ID]
+						if !exists {
+							tokensBaseline = 0
+						}
+						requestsBaseline, exists := requestBaselines[rateLimit.ID]
+						if !exists {
+							requestsBaseline = 0
+						}
+						if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+							tokenPercent := float64(rateLimit.TokenCurrentUsage+tokensBaseline) / float64(*rateLimit.TokenMaxLimit) * 100
+							if tokenPercent > result.RateLimitTokenPercentUsed {
+								result.RateLimitTokenPercentUsed = tokenPercent
+							}
+						}
+						// Calculate request percent used
+						if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+							requestPercent := float64(rateLimit.RequestCurrentUsage+requestsBaseline) / float64(*rateLimit.RequestMaxLimit) * 100
+							if requestPercent > result.RateLimitRequestPercentUsed {
+								result.RateLimitRequestPercentUsed = requestPercent
+							}
+						}
+					}
+				}
+			}
+			// Get budget status
+			if modelConfig.BudgetID != nil {
+				if budgetValue, ok := gs.budgets.Load(*modelConfig.BudgetID); ok && budgetValue != nil {
+					if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+						baseline, exists := budgetBaselines[budget.ID]
+						if !exists {
+							baseline = 0
+						}
+						if budget.MaxLimit > 0 {
+							budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+							if budgetPercent > result.BudgetPercentUsed {
+								result.BudgetPercentUsed = budgetPercent
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check global provider-specific rate limits and budgets
+	providerValue, ok := gs.providers.Load(string(provider))
+	if ok && providerValue != nil {
+		if providerTable, ok := providerValue.(*configstoreTables.TableProvider); ok && providerTable != nil {
+			// Get rate limit status
+			if providerTable.RateLimitID != nil {
+				if rateLimitValue, ok := gs.rateLimits.Load(*providerTable.RateLimitID); ok && rateLimitValue != nil {
+					if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+						tokensBaseline, exists := tokenBaselines[rateLimit.ID]
+						if !exists {
+							tokensBaseline = 0
+						}
+						requestsBaseline, exists := requestBaselines[rateLimit.ID]
+						if !exists {
+							requestsBaseline = 0
+						}
+						// Calculate token percent used
+						if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+							tokenPercent := float64(rateLimit.TokenCurrentUsage+tokensBaseline) / float64(*rateLimit.TokenMaxLimit) * 100
+							if tokenPercent > result.RateLimitTokenPercentUsed {
+								result.RateLimitTokenPercentUsed = tokenPercent
+							}
+						}
+						// Calculate request percent used
+						if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+							requestPercent := float64(rateLimit.RequestCurrentUsage+requestsBaseline) / float64(*rateLimit.RequestMaxLimit) * 100
+							if requestPercent > result.RateLimitRequestPercentUsed {
+								result.RateLimitRequestPercentUsed = requestPercent
+							}
+						}
+					}
+				}
+			}
+			// Get budget status
+			if providerTable.BudgetID != nil {
+				if budgetValue, ok := gs.budgets.Load(*providerTable.BudgetID); ok && budgetValue != nil {
+					if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+						baseline, exists := budgetBaselines[budget.ID]
+						if !exists {
+							baseline = 0
+						}
+						if budget.MaxLimit > 0 {
+							budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+							if budgetPercent > result.BudgetPercentUsed {
+								result.BudgetPercentUsed = budgetPercent
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check virtual key level provider-specific rate limits and budgets
+	if vk != nil {
+		if vk.ProviderConfigs != nil {
+			for _, pc := range vk.ProviderConfigs {
+				if pc.Provider == string(provider) {
+					// Get rate limit status
+					if pc.RateLimit != nil {
+						// Look up canonical rate limit from gs.rateLimits
+						if rateLimitValue, ok := gs.rateLimits.Load(pc.RateLimit.ID); ok && rateLimitValue != nil {
+							if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+								tokensBaseline, exists := tokenBaselines[rateLimit.ID]
+								if !exists {
+									tokensBaseline = 0
+								}
+								requestsBaseline, exists := requestBaselines[rateLimit.ID]
+								if !exists {
+									requestsBaseline = 0
+								}
+								// Calculate token percent used
+								if rateLimit.TokenMaxLimit != nil && *rateLimit.TokenMaxLimit > 0 {
+									tokenPercent := float64(rateLimit.TokenCurrentUsage+tokensBaseline) / float64(*rateLimit.TokenMaxLimit) * 100
+									if tokenPercent > result.RateLimitTokenPercentUsed {
+										result.RateLimitTokenPercentUsed = tokenPercent
+									}
+								}
+								// Calculate request percent used
+								if rateLimit.RequestMaxLimit != nil && *rateLimit.RequestMaxLimit > 0 {
+									requestPercent := float64(rateLimit.RequestCurrentUsage+requestsBaseline) / float64(*rateLimit.RequestMaxLimit) * 100
+									if requestPercent > result.RateLimitRequestPercentUsed {
+										result.RateLimitRequestPercentUsed = requestPercent
+									}
+								}
+							}
+						}
+					}
+					// Get budget status
+					if pc.BudgetID != nil {
+						if budgetValue, ok := gs.budgets.Load(*pc.BudgetID); ok && budgetValue != nil {
+							if budget, ok := budgetValue.(*configstoreTables.TableBudget); ok && budget != nil {
+								baseline, exists := budgetBaselines[budget.ID]
+								if !exists {
+									baseline = 0
+								}
+								if budget.MaxLimit > 0 {
+									budgetPercent := float64(budget.CurrentUsage+baseline) / budget.MaxLimit * 100
+									if budgetPercent > result.BudgetPercentUsed {
+										result.BudgetPercentUsed = budgetPercent
+									}
+								}
+							}
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+	return result
+}
+
+// UpdateRoutingRuleInMemory updates a routing rule in the in-memory cache
+func (gs *LocalGovernanceStore) UpdateRoutingRuleInMemory(rule *configstoreTables.TableRoutingRule) error {
+	if rule == nil {
+		return fmt.Errorf("routing rule cannot be nil")
+	}
+
+	// First, remove the rule from ALL scopes (in case it was moved from one scope to another)
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+
+		// Filter out the rule if it exists in this scope
+		newRules := make([]*configstoreTables.TableRoutingRule, 0, len(rules))
+		for _, r := range rules {
+			if r.ID != rule.ID {
+				newRules = append(newRules, r)
+			}
+		}
+
+		// Update the scope with the filtered rules
+		if len(newRules) != len(rules) {
+			if len(newRules) == 0 {
+				gs.routingRules.Delete(key)
+			} else {
+				gs.routingRules.Store(key, newRules)
+			}
+		}
+		return true
+	})
+
+	// Build cache key for the new scope
+	var key string
+	if rule.Scope == "global" {
+		key = "global:"
+	} else {
+		scopeID := ""
+		if rule.ScopeID != nil {
+			scopeID = *rule.ScopeID
+		}
+		key = fmt.Sprintf("%s:%s", rule.Scope, scopeID)
+	}
+
+	// Load existing rules for this scope
+	var rules []*configstoreTables.TableRoutingRule
+	if value, ok := gs.routingRules.Load(key); ok {
+		if existing, ok := value.([]*configstoreTables.TableRoutingRule); ok {
+			rules = existing
+		}
+	}
+
+	// Add the rule to the new scope
+	rules = append(rules, rule)
+
+	// Sort by priority ASC (0 is highest priority, higher numbers are lower priority)
+	sort.Slice(rules, func(i, j int) bool {
+		return rules[i].Priority < rules[j].Priority
+	})
+
+	// Store back in cache
+	gs.routingRules.Store(key, rules)
+
+	// Invalidate compiled program cache for this rule (expression may have changed)
+	gs.compiledRoutingPrograms.Delete(rule.ID)
+
+	// Recompile the program immediately to update cache with fresh compilation
+	if _, err := gs.GetRoutingProgram(rule); err != nil {
+		gs.logger.Warn("Failed to recompile routing program for rule %s: %v", rule.ID, err)
+	}
+
+	return nil
+}
+
+// DeleteRoutingRuleInMemory removes a routing rule from the in-memory cache
+func (gs *LocalGovernanceStore) DeleteRoutingRuleInMemory(id string) error {
+	// Loop over all rules and delete the one with the matching id
+	gs.routingRules.Range(func(key, value interface{}) bool {
+		rules, ok := value.([]*configstoreTables.TableRoutingRule)
+		if !ok {
+			return true
+		}
+
+		// Find and filter out the rule with matching ID
+		var filteredRules []*configstoreTables.TableRoutingRule
+		for _, r := range rules {
+			if r.ID != id {
+				filteredRules = append(filteredRules, r)
+			}
+		}
+
+		// Update or delete the key
+		if len(filteredRules) == 0 {
+			gs.routingRules.Delete(key)
+		} else {
+			gs.routingRules.Store(key, filteredRules)
+		}
+		return true
+	})
+
+	// Invalidate compiled program cache for this rule
+	gs.compiledRoutingPrograms.Delete(id)
+
+	return nil
 }

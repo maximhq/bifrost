@@ -21,7 +21,7 @@ func (request *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostConte
 }
 
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
-func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
+func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
@@ -38,8 +38,8 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
-
 	switch bifrostReq.Provider {
 	case schemas.OpenAI:
 		return openaiReq
@@ -65,6 +65,10 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		}
 		return openaiReq
 	default:
+		// Check if provider is a custom provider
+		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			return openaiReq
+		}
 		openaiReq.filterOpenAISpecificParameters()
 		return openaiReq
 	}
@@ -98,14 +102,23 @@ func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
 		}
 	}
 
+	if request.ChatParameters.Prediction != nil {
+		request.ChatParameters.Prediction = nil
+	}
 	if request.ChatParameters.PromptCacheKey != nil {
 		request.ChatParameters.PromptCacheKey = nil
+	}
+	if request.ChatParameters.PromptCacheRetention != nil {
+		request.ChatParameters.PromptCacheRetention = nil
 	}
 	if request.ChatParameters.Verbosity != nil {
 		request.ChatParameters.Verbosity = nil
 	}
 	if request.ChatParameters.Store != nil {
 		request.ChatParameters.Store = nil
+	}
+	if request.ChatParameters.WebSearchOptions != nil {
+		request.ChatParameters.WebSearchOptions = nil
 	}
 }
 

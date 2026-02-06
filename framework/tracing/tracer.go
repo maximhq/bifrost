@@ -176,7 +176,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	span := trace.GetSpan(h.spanID)
 	if span == nil {
 		return
-	}
+	}	
 	for k, v := range PopulateResponseAttributes(resp) {
 		span.SetAttribute(k, v)
 	}

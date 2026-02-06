@@ -35,6 +35,9 @@ const PROVIDER_ENDPOINTS: Partial<Record<BaseProvider, Partial<Record<RequestTyp
 		transcription_stream: "/v1/audio/transcriptions",
 		image_generation: "/v1/images/generations",
 		image_generation_stream: "/v1/images/generations",
+		image_edit: "/v1/images/edits",
+		image_edit_stream: "/v1/images/edits",
+		image_variation: "/v1/images/variations",
 		count_tokens: "/v1/responses/tokens",
 	},
 	anthropic: {
@@ -75,6 +78,9 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "transcription_stream", label: "Transcription Stream" },
 	{ key: "image_generation", label: "Image Generation" },
 	{ key: "image_generation_stream", label: "Image Generation Stream" },
+	{ key: "image_edit", label: "Image Edit" },
+	{ key: "image_edit_stream", label: "Image Edit Stream" },
+	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
 
@@ -128,8 +134,11 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 											</PopoverTrigger>
 											<PopoverContent className="w-80" align="end" onOpenAutoFocus={(e) => e.preventDefault()}>
 												<div className="space-y-2">
-													<h4 className="text-sm font-medium">Custom Path</h4>
-													<p className="text-muted-foreground text-xs">Override the default endpoint path</p>
+													<h4 className="text-sm font-medium">Custom Path or URL</h4>
+													<p className="text-muted-foreground text-xs">
+														Override with a path (e.g., /v1/chat) or a full URL (e.g., https://api.example.com/chat) to bypass
+														base_url
+													</p>
 													<Input placeholder={placeholder} {...pathField} value={pathField.value || ""} className="h-9" />
 												</div>
 											</PopoverContent>
@@ -169,7 +178,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 				<div className="text-sm font-medium">Allowed Request Types</div>
 				<p className="text-muted-foreground text-xs">
 					Select which request types this custom provider can handle.{" "}
-					{!isPathOverrideDisabled ? "Click the settings icon to customize endpoint paths." : ""}
+					{!isPathOverrideDisabled ? "Click the settings icon to customize endpoint paths or use full URLs." : ""}
 				</p>
 			</div>
 

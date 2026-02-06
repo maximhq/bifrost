@@ -128,6 +128,37 @@ if response.ChatResponse != nil {
 }
 ```
 
+### Passthrough Extra Parameters
+
+Enable passthrough mode for extra parameters. When enabled, any parameters in `ExtraParams` will be merged directly into the request sent to the provider, bypassing Bifrost's parameter filtering.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "custom_param": "value",
+            "another_param": 123,
+            "nested_param": map[string]interface{}{
+                "nested_key": "nested_value",
+            },
+        },
+    },
+})
+```
+
+When enabled, the extra parameters are merged into the JSON request body sent to the provider. This allows you to pass provider-specific parameters that Bifrost doesn't natively support.
+
+<Note>
+- This feature only works for JSON requests, not multipart/form-data requests
+- Parameters already handled by Bifrost (like `addWatermark`, `enhancePrompt`) are not duplicated - they appear in their proper location
+- Nested parameters (e.g., `parameters.custom_field`) are merged recursively with existing nested structures
+</Note>
+
 ## Response Metadata Keys
 
 These keys are set by Bifrost and can be read from the context after a request completes. They're particularly useful in plugins and hooks.
@@ -168,7 +199,7 @@ isStreamEnd := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool)
 ```
 
 <Note>
-Plugin developers: When implementing custom streaming in PreHook or PostHook, make sure to mark `BifrostContextKeyStreamEndIndicator` as `true` at the end of the stream for proper cleanup.
+Plugin developers: When implementing custom streaming in PreLLMHook or PostLLMHook, make sure to mark `BifrostContextKeyStreamEndIndicator` as `true` at the end of the stream for proper cleanup.
 </Note>
 
 ### Integration Type
@@ -262,6 +293,7 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Use raw request body |
 | `BifrostContextKeySendBackRawRequest` | `bool` | Set | Include raw request in response |
 | `BifrostContextKeySendBackRawResponse` | `bool` | Set | Include raw response |
+| `BifrostContextKeyPassthroughExtraParams` | `bool` | Set | Enable passthrough for extra parameters |
 | `BifrostContextKeyIntegrationType` | `string` | Read | Integration format type |
 | `BifrostContextKeyUserAgent` | `string` | Read | Request user agent |
 

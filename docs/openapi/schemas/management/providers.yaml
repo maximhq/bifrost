@@ -77,6 +77,11 @@ AzureKeyConfig:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
     tenant_id:
       $ref: '../../schemas/management/common.yaml#/EnvVar'
+    scopes:
+      type: array
+      items:
+        type: string
+      description: List of scopes to use for authentication
 
 VertexKeyConfig:
   type: object

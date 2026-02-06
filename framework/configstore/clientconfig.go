@@ -53,6 +53,7 @@ type ClientConfig struct {
 	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
@@ -127,6 +128,12 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
 	} else {
 		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
+	}
+
+	if c.MCPToolSyncInterval > 0 {
+		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
+	} else {
+		hash.Write([]byte("mcpToolSyncInterval:0"))
 	}
 
 	// Hash integer fields
@@ -285,6 +292,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			if key.AzureKeyConfig.TenantID != nil {
 				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
+			}
+			if len(key.AzureKeyConfig.Scopes) > 0 {
+				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
@@ -456,8 +466,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 
 // VirtualKeyHashInput represents the fields used for virtual key hash generation.
 // This struct is used to create a consistent hash from TableVirtualKey,
-// excluding dynamic fields like ID, timestamps, relationship objects, and Value.
-// Note: Value is intentionally excluded as it's a generated secret that shouldn't affect config sync.
+// excluding dynamic fields like ID, timestamps, and relationship objects.
 type VirtualKeyHashInput struct {
 	Name        string
 	Description string
@@ -496,6 +505,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
+	// Hash Value
 	hash.Write([]byte(vk.Value))
 	// Hash IsActive
 	if vk.IsActive {
@@ -753,6 +763,78 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
+// This is used to detect changes to routing rules between config.json and database.
+// Skips: CreatedAt, UpdatedAt (dynamic fields)
+func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
+	hash := sha256.New()
+
+	// Hash ID
+	hash.Write([]byte(r.ID))
+
+	// Hash Name
+	hash.Write([]byte(r.Name))
+
+	// Hash Description
+	hash.Write([]byte(r.Description))
+
+	// Hash Enabled
+	if r.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+
+	// Hash CelExpression
+	hash.Write([]byte(r.CelExpression))
+
+	// Hash Provider
+	hash.Write([]byte(r.Provider))
+
+	// Hash Model
+	hash.Write([]byte(r.Model))
+
+	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
+	if r.Fallbacks != nil {
+		hash.Write([]byte(*r.Fallbacks))
+	} else if len(r.ParsedFallbacks) > 0 {
+		data, err := sonic.Marshal(r.ParsedFallbacks)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Query: use raw string when set, else marshal ParsedQuery (config-origin)
+	// Use OrderedMap's deterministic marshalling to ensure consistent hashes across runs
+	if r.Query != nil {
+		hash.Write([]byte(*r.Query))
+	} else if len(r.ParsedQuery) > 0 {
+		// Convert map to OrderedMap which has deterministic JSON marshalling with sorted keys
+		orderedMap := schemas.OrderedMap(r.ParsedQuery)
+		data, err := sonic.Marshal(orderedMap)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Scope
+	hash.Write([]byte(r.Scope))
+
+	// Hash ScopeID (nil = global)
+	scopeID := ""
+	if r.ScopeID != nil {
+		scopeID = *r.ScopeID
+	}
+	hash.Write([]byte(scopeID))
+
+	// Hash Priority
+	hash.Write([]byte(strconv.Itoa(r.Priority)))
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -884,5 +966,6 @@ type GovernanceConfig struct {
 	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
 	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
 	Providers    []tables.TableProvider    `json:"providers"`
+	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
 	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
 }

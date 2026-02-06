@@ -43,10 +43,22 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateMCPToolLogsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCostColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddImageGenerationOutputColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddImageGenerationInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVirtualKeyColumnsToMCPToolLogs(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -681,6 +693,122 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationCreateMCPToolLogsTable creates the mcp_tool_logs table for MCP tool execution logs
+func migrationCreateMCPToolLogsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "mcp_tool_logs_init",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&MCPToolLog{}) {
+				if err := migrator.CreateTable(&MCPToolLog{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id"); err != nil {
+					return fmt.Errorf("failed to create index on llm_request_id: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name"); err != nil {
+					return fmt.Errorf("failed to create index on tool_name: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_server_label") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_server_label"); err != nil {
+					return fmt.Errorf("failed to create index on server_label: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_latency") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_latency"); err != nil {
+					return fmt.Errorf("failed to create index on latency: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_status") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_status"); err != nil {
+					return fmt.Errorf("failed to create index on status: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropTable(&MCPToolLog{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating mcp_tool_logs table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCostColumnToMCPToolLogs adds the cost column to the mcp_tool_logs table
+func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_cost_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add cost column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "cost") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "cost"); err != nil {
+					return fmt.Errorf("failed to add cost column: %w", err)
+				}
+			}
+
+			// Create index on cost column
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_cost"); err != nil {
+					return fmt.Errorf("failed to create index on cost: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop index first
+			if migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
+				if err := migrator.DropIndex(&MCPToolLog{}, "idx_mcp_logs_cost"); err != nil {
+					return err
+				}
+			}
+
+			// Drop column
+			if migrator.HasColumn(&MCPToolLog{}, "cost") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "cost"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding cost column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
 func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -743,6 +871,117 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) er
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding image generation input column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_rule_id_and_routing_rule_name_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing rule id and routing rule name columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyColumnsToMCPToolLogs adds virtual_key_id and virtual_key_name columns to the mcp_tool_logs table
+func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_virtual_key_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add virtual_key_id column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_id column: %w", err)
+				}
+			}
+
+			// Add virtual_key_name column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_name column: %w", err)
+				}
+			}
+
+			// Create index on virtual_key_id column
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
+					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop index first
+			if migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+				if err := migrator.DropIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
+					return err
+				}
+			}
+
+			// Drop virtual_key_name column
+			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
+					return err
+				}
+			}
+
+			// Drop virtual_key_id column
+			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding virtual key columns to mcp_tool_logs: %s", err.Error())
 	}
 	return nil
 }

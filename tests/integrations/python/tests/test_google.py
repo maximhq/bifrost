@@ -81,6 +81,10 @@ from .utils.common import (
     GENAI_INVALID_ROLE_CONTENT,
     # Image Generation utilities
     IMAGE_GENERATION_SIMPLE_PROMPT,
+    # Image Edit utilities
+    IMAGE_EDIT_SIMPLE_PROMPT,
+    assert_valid_image_edit_response,
+    create_simple_mask_image,
     IMAGE_URL_SECONDARY,
     INPUT_TOKENS_LONG_TEXT,
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -2204,6 +2208,101 @@ Joe: Pretty good, thanks for asking."""
         except Exception as e:
             # Imagen may not be available in all regions or configurations
             pytest.skip(f"Imagen generation failed: {e}")
+
+    # =========================================================================
+    # IMAGE EDIT TEST CASES
+    # =========================================================================
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.timeout(300)  # Increase timeout to 300 seconds for image edit tests
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("image_edit"))
+    def test_42a_image_edit_simple(self, test_config, provider, model):
+        """Test Case 42a: Simple image edit with Gemini/Imagen via Bifrost"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for image_edit scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which Google GenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by Google GenAI SDK")
+        
+        # Vertex imagen models (imagen-3.0-capability-001) only support 1 image, not mask as separate image
+        if provider == "vertex" and "imagen" in model.lower():
+            pytest.skip(f"Vertex imagen model {model} only supports 1 image, not mask as separate image")
+        
+        import base64
+        
+        # Get provider-specific client
+        client = get_provider_google_client(provider)
+        
+        # Prepare image and mask
+        image_b64 = BASE64_IMAGE
+        mask_b64 = create_simple_mask_image(512, 512)
+        
+        # Google GenAI uses Parts with inline_data for image editing
+        # Create content with image, mask, and prompt
+        # Text content is passed as a string, not Part.from_text()
+        response = client.models.generate_content(
+            model=format_provider_model(provider, model),
+            contents=[
+                types.Part.from_bytes(
+                    data=base64.b64decode(image_b64),
+                    mime_type="image/png"
+                ),
+                IMAGE_EDIT_SIMPLE_PROMPT,  # Text content as string
+                # Mask as separate part if supported
+                types.Part.from_bytes(
+                    data=base64.b64decode(mask_b64),
+                    mime_type="image/png"  # Changed to PNG to match mask format
+                )
+            ],
+            config=types.GenerateContentConfig(
+                response_modalities=["IMAGE"]
+            )
+        )
+        
+        # Validate response structure
+        assert_valid_image_edit_response(response, "google")
+
+    @skip_if_no_api_key("google")
+    @pytest.mark.timeout(300)  # Increase timeout to 300 seconds for image edit tests
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("imagen_edit"))
+    def test_42b_imagen_edit(self, test_config, provider, model):
+        """Test Case 42b: Image editing using Imagen model via Bifrost"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for imagen_edit scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which Google GenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by Google GenAI SDK")
+        
+        # Vertex imagen models (imagen-3.0-capability-001) only support 1 image, not mask as separate image
+        if provider == "vertex" and "imagen" in model.lower():
+            pytest.skip(f"Vertex imagen model {model} only supports 1 image, not mask as separate image")
+        
+        import base64
+        
+        client = get_provider_google_client(provider)
+        
+        # For Imagen edit models, Bifrost routes to :editImage endpoint
+        try:
+            response = client.models.generate_content(
+                model=format_provider_model(provider, model),
+                contents=[
+                    types.Part.from_bytes(
+                        data=base64.b64decode(BASE64_IMAGE),
+                        mime_type="image/png"
+                    ),
+                    IMAGE_EDIT_SIMPLE_PROMPT,  # Text content as string
+                    types.Part.from_bytes(
+                        data=base64.b64decode(create_simple_mask_image()),
+                        mime_type="image/png"
+                    )
+                ]
+            )
+            
+            assert_valid_image_edit_response(response, "google")
+        except Exception as e:
+            pytest.skip(f"Imagen edit failed: {e}")
 
     # =========================================================================
     # FILES API TEST CASES

@@ -36,6 +36,9 @@ func ToBedrockTitanEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		}
 		titanReq.InputText = embeddingText
 	}
+	if bifrostReq.Params != nil {
+		titanReq.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 
 	return titanReq, nil
 }

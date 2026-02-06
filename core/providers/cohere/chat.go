@@ -146,29 +146,36 @@ func ToCohereChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*Coh
 		// Convert extra params
 		if bifrostReq.Params.ExtraParams != nil {
 			// Handle thinking parameter
+			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
 					thinking := &CohereThinking{}
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
+						delete(thinkingMap, "type")
 						thinking.Type = CohereThinkingType(typeStr)
 					}
 					if tokenBudget, ok := schemas.SafeExtractIntPointer(thinkingMap["token_budget"]); ok {
+						delete(thinkingMap, "token_budget")
 						thinking.TokenBudget = tokenBudget
 					}
 					cohereReq.Thinking = thinking
+					cohereReq.ExtraParams["thinking"] = thinkingMap
 				}
 			}
 
 			// Handle other Cohere-specific extra params
 			if safetyMode, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["safety_mode"]); ok {
+				delete(cohereReq.ExtraParams, "safety_mode")
 				cohereReq.SafetyMode = safetyMode
 			}
 
 			if logProbs, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["log_probs"]); ok {
+				delete(cohereReq.ExtraParams, "log_probs")
 				cohereReq.LogProbs = logProbs
 			}
 
 			if strictToolChoice, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["strict_tool_choice"]); ok {
+				delete(cohereReq.ExtraParams, "strict_tool_choice")
 				cohereReq.StrictToolChoice = strictToolChoice
 			}
 		}

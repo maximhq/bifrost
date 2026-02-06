@@ -358,7 +358,7 @@ func (provider *MistralProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 // TranscriptionStream performs a streaming transcription request to Mistral's API.
 // It creates a multipart form with the audio file and streams transcription events.
-// Returns a channel of BifrostStream objects containing transcription deltas.
+// Returns a channel of BifrostStreamChunk objects containing transcription deltas.
 func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
@@ -468,7 +468,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 			if ctx.Err() != nil {
 				return
 			}
-			
+
 			line := scanner.Text()
 
 			// Skip empty lines (event delimiter)
@@ -507,7 +507,7 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		// Handle scanner errors
 		if err := scanner.Err(); err != nil {
 			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {	
+			if ctx.Err() != nil {
 				return
 			}
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -659,6 +659,21 @@ func (provider *MistralProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 // ImageGenerationStream is not supported by the Mistral provider.
 func (provider *MistralProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
+// ImageEdit is not supported by the Mistral provider.
+func (provider *MistralProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+}
+
+// ImageEditStream is not supported by the Mistral provider.
+func (provider *MistralProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Mistral provider.
+func (provider *MistralProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Mistral provider.

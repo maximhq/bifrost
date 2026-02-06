@@ -1,0 +1,842 @@
+---
+title: "Request Options"
+description: "Complete reference of all request options supported by Bifrost, including HTTP headers for the gateway and context keys for the Go SDK."
+icon: "list"
+---
+
+Bifrost provides request options that control behavior, enable features, and pass metadata. In the gateway, these are set via HTTP headers (prefixed with `x-bf-`). In the Go SDK, they are set via context keys. This document covers both approaches.
+
+## Complete Reference
+
+| Context Key | Header | Type | Description |
+|-------------|--------|------|-------------|
+| `BifrostContextKeyVirtualKey` | `x-bf-vk` | `string` | Virtual key identifier for governance |
+| `BifrostContextKeyAPIKeyName` | `x-bf-api-key` | `string` | Explicit API key name selection |
+| `BifrostContextKeyRequestID` | `x-request-id` | `string` | Custom request ID for tracking |
+| `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response |
+| `BifrostContextKeyPassthroughExtraParams` | `x-bf-passthrough-extra-params` | `bool` | Enable passthrough for extra parameters |
+| `BifrostContextKeyExtraHeaders` | `x-bf-eh-*` | `map[string][]string` | Custom headers forwarded to provider |
+| `BifrostContextKeyDirectKey` | `-` | `schemas.Key` | Direct key credentials (Go SDK only) |
+| `BifrostContextKeySkipKeySelection` | `-` | `bool` | Skip key selection process (Go SDK only) |
+| `BifrostContextKeyURLPath` | `-` | `string` | Custom URL path appended to provider base URL (Go SDK only) |
+| `BifrostContextKeyUseRawRequestBody` | `-` | `bool` | Use raw request body (Go SDK only, requires RawRequestBody field) |
+| `semanticcache.CacheKey` | `x-bf-cache-key` | `string` | Custom cache key |
+| `semanticcache.CacheTTLKey` | `x-bf-cache-ttl` | `time.Duration` | Cache TTL (duration string or seconds) |
+| `semanticcache.CacheThresholdKey` | `x-bf-cache-threshold` | `float64` | Similarity threshold (0.0-1.0) |
+| `semanticcache.CacheTypeKey` | `x-bf-cache-type` | `string` | Cache type |
+| `semanticcache.CacheNoStoreKey` | `x-bf-cache-no-store` | `bool` | Prevent caching |
+| `mcp-include-clients` | `x-bf-mcp-include-clients` | `[]string` | Filter MCP clients (comma-separated) |
+| `mcp-include-tools` | `x-bf-mcp-include-tools` | `[]string` | Filter MCP tools (comma-separated) |
+| `maxim.TraceIDKey` | `x-bf-maxim-trace-id` | `string` | Maxim trace ID |
+| `maxim.GenerationIDKey` | `x-bf-maxim-generation-id` | `string` | Maxim generation ID |
+| `maxim.TagsKey` | `x-bf-maxim-*` | `map[string]string` | Maxim tags (custom tag names) |
+| `BifrostContextKey(labelName)` | `x-bf-prom-*` | `string` | Prometheus metric labels |
+
+
+## Request Configuration Options
+
+These options configure how Bifrost processes and forwards requests.
+
+### Virtual Key
+
+**Context Key:** `BifrostContextKeyVirtualKey`  
+**Header:** `x-bf-vk`  
+**Type:** `string`  
+**Required:** Yes (when governance **is** enabled and enforced)
+
+Specify the virtual key identifier for governance, routing, and access control.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-vk: vk-engineering-main' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyVirtualKey, "vk-engineering-main")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+<Note>
+Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk-*`, or `x-goog-api-key: vk-*` headers when the value starts with the virtual key prefix.
+</Note>
+
+### API Key Name Selection
+
+**Context Key:** `BifrostContextKeyAPIKeyName`  
+**Header:** `x-bf-api-key`  
+**Type:** `string`  
+**Required:** No
+
+Explicitly select a named API key from your configured keys.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-api-key: premium-key' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "premium-key")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Request ID
+
+**Context Key:** `BifrostContextKeyRequestID`  
+**Header:** `x-request-id`  
+**Type:** `string`  
+**Required:** No
+
+Set a custom request ID for tracking and correlation. If not provided, Bifrost generates a UUID.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-request-id: req-12345-abc' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-12345-abc")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Send Back Raw Response
+
+**Context Key:** `BifrostContextKeySendBackRawResponse`  
+**Header:** `x-bf-send-back-raw-response`  
+**Type:** `bool` (header value: `"true"`)  
+**Required:** No
+
+Include the original provider response alongside Bifrost's standardized response format.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-send-back-raw-response: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+
+// Access raw response
+if response.ChatResponse != nil {
+    rawResp := response.ChatResponse.ExtraFields.RawResponse
+}
+```
+</Tab>
+</Tabs>
+
+The raw response appears in `extra_fields.raw_response`:
+
+```json
+{
+    "choices": [...],
+    "usage": {...},
+    "extra_fields": {
+        "provider": "openai",
+        "raw_response": {
+            // Original provider response here
+        }
+    }
+}
+```
+
+### Passthrough Extra Parameters
+
+**Context Key:** `BifrostContextKeyPassthroughExtraParams`  
+**Header:** `x-bf-passthrough-extra-params`  
+**Type:** `bool` (header value: `"true"`)  
+**Required:** No
+
+Enable passthrough mode for extra parameters. When enabled, any parameters in `extra_params` (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-passthrough-extra-params: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "extra_params": {
+        "custom_param": "value",
+        "another_param": 123
+    }
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+    Params: &schemas.ChatParameters{
+        ExtraParams: map[string]interface{}{
+            "custom_param":  "value",
+            "another_param": 123,
+        },
+    },
+})
+```
+</Tab>
+</Tabs>
+
+<Note>
+- Only works for JSON requests, not multipart/form-data requests
+- Parameters already handled by Bifrost are not duplicated
+- Nested parameters are merged recursively with existing structures
+</Note>
+
+### Direct Key (Go SDK Only)
+
+**Context Key:** `BifrostContextKeyDirectKey`  
+**Header:** `-` (not available via HTTP)  
+**Type:** `schemas.Key`  
+**Required:** No
+
+Bypass key selection and provide credentials directly. Useful for dynamic key scenarios.
+
+```go
+directKey := schemas.Key{
+    Value:  "sk-direct-api-key",
+    Models: []string{"gpt-4o"},
+    Weight: 1.0,
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o",
+    Input:    messages,
+})
+```
+
+### Skip Key Selection (Go SDK Only)
+
+**Context Key:** `BifrostContextKeySkipKeySelection`  
+**Header:** `-` (not available via HTTP)  
+**Type:** `bool`  
+**Required:** No
+
+Skip the key selection process entirely and pass an empty key to the provider. Useful for providers that don't require authentication or when using ambient credentials.
+
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySkipKeySelection, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+
+### Custom URL Path (Go SDK Only)
+
+**Context Key:** `BifrostContextKeyURLPath`  
+**Header:** `-` (not available via HTTP)  
+**Type:** `string`  
+**Required:** No
+
+Append a custom path to the provider's base URL. Useful for accessing provider-specific endpoints.
+
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, "/custom/endpoint")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+
+### Raw Request Body (Go SDK Only)
+
+**Context Key:** `BifrostContextKeyUseRawRequestBody`  
+**Header:** `-` (not available via HTTP)  
+**Type:** `bool`  
+**Required:** No
+
+Send a raw request body instead of Bifrost's standardized format. The provider receives your payload as-is. You must both enable the context key AND set the `RawRequestBody` field on your request.
+
+```go
+// Prepare your raw JSON payload
+rawPayload := []byte(`{
+    "model": "gpt-4o",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "custom_field": "provider-specific-value"
+}`)
+
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider:       schemas.OpenAI,
+    Model:          "gpt-4o",
+    RawRequestBody: rawPayload,
+})
+```
+
+<Note>
+When using raw request body, Bifrost bypasses its request conversion and sends your payload directly to the provider. You're responsible for ensuring the payload matches the provider's expected format.
+</Note>
+
+## Custom Headers
+
+### Extra Headers (x-bf-eh-*)
+
+**Context Key:** `BifrostContextKeyExtraHeaders`  
+**Header Pattern:** `x-bf-eh-{header-name}`  
+**Type:** `map[string][]string`  
+**Required:** No
+
+Pass custom headers to providers. The `x-bf-eh-` prefix is stripped before forwarding.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-eh-user-id: user-123' \
+--header 'x-bf-eh-tracking-id: trace-456' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+extraHeaders := map[string][]string{
+    "user-id":     {"user-123"},
+    "tracking-id": {"trace-456"},
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+The headers `x-bf-eh-user-id` and `x-bf-eh-tracking-id` are forwarded to the provider as `user-id` and `tracking-id` respectively.
+
+**Example use cases:**
+- User identification: `x-bf-eh-user-id`, `x-bf-eh-tenant-id`
+- Request tracking: `x-bf-eh-correlation-id`, `x-bf-eh-trace-id`
+- Custom metadata: `x-bf-eh-department`, `x-bf-eh-cost-center`
+- A/B testing: `x-bf-eh-experiment-id`, `x-bf-eh-variant`
+
+## Semantic Cache Options
+
+These options control semantic caching behavior.
+
+### Cache Key
+
+**Context Key:** `semanticcache.CacheKey`  
+**Header:** `x-bf-cache-key`  
+**Type:** `string`  
+**Required:** No
+
+Specify a custom cache key for semantic cache lookups.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-key: custom-key-123' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheKey, "custom-key-123")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Cache TTL
+
+**Context Key:** `semanticcache.CacheTTLKey`  
+**Header:** `x-bf-cache-ttl`  
+**Type:** `time.Duration` (header value: duration string like `"30s"` or `"5m"`, or seconds as integer)  
+**Required:** No
+
+Set a custom time-to-live for cached responses.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-ttl: 300' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheTTLKey, 5*time.Minute)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds).
+
+### Cache Threshold
+
+**Context Key:** `semanticcache.CacheThresholdKey`  
+**Header:** `x-bf-cache-threshold`  
+**Type:** `float64` (range: 0.0 to 1.0)  
+**Required:** No
+
+Set the similarity threshold for semantic cache matching.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-threshold: 0.85' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheThresholdKey, 0.85)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Cache Type
+
+**Context Key:** `semanticcache.CacheTypeKey`  
+**Header:** `x-bf-cache-type`  
+**Type:** `semanticcache.CacheType` (string)  
+**Required:** No
+
+Specify the cache type for this request.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-type: semantic' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheTypeKey, semanticcache.CacheTypeSemantic)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Cache No Store
+
+**Context Key:** `semanticcache.CacheNoStoreKey`  
+**Header:** `x-bf-cache-no-store`  
+**Type:** `bool` (header value: `"true"`)  
+**Required:** No
+
+Prevent caching of this request/response.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-cache-no-store: true' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+## MCP (Model Context Protocol) Options
+
+These options control MCP client and tool filtering.
+
+### Include Clients
+
+**Context Key:** `mcp-include-clients`  
+**Header:** `x-bf-mcp-include-clients`  
+**Type:** `[]string` (comma-separated values)  
+**Required:** No
+
+Filter MCP clients to include only the specified ones.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-mcp-include-clients: client1,client2' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-clients"), []string{"client1", "client2"})
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Include Tools
+
+**Context Key:** `mcp-include-tools`  
+**Header:** `x-bf-mcp-include-tools`  
+**Type:** `[]string` (comma-separated values)  
+**Required:** No
+
+Filter MCP tools to include only the specified ones.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-mcp-include-tools: tool1,tool2' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), []string{"tool1", "tool2"})
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+## Maxim Observability Options
+
+These options enable Maxim observability integration and tag propagation.
+
+### Maxim Trace ID
+
+**Context Key:** `maxim.TraceIDKey`  
+**Header:** `x-bf-maxim-trace-id`  
+**Type:** `string`  
+**Required:** No
+
+Set the Maxim trace ID for distributed tracing.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-maxim-trace-id: trace-12345' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, maxim.TraceIDKey, "trace-12345")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Maxim Generation ID
+
+**Context Key:** `maxim.GenerationIDKey`  
+**Header:** `x-bf-maxim-generation-id`  
+**Type:** `string`  
+**Required:** No
+
+Set the Maxim generation ID for request correlation.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-maxim-generation-id: gen-12345' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, maxim.GenerationIDKey, "gen-12345")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Maxim Tags (x-bf-maxim-*)
+
+**Context Key:** `maxim.TagsKey`  
+**Header Pattern:** `x-bf-maxim-{tag-name}`  
+**Type:** `map[string]string`  
+**Required:** No
+
+Add custom tags to Maxim traces. Any header starting with `x-bf-maxim-` that isn't a reserved header becomes a tag.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-maxim-environment: production' \
+--header 'x-bf-maxim-team: engineering' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+tags := map[string]string{
+    "environment": "production",
+    "team":        "engineering",
+}
+ctx := context.Background()
+ctx = context.WithValue(ctx, maxim.TagsKey, tags)
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+## Prometheus Options
+
+**Context Key:** `BifrostContextKey(labelName)`  
+**Header Pattern:** `x-bf-prom-{label-name}`  
+**Type:** `string`  
+**Required:** No
+
+Add custom labels to Prometheus metrics. The `x-bf-prom-` prefix is stripped and the remainder becomes the label name.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-prom-environment: production' \
+--header 'x-bf-prom-team: engineering' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKey("environment"), "production")
+ctx = context.WithValue(ctx, schemas.BifrostContextKey("team"), "engineering")
+
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+## Security Denylist
+
+Bifrost maintains a security denylist of headers that are **never** forwarded to providers, regardless of configuration:
+
+- `proxy-authorization`
+- `cookie`
+- `host`
+- `content-length`
+- `connection`
+- `transfer-encoding`
+- `x-api-key` (when used via `x-bf-eh-*`)
+- `x-goog-api-key` (when used via `x-bf-eh-*`)
+- `x-bf-api-key` (when used via `x-bf-eh-*`)
+- `x-bf-vk` (when used via `x-bf-eh-*`)
+
+## Internal Context Keys 
+<Warning>
+These context keys are read-only and set when request is completed. **Do not set these values.**
+</Warning>
+The following context keys are set by Bifrost internally.
+
+- `BifrostContextKeySelectedKeyID` - The selected provider key ID.
+- `BifrostContextKeySelectedKeyName` - The selected provider key name.
+- `BifrostContextKeyNumberOfRetries` - Number of retry attempts made.
+- `BifrostContextKeyFallbackIndex` - Index of fallback provider used.
+- `BifrostContextKeyFallbackRequestID` - Request ID for fallback attempts.
+- `BifrostContextKeyStreamEndIndicator` - Indicates if stream completed.
+- `BifrostContextKeyIntegrationType` - Format type of integration used.
+- `BifrostContextKeyUserAgent` - User agent from request.
+
+## Related Documentation
+
+- **[Gateway Provider Configuration](../quickstart/gateway/provider-configuration)** - Configure providers and headers
+- **[Go SDK Context Keys](../quickstart/go-sdk/context-keys)** - Programmatic context key usage
+- **[Virtual Keys](../features/governance/virtual-keys)** - Virtual key usage and governance
+- **[Semantic Cache](../features/semantic-caching)** - Caching configuration

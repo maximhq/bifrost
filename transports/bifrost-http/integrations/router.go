@@ -269,6 +269,10 @@ type ImageGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *sc
 // It takes a BifrostImageGenerationStreamResponse and returns the event type and the streaming format expected by the specific integration.
 type ImageGenerationStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
 
+// ImageEditResponseConverter is a function that converts BifrostImageGenerationResponse to integration-specific format.
+// It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
+type ImageEditResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
@@ -293,6 +297,10 @@ type PreRequestCallback func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bifro
 // It can be used to modify the response or perform additional logging/metrics.
 // If it returns an error, an error response is sent instead of the success response.
 type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error
+
+// HTTPRequestTypeGetter is a function type that accepts only a *fasthttp.RequestCtx and
+// returns a schemas.RequestType indicating the HTTP request type derived from the context.
+type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
 // StreamConfig defines streaming-specific configuration for an integration
 //
@@ -331,6 +339,7 @@ const (
 	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
+	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -339,6 +348,7 @@ type RouteConfig struct {
 	Type                                   RouteConfigType                        // Type of the route
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
+	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
 	GetRequestTypeInstance                 func() interface{}                     // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
@@ -437,20 +447,33 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			continue
 		}
 
+		registerRequestTypeMiddleware := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return func(ctx *fasthttp.RequestCtx) {
+				if route.GetHTTPRequestType != nil {
+					ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(ctx))
+				}
+				next(ctx)
+			}
+		}
+
+		// Create a fresh middlewares list for this route (don't mutate the original)
+		// This ensures each route only has its own middleware plus the originally passed middlewares
+		routeMiddlewares := append([]schemas.BifrostHTTPMiddleware{registerRequestTypeMiddleware}, middlewares...)
+
 		handler := g.createHandler(route)
 		switch method {
 		case fasthttp.MethodPost:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodGet:
-			r.GET(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.GET(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodPut:
-			r.PUT(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.PUT(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodDelete:
-			r.DELETE(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.DELETE(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodHead:
-			r.HEAD(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...)) // Default to POST
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...)) // Default to POST
 		}
 	}
 }
@@ -843,6 +866,62 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageGenerationResponse)
+	case bifrostReq.ImageEditRequest != nil:
+		imageEditResponse, bifrostErr := g.client.ImageEditRequest(bifrostCtx, bifrostReq.ImageEditRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageEditResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageEditResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageEditResponse)
+	case bifrostReq.ImageVariationRequest != nil:
+		imageVariationResponse, bifrostErr := g.client.ImageVariationRequest(bifrostCtx, bifrostReq.ImageVariationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageVariationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageVariationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageVariationResponse)
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
@@ -1464,6 +1543,8 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 	} else if bifrostReq.ImageGenerationRequest != nil {
 		stream, bifrostErr = g.client.ImageGenerationStreamRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
+	} else if bifrostReq.ImageEditRequest != nil {
+		stream, bifrostErr = g.client.ImageEditStreamRequest(bifrostCtx, bifrostReq.ImageEditRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -1552,7 +1633,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
-	var httpReq *schemas.HTTPRequest	
+	var httpReq *schemas.HTTPRequest
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
@@ -1658,10 +1739,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					var err error
 					chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 					if err != nil {
-						if chunk == nil {							
+						if chunk == nil {
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
-								cancel()								
+								cancel()
 								return
 							}
 							// Return error event and stopping the streaming
@@ -1669,7 +1750,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 								cancel()
 								return
 							}
-							_ = w.Flush() 
+							_ = w.Flush()
 							cancel()
 							return
 						}

@@ -12,17 +12,18 @@ The VectorStore is a core component of Bifrost's framework package that provides
 - **Vector Similarity Search**: Find semantically similar content using embeddings
 - **Namespace Management**: Organize data into separate collections with custom schemas
 - **Flexible Filtering**: Query data with complex filters and pagination
-- **Multiple Backends**: Support for Weaviate, Redis, and Qdrant vector stores
+- **Multiple Backends**: Support for Weaviate, Redis, Qdrant, and Pinecone vector stores
 - **High Performance**: Optimized for production workloads
 - **Scalable Storage**: Handle millions of vectors with efficient indexing
 
 ## Supported Vector Stores
 
-Bifrost currently supports three vector store implementations:
+Bifrost currently supports four vector store implementations:
 
 - **[Weaviate](#weaviate)**: Production-ready vector database with gRPC support and advanced querying
 - **[Redis](#redis)**: High-performance in-memory vector store using RediSearch
 - **[Qdrant](#qdrant)**: Rust-based vector search engine with advanced filtering
+- **[Pinecone](#pinecone)**: Managed vector database service with serverless and pod-based options
 
 ## VectorStore Interface Usage
 
@@ -550,6 +551,98 @@ Qdrant uses port 6334 for gRPC and port 6333 for REST. Bifrost uses the gRPC por
 
 <Warning>
 Qdrant requires all IDs to be valid UUIDs. Use `uuid.New().String()` to generate IDs.
+</Warning>
+
+---
+
+## Pinecone
+
+[Pinecone](https://www.pinecone.io/) is a managed vector database service designed for machine learning applications, offering both serverless and pod-based deployment options.
+
+### Key Features
+
+- **Managed Service**: Fully managed with no infrastructure to maintain
+- **Serverless Option**: Pay-per-use pricing with automatic scaling
+- **High Performance**: Optimized for low-latency vector search
+- **Metadata Filtering**: Advanced filtering on vector metadata
+- **Namespaces**: Organize vectors into separate namespaces within an index
+
+### Setup & Installation
+
+**Pinecone Cloud:**
+- Sign up at [pinecone.io](https://www.pinecone.io/)
+- Create a new index with the desired dimensions
+- Get your API key and index host URL from the console
+
+**Local Development (Pinecone Local):**
+```bash
+docker run -d \
+  --name pinecone-local \
+  -p 5081:5081 \
+  ghcr.io/pinecone-io/pinecone-index:latest
+```
+
+### Configuration Options
+
+<Tabs group="pinecone-config">
+
+<Tab title="Go SDK">
+
+```go
+vectorConfig := &vectorstore.Config{
+    Enabled: true,
+    Type:    vectorstore.VectorStoreTypePinecone,
+    Config: vectorstore.PineconeConfig{
+        APIKey:    "your-pinecone-api-key",
+        IndexHost: "your-index-host.svc.environment.pinecone.io",
+    },
+}
+
+store, err := vectorstore.NewVectorStore(context.Background(), vectorConfig, logger)
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+**Cloud Setup:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pinecone",
+    "config": {
+      "api_key": "your-pinecone-api-key",
+      "index_host": "your-index-host.svc.environment.pinecone.io"
+    }
+  }
+}
+```
+
+**Local Development:**
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "pinecone",
+    "config": {
+      "api_key": "pclocal",
+      "index_host": "localhost:5081"
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+<Note>
+For local development with Pinecone Local, any API key value works (e.g., "pclocal"). The index host should point to localhost:5081 by default.
+</Note>
+
+<Warning>
+Pinecone requires all IDs to be unique strings. Namespaces are created automatically when you first upsert vectors.
 </Warning>
 
 ---

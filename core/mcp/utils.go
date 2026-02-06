@@ -24,9 +24,10 @@ func (m *MCPManager) GetClientForTool(toolName string) *schemas.MCPClientState {
 	defer m.mu.RUnlock()
 
 	for _, client := range m.clientMap {
+		// All tools (both internal and external) are now stored with prefix "clientName-toolName"
+		// This ensures consistent behavior across all MCP clients
 		if _, exists := client.ToolMap[toolName]; exists {
 			// Return a copy to prevent TOCTOU race conditions
-			// The caller receives a snapshot of the client state at this point in time
 			clientCopy := *client
 			return &clientCopy
 		}
@@ -53,37 +54,44 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 		includeClients = existingIncludeClients
 	}
 
+	m.logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
+
 	tools := make(map[string][]schemas.ChatTool)
 	for _, client := range m.clientMap {
 		// Use client name as the key (not ID)
 		clientName := client.ExecutionConfig.Name
+		clientID := client.ExecutionConfig.ID
 
-		// Apply client filtering logic
-		if !shouldIncludeClient(clientName, includeClients) {
-			logger.Debug(fmt.Sprintf("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName))
+		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
+
+		// Apply client filtering logic - check both ID and Name for compatibility
+		if !shouldIncludeClient(clientName, includeClients, m.logger) {
+			m.logger.Debug("%s Skipping MCP client %s: not in include clients list", MCPLogPrefix, clientName)
 			continue
 		}
 
-		logger.Debug(fmt.Sprintf("Checking tools for MCP client %s with tools to execute: %v", clientName, client.ExecutionConfig.ToolsToExecute))
-
 		// Add all tools from this client
+		// FILTERING HIERARCHY (restrictive, not permissive):
+		// 1. Client-level configuration (ToolsToExecute) - Global allow-list, most restrictive
+		// 2. Request context (MCPContextKeyIncludeTools) - Can only further narrow, not expand
+		// Context filtering CANNOT override client configuration - it can only be more restrictive.
 		for toolName, tool := range client.ToolMap {
-			// Check if tool should be skipped based on client configuration
+			// First check: Client configuration is the global allow-list
+			// If client config blocks a tool, it CANNOT be overridden by context
 			if shouldSkipToolForConfig(toolName, client.ExecutionConfig) {
-				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in tools to execute list", MCPLogPrefix, toolName))
 				continue
 			}
 
-			// Check if tool should be skipped based on request context
+			// Second check: Request context can further narrow the allowed tools
+			// Context can only restrict, not expand beyond client configuration
 			if shouldSkipToolForRequest(ctx, clientName, toolName) {
-				logger.Debug(fmt.Sprintf("%s Skipping MCP tool %s: not in include tools list", MCPLogPrefix, toolName))
 				continue
 			}
 
 			tools[clientName] = append(tools[clientName], tool)
 		}
 		if len(tools[clientName]) > 0 {
-			logger.Debug(fmt.Sprintf("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName))
+			m.logger.Debug("%s Added %d tools for MCP client %s", MCPLogPrefix, len(tools[clientName]), clientName)
 		}
 	}
 	return tools
@@ -99,19 +107,24 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap))
 	for _, client := range m.clientMap {
+		m.logger.Debug("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID)
 		if client.ExecutionConfig.Name == clientName {
 			// Return a copy to prevent TOCTOU race conditions
 			// The caller receives a snapshot of the client state at this point in time
+			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient)
 			clientCopy := *client
 			return &clientCopy
 		}
 	}
+	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
 	return nil
 }
 
 // retrieveExternalTools retrieves and filters tools from an external MCP server without holding locks.
-func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string) (map[string]schemas.ChatTool, error) {
+// Returns both the tools map and a name mapping (sanitized_name -> original_mcp_name) for tool execution.
+func retrieveExternalTools(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger) (map[string]schemas.ChatTool, map[string]string, error) {
 	// Get available tools from external server
 	listRequest := mcp.ListToolsRequest{
 		PaginatedRequest: mcp.PaginatedRequest{
@@ -123,55 +136,76 @@ func retrieveExternalTools(ctx context.Context, client *client.Client, clientNam
 
 	toolsResponse, err := client.ListTools(ctx, listRequest)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list tools: %v", err)
+		return nil, nil, fmt.Errorf("failed to list tools: %v", err)
 	}
 
 	if toolsResponse == nil {
-		return make(map[string]schemas.ChatTool), nil // No tools available
+		return make(map[string]schemas.ChatTool), make(map[string]string), nil // No tools available
 	}
 
 	tools := make(map[string]schemas.ChatTool)
+	toolNameMapping := make(map[string]string) // Maps sanitized_name -> original_mcp_name
 
 	// toolsResponse is already a ListToolsResult
 	for _, mcpTool := range toolsResponse.Tools {
+		// Validate the original tool name (with hyphens replaced by underscores for validation only)
+		validationName := strings.ReplaceAll(mcpTool.Name, "-", "_")
+		if err := validateNormalizedToolName(validationName); err != nil {
+			logger.Warn("%s Skipping MCP tool %q: %v", MCPLogPrefix, mcpTool.Name, err)
+			continue
+		}
+
 		// Convert MCP tool schema to Bifrost format
-		bifrostTool := convertMCPToolToBifrostSchema(&mcpTool)
-		// Prefix tool name with client name to make it permanent
-		prefixedToolName := fmt.Sprintf("%s_%s", clientName, mcpTool.Name)
+		bifrostTool := convertMCPToolToBifrostSchema(&mcpTool, logger)
+		// Prefix tool name with client name to make it permanent (using '-' as separator)
+		// Keep the original tool name (don't sanitize) so we can call the MCP server correctly
+		prefixedToolName := fmt.Sprintf("%s-%s", clientName, mcpTool.Name)
 		// Update the tool's function name to match the prefixed name
 		if bifrostTool.Function != nil {
 			bifrostTool.Function.Name = prefixedToolName
 		}
+		// Store the tool with the prefixed name
 		tools[prefixedToolName] = bifrostTool
+		// Store the mapping from sanitized name to original MCP name for later lookup during execution
+		sanitizedToolName := strings.ReplaceAll(mcpTool.Name, "-", "_")
+		toolNameMapping[sanitizedToolName] = mcpTool.Name
 	}
 
-	return tools, nil
+	return tools, toolNameMapping, nil
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.
-func shouldIncludeClient(clientName string, includeClients []string) bool {
+func shouldIncludeClient(clientName string, includeClients []string, logger schemas.Logger) bool {
 	// If includeClients is specified (not nil), apply whitelist filtering
 	if includeClients != nil {
 		// Handle empty array [] - means no clients are included
 		if len(includeClients) == 0 {
+			logger.Debug("%s shouldIncludeClient: %s - BLOCKED (empty include list)", MCPLogPrefix, clientName)
 			return false // No clients allowed
 		}
 
 		// Handle wildcard "*" - if present, all clients are included
 		if slices.Contains(includeClients, "*") {
+			logger.Debug("%s shouldIncludeClient: %s - ALLOWED (wildcard filter)", MCPLogPrefix, clientName)
 			return true // All clients allowed
 		}
 
 		// Check if specific client is in the list
-		return slices.Contains(includeClients, clientName)
+		included := slices.Contains(includeClients, clientName)
+		logger.Debug("%s shouldIncludeClient: %s - %s (filter: %v)", MCPLogPrefix, clientName, map[bool]string{true: "ALLOWED", false: "BLOCKED"}[included], includeClients)
+		return included
 	}
 
 	// Default: include all clients when no filtering specified (nil case)
+	logger.Debug("%s shouldIncludeClient: %s - ALLOWED (no filter)", MCPLogPrefix, clientName)
 	return true
 }
 
 // shouldSkipToolForConfig checks if a tool should be skipped based on client configuration (without accessing clientMap).
-func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bool {
+func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) bool {
+	if config == nil {
+		return true // No tools allowed
+	}
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
@@ -184,8 +218,13 @@ func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bo
 			return false // All tools allowed
 		}
 
+		// Strip client prefix from tool name before checking
+		// Tool names in config are stored without prefix (e.g., "add")
+		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
+		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+
 		// Check if specific tool is in the allowed list
-		return !slices.Contains(config.ToolsToExecute, toolName) // Tool not in allowed list
+		return !slices.Contains(config.ToolsToExecute, unprefixedToolName) // Tool not in allowed list
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
@@ -193,7 +232,7 @@ func shouldSkipToolForConfig(toolName string, config schemas.MCPClientConfig) bo
 
 // canAutoExecuteTool checks if a tool can be auto-executed based on client configuration.
 // Returns true if the tool can be auto-executed, false otherwise.
-func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
+func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// First check if tool is in ToolsToExecute (must be executable first)
 	if shouldSkipToolForConfig(toolName, config) {
 		return false // Tool is not in ToolsToExecute, so it cannot be auto-executed
@@ -211,14 +250,22 @@ func canAutoExecuteTool(toolName string, config schemas.MCPClientConfig) bool {
 			return true // All tools auto-executed
 		}
 
+		// Strip client prefix from tool name before checking
+		// Tool names in config are stored without prefix (e.g., "add")
+		// but tool names in ToolMap are stored with prefix (e.g., "calculator/add")
+		unprefixedToolName := stripClientPrefix(toolName, config.Name)
+
 		// Check if specific tool is in the auto-execute list
-		return slices.Contains(config.ToolsToAutoExecute, toolName)
+		return slices.Contains(config.ToolsToAutoExecute, unprefixedToolName)
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)
 }
 
 // shouldSkipToolForRequest checks if a tool should be skipped based on the request context.
+// shouldSkipToolForRequest determines if a tool should be skipped based on request context filtering.
+// Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
+// This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
 	includeTools := ctx.Value(MCPContextKeyIncludeTools)
 
@@ -230,14 +277,14 @@ func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) 
 				return true // No tools allowed
 			}
 
-			// Handle wildcard "clientName/*" - if present, all tools are included for this client
-			if slices.Contains(includeToolsList, fmt.Sprintf("%s/*", clientName)) {
+			// Handle wildcard "clientName-*" - if present, all tools are included for this client
+			if slices.Contains(includeToolsList, fmt.Sprintf("%s-*", clientName)) {
 				return false // All tools allowed
 			}
 
-			// Check if specific tool is in the list (format: clientName/toolName)
-			fullToolName := fmt.Sprintf("%s/%s", clientName, toolName)
-			if slices.Contains(includeToolsList, fullToolName) {
+			// Check if specific tool is in the list (format: clientName-toolName)
+			// Note: toolName is already prefixed when coming from ToolMap, so use it directly
+			if slices.Contains(includeToolsList, toolName) {
 				return false // Tool is explicitly allowed
 			}
 
@@ -250,12 +297,22 @@ func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) 
 }
 
 // convertMCPToolToBifrostSchema converts an MCP tool definition to Bifrost format.
-func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool) schemas.ChatTool {
+func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) schemas.ChatTool {
 	var properties *schemas.OrderedMap
 	if len(mcpTool.InputSchema.Properties) > 0 {
 		orderedProps := make(schemas.OrderedMap, len(mcpTool.InputSchema.Properties))
 		maps.Copy(orderedProps, mcpTool.InputSchema.Properties)
+
+		// Fix array schemas: ensure all array properties have an 'items' field
+		FixArraySchemas(orderedProps, logger)
+
 		properties = &orderedProps
+	} else {
+		// For tools with no parameters, initialize an empty properties map
+		// This is required by some providers (e.g., OpenAI) which expect
+		// object schemas to always have a properties field, even if empty
+		emptyProps := make(schemas.OrderedMap)
+		properties = &emptyProps
 	}
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
@@ -349,11 +406,7 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 			return fmt.Errorf("StdioConfig is required for STDIO connection type in client '%s'", config.Name)
 		}
 	case schemas.MCPConnectionTypeInProcess:
-		// InProcess requires a server instance to be provided programmatically
-		// This cannot be validated from JSON config - the server must be set when using the Go package
-		if config.InProcessServer == nil {
-			return fmt.Errorf("InProcessServer is required for InProcess connection type in client '%s' (Go package only)", config.Name)
-		}
+		// InProcess can be provided programmatically or created automatically.
 	default:
 		return fmt.Errorf("unknown connection type '%s' in client '%s'", config.ConnectionType, config.Name)
 	}
@@ -435,8 +488,30 @@ func parseToolName(toolName string) string {
 	return parsed
 }
 
-// extractToolCallsFromCode extracts tool calls from TypeScript code
-// Tool calls are in the format: serverName.toolName(...) or await serverName.toolName(...)
+// validateNormalizedToolName validates a normalized tool name to prevent path traversal.
+// It rejects tool names that are empty, contain '/', or contain '..' after normalization.
+// This prevents issues when tool names are used in VFS file paths.
+//
+// Parameters:
+//   - normalizedName: The tool name after normalization (e.g., after replacing '-' with '_')
+//
+// Returns:
+//   - error: An error if the tool name is invalid, nil otherwise
+func validateNormalizedToolName(normalizedName string) error {
+	if normalizedName == "" {
+		return fmt.Errorf("tool name cannot be empty after normalization")
+	}
+	if strings.Contains(normalizedName, "/") {
+		return fmt.Errorf("tool name cannot contain '/' (path separator) after normalization: %s", normalizedName)
+	}
+	if strings.Contains(normalizedName, "..") {
+		return fmt.Errorf("tool name cannot contain '..' (path traversal) after normalization: %s", normalizedName)
+	}
+	return nil
+}
+
+// extractToolCallsFromCode extracts tool calls from Python/Starlark code
+// Tool calls are in the format: server_name.tool_name(...)
 func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
 	toolCalls := []toolCallInfo{}
 
@@ -469,7 +544,7 @@ func extractToolCallsFromCode(code string) ([]toolCallInfo, error) {
 func isToolCallAllowedForCodeMode(serverName, toolName string, allClientNames []string, allowedAutoExecutionTools map[string][]string) bool {
 	// Check if the server name is in the list of all client names
 	if !slices.Contains(allClientNames, serverName) {
-		// It can be a built-in JavaScript/TypeScript object, if not then downstream execution will fail with a runtime error.
+		// It can be a built-in Python/Starlark object, if not then downstream execution will fail with a runtime error.
 		return true
 	}
 
@@ -548,20 +623,119 @@ func hasToolCallsForResponsesResponse(response *schemas.BifrostResponsesResponse
 }
 
 // stripClientPrefix removes the client name prefix from a tool name.
-// Tool names are stored with format "{clientName}_{toolName}", but when calling
+// Tool names are stored with format "{clientName}-{toolName}", but when calling
 // the MCP server, we need the original tool name without the prefix.
 //
 // Parameters:
-//   - prefixedToolName: Tool name with client prefix (e.g., "calculator_add")
+//   - prefixedToolName: Tool name with client prefix (e.g., "calculator-add")
 //   - clientName: Client name to strip (e.g., "calculator")
 //
 // Returns:
-//   - string: Original tool name without prefix (e.g., "add")
+//   - string: Sanitized tool name without prefix (e.g., "add")
 func stripClientPrefix(prefixedToolName, clientName string) string {
-	prefix := clientName + "_"
+	prefix := clientName + "-"
 	if strings.HasPrefix(prefixedToolName, prefix) {
 		return strings.TrimPrefix(prefixedToolName, prefix)
 	}
 	// If prefix doesn't match, return as-is (shouldn't happen, but be safe)
 	return prefixedToolName
+}
+
+// getOriginalToolName retrieves the original MCP tool name from the sanitized name using the mapping.
+// This function is used to restore the original tool name (with hyphens) that the MCP server expects.
+//
+// Parameters:
+//   - sanitizedToolName: Sanitized tool name (e.g., "notion_search")
+//   - client: The MCP client state containing the name mapping
+//
+// Returns:
+//   - string: Original MCP tool name (e.g., "notion-search"), or sanitizedToolName if not found in mapping
+func getOriginalToolName(sanitizedToolName string, client *schemas.MCPClientState) string {
+	if client == nil || client.ToolNameMapping == nil {
+		return sanitizedToolName
+	}
+
+	// Look up the original MCP name in the mapping
+	if originalName, exists := client.ToolNameMapping[sanitizedToolName]; exists {
+		return originalName
+	}
+
+	// If not in mapping, return as-is (might not need mapping if names are the same)
+	return sanitizedToolName
+}
+
+// FixArraySchemas recursively fixes array schemas by ensuring they have an 'items' field.
+// This prevents validation errors like "array schema missing items" when tools are registered.
+// It handles nested arrays (array-of-array) and recurses into items regardless of type.
+//
+// Parameters:
+//   - properties: The properties map to fix
+func FixArraySchemas(properties map[string]interface{}, logger schemas.Logger) {
+	for key, value := range properties {
+		// Check if the value is a map (representing a schema object)
+		if schemaMap, ok := value.(map[string]interface{}); ok {
+			// Check if this is an array type
+			if schemaType, ok := schemaMap["type"].(string); ok && schemaType == "array" {
+				// Check if 'items' is missing
+				if _, hasItems := schemaMap["items"]; !hasItems {
+					// Add a default 'items' schema (unconstrained)
+					schemaMap["items"] = map[string]interface{}{}
+					logger.Debug("%s Fixed array schema for property '%s': added missing 'items' field", MCPLogPrefix, key)
+				}
+				// Recurse into items regardless of type (object or array)
+				if itemsMap, ok := schemaMap["items"].(map[string]interface{}); ok {
+					itemsType, _ := itemsMap["type"].(string)
+					switch itemsType {
+					case "array":
+						// Handle nested arrays (array-of-array)
+						FixArraySchemas(map[string]interface{}{"": itemsMap}, logger)
+					case "object":
+						// Recurse into object properties
+						if itemsProps, ok := itemsMap["properties"].(map[string]interface{}); ok {
+							FixArraySchemas(itemsProps, logger)
+						}
+					}
+				}
+			}
+
+			// Recursively fix nested object properties
+			if schemaType, ok := schemaMap["type"].(string); ok && schemaType == "object" {
+				if nestedProps, ok := schemaMap["properties"].(map[string]interface{}); ok {
+					FixArraySchemas(nestedProps, logger)
+				}
+			}
+
+			// Handle anyOf, oneOf, allOf
+			for _, unionKey := range []string{"anyOf", "oneOf", "allOf"} {
+				if unionArray, ok := schemaMap[unionKey].([]interface{}); ok {
+					for _, unionItem := range unionArray {
+						if unionMap, ok := unionItem.(map[string]interface{}); ok {
+							if unionType, ok := unionMap["type"].(string); ok && unionType == "array" {
+								if _, hasItems := unionMap["items"]; !hasItems {
+									unionMap["items"] = map[string]interface{}{}
+									logger.Debug("%s Fixed array schema in %s for property '%s': added missing 'items' field", MCPLogPrefix, unionKey, key)
+								}
+								// Recurse into items regardless of type
+								if itemsMap, ok := unionMap["items"].(map[string]interface{}); ok {
+									itemsType, _ := itemsMap["type"].(string)
+									switch itemsType {
+									case "array":
+										// Handle nested arrays
+										FixArraySchemas(map[string]interface{}{"": itemsMap}, logger)
+									case "object":
+										if itemsProps, ok := itemsMap["properties"].(map[string]interface{}); ok {
+											FixArraySchemas(itemsProps, logger)
+										}
+									}
+								}
+							}
+							if nestedProps, ok := unionMap["properties"].(map[string]interface{}); ok {
+								FixArraySchemas(nestedProps, logger)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
 }

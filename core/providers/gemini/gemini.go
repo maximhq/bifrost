@@ -230,7 +230,9 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiChatCompletionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiChatCompletionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -277,7 +279,7 @@ func (provider *GeminiProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody := ToGeminiChatCompletionRequest(request)
 			if reqBody == nil {
 				return nil, fmt.Errorf("chat completion request is not provided or could not be converted to Gemini format")
@@ -554,7 +556,7 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody := ToGeminiResponsesRequest(request)
 			if reqBody == nil {
 				return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
@@ -608,7 +610,7 @@ func (provider *GeminiProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) {
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			reqBody := ToGeminiResponsesRequest(request)
 			if reqBody == nil {
 				return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
@@ -944,7 +946,9 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiEmbeddingRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiEmbeddingRequest(request), nil
+		},
 		providerName)
 	if err != nil {
 		return nil, err
@@ -1035,7 +1039,9 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiSpeechRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiSpeechRequest(request)
+		},
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -1088,7 +1094,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiSpeechRequest(request) },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiSpeechRequest(request)
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1330,7 +1338,9 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiTranscriptionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiTranscriptionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1378,7 +1388,9 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiTranscriptionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiTranscriptionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1633,7 +1645,9 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiImageGenerationRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiImageGenerationRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1691,7 +1705,9 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToImagenImageGenerationRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToImagenImageGenerationRequest(request), nil
+		},
 		providerName)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1764,6 +1780,150 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 // ImageGenerationStream is not supported by the Gemini provider.
 func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
+// ImageEdit handles image edit requests. For Imagen models, uses the Imagen edit API; otherwise uses Gemini generateContent.
+func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Handle Imagen models using :predict endpoint
+	if schemas.IsImagenModel(request.Model) {
+		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToImagenImageEditRequest(request), nil
+			},
+			providerName)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		baseURL := provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":predict")
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+
+		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+		req.SetRequestURI(baseURL)
+		req.Header.SetMethod(http.MethodPost)
+		req.Header.SetContentType("application/json")
+		req.SetBody(jsonData)
+
+		if value := key.Value.GetValue(); value != "" {
+			req.Header.Set("x-goog-api-key", value)
+		}
+
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		if resp.StatusCode() != fasthttp.StatusOK {
+			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
+			return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
+				Provider:    providerName,
+				Model:       request.Model,
+				RequestType: schemas.ImageEditRequest,
+			}), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		}
+
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		}
+
+		imagenResponse := GeminiImagenResponse{}
+		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &imagenResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
+		response := imagenResponse.ToBifrostImageGenerationResponse()
+		response.ExtraFields.Provider = providerName
+		response.ExtraFields.ModelRequested = request.Model
+		response.ExtraFields.RequestType = schemas.ImageEditRequest
+		response.ExtraFields.Latency = latency.Milliseconds()
+
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			response.ExtraFields.RawRequest = rawRequest
+		}
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			response.ExtraFields.RawResponse = rawResponse
+		}
+
+		return response, nil
+	}
+
+	// Prepare body for non-Imagen models
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiImageEditRequest(request), nil
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Use common request function
+	geminiResponse, rawResponse, latency, bifrostErr := provider.completeRequest(ctx, request.Model, key, jsonData, ":generateContent", &providerUtils.RequestMetadata{
+		Provider:    providerName,
+		Model:       request.Model,
+		RequestType: schemas.ImageEditRequest,
+	})
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
+	if bifrostErr != nil {
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			Provider:       providerName,
+			ModelRequested: request.Model,
+			RequestType:    schemas.ImageEditRequest,
+		}
+		return nil, bifrostErr
+	}
+	if response == nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to convert Gemini image edit response",
+			fmt.Errorf("ToBifrostImageGenerationResponse returned nil response"),
+			providerName,
+		)
+	}
+
+	// Set ExtraFields
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ImageEditRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
+	}
+
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+// ImageEditStream is not supported by the Gemini provider.
+func (provider *GeminiProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Gemini provider.
+func (provider *GeminiProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
 // ==================== BATCH OPERATIONS ====================
@@ -3089,7 +3249,9 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToGeminiResponsesRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiResponsesRequest(request), nil
+		},
 		provider.GetProviderKey(),
 	)
 	if bifrostErr != nil {

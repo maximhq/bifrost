@@ -115,11 +115,12 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
-
+		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings
 			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
+				delete(geminiReq.ExtraParams, "safety_settings")
 				if settings, ok := SafeExtractSafetySettings(safetySettings); ok {
 					geminiReq.SafetySettings = settings
 				}
@@ -127,12 +128,14 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 			// Cached content
 			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
+				delete(geminiReq.ExtraParams, "cached_content")
 				geminiReq.CachedContent = cachedContent
 			}
 
 			// Labels
 			if labels, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "labels"); ok {
 				if labelMap, ok := schemas.SafeExtractStringMap(labels); ok {
+					delete(geminiReq.ExtraParams, "labels")
 					geminiReq.Labels = labelMap
 				}
 			}
@@ -177,9 +180,6 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schemas.BifrostTranscriptionResponse {
 	bifrostResp := &schemas.BifrostTranscriptionResponse{}
 
-	// Extract usage metadata
-	inputTokens, outputTokens, totalTokens, _, _ := response.extractUsageMetadata()
-
 	// Process candidates to extract text content
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
@@ -197,13 +197,8 @@ func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schem
 				bifrostResp.Text = textContent
 				bifrostResp.Task = schemas.Ptr("transcribe")
 
-				// Set usage information
-				bifrostResp.Usage = &schemas.TranscriptionUsage{
-					Type:         "tokens",
-					InputTokens:  &inputTokens,
-					OutputTokens: &outputTokens,
-					TotalTokens:  &totalTokens,
-				}
+				// Set usage information with modality details
+				bifrostResp.Usage = convertGeminiUsageMetadataToTranscriptionUsage(response.UsageMetadata)
 			}
 		}
 	}
@@ -230,25 +225,8 @@ func ToGeminiTranscriptionResponse(bifrostResp *schemas.BifrostTranscriptionResp
 		},
 	}
 
-	// Set usage metadata from transcription usage
-	if bifrostResp.Usage != nil {
-		var promptTokens, candidatesTokens, totalTokens int32
-		if bifrostResp.Usage.InputTokens != nil {
-			promptTokens = int32(*bifrostResp.Usage.InputTokens)
-		}
-		if bifrostResp.Usage.OutputTokens != nil {
-			candidatesTokens = int32(*bifrostResp.Usage.OutputTokens)
-		}
-		if bifrostResp.Usage.TotalTokens != nil {
-			totalTokens = int32(*bifrostResp.Usage.TotalTokens)
-		}
-
-		genaiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-			PromptTokenCount:     promptTokens,
-			CandidatesTokenCount: candidatesTokens,
-			TotalTokenCount:      totalTokens,
-		}
-	}
+	// Set usage metadata from transcription usage with modality details
+	genaiResp.UsageMetadata = convertBifrostTranscriptionUsageToGeminiUsageMetadata(bifrostResp.Usage)
 
 	genaiResp.Candidates = []*Candidate{candidate}
 	return genaiResp

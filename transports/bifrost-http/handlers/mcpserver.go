@@ -5,12 +5,12 @@ package handlers
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -25,7 +25,7 @@ import (
 // MCPToolExecutor interface defines the method needed for executing MCP tools
 type MCPToolManager interface {
 	GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool
-	ExecuteChatMCPTool(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
+	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 }
 
@@ -99,7 +99,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Marshal and send response
-	responseJSON, err := json.Marshal(response)
+	responseJSON, err := sonic.Marshal(response)
 	if err != nil {
 		logger.Warn(fmt.Sprintf("Failed to marshal MCP response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
@@ -138,7 +138,7 @@ func (h *MCPServerHandler) handleMCPServerSSE(ctx *fasthttp.RequestCtx) {
 			"jsonrpc": "2.0",
 			"method":  "connection/opened",
 		}
-		if initJSON, err := json.Marshal(initMessage); err == nil {
+		if initJSON, err := sonic.Marshal(initMessage); err == nil {
 			fmt.Fprintf(w, "data: %s\n\n", initJSON)
 			w.Flush()
 		}
@@ -154,7 +154,7 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
-	h.syncServer(h.globalMCPServer, availableTools)
+	h.syncServer(h.globalMCPServer, availableTools, nil)
 	logger.Debug("Synced global MCP server with %d tools", len(availableTools))
 
 	// initialize vkMCPServers map
@@ -171,8 +171,8 @@ func (h *MCPServerHandler) SyncAllMCPServers(ctx context.Context) error {
 				version,
 				server.WithToolCapabilities(true),
 			)
-			availableTools := h.fetchToolsForVK(vk)
-			h.syncServer(h.vkMCPServers[vk.Value], availableTools)
+			availableTools, toolFilter := h.fetchToolsForVK(vk)
+			h.syncServer(h.vkMCPServers[vk.Value], availableTools, toolFilter)
 			logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
 		}
 	}
@@ -192,8 +192,8 @@ func (h *MCPServerHandler) SyncVKMCPServer(vk *tables.TableVirtualKey) {
 		)
 		h.vkMCPServers[vk.Value] = vkServer
 	}
-	availableTools := h.fetchToolsForVK(vk)
-	h.syncServer(vkServer, availableTools)
+	availableTools, toolFilter := h.fetchToolsForVK(vk)
+	h.syncServer(vkServer, availableTools, toolFilter)
 	h.vkMCPServers[vk.Value] = vkServer
 	logger.Debug("Synced MCP server for virtual key '%s' with %d tools", vk.Name, len(availableTools))
 }
@@ -204,7 +204,7 @@ func (h *MCPServerHandler) DeleteVKMCPServer(vkValue string) {
 	delete(h.vkMCPServers, vkValue)
 }
 
-func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools []schemas.ChatTool) {
+func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools []schemas.ChatTool, toolFilter []string) {
 	// Clear existing tools
 	toolMap := server.ListTools()
 	for toolName, _ := range toolMap {
@@ -222,10 +222,14 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 		toolName := tool.Function.Name
 
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// Inject tool filter into execution context if present
+			if toolFilter != nil {
+				ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), toolFilter)
+			}
 			// Convert to Bifrost tool call format
 			toolCallType := "function"
 			toolCallID := fmt.Sprintf("mcp-%s", toolName)
-			argsJSON, jsonErr := json.Marshal(request.GetArguments())
+			argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
 			if jsonErr != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr)), nil
 			}
@@ -239,7 +243,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 			}
 
 			// Execute the tool via tool executor
-			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, toolCall)
+			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 			if err != nil {
 				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
 			}
@@ -302,9 +306,10 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 
 // fetchToolsForVK fetches the tools for a given virtual key value.
 // vkValue is the virtual key value for the server, if empty, all tools will be fetched for global mcp server.
-// Returns a map of tool name to tool.
-func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) []schemas.ChatTool {
+// Returns the list of available tools and the tool filter to be applied during execution.
+func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schemas.ChatTool, []string) {
 	ctx := context.Background()
+	var toolFilter []string
 
 	if len(vk.MCPConfigs) > 0 {
 		executeOnlyTools := make([]string, 0)
@@ -317,23 +322,25 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) []schemas
 			// Handle wildcard in virtual key config - allow all tools from this client
 			if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
 				// Virtual key uses wildcard - use client-specific wildcard
-				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s/*", vkMcpConfig.MCPClient.Name))
+				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
 				continue
 			}
 
 			for _, tool := range vkMcpConfig.ToolsToExecute {
 				if tool != "" {
 					// Add the tool - client config filtering will be handled by mcp.go
-					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s/%s", vkMcpConfig.MCPClient.Name, tool))
+					// Note: Use '-' separator for individual tools (wildcard uses '-*' after client name, e.g., "client-*")
+					executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-%s", vkMcpConfig.MCPClient.Name, tool))
 				}
 			}
 		}
 
 		// Set even when empty to exclude tools when no tools are present in the virtual key config
 		ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), executeOnlyTools)
+		toolFilter = executeOnlyTools
 	}
 
-	return h.toolManager.GetAvailableMCPTools(ctx)
+	return h.toolManager.GetAvailableMCPTools(ctx), toolFilter
 }
 
 // Utility methods
@@ -343,7 +350,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 	defer h.mu.RUnlock()
 
 	h.config.Mu.RLock()
-	enforceVK := h.config.ClientConfig.EnforceGovernanceHeader
+	enforceVK := h.config.ClientConfig.EnforceGovernanceHeader && h.config.ClientConfig.EnableGovernance
 	h.config.Mu.RUnlock()
 
 	vk := getVKFromRequest(ctx)

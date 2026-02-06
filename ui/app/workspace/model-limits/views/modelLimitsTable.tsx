@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Edit, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
 
@@ -41,7 +41,13 @@ interface ModelLimitsTableProps {
 
 export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
-	const [editingModelConfig, setEditingModelConfig] = useState<ModelConfig | null>(null);
+	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
+
+	// Derive editingModelConfig from props so it stays in sync with RTK cache updates
+	const editingModelConfig = useMemo(
+		() => (editingModelConfigId ? modelConfigs.find((mc) => mc.id === editingModelConfigId) ?? null : null),
+		[editingModelConfigId, modelConfigs],
+	);
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
@@ -60,19 +66,19 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 	};
 
 	const handleAddModelLimit = () => {
-		setEditingModelConfig(null);
+		setEditingModelConfigId(null);
 		setShowModelLimitSheet(true);
 	};
 
 	const handleEditModelLimit = (config: ModelConfig, e: React.MouseEvent) => {
 		e.stopPropagation();
-		setEditingModelConfig(config);
+		setEditingModelConfigId(config.id);
 		setShowModelLimitSheet(true);
 	};
 
 	const handleModelLimitSaved = () => {
 		setShowModelLimitSheet(false);
-		setEditingModelConfig(null);
+		setEditingModelConfigId(null);
 		onRefresh();
 	};
 
@@ -85,6 +91,7 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
+						<h1 className="text-lg font-semibold">Model Limits</h1>
 						<p className="text-muted-foreground text-sm">
 							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
 						</p>

@@ -138,7 +138,9 @@ var speechParamsKnownFields = map[string]bool{
 	"speed":           true,
 }
 
-var imageParamsKnownFields = map[string]bool{
+// imageGenerationParamsKnownFields contains known fields for image generation requests
+// Based on ImageGenerationInput and ImageGenerationParameters structs
+var imageGenerationParamsKnownFields = map[string]bool{
 	"model":               true,
 	"prompt":              true,
 	"fallbacks":           true,
@@ -157,6 +159,45 @@ var imageParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"num_inference_steps": true,
 	"user":                true,
+}
+
+// imageEditParamsKnownFields contains known fields for image edit requests
+// Based on ImageEditInput and ImageEditParameters structs
+var imageEditParamsKnownFields = map[string]bool{
+	"model":               true,
+	"prompt":              true,
+	"fallbacks":           true,
+	"image":               true,
+	"image[]":             true,
+	"mask":                true,
+	"type":                true,
+	"background":          true,
+	"input_fidelity":      true,
+	"n":                   true,
+	"output_compression":  true,
+	"output_format":       true,
+	"partial_images":      true,
+	"quality":             true,
+	"response_format":     true,
+	"size":                true,
+	"user":                true,
+	"negative_prompt":     true,
+	"seed":                true,
+	"num_inference_steps": true,
+	"stream":              true,
+}
+
+// imageVariationParamsKnownFields contains known fields for image variation requests
+// Based on ImageVariationInput and ImageVariationParameters structs
+var imageVariationParamsKnownFields = map[string]bool{
+	"model":           true,
+	"fallbacks":       true,
+	"image":           true,
+	"image[]":         true,
+	"n":               true,
+	"response_format": true,
+	"size":            true,
+	"user":            true,
 }
 
 var transcriptionParamsKnownFields = map[string]bool{
@@ -257,6 +298,18 @@ type ResponsesRequestInput struct {
 type ImageGenerationHTTPRequest struct {
 	*schemas.ImageGenerationInput
 	*schemas.ImageGenerationParameters
+	BifrostParams
+}
+
+type ImageEditHTTPRequest struct {
+	*schemas.ImageEditInput
+	*schemas.ImageEditParameters
+	BifrostParams
+}
+
+type ImageVariationHTTPRequest struct {
+	*schemas.ImageVariationInput
+	*schemas.ImageVariationParameters
 	BifrostParams
 }
 
@@ -468,47 +521,112 @@ const (
 	AudioMimeFLAC2 = "audio/x-flac" // Alternative FLAC
 )
 
+// PathToTypeMapping maps exact paths to request types (only for non-parameterized paths)
+// Parameterized paths are set per-route in RegisterRoutes
+var PathToTypeMapping = map[string]schemas.RequestType{
+	"/v1/completions":          schemas.TextCompletionRequest,
+	"/v1/chat/completions":     schemas.ChatCompletionRequest,
+	"/v1/responses":            schemas.ResponsesRequest,
+	"/v1/embeddings":           schemas.EmbeddingRequest,
+	"/v1/audio/speech":         schemas.SpeechRequest,
+	"/v1/audio/transcriptions": schemas.TranscriptionRequest,
+	"/v1/images/generations":   schemas.ImageGenerationRequest,
+	"/v1/count_tokens":         schemas.CountTokensRequest,
+	"/v1/images/edits":         schemas.ImageEditRequest,
+	"/v1/images/variations":    schemas.ImageVariationRequest,
+	"/v1/models":               schemas.ListModelsRequest,
+}
+
+// createRequestTypeMiddleware creates a middleware that sets the request type for a specific route
+func createRequestTypeMiddleware(requestType schemas.RequestType) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+			next(ctx)
+		}
+	}
+}
+
+// RegisterRequestTypeMiddleware handles exact path matching for non-parameterized routes
+func RegisterRequestTypeMiddleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		path := string(ctx.Path())
+		if requestType, ok := PathToTypeMapping[path]; ok {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+		}
+		next(ctx)
+	}
+}
+
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	// Base middlewares for all routes
+	baseMiddlewares := append([]schemas.BifrostHTTPMiddleware{RegisterRequestTypeMiddleware}, middlewares...)
+
 	// Model endpoints
-	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
 
-	// Completion endpoints
-	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, middlewares...))
-	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, middlewares...))
-	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, middlewares...))
-	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
-	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
-	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
-	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, middlewares...))
-	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, middlewares...))
+	// Completion endpoints (non-parameterized)
+	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
+	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
+	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
+	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
+	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
+	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
+	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
+	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
+	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 
-	// Batch API endpoints
-	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, middlewares...))
-	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, middlewares...))
-	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, middlewares...))
-	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, middlewares...))
-	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, middlewares...))
+	// Batch API endpoints (parameterized routes need explicit request type middleware)
+	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
+	batchListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchListRequest)}, middlewares...)
+	batchRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchRetrieveRequest)}, middlewares...)
+	batchCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCancelRequest)}, middlewares...)
+	batchResultsMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchResultsRequest)}, middlewares...)
 
-	// File API endpoints
-	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, middlewares...))
-	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, middlewares...))
-	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, middlewares...))
-	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, middlewares...))
-	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, middlewares...))
+	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, batchCreateMW...))
+	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, batchListMW...))
+	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, batchRetrieveMW...))
+	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, batchCancelMW...))
+	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, batchResultsMW...))
 
-	// Container API endpoints
-	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, middlewares...))
-	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, middlewares...))
-	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, middlewares...))
-	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, middlewares...))
+	// File API endpoints (parameterized routes need explicit request type middleware)
+	fileUploadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileUploadRequest)}, middlewares...)
+	fileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileListRequest)}, middlewares...)
+	fileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileRetrieveRequest)}, middlewares...)
+	fileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileDeleteRequest)}, middlewares...)
+	fileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileContentRequest)}, middlewares...)
 
-	// Container Files API endpoints
-	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, middlewares...))
-	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, middlewares...))
-	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, middlewares...))
+	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, fileUploadMW...))
+	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, fileListMW...))
+	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, fileRetrieveMW...))
+	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, fileDeleteMW...))
+	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, fileContentMW...))
+
+	// Container API endpoints (parameterized routes need explicit request type middleware)
+	containerCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerCreateRequest)}, middlewares...)
+	containerListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerListRequest)}, middlewares...)
+	containerRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerRetrieveRequest)}, middlewares...)
+	containerDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, containerCreateMW...))
+	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, containerListMW...))
+	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, containerRetrieveMW...))
+	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, containerDeleteMW...))
+
+	// Container Files API endpoints (parameterized routes need explicit request type middleware)
+	containerFileCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileCreateRequest)}, middlewares...)
+	containerFileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileListRequest)}, middlewares...)
+	containerFileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileRetrieveRequest)}, middlewares...)
+	containerFileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileContentRequest)}, middlewares...)
+	containerFileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, containerFileCreateMW...))
+	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, containerFileListMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, containerFileRetrieveMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, containerFileContentMW...))
+	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
 // listModels handles GET /v1/models - Process list models requests
@@ -567,13 +685,13 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Add pricing data to the response
-	if len(resp.Data) > 0 && h.config.PricingManager != nil {
+	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
+			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
 			if pricingEntry == nil && modelEntry.Deployment != nil {
 				// Retry with deployment
-				pricingEntry = h.config.PricingManager.GetPricingEntryForModel(*modelEntry.Deployment, provider)
+				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Deployment, provider)
 			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
 				pricing := &schemas.Pricing{
@@ -1284,7 +1402,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := h.config.GetStreamChunkInterceptor()
-	var httpReq *schemas.HTTPRequest	
+	var httpReq *schemas.HTTPRequest
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
@@ -1312,7 +1430,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
 				chunk.BifrostImageGenerationStreamResponse != nil ||
-				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest)) {
+				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageEditStreamRequest)) {
 				includeEventType = true
 			}
 
@@ -1510,7 +1628,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		req.ImageGenerationParameters = &schemas.ImageGenerationParameters{}
 	}
 
-	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
+	extraParams, err := extractExtraParams(ctx.PostBody(), imageGenerationParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
 		// Continue without extra params
@@ -1569,6 +1687,423 @@ func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.Request
 	}
 
 	h.handleStreamingResponse(ctx, bifrostCtx, getStream, cancel)
+}
+
+// imageEdit handles POST /v1/images/edits - Processes image edit requests
+func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
+	var req ImageEditHTTPRequest
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to parse multipart form: %v", err))
+		return
+	}
+
+	// Extract model (required)
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Model is required")
+		return
+	}
+
+	req.Model = modelValues[0]
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	// Extract type to check if prompt is required
+	var editType string
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		editType = typeValues[0]
+	}
+
+	// Extract prompt (required unless type is background_removal)
+	promptValues := form.Value["prompt"]
+	if editType != "background_removal" {
+		if len(promptValues) == 0 || promptValues[0] == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, "prompt is required")
+			return
+		}
+	}
+
+	// Extract images (required) - handle both "image[]"
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+
+	if len(imageFiles) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one image is required")
+		return
+	}
+
+	// Read all image files
+	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	for _, fileHeader := range imageFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open uploaded file: %v", err))
+			return
+		}
+		defer file.Close()
+
+		// Read file data
+		fileData, err := io.ReadAll(file)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file: %v", err))
+			return
+		}
+
+		images = append(images, schemas.ImageInput{
+			Image: fileData,
+		})
+	}
+
+	// Create image edit input
+	prompt := ""
+	if len(promptValues) > 0 && promptValues[0] != "" {
+		prompt = promptValues[0]
+	}
+	req.ImageEditInput = &schemas.ImageEditInput{
+		Images: images,
+		Prompt: prompt,
+	}
+
+	// Create image edit parameters
+	req.ImageEditParameters = &schemas.ImageEditParameters{}
+
+	// Extract optional parameters
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid n value: %v", err))
+			return
+		}
+		req.ImageEditParameters.N = &n
+	}
+
+	if backgroundValues := form.Value["background"]; len(backgroundValues) > 0 && backgroundValues[0] != "" {
+		req.ImageEditParameters.Background = &backgroundValues[0]
+	}
+
+	if inputFidelityValues := form.Value["input_fidelity"]; len(inputFidelityValues) > 0 && inputFidelityValues[0] != "" {
+		req.ImageEditParameters.InputFidelity = &inputFidelityValues[0]
+	}
+
+	if partialImagesValues := form.Value["partial_images"]; len(partialImagesValues) > 0 && partialImagesValues[0] != "" {
+		partialImages, err := strconv.Atoi(partialImagesValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid partial_images value: %v", err))
+			return
+		}
+		req.ImageEditParameters.PartialImages = &partialImages
+	}
+
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		req.ImageEditParameters.Size = &sizeValues[0]
+	}
+
+	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
+		req.ImageEditParameters.Quality = &qualityValues[0]
+	}
+
+	if outputFormatValues := form.Value["output_format"]; len(outputFormatValues) > 0 && outputFormatValues[0] != "" {
+		req.ImageEditParameters.OutputFormat = &outputFormatValues[0]
+	}
+
+	if numInferenceStepsValues := form.Value["num_inference_steps"]; len(numInferenceStepsValues) > 0 && numInferenceStepsValues[0] != "" {
+		numInferenceSteps, err := strconv.Atoi(numInferenceStepsValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid num_inference_steps value: %v", err))
+			return
+		}
+		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
+	}
+
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid seed value: %v", err))
+			return
+		}
+		req.ImageEditParameters.Seed = &seed
+	}
+
+	if outputCompressionValues := form.Value["output_compression"]; len(outputCompressionValues) > 0 && outputCompressionValues[0] != "" {
+		outputCompression, err := strconv.Atoi(outputCompressionValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid output_compression value: %v", err))
+			return
+		}
+		req.ImageEditParameters.OutputCompression = &outputCompression
+	}
+
+	if negativePromptValues := form.Value["negative_prompt"]; len(negativePromptValues) > 0 && negativePromptValues[0] != "" {
+		req.ImageEditParameters.NegativePrompt = &negativePromptValues[0]
+	}
+
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		req.ImageEditParameters.ResponseFormat = &responseFormatValues[0]
+	}
+
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		req.ImageEditParameters.User = &userValues[0]
+	}
+
+	// Extract type (required for Bedrock, optional for others)
+	// Note: type was already extracted earlier for prompt validation
+	if editType != "" {
+		req.ImageEditParameters.Type = &editType
+	}
+
+	// Extract mask if present
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
+		maskFile := maskFiles[0]
+		file, err := maskFile.Open()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open mask file: %v", err))
+			return
+		}
+		maskData, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read mask file: %v", err))
+			return
+		}
+		req.ImageEditParameters.Mask = maskData
+	}
+
+	// Initialize ExtraParams map
+	if req.ImageEditParameters.ExtraParams == nil {
+		req.ImageEditParameters.ExtraParams = make(map[string]interface{})
+	}
+
+	// Extract extra params
+	for key, value := range form.Value {
+		if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
+			req.ImageEditParameters.ExtraParams[key] = value[0]
+		}
+	}
+
+	// Extract fallbacks
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		req.Fallbacks = fallbackValues
+	}
+
+	// Extract stream parameter
+	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
+		stream := streamValues[0] == "true"
+		req.Stream = &stream
+	}
+
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Create Bifrost request
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.ImageEditInput,
+		Params:    req.ImageEditParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	// Handle streaming image edit
+	if req.Stream != nil && *req.Stream {
+		h.handleStreamingImageEditRequest(ctx, bifrostReq, bifrostCtx, cancel)
+		return
+	}
+	defer cancel()
+
+	// Execute request
+	resp, bifrostErr := h.client.ImageEditRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// handleStreamingImageEditRequest handles streaming image edit requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingImageEditRequest(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageEditRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
+	// Use the cancellable context from ConvertToBifrostContext
+	// See router.go for detailed explanation of why we need a cancellable context
+
+	getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return h.client.ImageEditStreamRequest(bifrostCtx, req)
+	}
+
+	h.handleStreamingResponse(ctx, bifrostCtx, getStream, cancel)
+}
+
+// imageVariation handles POST /v1/images/variations - Processes image variation requests
+func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
+	var req ImageVariationHTTPRequest
+	rawBody := ctx.Request.Body()
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to parse multipart form: %v", err))
+		return
+	}
+
+	// Extract model (required)
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Model is required")
+		return
+	}
+
+	req.Model = modelValues[0]
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	// Extract images (required) - handle both "image[]" and "image"
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+
+	if len(imageFiles) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "At least one image is required")
+		return
+	}
+
+	// Read all image files
+	images := make([][]byte, 0, len(imageFiles))
+	for _, fileHeader := range imageFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open uploaded file: %v", err))
+			return
+		}
+
+		// Read file data
+		fileData, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file: %v", err))
+			return
+		}
+
+		images = append(images, fileData)
+	}
+
+	// Create image variation input with first image
+	req.ImageVariationInput = &schemas.ImageVariationInput{
+		Image: schemas.ImageInput{
+			Image: images[0],
+		},
+	}
+
+	// Create image variation parameters
+	req.ImageVariationParameters = &schemas.ImageVariationParameters{}
+
+	// Extract optional parameters
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid n value: %v", err))
+			return
+		}
+		req.ImageVariationParameters.N = &n
+	}
+
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		req.ImageVariationParameters.ResponseFormat = &responseFormatValues[0]
+	}
+
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		req.ImageVariationParameters.Size = &sizeValues[0]
+	}
+
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		req.ImageVariationParameters.User = &userValues[0]
+	}
+
+	// Initialize ExtraParams map
+	if req.ImageVariationParameters.ExtraParams == nil {
+		req.ImageVariationParameters.ExtraParams = make(map[string]interface{})
+	}
+
+	// Store additional images (after the first one) in ExtraParams for providers that support multiple images
+	if len(images) > 1 {
+		req.ImageVariationParameters.ExtraParams["images"] = images[1:]
+	}
+
+	// Extract extra params
+	for key, value := range form.Value {
+		if len(value) > 0 && value[0] != "" && !imageVariationParamsKnownFields[key] {
+			req.ImageVariationParameters.ExtraParams[key] = value[0]
+		}
+	}
+
+	// Extract fallbacks
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		req.Fallbacks = fallbackValues
+	}
+
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.ImageVariationInput == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "image is required")
+		return
+	}
+
+	// Create Bifrost request
+	bifrostReq := &schemas.BifrostImageVariationRequest{
+		Provider:       schemas.ModelProvider(provider),
+		Model:          modelName,
+		Input:          req.ImageVariationInput,
+		Params:         req.ImageVariationParameters,
+		Fallbacks:      fallbacks,
+		RawRequestBody: rawBody,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	// Execute request (no streaming for variations)
+	resp, bifrostErr := h.client.ImageVariationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
 }
 
 // batchCreate handles POST /v1/batches - Create a new batch job

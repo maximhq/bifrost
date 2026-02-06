@@ -128,7 +128,7 @@ func main() {
     // Initialize Bifrost with the plugin
     client, err := bifrost.Init(ctx, schemas.BifrostConfig{
         Account: &yourAccount,
-        Plugins: []schemas.Plugin{otelPlugin},
+        LLMPlugins: []schemas.LLMPlugin{otelPlugin},
     })
     if err != nil {
         panic(err)

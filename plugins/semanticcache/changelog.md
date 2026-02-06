@@ -1,3 +1,0 @@
-- feat: semantic search now support Pinecone DB
-- chore: updated semantic search test cases to consider all dbs
-- chore: upgrades core to 1.3.13 and framework to 1.2.15

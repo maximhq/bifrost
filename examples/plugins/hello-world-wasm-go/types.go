@@ -31,7 +31,7 @@ type PreHookInput struct {
 type PreHookOutput struct {
 	Context         map[string]interface{}      `json:"context"`
 	Request         *schemas.BifrostRequest     `json:"request,omitempty"`
-	ShortCircuit    *schemas.PluginShortCircuit `json:"short_circuit,omitempty"`
+	ShortCircuit    *schemas.LLMPluginShortCircuit `json:"short_circuit,omitempty"`
 	HasShortCircuit bool                        `json:"has_short_circuit"`
 	Error           string                      `json:"error"`
 }

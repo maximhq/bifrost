@@ -46,24 +46,30 @@ interface LogDetailSheetProps {
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
-		'container_create', 'container_list', 'container_retrieve', 'container_delete',
-		'container_file_create', 'container_file_list', 'container_file_retrieve',
-		'container_file_content', 'container_file_delete'
-	]
-	return containerTypes.includes(object?.toLowerCase())
-}
+		"container_create",
+		"container_list",
+		"container_retrieve",
+		"container_delete",
+		"container_file_create",
+		"container_file_list",
+		"container_file_retrieve",
+		"container_file_content",
+		"container_file_delete",
+	];
+	return containerTypes.includes(object?.toLowerCase());
+};
 
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
 	if (!log) return null;
 
-	const isContainer = isContainerOperation(log.object)
+	const isContainer = isContainerOperation(log.object);
 
 	// Taking out tool call
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) {}
+		} catch (ignored) { }
 	}
 
 	const copyRequestBody = async () => {
@@ -193,7 +199,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8">
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
@@ -286,9 +292,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${
-											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-										} rounded-sm px-3 py-1`}
+										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+											} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -300,6 +305,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							)}
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
+						{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
 
 							{/* Display audio params if present */}
 							{(log.params as any)?.audio && (
@@ -554,7 +560,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				)}
 
 				{(log.image_generation_input || log.image_generation_output) && (
-					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} />
+					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
 				)}
 
 				{/* Show conversation history for chat/text completions */}
@@ -669,7 +675,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
 								<div className="w-full rounded-sm border">
 									<div className="border-b px-6 py-2 text-sm font-medium">Error</div>
-									<div className="px-6 py-2 font-mono text-xs">{log.error_details.error.message}</div>
+									<div className="px-6 py-2 font-mono text-xs break-words">{log.error_details.error.message}</div>
 								</div>
 							</>
 						)}

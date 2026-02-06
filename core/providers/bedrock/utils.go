@@ -200,6 +200,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
+		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle guardrail configuration
 		if guardrailConfig, exists := bifrostReq.Params.ExtraParams["guardrailConfig"]; exists {
 			if gc, ok := guardrailConfig.(map[string]interface{}); ok {
@@ -214,7 +215,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if trace, ok := gc["trace"].(string); ok {
 					config.Trace = &trace
 				}
-
+				delete(bedrockReq.ExtraParams, "guardrailConfig")
 				bedrockReq.GuardrailConfig = config
 			}
 		}
@@ -222,6 +223,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
 					bedrockReq.AdditionalModelRequestFields = orderedFields
 				}
 			}
@@ -230,6 +232,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
 				// Handle both []string and []interface{} types
 				if fields, ok := responseFields.([]string); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
 					bedrockReq.AdditionalModelResponseFieldPaths = fields
 				} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
 					stringFields := make([]string, 0, len(fieldsInterface))
@@ -239,6 +242,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 						}
 					}
 					if len(stringFields) > 0 {
+						delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
 						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
 					}
 				}
@@ -247,16 +251,17 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if perfConfig, exists := bifrostReq.Params.ExtraParams["performanceConfig"]; exists {
 				if pc, ok := perfConfig.(map[string]interface{}); ok {
 					config := &BedrockPerformanceConfig{}
-
 					if latency, ok := pc["latency"].(string); ok {
 						config.Latency = &latency
 					}
+					delete(bedrockReq.ExtraParams, "performanceConfig")
 					bedrockReq.PerformanceConfig = config
 				}
 			}
 			// Handle prompt variables
 			if promptVars, exists := bifrostReq.Params.ExtraParams["promptVariables"]; exists {
 				if vars, ok := promptVars.(map[string]interface{}); ok {
+					delete(bedrockReq.ExtraParams, "promptVariables")
 					variables := make(map[string]BedrockPromptVariable)
 
 					for key, value := range vars {
@@ -277,9 +282,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			// Handle request metadata
 			if reqMetadata, exists := bifrostReq.Params.ExtraParams["requestMetadata"]; exists {
 				if metadata, ok := schemas.SafeExtractStringMap(reqMetadata); ok {
+					delete(bedrockReq.ExtraParams, "requestMetadata")
 					bedrockReq.RequestMetadata = metadata
 				}
 			}
+		}
+		// Set ExtraParams to nil if all keys were extracted to dedicated fields
+		if len(bedrockReq.ExtraParams) == 0 {
+			bedrockReq.ExtraParams = nil
 		}
 	}
 	return nil
@@ -515,8 +525,8 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 // convertContent converts Bifrost message content to Bedrock content blocks
 func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
-	if content.ContentStr != nil {
-		// Simple text content
+	if content.ContentStr != nil && *content.ContentStr != "" {
+		// Simple text content (skip empty strings as Bedrock rejects blank text)
 		contentBlocks = append(contentBlocks, BedrockContentBlock{
 			Text: content.ContentStr,
 		})
@@ -538,7 +548,12 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
 	switch block.Type {
 	case schemas.ChatContentBlockTypeText:
-		if block.Text == nil {
+		// NOTE: we are doing this because LiteLLM does this for empty text blocks.
+		// Ideally we should not play with the payload - we should let the provider handle it.
+		// But for now, we are doing this to avoid the API error.
+		// Once the world onboards on Bifrost - we should remove these shitty patterns.
+		if block.Text == nil || *block.Text == "" {
+			// Skip nil or empty text as Bedrock rejects blank text content blocks
 			return []BedrockContentBlock{}, nil
 		}
 		blocks := []BedrockContentBlock{
@@ -1315,5 +1330,28 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 		return float64(val), true
 	default:
 		return 0, false
+	}
+}
+
+// tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
+// BedrockContentBlock based on the result.
+func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
+	var parsed interface{}
+	// Try to parse as JSON, otherwise treat as text
+	if err := sonic.UnmarshalString(text, &parsed); err != nil {
+		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	} else {
+		// Bedrock does not accept primitives or arrays directly in the json field
+		switch v := parsed.(type) {
+		case map[string]any:
+			// Objects are valid as-is
+			return BedrockContentBlock{JSON: v}
+		case []any:
+			// Arrays need to be wrapped
+			return BedrockContentBlock{JSON: map[string]any{"results": v}}
+		default:
+			// Primitives (string, number, boolean, null) need to be wrapped
+			return BedrockContentBlock{JSON: map[string]any{"value": v}}
+		}
 	}
 }

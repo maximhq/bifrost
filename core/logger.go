@@ -3,12 +3,15 @@ package bifrost
 
 import (
 	"os"
+	"sync"
 	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+var zerologOnce sync.Once
 
 // DefaultLogger implements the Logger interface with stdout/stderr printing.
 // It provides a simple logging implementation that writes to standard output
@@ -39,9 +42,11 @@ func toZerologLevel(l schemas.LogLevel) zerolog.Level {
 // The log level determines which messages will be output based on their severity.
 func NewDefaultLogger(level schemas.LogLevel) *DefaultLogger {
 	zerolog.SetGlobalLevel(toZerologLevel(level))
-	zerolog.DisableSampling(true)
-	zerolog.TimeFieldFormat = time.RFC3339
-	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	zerologOnce.Do(func() {
+		zerolog.DisableSampling(true)
+		zerolog.TimeFieldFormat = time.RFC3339
+		log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	})
 	return &DefaultLogger{
 		stderrLogger: zerolog.New(os.Stderr).With().Timestamp().Logger(),
 		stdoutLogger: zerolog.New(os.Stdout).With().Timestamp().Logger(),

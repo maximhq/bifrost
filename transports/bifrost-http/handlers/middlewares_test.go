@@ -626,7 +626,7 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
-		"/api/session/logout",
+		"/api/oauth/callback",
 		"/health",
 	}
 

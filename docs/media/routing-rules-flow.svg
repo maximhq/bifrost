@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1320" viewBox="0 0 1400 1320">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4B5563" />
+    </marker>
+  </defs>
+  <style>
+    .layer-title { font: 600 18px Helvetica, Arial, sans-serif; fill: #1F2937; }
+    .text { font: 16px Helvetica, Arial, sans-serif; fill: #1F2937; }
+    .text-sm { font: 15px Helvetica, Arial, sans-serif; fill: #1F2937; }
+    .text-lg { font: 600 18px Helvetica, Arial, sans-serif; fill: #1F2937; }
+    .box { fill: #ffffff; stroke: #64748B; stroke-width: 2; rx: 12; ry: 12; }
+    .diamond { fill: #ffffff; stroke: #64748B; stroke-width: 2; }
+    .arrow { stroke: #4B5563; stroke-width: 2.2; fill: none; }
+  </style>
+
+  <!-- Layer backgrounds -->
+  <rect x="80" y="140" width="1240" height="380" rx="18" fill="#D7ECFF" stroke="#B6D4F2" stroke-width="2" />
+  <rect x="80" y="560" width="1240" height="260" rx="18" fill="#E3F7E8" stroke="#BFE5C7" stroke-width="2" />
+  <rect x="80" y="850" width="1240" height="260" rx="18" fill="#FFE9D6" stroke="#F5CFAA" stroke-width="2" />
+
+  <!-- Layer titles -->
+  <text x="110" y="175" class="layer-title">1. Routing Rules Layer (Evaluated First)</text>
+  <text x="110" y="595" class="layer-title">2. Governance Layer (if no routing rule matched)</text>
+  <text x="110" y="885" class="layer-title">3. Load Balancing Layer</text>
+
+  <!-- Start box -->
+  <rect x="440" y="30" width="520" height="70" class="box" />
+  <text x="700" y="58" text-anchor="middle" class="text-lg">
+    <tspan x="700" dy="0">Request arrives</tspan>
+    <tspan x="700" dy="24">with model (provider optional)</tspan>
+  </text>
+
+  <!-- Decision and rule boxes -->
+  <polygon points="700,230 810,300 700,370 590,300" class="diamond" />
+  <text x="700" y="296" text-anchor="middle" class="text">
+    <tspan x="700" dy="-6">Match CEL</tspan>
+    <tspan x="700" dy="22">Expression?</tspan>
+  </text>
+
+  <rect x="920" y="250" width="360" height="100" class="box" />
+  <text x="1100" y="286" text-anchor="middle" class="text">
+    <tspan x="1100" dy="0">Rule Matched:</tspan>
+    <tspan x="1100" dy="22">New provider/model/fallbacks</tspan>
+  </text>
+
+  <rect x="120" y="250" width="360" height="100" class="box" />
+  <text x="300" y="286" text-anchor="middle" class="text">
+    <tspan x="300" dy="0">No Match:</tspan>
+    <tspan x="300" dy="22">Continue to Governance</tspan>
+  </text>
+
+  <!-- Governance boxes -->
+  <rect x="380" y="600" width="640" height="80" class="box" />
+  <text x="700" y="632" text-anchor="middle" class="text">
+    <tspan x="700" dy="0">Virtual Key Validation</tspan>
+    <tspan x="700" dy="22">(active, permissions, hierarchy)</tspan>
+  </text>
+
+  <rect x="380" y="710" width="640" height="80" class="box" />
+  <text x="700" y="742" text-anchor="middle" class="text">
+    <tspan x="700" dy="0">Provider Governance Routing</tspan>
+    <tspan x="700" dy="22">(weighted selection from provider_configs)</tspan>
+  </text>
+
+  <!-- Load balancing boxes -->
+  <rect x="380" y="900" width="640" height="80" class="box" />
+  <text x="700" y="932" text-anchor="middle" class="text">
+    <tspan x="700" dy="0">Level 1: Provider Selection</tspan>
+    <tspan x="700" dy="22">(performance-based, if provider not set)</tspan>
+  </text>
+
+  <rect x="380" y="1010" width="640" height="80" class="box" />
+  <text x="700" y="1042" text-anchor="middle" class="text">
+    <tspan x="700" dy="0">Level 2: Key Selection</tspan>
+    <tspan x="700" dy="22">(performance-based)</tspan>
+  </text>
+
+  <!-- Execute box -->
+  <rect x="340" y="1180" width="720" height="80" class="box" />
+  <text x="700" y="1212" text-anchor="middle" class="text">
+    <tspan x="700" dy="0">Execute request with selected provider + key</tspan>
+  </text>
+
+  <!-- Arrows -->
+  <line x1="700" y1="100" x2="700" y2="230" class="arrow" marker-end="url(#arrowhead)" />
+
+  <line x1="810" y1="300" x2="920" y2="300" class="arrow" marker-end="url(#arrowhead)" />
+  <text x="855" y="288" class="text-sm">Yes</text>
+
+  <line x1="590" y1="300" x2="480" y2="300" class="arrow" marker-end="url(#arrowhead)" />
+  <text x="510" y="288" class="text-sm">No</text>
+
+  <!-- No branch to governance -->
+  <path d="M 300 350 L 300 580 L 700 580 L 700 600" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Yes branch to load balancing -->
+  <path d="M 1100 350 L 1100 990 L 700 990 L 700 1010" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Governance flow -->
+  <line x1="700" y1="680" x2="700" y2="710" class="arrow" marker-end="url(#arrowhead)" />
+  <path d="M 700 790 L 1100 790 L 1100 990 L 700 990 L 700 1010" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Load balancing to execute -->
+  <line x1="700" y1="1090" x2="700" y2="1180" class="arrow" marker-end="url(#arrowhead)" />
+</svg>

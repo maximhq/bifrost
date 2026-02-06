@@ -219,7 +219,9 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToElevenlabsSpeechRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToElevenlabsSpeechRequest(request), nil
+		},
 		providerName)
 
 	if bifrostErr != nil {
@@ -303,15 +305,12 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 
 	providerName := provider.GetProviderKey()
 
-	reqBody := ToElevenlabsSpeechRequest(request)
-	if reqBody == nil {
-		return nil, providerUtils.NewBifrostOperationError("speech input is not provided", nil, providerName)
-	}
-
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToElevenlabsSpeechRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToElevenlabsSpeechRequest(request), nil
+		},
 		providerName)
 
 	if bifrostErr != nil {
@@ -508,7 +507,12 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest))
+	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, "/v1/speech-to-text", provider.customProviderConfig, schemas.TranscriptionRequest)
+	if isCompleteURL {
+		req.SetRequestURI(requestPath)
+	} else {
+		req.SetRequestURI(provider.networkConfig.BaseURL + requestPath)
+	}
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(contentType)
 	if key.Value.GetValue() != "" {
@@ -713,17 +717,45 @@ func (provider *ElevenlabsProvider) ImageGenerationStream(ctx *schemas.BifrostCo
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
+// ImageEdit is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+}
+
+// ImageEditStream is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Elevenlabs provider.
+func (provider *ElevenlabsProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
+}
+
 // buildSpeechRequestURL constructs the full request URL using the provider's configuration for speech.
 func (provider *ElevenlabsProvider) buildBaseSpeechRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType, request *schemas.BifrostSpeechRequest) string {
 	baseURL := provider.networkConfig.BaseURL
-	requestPath := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
-
-	u, parseErr := url.Parse(baseURL)
-	if parseErr != nil {
-		return baseURL + requestPath
+	requestPath, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	
+	var finalURL string
+	if isCompleteURL {
+		finalURL = requestPath
+	} else {
+		u, parseErr := url.Parse(baseURL)
+		if parseErr != nil {
+			finalURL = baseURL + requestPath
+		} else {
+			u.Path = path.Join(u.Path, requestPath)
+			finalURL = u.String()
+		}
 	}
 
-	u.Path = path.Join(u.Path, requestPath)
+	// Parse the final URL to add query parameters
+	u, parseErr := url.Parse(finalURL)
+	if parseErr != nil {
+		return finalURL
+	}
+
 	q := u.Query()
 
 	if request.Params != nil {

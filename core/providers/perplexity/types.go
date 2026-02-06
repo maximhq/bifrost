@@ -4,31 +4,37 @@ import "github.com/maximhq/bifrost/core/schemas"
 
 // PerplexityChatRequest represents a Perplexity chat completion request
 type PerplexityChatRequest struct {
-	Model                   string                `json:"model"`                                // Required: Model to use for chat completion
-	Messages                []schemas.ChatMessage `json:"messages"`                             // Required: Array of message objects
-	SearchMode              *string               `json:"search_mode"`                          // Required: Search mode
-	ReasoningEffort         *string               `json:"reasoning_effort"`                     // Required: Reasoning effort (low, medium, high)
-	MaxTokens               *int                  `json:"max_tokens,omitempty"`                 // Optional: Maximum tokens to generate
-	Temperature             *float64              `json:"temperature,omitempty"`                // Optional: Sampling temperature
-	TopP                    *float64              `json:"top_p,omitempty"`                      // Optional: Top-p sampling
-	LanguagePreference      *string               `json:"language_preference,omitempty"`        // Optional: Language preference
-	SearchDomainFilter      []string              `json:"search_domain_filter,omitempty"`       // Optional: Search domain filter
-	ReturnImages            *bool                 `json:"return_images,omitempty"`              // Optional: Return images
-	ReturnRelatedQuestions  *bool                 `json:"return_related_questions,omitempty"`   // Optional: Return related questions
-	SearchRecencyFilter     *string               `json:"search_recency_filter,omitempty"`      // Optional: Search recency filter
-	SearchAfterDateFilter   *string               `json:"search_after_date_filter,omitempty"`   // Optional: Search after date filter
-	SearchBeforeDateFilter  *string               `json:"search_before_date_filter,omitempty"`  // Optional: Search before date filter
-	LastUpdatedAfterFilter  *string               `json:"last_updated_after_filter,omitempty"`  // Optional: Last updated after filter
-	LastUpdatedBeforeFilter *string               `json:"last_updated_before_filter,omitempty"` // Optional: Last updated before filter
-	TopK                    *int                  `json:"top_k,omitempty"`                      // Optional: Top-k sampling
-	Stream                  *bool                 `json:"stream,omitempty"`                     // Optional: Enable streaming
-	PresencePenalty         *float64              `json:"presence_penalty,omitempty"`           // Optional: Presence penalty
-	FrequencyPenalty        *float64              `json:"frequency_penalty,omitempty"`          // Optional: Frequency penalty
-	ResponseFormat          *interface{}          `json:"response_format,omitempty"`            // Format for the response
-	DisableSearch           *bool                 `json:"disable_search,omitempty"`             // Optional: Disable search
-	EnableSearchClassifier  *bool                 `json:"enable_search_classifier,omitempty"`   // Optional: Enable search classifier
-	WebSearchOptions        []WebSearchOption     `json:"web_search_options,omitempty"`         // Optional: Web search options
-	MediaResponse           *MediaResponse        `json:"media_response,omitempty"`             // Optional: Media response
+	Model                   string                 `json:"model"`                                // Required: Model to use for chat completion
+	Messages                []schemas.ChatMessage  `json:"messages"`                             // Required: Array of message objects
+	SearchMode              *string                `json:"search_mode"`                          // Required: Search mode
+	ReasoningEffort         *string                `json:"reasoning_effort"`                     // Required: Reasoning effort (low, medium, high)
+	MaxTokens               *int                   `json:"max_tokens,omitempty"`                 // Optional: Maximum tokens to generate
+	Temperature             *float64               `json:"temperature,omitempty"`                // Optional: Sampling temperature
+	TopP                    *float64               `json:"top_p,omitempty"`                      // Optional: Top-p sampling
+	LanguagePreference      *string                `json:"language_preference,omitempty"`        // Optional: Language preference
+	SearchDomainFilter      []string               `json:"search_domain_filter,omitempty"`       // Optional: Search domain filter
+	ReturnImages            *bool                  `json:"return_images,omitempty"`              // Optional: Return images
+	ReturnRelatedQuestions  *bool                  `json:"return_related_questions,omitempty"`   // Optional: Return related questions
+	SearchRecencyFilter     *string                `json:"search_recency_filter,omitempty"`      // Optional: Search recency filter
+	SearchAfterDateFilter   *string                `json:"search_after_date_filter,omitempty"`   // Optional: Search after date filter
+	SearchBeforeDateFilter  *string                `json:"search_before_date_filter,omitempty"`  // Optional: Search before date filter
+	LastUpdatedAfterFilter  *string                `json:"last_updated_after_filter,omitempty"`  // Optional: Last updated after filter
+	LastUpdatedBeforeFilter *string                `json:"last_updated_before_filter,omitempty"` // Optional: Last updated before filter
+	TopK                    *int                   `json:"top_k,omitempty"`                      // Optional: Top-k sampling
+	Stream                  *bool                  `json:"stream,omitempty"`                     // Optional: Enable streaming
+	PresencePenalty         *float64               `json:"presence_penalty,omitempty"`           // Optional: Presence penalty
+	FrequencyPenalty        *float64               `json:"frequency_penalty,omitempty"`          // Optional: Frequency penalty
+	ResponseFormat          *interface{}           `json:"response_format,omitempty"`            // Format for the response
+	DisableSearch           *bool                  `json:"disable_search,omitempty"`             // Optional: Disable search
+	EnableSearchClassifier  *bool                  `json:"enable_search_classifier,omitempty"`   // Optional: Enable search classifier
+	WebSearchOptions        []WebSearchOption      `json:"web_search_options,omitempty"`         // Optional: Web search options
+	MediaResponse           *MediaResponse         `json:"media_response,omitempty"`             // Optional: Media response
+	ExtraParams             map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *PerplexityChatRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 type WebSearchOption struct {

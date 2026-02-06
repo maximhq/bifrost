@@ -66,52 +66,66 @@ func ToHuggingFaceTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 		if request.Params.ExtraParams != nil {
 			extra := request.Params.ExtraParams
 			if val, ok := extra["do_sample"].(bool); ok {
+				delete(extra, "do_sample")
 				genParams.DoSample = &val
 			}
 			if v, ok := schemas.SafeExtractIntPointer(extra["num_beams"]); ok {
+				delete(extra, "num_beams")
 				genParams.NumBeams = v
 			}
 			if v, ok := schemas.SafeExtractIntPointer(extra["num_beam_groups"]); ok {
+				delete(extra, "num_beam_groups")
 				genParams.NumBeamGroups = v
 			}
 			if val, ok := extra["penalty_alpha"].(float64); ok {
+				delete(extra, "penalty_alpha")
 				genParams.PenaltyAlpha = &val
 			}
 			if val, ok := extra["temperature"].(float64); ok {
+				delete(extra, "temperature")
 				genParams.Temperature = &val
 			}
 			if v, ok := schemas.SafeExtractIntPointer(extra["top_k"]); ok {
+				delete(extra, "top_k")
 				genParams.TopK = v
 			}
 			if val, ok := extra["top_p"].(float64); ok {
+				delete(extra, "top_p")
 				genParams.TopP = &val
 			}
 			if val, ok := extra["typical_p"].(float64); ok {
+				delete(extra, "typical_p")
 				genParams.TypicalP = &val
 			}
 			if val, ok := extra["use_cache"].(bool); ok {
+				delete(extra, "use_cache")
 				genParams.UseCache = &val
 			}
 			if val, ok := extra["epsilon_cutoff"].(float64); ok {
+				delete(extra, "epsilon_cutoff")
 				genParams.EpsilonCutoff = &val
 			}
 			if val, ok := extra["eta_cutoff"].(float64); ok {
+				delete(extra, "eta_cutoff")
 				genParams.EtaCutoff = &val
 			}
 
 			// Handle early_stopping (can be bool or string "never")
 			if val, ok := extra["early_stopping"].(bool); ok {
+				delete(extra, "early_stopping")
 				genParams.EarlyStopping = &HuggingFaceTranscriptionEarlyStopping{BoolValue: &val}
 			} else if val, ok := extra["early_stopping"].(string); ok {
+				delete(extra, "early_stopping")
 				genParams.EarlyStopping = &HuggingFaceTranscriptionEarlyStopping{StringValue: &val}
 			}
 
 			// Handle return_timestamps
 			if val, ok := extra["return_timestamps"].(bool); ok {
+				delete(extra, "return_timestamps")
 				hfRequest.Parameters.ReturnTimestamps = &val
 			}
 		}
-
+		hfRequest.ExtraParams = request.Params.ExtraParams
 		hfRequest.Parameters.GenerationParameters = genParams
 	}
 

@@ -33,7 +33,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, and customers
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -521,6 +521,12 @@ paths:
   /api/mcp/client/{id}/reconnect:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
 
+  # MCP - OAuth
+  /api/mcp/oauth/callback:
+    $ref: './paths/management/oauth.yaml#/oauth-callback'
+  /api/mcp/oauth/{id}:
+    $ref: './paths/management/oauth.yaml#/oauth-config-status'
+
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
     $ref: './paths/management/governance.yaml#/virtual-keys'
@@ -544,7 +550,22 @@ paths:
     $ref: './paths/management/governance.yaml#/budgets'
   /api/governance/rate-limits:
     $ref: './paths/management/governance.yaml#/rate-limits'
+  /api/governance/routing-rules:
+    $ref: './paths/management/governance.yaml#/routing-rules'
+  /api/governance/routing-rules/{rule_id}:
+    $ref: './paths/management/governance.yaml#/routing-rules-by-id'
 
+  # Governance - Model Configs
+  /api/governance/model-configs:
+    $ref: './paths/management/governance.yaml#/model-configs'
+  /api/governance/model-configs/{mc_id}:
+    $ref: './paths/management/governance.yaml#/model-configs-by-id'
+
+  # Governance - Provider Governance
+  /api/governance/providers:
+    $ref: './paths/management/governance.yaml#/provider-governance'
+  /api/governance/providers/{provider_name}:
+    $ref: './paths/management/governance.yaml#/provider-governance-by-name'
 
   # Logging
   /api/logs:
@@ -830,24 +851,110 @@ components:
       $ref: './schemas/management/mcp.yaml#/MCPClientConfig'
     ExecuteToolRequest:
       $ref: './schemas/management/mcp.yaml#/ExecuteToolRequest'
+    MCPAuthType:
+      $ref: './schemas/management/oauth.yaml#/MCPAuthType'
+    OAuthConfigRequest:
+      $ref: './schemas/management/oauth.yaml#/OAuthConfigRequest'
+    OAuthFlowInitiation:
+      $ref: './schemas/management/oauth.yaml#/OAuthFlowInitiation'
+    OAuthConfigStatus:
+      $ref: './schemas/management/oauth.yaml#/OAuthConfigStatus'
+    OAuthToken:
+      $ref: './schemas/management/oauth.yaml#/OAuthToken'
 
-    # Governance
+    # Governance - Virtual Keys
     VirtualKey:
       $ref: './schemas/management/governance.yaml#/VirtualKey'
+    VirtualKeyResponse:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyResponse'
+    VirtualKeyProviderConfig:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyProviderConfig'
+    VirtualKeyMCPConfig:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
     ListVirtualKeysResponse:
       $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
     CreateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     UpdateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+
+    # Governance - Teams
     Team:
       $ref: './schemas/management/governance.yaml#/Team'
+    TeamResponse:
+      $ref: './schemas/management/governance.yaml#/TeamResponse'
     ListTeamsResponse:
       $ref: './schemas/management/governance.yaml#/ListTeamsResponse'
+    CreateTeamRequest:
+      $ref: './schemas/management/governance.yaml#/CreateTeamRequest'
+    UpdateTeamRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateTeamRequest'
+
+    # Governance - Customers
     Customer:
       $ref: './schemas/management/governance.yaml#/Customer'
+    CustomerResponse:
+      $ref: './schemas/management/governance.yaml#/CustomerResponse'
     ListCustomersResponse:
       $ref: './schemas/management/governance.yaml#/ListCustomersResponse'
+    CreateCustomerRequest:
+      $ref: './schemas/management/governance.yaml#/CreateCustomerRequest'
+    UpdateCustomerRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateCustomerRequest'
+
+    # Governance - Budgets and Rate Limits
+    Budget:
+      $ref: './schemas/management/governance.yaml#/Budget'
+    RateLimit:
+      $ref: './schemas/management/governance.yaml#/RateLimit'
+    ListBudgetsResponse:
+      $ref: './schemas/management/governance.yaml#/ListBudgetsResponse'
+    ListRateLimitsResponse:
+      $ref: './schemas/management/governance.yaml#/ListRateLimitsResponse'
+    CreateBudgetRequest:
+      $ref: './schemas/management/governance.yaml#/CreateBudgetRequest'
+    UpdateBudgetRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateBudgetRequest'
+    CreateRateLimitRequest:
+      $ref: './schemas/management/governance.yaml#/CreateRateLimitRequest'
+    UpdateRateLimitRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateRateLimitRequest'
+
+    # Governance - Routing Rules
+    RoutingRule:
+      $ref: './schemas/management/governance.yaml#/RoutingRule'
+    RoutingRuleResponse:
+      $ref: './schemas/management/governance.yaml#/RoutingRuleResponse'
+    ListRoutingRulesResponse:
+      $ref: './schemas/management/governance.yaml#/ListRoutingRulesResponse'
+    CreateRoutingRuleRequest:
+      $ref: './schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    UpdateRoutingRuleRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    TableKey:
+      $ref: './schemas/management/governance.yaml#/TableKey'
+
+    # Governance - Model Configs
+    ModelConfig:
+      $ref: './schemas/management/governance.yaml#/ModelConfig'
+    ModelConfigResponse:
+      $ref: './schemas/management/governance.yaml#/ModelConfigResponse'
+    ListModelConfigsResponse:
+      $ref: './schemas/management/governance.yaml#/ListModelConfigsResponse'
+    CreateModelConfigRequest:
+      $ref: './schemas/management/governance.yaml#/CreateModelConfigRequest'
+    UpdateModelConfigRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateModelConfigRequest'
+
+    # Governance - Provider Governance
+    ProviderGovernance:
+      $ref: './schemas/management/governance.yaml#/ProviderGovernance'
+    ProviderGovernanceResponse:
+      $ref: './schemas/management/governance.yaml#/ProviderGovernanceResponse'
+    ListProviderGovernanceResponse:
+      $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
+    UpdateProviderGovernanceRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
 
     # Logging
     LogEntry:

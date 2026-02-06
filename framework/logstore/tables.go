@@ -8,6 +8,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+
 	"gorm.io/gorm"
 )
 
@@ -35,6 +36,7 @@ type SearchFilters struct {
 	Objects         []string   `json:"objects,omitempty"` // For filtering by request type (chat.completion, text.completion, embedding)
 	SelectedKeyIDs  []string   `json:"selected_key_ids,omitempty"`
 	VirtualKeyIDs   []string   `json:"virtual_key_ids,omitempty"`
+	RoutingRuleIDs  []string   `json:"routing_rule_ids,omitempty"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
 	EndTime         *time.Time `json:"end_time,omitempty"`
 	MinLatency      *float64   `json:"min_latency,omitempty"`
@@ -49,10 +51,11 @@ type SearchFilters struct {
 
 // PaginationOptions represents pagination parameters
 type PaginationOptions struct {
-	Limit  int    `json:"limit"`
-	Offset int    `json:"offset"`
-	SortBy string `json:"sort_by"` // "timestamp", "latency", "tokens", "cost"
-	Order  string `json:"order"`   // "asc", "desc"
+	Limit      int    `json:"limit"`
+	Offset     int    `json:"offset"`
+	SortBy     string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost"
+	Order      string `json:"order"`       // "asc", "desc"
+	TotalCount int64  `json:"total_count"` // Total number of items matching the query
 }
 
 // SearchResult represents the result of a log search
@@ -86,6 +89,8 @@ type Log struct {
 	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	RoutingRuleID         *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingRuleName       *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
 	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
 	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
@@ -138,8 +143,9 @@ type Log struct {
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 
 	// Populated in handlers after find using the virtual key id and key id
-	VirtualKey  *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`  // redacted
-	SelectedKey *schemas.Key            `gorm:"-" json:"selected_key,omitempty"` // redacted
+	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
+	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
+	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"` // redacted
 }
 
 // NewLogEntryFromMap creates a new Log from a map[string]interface{}
@@ -450,6 +456,139 @@ func (l *Log) DeserializeFields() error {
 	}
 
 	return nil
+}
+
+// MCPToolLog represents a log entry for MCP tool executions
+// This is separate from the main Log table since MCP tool calls have different fields
+type MCPToolLog struct {
+	ID             string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	LLMRequestID   *string   `gorm:"type:varchar(255);column:llm_request_id;index:idx_mcp_logs_llm_request_id" json:"llm_request_id,omitempty"` // Links to the LLM request that triggered this tool call
+	Timestamp      time.Time `gorm:"index;not null" json:"timestamp"`
+	ToolName       string    `gorm:"type:varchar(255);index:idx_mcp_logs_tool_name;not null" json:"tool_name"`
+	ServerLabel    string    `gorm:"type:varchar(255);index:idx_mcp_logs_server_label" json:"server_label,omitempty"` // MCP server that provided the tool
+	VirtualKeyID   *string   `gorm:"type:varchar(255);index:idx_mcp_logs_virtual_key_id" json:"virtual_key_id"`
+	VirtualKeyName *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	Arguments      string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool arguments
+	Result         string    `gorm:"type:text" json:"-"`                                                // JSON serialized tool result
+	ErrorDetails   string    `gorm:"type:text" json:"-"`                                                // JSON serialized *schemas.BifrostError
+	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`               // Execution time in milliseconds
+	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
+	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
+	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
+
+	// Virtual fields for JSON output - populated when needed
+	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
+	ResultParsed       interface{}             `gorm:"-" json:"result,omitempty"`
+	ErrorDetailsParsed *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
+	VirtualKey         *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (MCPToolLog) TableName() string {
+	return "mcp_tool_logs"
+}
+
+// BeforeCreate GORM hook to set created_at and serialize JSON fields
+func (l *MCPToolLog) BeforeCreate(tx *gorm.DB) error {
+	if l.CreatedAt.IsZero() {
+		l.CreatedAt = time.Now().UTC()
+	}
+	if l.Timestamp.IsZero() {
+		l.Timestamp = time.Now().UTC()
+	}
+	return l.SerializeFields()
+}
+
+// BeforeSave GORM hook to serialize JSON fields
+func (l *MCPToolLog) BeforeSave(tx *gorm.DB) error {
+	return l.SerializeFields()
+}
+
+// AfterFind GORM hook to deserialize JSON fields
+func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
+	return l.DeserializeFields()
+}
+
+// SerializeFields converts Go structs to JSON strings for storage
+func (l *MCPToolLog) SerializeFields() error {
+	if l.ArgumentsParsed != nil {
+		if data, err := json.Marshal(l.ArgumentsParsed); err != nil {
+			return err
+		} else {
+			l.Arguments = string(data)
+		}
+	}
+
+	if l.ResultParsed != nil {
+		if data, err := json.Marshal(l.ResultParsed); err != nil {
+			return err
+		} else {
+			l.Result = string(data)
+		}
+	}
+
+	if l.ErrorDetailsParsed != nil {
+		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+			return err
+		} else {
+			l.ErrorDetails = string(data)
+		}
+	}
+
+	return nil
+}
+
+// DeserializeFields converts JSON strings back to Go structs
+func (l *MCPToolLog) DeserializeFields() error {
+	if l.Arguments != "" {
+		if err := json.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
+			l.ArgumentsParsed = nil
+		}
+	}
+
+	if l.Result != "" {
+		if err := json.Unmarshal([]byte(l.Result), &l.ResultParsed); err != nil {
+			l.ResultParsed = nil
+		}
+	}
+
+	if l.ErrorDetails != "" {
+		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+			l.ErrorDetailsParsed = nil
+		}
+	}
+
+	return nil
+}
+
+// MCPToolLogSearchFilters represents the available filters for MCP tool log searches
+type MCPToolLogSearchFilters struct {
+	ToolNames     []string   `json:"tool_names,omitempty"`
+	ServerLabels  []string   `json:"server_labels,omitempty"`
+	Status        []string   `json:"status,omitempty"`
+	VirtualKeyIDs []string   `json:"virtual_key_ids,omitempty"`
+	LLMRequestIDs []string   `json:"llm_request_ids,omitempty"`
+	StartTime     *time.Time `json:"start_time,omitempty"`
+	EndTime       *time.Time `json:"end_time,omitempty"`
+	MinLatency    *float64   `json:"min_latency,omitempty"`
+	MaxLatency    *float64   `json:"max_latency,omitempty"`
+	ContentSearch string     `json:"content_search,omitempty"`
+}
+
+// MCPToolLogSearchResult represents the result of an MCP tool log search
+type MCPToolLogSearchResult struct {
+	Logs       []MCPToolLog      `json:"logs"`
+	Pagination PaginationOptions `json:"pagination"`
+	Stats      MCPToolLogStats   `json:"stats"`
+	HasLogs    bool              `json:"has_logs"`
+}
+
+// MCPToolLogStats represents statistics for MCP tool log searches
+type MCPToolLogStats struct {
+	TotalExecutions int64   `json:"total_executions"`
+	SuccessRate     float64 `json:"success_rate"`
+	AverageLatency  float64 `json:"average_latency"`
+	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
 }
 
 // BuildContentSummary creates a searchable text summary

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -93,6 +94,20 @@ func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schema
 // Some providers like Vertex and Bedrock have their credentials in additional key configs..
 func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
 	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
+}
+
+// hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
+// This allows Azure keys to have an empty API key value when using Entra ID authentication.
+func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
+	if providerType != schemas.Azure || key.AzureKeyConfig == nil {
+		return false
+	}
+	return key.AzureKeyConfig.ClientID != nil &&
+		key.AzureKeyConfig.ClientSecret != nil &&
+		key.AzureKeyConfig.TenantID != nil &&
+		key.AzureKeyConfig.ClientID.GetValue() != "" &&
+		key.AzureKeyConfig.ClientSecret.GetValue() != "" &&
+		key.AzureKeyConfig.TenantID.GetValue() != ""
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -217,7 +232,7 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -442,4 +457,9 @@ func isPrivateIP(ip net.IP) bool {
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
 func sanitizeSpanName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}
+
+// IsCodemodeTool returns true if the given tool name is a codemode tool.
+func IsCodemodeTool(toolName string) bool {
+	return mcp.IsCodeModeTool(toolName)
 }

@@ -22,16 +22,17 @@ Tests Pydantic AI standard interface compliance and Bifrost integration:
 2. Agent with system prompt (instructions) - Cross-provider
 3. Multi-turn conversation with message history - Cross-provider
 4. Tool calling with @agent.tool decorator - Cross-provider
-5. Structured output with Pydantic models - Cross-provider
-6. Streaming responses - Cross-provider
-7. Async operations
-8. Tool with context - Cross-provider
-9. Multiple tools - Cross-provider
-10. Error handling
-11. Result validation
-12. Usage tracking
-13. Message history inspection
-14. Dynamic instructions
+5. End-to-end tool calling with multi-turn flow - Cross-provider
+6. Structured output with Pydantic models - Cross-provider
+7. Streaming responses - Cross-provider
+8. Async operations
+9. Error handling
+10. Tool with context - Cross-provider
+11. Multiple tools - Cross-provider
+12. Result validation
+13. Usage tracking
+14. Message history inspection
+15. Dynamic instructions
 """
 
 import pytest
@@ -377,8 +378,47 @@ class TestPydanticAIIntegration:
         except ValueError as e:
             pytest.skip(f"Provider {provider} not available: {e}")
 
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("end2end_tool_calling"))
+    def test_05_end2end_tool_calling(self, test_config, provider, model):
+        """Test Case 5: Complete end-to-end tool calling flow with multi-turn conversation - runs across all available providers"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        try:
+            pydantic_model = get_pydanticai_model_for_provider(provider, model)
+
+            # Define a tool that we'll manually execute
+            def get_weather(location: str) -> str:
+                """Get the current weather for a location."""
+                return f"The weather in {location} is 72°F and sunny."
+
+            agent = Agent(
+                pydantic_model,
+                tools=[get_weather],
+                instructions="You are a helpful assistant that can check weather.",
+            )
+
+            # Step 1: Initial request - should trigger tool call
+            result1 = agent.run_sync("What's the weather in Boston in fahrenheit?")
+
+            assert result1 is not None
+            assert result1.output is not None
+            
+            # Pydantic AI automatically executes tools, so result1.output should contain
+            # the final response with weather information.
+            
+            # Verify the response contains weather information
+            content = str(result1.output).lower()
+            weather_location_keywords = WEATHER_KEYWORDS + LOCATION_KEYWORDS
+            assert any(
+                word in content for word in weather_location_keywords
+            ), f"Response should mention weather or location. Got: {content}"
+
+        except ValueError as e:
+            pytest.skip(f"Provider {provider} not available: {e}")
+
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("pydantic_structured_output"))
-    def test_05_structured_output(self, test_config, provider, model):
+    def test_06_structured_output(self, test_config, provider, model):
         """Test Case 5: Structured output with Pydantic models - runs on providers with reliable PydanticAI structured output support"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
@@ -403,8 +443,8 @@ class TestPydanticAIIntegration:
             pytest.skip(f"Provider {provider} not available: {e}")
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("pydanticai_streaming"))
-    def test_06_streaming_responses(self, test_config, provider, model):
-        """Test Case 6: Streaming response functionality - runs on providers with PydanticAI streaming support"""
+    def test_07_streaming_responses(self, test_config, provider, model):
+        """Test Case 7: Streaming response functionality - runs on providers with PydanticAI streaming support"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
         
@@ -440,8 +480,8 @@ class TestPydanticAIIntegration:
         except ValueError as e:
             pytest.skip(f"Provider {provider} not available: {e}")
 
-    def test_07_async_operations(self, test_config):
-        """Test Case 7: Async operation support"""
+    def test_08_async_operations(self, test_config):
+        """Test Case 8: Async operation support"""
 
         async def async_test():
             try:
@@ -467,8 +507,8 @@ class TestPydanticAIIntegration:
         if result is not False:
             assert result is True
 
-    def test_08_error_handling(self, test_config):
-        """Test Case 8: Error handling for invalid requests"""
+    def test_09_error_handling(self, test_config):
+        """Test Case 9: Error handling for invalid requests"""
         try:
             # Test with invalid model name
             base_url = get_integration_url("pydanticai")
@@ -493,8 +533,8 @@ class TestPydanticAIIntegration:
             pytest.skip(f"Error handling test through Pydantic AI not available: {e}")
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("tool_calls"))
-    def test_09_tool_with_context(self, test_config, provider, model):
-        """Test Case 9: Tool with RunContext for dependency injection - runs across all available providers"""
+    def test_10_tool_with_context(self, test_config, provider, model):
+        """Test Case 10: Tool with RunContext for dependency injection - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
         
@@ -530,8 +570,8 @@ class TestPydanticAIIntegration:
             pytest.skip(f"Provider {provider} not available: {e}")
 
     @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("multiple_tool_calls"))
-    def test_10_multiple_tools(self, test_config, provider, model):
-        """Test Case 10: Multiple tools in single agent - runs across all available providers"""
+    def test_11_multiple_tools(self, test_config, provider, model):
+        """Test Case 11: Multiple tools in single agent - runs across all available providers"""
         if provider == "_no_providers_" or model == "_no_model_":
             pytest.skip("No providers configured for this scenario")
         
@@ -564,8 +604,8 @@ class TestPydanticAIIntegration:
         except ValueError as e:
             pytest.skip(f"Provider {provider} not available: {e}")
 
-    def test_11_agent_with_result_validators(self, test_config):
-        """Test Case 11: Agent with result type validation"""
+    def test_12_agent_with_result_validators(self, test_config):
+        """Test Case 12: Agent with result type validation"""
         try:
             model = get_openai_model()
 
@@ -590,8 +630,8 @@ class TestPydanticAIIntegration:
         except Exception as e:
             pytest.skip(f"Result validation through Pydantic AI not available: {e}")
 
-    def test_12_usage_tracking(self, test_config):
-        """Test Case 12: Usage tracking and token counting"""
+    def test_13_usage_tracking(self, test_config):
+        """Test Case 13: Usage tracking and token counting"""
         try:
             model = get_openai_model()
             agent = Agent(
@@ -615,8 +655,8 @@ class TestPydanticAIIntegration:
         except Exception as e:
             pytest.skip(f"Usage tracking through Pydantic AI not available: {e}")
 
-    def test_13_message_history_inspection(self, test_config):
-        """Test Case 13: Inspect message history after run"""
+    def test_14_message_history_inspection(self, test_config):
+        """Test Case 14: Inspect message history after run"""
         try:
             model = get_openai_model()
             agent = Agent(
@@ -639,8 +679,8 @@ class TestPydanticAIIntegration:
         except Exception as e:
             pytest.skip(f"Message history inspection through Pydantic AI not available: {e}")
 
-    def test_14_dynamic_instructions(self, test_config):
-        """Test Case 14: Dynamic instructions based on context"""
+    def test_15_dynamic_instructions(self, test_config):
+        """Test Case 15: Dynamic instructions based on context"""
         try:
             model = get_openai_model()
 

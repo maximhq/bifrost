@@ -39,12 +39,23 @@ type AnthropicTextRequest struct {
 	StopSequences     []string `json:"stop_sequences,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
-	Fallbacks []string `json:"fallbacks,omitempty"`
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (req *AnthropicTextRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
 func (req *AnthropicTextRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
+}
+
+// AnthropicOutputConfig represents the GA structured outputs config (output_config.format)
+type AnthropicOutputConfig struct {
+	Format interface{} `json:"format,omitempty"`
 }
 
 // AnthropicMessageRequest represents an Anthropic messages API request
@@ -63,13 +74,20 @@ type AnthropicMessageRequest struct {
 	ToolChoice    *AnthropicToolChoice `json:"tool_choice,omitempty"`
 	MCPServers    []AnthropicMCPServer `json:"mcp_servers,omitempty"` // This feature requires the beta header: "anthropic-beta": "mcp-client-2025-04-04"
 	Thinking      *AnthropicThinking   `json:"thinking,omitempty"`
-	OutputFormat  interface{}          `json:"output_format,omitempty"` // This feature requires the beta header: "anthropic-beta": "structured-outputs-2025-11-13" and currently only supported for Claude Sonnet 4.5 and Claude Opus 4.1
+	OutputFormat  interface{}          `json:"output_format,omitempty"` // Beta: requires header "anthropic-beta": "structured-outputs-2025-11-13"
+	OutputConfig  *AnthropicOutputConfig `json:"output_config,omitempty"` // GA: structured outputs without beta header
+	ServiceTier   *string              `json:"service_tier,omitempty"`  // "auto" or "standard_only"
 
 	// Extra params for advanced use cases
-	ExtraParams map[string]interface{} `json:"extra_params,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
 	Fallbacks []string `json:"fallbacks,omitempty"`
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (req *AnthropicMessageRequest) GetExtraParams() map[string]interface{} {
+	return req.ExtraParams
 }
 
 type AnthropicMetaData struct {
@@ -82,8 +100,8 @@ type AnthropicThinking struct {
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
-func (mr *AnthropicMessageRequest) IsStreamingRequested() bool {
-	return mr.Stream != nil && *mr.Stream
+func (req *AnthropicMessageRequest) IsStreamingRequested() bool {
+	return req.Stream != nil && *req.Stream
 }
 
 // Known fields for AnthropicMessageRequest
@@ -103,13 +121,15 @@ var anthropicMessageRequestKnownFields = map[string]bool{
 	"mcp_servers":    true,
 	"thinking":       true,
 	"output_format":  true,
+	"output_config":  true,
+	"service_tier":   true,
 	"extra_params":   true,
 	"fallbacks":      true,
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicMessageRequest.
 // This captures all unregistered fields into ExtraParams.
-func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
+func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	// Create an alias type to avoid infinite recursion
 	type Alias AnthropicMessageRequest
 
@@ -117,7 +137,7 @@ func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		*Alias
 	}{
-		Alias: (*Alias)(mr),
+		Alias: (*Alias)(req),
 	}
 
 	if err := sonic.Unmarshal(data, aux); err != nil {
@@ -131,8 +151,8 @@ func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 	}
 
 	// Initialize ExtraParams if not already initialized
-	if mr.ExtraParams == nil {
-		mr.ExtraParams = make(map[string]interface{})
+	if req.ExtraParams == nil {
+		req.ExtraParams = make(map[string]interface{})
 	}
 
 	// Extract unknown fields
@@ -142,11 +162,24 @@ func (mr *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 			if err := sonic.Unmarshal(value, &v); err != nil {
 				continue // Skip fields that can't be unmarshaled
 			}
-			mr.ExtraParams[key] = v
+			req.ExtraParams[key] = v
 		}
 	}
 
 	return nil
+}
+
+// MarshalJSON implements custom JSON marshalling for AnthropicMessageRequest.
+// It validates that OutputFormat and OutputConfig are mutually exclusive.
+func (req *AnthropicMessageRequest) MarshalJSON() ([]byte, error) {
+	// Validation: ensure OutputFormat and OutputConfig are not both set
+	if req.OutputFormat != nil && req.OutputConfig != nil {
+		return nil, fmt.Errorf("both OutputFormat and OutputConfig are set; only one should be non-nil")
+	}
+
+	// Use alias type to avoid infinite recursion
+	type Alias AnthropicMessageRequest
+	return sonic.Marshal((*Alias)(req))
 }
 
 type AnthropicMessageRole string
@@ -217,18 +250,19 @@ func (mc *AnthropicContent) UnmarshalJSON(data []byte) error {
 type AnthropicContentBlockType string
 
 const (
-	AnthropicContentBlockTypeText                AnthropicContentBlockType = "text"
-	AnthropicContentBlockTypeImage               AnthropicContentBlockType = "image"
-	AnthropicContentBlockTypeDocument            AnthropicContentBlockType = "document"
-	AnthropicContentBlockTypeToolUse             AnthropicContentBlockType = "tool_use"
-	AnthropicContentBlockTypeServerToolUse       AnthropicContentBlockType = "server_tool_use"
-	AnthropicContentBlockTypeToolResult          AnthropicContentBlockType = "tool_result"
-	AnthropicContentBlockTypeWebSearchToolResult AnthropicContentBlockType = "web_search_tool_result"
-	AnthropicContentBlockTypeWebSearchResult     AnthropicContentBlockType = "web_search_result"
-	AnthropicContentBlockTypeMCPToolUse          AnthropicContentBlockType = "mcp_tool_use"
-	AnthropicContentBlockTypeMCPToolResult       AnthropicContentBlockType = "mcp_tool_result"
-	AnthropicContentBlockTypeThinking            AnthropicContentBlockType = "thinking"
-	AnthropicContentBlockTypeRedactedThinking    AnthropicContentBlockType = "redacted_thinking"
+	AnthropicContentBlockTypeText                     AnthropicContentBlockType = "text"
+	AnthropicContentBlockTypeImage                    AnthropicContentBlockType = "image"
+	AnthropicContentBlockTypeDocument                 AnthropicContentBlockType = "document"
+	AnthropicContentBlockTypeToolUse                  AnthropicContentBlockType = "tool_use"
+	AnthropicContentBlockTypeServerToolUse            AnthropicContentBlockType = "server_tool_use"
+	AnthropicContentBlockTypeToolResult               AnthropicContentBlockType = "tool_result"
+	AnthropicContentBlockTypeWebSearchToolResult      AnthropicContentBlockType = "web_search_tool_result"
+	AnthropicContentBlockTypeWebSearchToolResultError AnthropicContentBlockType = "web_search_tool_result_error"
+	AnthropicContentBlockTypeWebSearchResult          AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeMCPToolUse               AnthropicContentBlockType = "mcp_tool_use"
+	AnthropicContentBlockTypeMCPToolResult            AnthropicContentBlockType = "mcp_tool_result"
+	AnthropicContentBlockTypeThinking                 AnthropicContentBlockType = "thinking"
+	AnthropicContentBlockTypeRedactedThinking         AnthropicContentBlockType = "redacted_thinking"
 )
 
 // AnthropicContentBlock represents content in Anthropic message format
@@ -253,6 +287,7 @@ type AnthropicContentBlock struct {
 	URL              *string                   `json:"url,omitempty"`               // For web_search_result content
 	EncryptedContent *string                   `json:"encrypted_content,omitempty"` // For web_search_result content
 	PageAge          *string                   `json:"page_age,omitempty"`          // For web_search_result content
+	ErrorCode        *string                   `json:"error_code,omitempty"`        // For web_search_tool_result_error content
 }
 
 // AnthropicSource represents image or document source in Anthropic format
@@ -318,7 +353,7 @@ type AnthropicCitations struct {
 	TextCitations []AnthropicTextCitation
 }
 
-// Custom marshal/unmarshal methods
+// MarshalJSON implements the json.Marshaler interface
 func (ac *AnthropicCitations) MarshalJSON() ([]byte, error) {
 	if len(ac.TextCitations) == 0 {
 		ac.TextCitations = nil
@@ -336,6 +371,7 @@ func (ac *AnthropicCitations) MarshalJSON() ([]byte, error) {
 	return sonic.Marshal(nil)
 }
 
+// UnmarshalJSON implements the json.Unmarshaler interface
 func (ac *AnthropicCitations) UnmarshalJSON(data []byte) error {
 	// Try to unmarshal as array of citations
 	var textCitations []AnthropicTextCitation
@@ -396,6 +432,7 @@ type AnthropicToolComputerUse struct {
 type AnthropicToolWebSearchUserLocation struct {
 	Type     *string `json:"type,omitempty"` // "approximate"
 	City     *string `json:"city,omitempty"`
+	Region   *string `json:"region,omitempty"`
 	Country  *string `json:"country,omitempty"`
 	Timezone *string `json:"timezone,omitempty"`
 }
@@ -415,15 +452,15 @@ type AnthropicToolInputExample struct {
 
 // AnthropicTool represents a tool in Anthropic format
 type AnthropicTool struct {
-	Name          string                          `json:"name"`
-	Type          *AnthropicToolType              `json:"type,omitempty"`
-	Description   *string                         `json:"description,omitempty"`
-	InputSchema   *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
-	CacheControl  *schemas.CacheControl           `json:"cache_control,omitempty"`
-	DeferLoading  *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
-	Strict        *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
-	AllowedCallers []string                       `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
-	InputExamples []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
+	Name           string                          `json:"name"`
+	Type           *AnthropicToolType              `json:"type,omitempty"`
+	Description    *string                         `json:"description,omitempty"`
+	InputSchema    *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
+	CacheControl   *schemas.CacheControl           `json:"cache_control,omitempty"`
+	DeferLoading   *bool                           `json:"defer_loading,omitempty"`   // Beta: defer loading of tool definition
+	Strict         *bool                           `json:"strict,omitempty"`          // Whether to enforce strict parameter validation
+	AllowedCallers []string                        `json:"allowed_callers,omitempty"` // Beta: which callers can use this tool
+	InputExamples  []AnthropicToolInputExample     `json:"input_examples,omitempty"`  // Beta: example inputs for the tool
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch
@@ -498,11 +535,18 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	InputTokens              int                         `json:"input_tokens"`
-	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
-	CacheCreation            AnthropicUsageCacheCreation `json:"cache_creation"`
-	OutputTokens             int                         `json:"output_tokens"`
+	InputTokens              int                          `json:"input_tokens"`
+	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int                          `json:"cache_read_input_tokens"`
+	CacheCreation            AnthropicUsageCacheCreation  `json:"cache_creation"`
+	OutputTokens             int                          `json:"output_tokens"`
+	ServerToolUse            *AnthropicServerToolUseUsage `json:"server_tool_use,omitempty"` // Server tool use statistics (e.g., web search)
+	ServiceTier              *string                      `json:"service_tier,omitempty"`    // "standard", "priority", or "batch"
+}
+
+// AnthropicServerToolUseUsage represents server tool use statistics in usage
+type AnthropicServerToolUseUsage struct {
+	WebSearchRequests int `json:"web_search_requests"` // Number of web search requests made
 }
 
 type AnthropicUsageCacheCreation struct {

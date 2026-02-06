@@ -38,9 +38,9 @@ type ProviderHandler struct {
 }
 
 // NewProviderHandler creates a new provider handler instance
-func NewProviderHandler(modelsManager ModelsManager, dbStore configstore.ConfigStore, inMemoryStore *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
+func NewProviderHandler(modelsManager ModelsManager, inMemoryStore *lib.Config, client *bifrost.Bifrost) *ProviderHandler {
 	return &ProviderHandler{
-		dbStore:       dbStore,
+		dbStore:       inMemoryStore.ConfigStore,
 		inMemoryStore: inMemoryStore,
 		client:        client,
 		modelsManager: modelsManager,
@@ -91,6 +91,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 }
 
 // listProviders handles GET /api/providers - List all providers
@@ -683,6 +684,63 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 		}
 	}
 	return filtered
+}
+
+// ListBaseModelsResponse represents the response for listing base models
+type ListBaseModelsResponse struct {
+	Models []string `json:"models"`
+	Total  int      `json:"total"`
+}
+
+// listBaseModels handles GET /api/models/base - List distinct base model names from the catalog
+// Query parameters:
+//   - query: Filter base models by name (case-insensitive partial match)
+//   - limit: Maximum number of results to return (default: 20)
+func (h *ProviderHandler) listBaseModels(ctx *fasthttp.RequestCtx) {
+	queryParam := string(ctx.QueryArgs().Peek("query"))
+	limitParam := string(ctx.QueryArgs().Peek("limit"))
+
+	limit := 20
+	if limitParam != "" {
+		if n, err := ctx.QueryArgs().GetUint("limit"); err == nil {
+			limit = n
+		}
+	}
+
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		SendJSON(ctx, ListBaseModelsResponse{Models: []string{}, Total: 0})
+		return
+	}
+
+	baseModels := modelCatalog.GetDistinctBaseModelNames()
+	sort.Strings(baseModels)
+
+	// Apply query filter if provided
+	if queryParam != "" {
+		filtered := []string{}
+		queryLower := strings.ToLower(queryParam)
+		queryNormalized := strings.ReplaceAll(strings.ReplaceAll(queryLower, "-", ""), "_", "")
+
+		for _, model := range baseModels {
+			modelLower := strings.ToLower(model)
+			modelNormalized := strings.ReplaceAll(strings.ReplaceAll(modelLower, "-", ""), "_", "")
+
+			if strings.Contains(modelLower, queryLower) ||
+				strings.Contains(modelNormalized, queryNormalized) ||
+				fuzzyMatch(modelLower, queryLower) {
+				filtered = append(filtered, model)
+			}
+		}
+		baseModels = filtered
+	}
+
+	total := len(baseModels)
+	if limit > 0 && limit < len(baseModels) {
+		baseModels = baseModels[:limit]
+	}
+
+	SendJSON(ctx, ListBaseModelsResponse{Models: baseModels, Total: total})
 }
 
 // mergeKeys merges new keys with old, preserving values that are redacted in the new config

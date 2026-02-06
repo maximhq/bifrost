@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -17,7 +18,7 @@ import (
 type PluginsLoader interface {
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
-	GetPluginStatus(ctx context.Context) []schemas.PluginStatus
+	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 }
 
 // PluginsHandler is the handler for the plugins API
@@ -58,33 +59,30 @@ func (h *PluginsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas
 	r.DELETE("/api/plugins/{name}", lib.ChainMiddlewares(h.deletePlugin, middlewares...))
 }
 
+type PluginResponse struct {
+	Name       string               `json:"name"`
+	ActualName string               `json:"actualName"`
+	Enabled    bool                 `json:"enabled"`
+	Config     any                  `json:"config"`
+	IsCustom   bool                 `json:"isCustom"`
+	Path       *string              `json:"path"`
+	Status     schemas.PluginStatus `json:"status"`
+}
+
 // getPlugins gets all plugins
 func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
 		pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
-		finalPlugins := []struct {
-			Name     string               `json:"name"`
-			Enabled  bool                 `json:"enabled"`
-			Config   any                  `json:"config"`
-			IsCustom bool                 `json:"isCustom"`
-			Path     *string              `json:"path"`
-			Status   schemas.PluginStatus `json:"status"`
-		}{}
-		for _, pluginStatus := range pluginStatus {
-			finalPlugins = append(finalPlugins, struct {
-				Name     string               `json:"name"`
-				Enabled  bool                 `json:"enabled"`
-				Config   any                  `json:"config"`
-				IsCustom bool                 `json:"isCustom"`
-				Path     *string              `json:"path"`
-				Status   schemas.PluginStatus `json:"status"`
-			}{
-				Name:     pluginStatus.Name,
-				Enabled:  true,
-				Config:   map[string]any{},
-				IsCustom: true,
-				Path:     nil,
-				Status:   pluginStatus,
+		finalPlugins := []PluginResponse{}
+		for name, pluginStatus := range pluginStatus {
+			finalPlugins = append(finalPlugins, PluginResponse{
+				Name:       pluginStatus.Name,
+				ActualName: name,
+				Enabled:    true,
+				Config:     map[string]any{},
+				IsCustom:   true,
+				Path:       nil,
+				Status:     pluginStatus,
 			})
 		}
 		SendJSON(ctx, map[string]any{
@@ -102,20 +100,14 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 	// Fetching status
 	pluginStatuses := h.pluginsLoader.GetPluginStatus(ctx)
 	// Creating ephemeral struct for the plugins
-	finalPlugins := []struct {
-		Name     string               `json:"name"`
-		Enabled  bool                 `json:"enabled"`
-		Config   any                  `json:"config"`
-		IsCustom bool                 `json:"isCustom"`
-		Path     *string              `json:"path"`
-		Status   schemas.PluginStatus `json:"status"`
-	}{}
+	finalPlugins := []PluginResponse{}
+
 	// Iterating over plugin status to get the plugin info
 	for _, plugin := range plugins {
 		pluginStatus := schemas.PluginStatus{
-			Name: plugin.Name,
+			Name:   plugin.Name,
 			Status: schemas.PluginStatusUninitialized,
-			Logs: []string{},
+			Logs:   []string{},
 		}
 		if !plugin.Enabled {
 			pluginStatus.Status = schemas.PluginStatusDisabled
@@ -127,21 +119,23 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 			}
 		}
 		finalPlugins = append(finalPlugins, struct {
-			Name     string               `json:"name"`
-			Enabled  bool                 `json:"enabled"`
-			Config   any                  `json:"config"`
-			IsCustom bool                 `json:"isCustom"`
-			Path     *string              `json:"path"`
-			Status   schemas.PluginStatus `json:"status"`
+			Name       string               `json:"name"`
+			ActualName string               `json:"actualName"`
+			Enabled    bool                 `json:"enabled"`
+			Config     any                  `json:"config"`
+			IsCustom   bool                 `json:"isCustom"`
+			Path       *string              `json:"path"`
+			Status     schemas.PluginStatus `json:"status"`
 		}{
-			Name:     plugin.Name,
-			Enabled:  plugin.Enabled,
-			Config:   plugin.Config,
-			IsCustom: plugin.IsCustom,
-			Path:     plugin.Path,
-			Status:   pluginStatus,
+			Name:       plugin.Name,
+			ActualName: pluginStatus.Name,
+			Enabled:    plugin.Enabled,
+			Config:     plugin.Config,
+			IsCustom:   plugin.IsCustom,
+			Path:       plugin.Path,
+			Status:     pluginStatus,
 		})
-	}	
+	}
 	// Creating ephemeral struct
 	SendJSON(ctx, map[string]any{
 		"plugins": finalPlugins,
@@ -153,30 +147,17 @@ func (h *PluginsHandler) getPlugins(ctx *fasthttp.RequestCtx) {
 func (h *PluginsHandler) getPlugin(ctx *fasthttp.RequestCtx) {
 	if h.configStore == nil {
 		pluginStatus := h.pluginsLoader.GetPluginStatus(ctx)
-		pluginInfo := struct {
-			Name     string               `json:"name"`
-			Enabled  bool                 `json:"enabled"`
-			Config   any                  `json:"config"`
-			IsCustom bool                 `json:"isCustom"`
-			Path     *string              `json:"path"`
-			Status   schemas.PluginStatus `json:"status"`
-		}{}
-		for _, pluginStatus := range pluginStatus {
+		pluginInfo := PluginResponse{}
+		for name, pluginStatus := range pluginStatus {
 			if pluginStatus.Name == ctx.UserValue("name") {
-				pluginInfo = struct {
-					Name     string               `json:"name"`
-					Enabled  bool                 `json:"enabled"`
-					Config   any                  `json:"config"`
-					IsCustom bool                 `json:"isCustom"`
-					Path     *string              `json:"path"`
-					Status   schemas.PluginStatus `json:"status"`
-				}{
-					Name:     pluginStatus.Name,
-					Enabled:  true,
-					Config:   map[string]any{},
-					IsCustom: true,
-					Path:     nil,
-					Status:   pluginStatus,
+				pluginInfo = PluginResponse{
+					Name:       pluginStatus.Name,
+					ActualName: name,
+					Enabled:    true,
+					Config:     map[string]any{},
+					IsCustom:   true,
+					Path:       nil,
+					Status:     pluginStatus,
 				}
 				break
 			}
@@ -241,6 +222,16 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusConflict, "Plugin already exists")
 		return
 	}
+	// We reload the plugin if its enabled
+	if request.Enabled {
+		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, request.Config); err != nil {
+			logger.Error("failed to load plugin: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin created in database but failed to load: %v", err))
+			return
+		}
+	}
+
+	// Create a DB entry if plugin loading was successful
 	if err := h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:     request.Name,
 		Enabled:  request.Enabled,
@@ -258,18 +249,6 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to get plugin: %v", err)
 		SendError(ctx, 500, "Failed to retrieve plugin")
 		return
-	}
-
-	// We reload the plugin if its enabled
-	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, request.Name, request.Path, request.Config); err != nil {
-			logger.Error("failed to load plugin: %v", err)
-			SendJSON(ctx, map[string]any{
-				"message": fmt.Sprintf("Plugin created successfully; but failed to load plugin with new config: %v", err),
-				"plugin":  plugin,
-			})
-			return
-		}
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusCreated)
@@ -364,20 +343,13 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	if request.Enabled {
 		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config); err != nil {
 			logger.Error("failed to load plugin: %v", err)
-			SendJSON(ctx, map[string]any{
-				"message": fmt.Sprintf("Plugin updated successfully; but failed to load plugin with new config: %v", err),
-				"plugin":  plugin,
-			})
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
 			return
 		}
 	} else {
 		ctx.SetUserValue("isDisabled", true)
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
-			logger.Error("failed to stop plugin: %v", err)
-			SendJSON(ctx, map[string]any{
-				"message": fmt.Sprintf("Plugin updated successfully; but failed to stop plugin: %v", err),
-				"plugin":  plugin,
-			})
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
 			return
 		}
 	}
@@ -426,14 +398,11 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 
 	if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
-		logger.Error("failed to stop plugin: %v", err)
-		SendJSON(ctx, map[string]any{
-			"message": fmt.Sprintf("Plugin deleted successfully; but failed to stop plugin: %v", err),
-			"plugin":  name,
-		})
-		return
+		if !errors.Is(err, plugins.ErrPluginNotFound) {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin deleted in database but failed to stop: %v", err))
+			return
+		}
 	}
-
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
 	})

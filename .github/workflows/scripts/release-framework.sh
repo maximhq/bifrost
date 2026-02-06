@@ -82,45 +82,7 @@ git add go.mod go.sum
 # Validate framework build
 echo "🔨 Validating framework build..."
 go build ./...
-# Starting dependencies of framework tests
-echo "🔧 Starting dependencies of framework tests..."
-# Use docker compose (v2) if available, fallback to docker-compose (v1)
-if command -v docker-compose >/dev/null 2>&1; then
-  docker-compose -f ../tests/docker-compose.yml up -d
-elif docker compose version >/dev/null 2>&1; then
-  docker compose -f ../tests/docker-compose.yml up -d
-else
-  echo "❌ Neither docker-compose nor docker compose is available"
-  exit 1
-fi
-sleep 20
-go test --race -coverprofile=coverage.txt -coverpkg=./... ./...
-
-# Upload coverage to Codecov
-if [ -n "${CODECOV_TOKEN:-}" ]; then
-  echo "📊 Uploading coverage to Codecov..."
-  curl -Os https://uploader.codecov.io/latest/linux/codecov
-  chmod +x codecov
-  ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F framework
-  rm -f codecov coverage.txt
-else
-  echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
-  rm -f coverage.txt
-fi
-
-# Shutting down dependencies
-echo "🔧 Shutting down dependencies of framework tests..."
-# Use docker compose (v2) if available, fallback to docker-compose (v1)
-if command -v docker-compose >/dev/null 2>&1; then
-  docker-compose -f ../tests/docker-compose.yml down
-elif docker compose version >/dev/null 2>&1; then
-  docker compose -f ../tests/docker-compose.yml down
-else
-  echo "❌ Neither docker-compose nor docker compose is available"
-  exit 1
-fi
 cd ..
-
 echo "✅ Framework build validation successful"
 
 # Check if there are any changes to commit

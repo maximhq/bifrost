@@ -30,14 +30,17 @@ type TranscriptionInput struct {
 }
 
 type TranscriptionParameters struct {
-	Language       *string `json:"language,omitempty"`
-	Prompt         *string `json:"prompt,omitempty"`
-	ResponseFormat *string `json:"response_format,omitempty"` // Default is "json"
-	Format         *string `json:"file_format,omitempty"`     // Type of file, not required in openai, but required in gemini
-	MaxLength      *int    `json:"max_length,omitempty"`      // Maximum length of the transcription used by HuggingFace
-	MinLength      *int    `json:"min_length,omitempty"`      // Minimum length of the transcription used by HuggingFace
-	MaxNewTokens   *int    `json:"max_new_tokens,omitempty"`  // Maximum new tokens to generate used by HuggingFace
-	MinNewTokens   *int    `json:"min_new_tokens,omitempty"`  // Minimum new tokens to generate used by HuggingFace
+	Language                *string  `json:"language,omitempty"`
+	Prompt                  *string  `json:"prompt,omitempty"`
+	ResponseFormat          *string  `json:"response_format,omitempty"`           // Default is "json"
+	Temperature             *float64 `json:"temperature,omitempty"`               // Sampling temperature (0.0-1.0)
+	TimestampGranularities  []string `json:"timestamp_granularities,omitempty"`   // "word" and/or "segment"; requires response_format=verbose_json
+	Include                 []string `json:"include,omitempty"`                   // Additional response info (e.g., logprobs)
+	Format                  *string  `json:"file_format,omitempty"`               // Type of file, not required in openai, but required in gemini
+	MaxLength               *int     `json:"max_length,omitempty"`                // Maximum length of the transcription used by HuggingFace
+	MinLength               *int     `json:"min_length,omitempty"`                // Minimum length of the transcription used by HuggingFace
+	MaxNewTokens            *int     `json:"max_new_tokens,omitempty"`            // Maximum new tokens to generate used by HuggingFace
+	MinNewTokens            *int     `json:"min_new_tokens,omitempty"`            // Minimum new tokens to generate used by HuggingFace
 
 	// Elevenlabs-specific fields
 	AdditionalFormats []TranscriptionAdditionalFormat `json:"additional_formats,omitempty"`

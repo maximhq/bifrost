@@ -3,6 +3,7 @@ package azure
 // AzureAPIVersionDefault is the default Azure API version to use when not specified.
 const AzureAPIVersionDefault = "2024-10-21"
 const AzureAPIVersionPreview = "preview"
+const AzureAPIVersionImageEditDefault = "2025-04-01-preview"
 const AzureAnthropicAPIVersionDefault = "2023-06-01"
 
 type AzureModelCapabilities struct {

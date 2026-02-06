@@ -17,11 +17,18 @@ type TableMCPClient struct {
 	IsCodeModeClient       bool            `gorm:"default:false" json:"is_code_mode_client"`         // Whether the client is a code mode client
 	ConnectionType         string          `gorm:"type:varchar(20);not null" json:"connection_type"` // schemas.MCPConnectionType
 	ConnectionString       *schemas.EnvVar `gorm:"type:text" json:"connection_string,omitempty"`
-	StdioConfigJSON        *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.MCPStdioConfig
-	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"` // JSON serialized []string
-	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"` // JSON serialized []string
-	HeadersJSON            string          `gorm:"type:text" json:"-"` // JSON serialized map[string]string
-	IsPingAvailable        bool            `gorm:"default:true" json:"is_ping_available"`           // Whether the MCP server supports ping for health checks
+	StdioConfigJSON        *string         `gorm:"type:text" json:"-"`                    // JSON serialized schemas.MCPStdioConfig
+	ToolsToExecuteJSON     string          `gorm:"type:text" json:"-"`                    // JSON serialized []string
+	ToolsToAutoExecuteJSON string          `gorm:"type:text" json:"-"`                    // JSON serialized []string
+	HeadersJSON            string          `gorm:"type:text" json:"-"`                    // JSON serialized map[string]string
+	IsPingAvailable        *bool           `gorm:"default:true" json:"is_ping_available,omitempty"`  // Whether the MCP server supports ping for health checks
+	ToolPricingJSON        string          `gorm:"type:text" json:"-"`                     // JSON serialized map[string]float64
+	ToolSyncInterval       int             `gorm:"default:0" json:"tool_sync_interval"`    // Per-client tool sync interval in minutes (0 = use global, -1 = disabled)
+
+	// OAuth authentication fields
+	AuthType      string            `gorm:"type:varchar(20);default:'headers'" json:"auth_type"`                         // "none", "headers", "oauth"
+	OauthConfigID *string           `gorm:"type:varchar(255);index;constraint:OnDelete:CASCADE" json:"oauth_config_id"`  // Foreign key to oauth_configs.ID with CASCADE delete
+	OauthConfig   *TableOauthConfig `gorm:"foreignKey:OauthConfigID;references:ID;constraint:OnDelete:CASCADE" json:"-"` // Gorm relationship
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -35,6 +42,7 @@ type TableMCPClient struct {
 	ToolsToExecute     []string                  `gorm:"-" json:"tools_to_execute"`
 	ToolsToAutoExecute []string                  `gorm:"-" json:"tools_to_auto_execute"`
 	Headers            map[string]schemas.EnvVar `gorm:"-" json:"headers"`
+	ToolPricing        map[string]float64        `gorm:"-" json:"tool_pricing"`
 }
 
 // TableName sets the table name for each model
@@ -89,7 +97,17 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.HeadersJSON = "{}"
 	}
-	return nil
+
+	if c.ToolPricing != nil {
+		data, err := json.Marshal(c.ToolPricing)
+		if err != nil {
+			return err
+		}
+		c.ToolPricingJSON = string(data)
+	} else {
+		c.ToolPricingJSON = "{}"
+	}
+		return nil
 }
 
 // AfterFind hooks for deserialization
@@ -113,6 +131,12 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 	}
 	if c.HeadersJSON != "" {
 		if err := sonic.Unmarshal([]byte(c.HeadersJSON), &c.Headers); err != nil {
+			return err
+		}
+	}
+
+	if c.ToolPricingJSON != "" {
+		if err := json.Unmarshal([]byte(c.ToolPricingJSON), &c.ToolPricing); err != nil {
 			return err
 		}
 	}

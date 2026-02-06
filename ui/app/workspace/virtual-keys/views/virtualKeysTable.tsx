@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/utils/governance"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react"
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
 import VirtualKeySheet from "./virtualKeySheet"
@@ -34,10 +34,20 @@ interface VirtualKeysTableProps {
 
 export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefresh }: VirtualKeysTableProps) {
   const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
-  const [editingVirtualKey, setEditingVirtualKey] = useState<VirtualKey | null>(null)
+  const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
-  const [selectedVirtualKey, setSelectedVirtualKey] = useState<VirtualKey | null>(null)
+  const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
   const [showDetailSheet, setShowDetailSheet] = useState(false)
+
+  // Derive objects from props so they stay in sync with RTK cache updates
+  const editingVirtualKey = useMemo(
+    () => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
+    [editingVirtualKeyId, virtualKeys],
+  )
+  const selectedVirtualKey = useMemo(
+    () => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
+    [selectedVirtualKeyId, virtualKeys],
+  )
 
   const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
   const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
@@ -56,30 +66,30 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers, onRefr
 	};
 
 	const handleAddVirtualKey = () => {
-		setEditingVirtualKey(null);
+		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
 
 	const handleEditVirtualKey = (vk: VirtualKey, e: React.MouseEvent) => {
 		e.stopPropagation(); // Prevent row click
-		setEditingVirtualKey(vk);
+		setEditingVirtualKeyId(vk.id);
 		setShowVirtualKeySheet(true);
 	};
 
 	const handleVirtualKeySaved = () => {
 		setShowVirtualKeySheet(false);
-		setEditingVirtualKey(null);
+		setEditingVirtualKeyId(null);
 		onRefresh();
 	};
 
 	const handleRowClick = (vk: VirtualKey) => {
-		setSelectedVirtualKey(vk);
+		setSelectedVirtualKeyId(vk.id);
 		setShowDetailSheet(true);
 	};
 
 	const handleDetailSheetClose = () => {
 		setShowDetailSheet(false);
-		setSelectedVirtualKey(null);
+		setSelectedVirtualKeyId(null);
 	};
 
 	const toggleKeyVisibility = (vkId: string) => {

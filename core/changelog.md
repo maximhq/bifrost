@@ -1,11 +1,8 @@
-- feat: add is_ping_available configuration for MCP health checks
-- fix: allow flat $defs and propertyOrdering in jsonschema and forward it to Gemini
-- feat: adds beta feature for Anthropic
-  - deferLoading
-  - strict
-  - allowedCallers
-  - inputExamples
-  - add IsError to tool_result content
-  - add "none" option to ToolChoice.Type
-- fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
-- fix: duplicate error when adding first MCP server
+- feat: add EventBroadcaster type for real-time event streaming to WebSocket clients
+- fix: model names with namespaces (e.g., `meta-llama/Llama-3.1-8B`) are now correctly preserved instead of being incorrectly split as provider-prefixed models
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage
+- fix: embedding thought signature in tool call id for valid tool calling cycle in gemini chat
+- feat: request path override functionality to support full URLs (with scheme and host) as well as custom paths
+- fix: missing and duplicated tool results in Bedrock - [@hhieuu](https://github.com/hhieuu)
+- fix: support HuggingFace model names without an explicit provider prefix
+- feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID

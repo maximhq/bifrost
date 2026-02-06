@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,13 +16,13 @@ func TestOpenAI(t *testing.T) {
 		t.Skip("Skipping OpenAI tests because OPENAI_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.OpenAI,
 		TextModel:          "gpt-3.5-turbo-instruct",
 		ChatModel:          "gpt-4o",
@@ -39,8 +39,10 @@ func TestOpenAI(t *testing.T) {
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
 		ReasoningModel:       "o1",
 		ImageGenerationModel: "gpt-image-1",
+		ImageEditModel:       "gpt-image-1",
+		ImageVariationModel:  "dall-e-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
 			SimpleChat:            true,
@@ -67,6 +69,9 @@ func TestOpenAI(t *testing.T) {
 			ListModels:            true,
 			ImageGeneration:       true,
 			ImageGenerationStream: true,
+			ImageEdit:             true,
+			ImageEditStream:       true,
+			ImageVariation:        true,
 			BatchCreate:           true,
 			BatchList:             true,
 			BatchRetrieve:         true,
@@ -94,7 +99,7 @@ func TestOpenAI(t *testing.T) {
 	}
 
 	t.Run("OpenAITests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

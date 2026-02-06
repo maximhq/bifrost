@@ -109,6 +109,189 @@ LogEntry:
       type: object
       additionalProperties: true
 
+MCPToolLogEntry:
+  type: object
+  description: MCP tool execution log entry
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the log entry
+    llm_request_id:
+      type: string
+      description: Links to the LLM request that triggered this tool call
+    timestamp:
+      type: string
+      format: date-time
+      description: When the tool execution started
+    tool_name:
+      type: string
+      description: Name of the MCP tool that was executed
+    server_label:
+      type: string
+      description: Label of the MCP server that provided the tool
+    virtual_key_id:
+      type: string
+      description: ID of the virtual key used for this tool execution
+    virtual_key_name:
+      type: string
+      description: Name of the virtual key used for this tool execution
+    arguments:
+      type: object
+      additionalProperties: true
+      description: Tool execution arguments
+    result:
+      type: object
+      additionalProperties: true
+      description: Tool execution result
+    error_details:
+      $ref: '../../schemas/inference/common.yaml#/BifrostError'
+    latency:
+      type: number
+      description: Execution time in milliseconds
+    cost:
+      type: number
+      description: Cost in dollars for this tool execution
+    status:
+      type: string
+      enum: ["processing", "success", "error"]
+      description: Execution status
+    created_at:
+      type: string
+      format: date-time
+      description: When the log entry was created
+
+MCPToolLogSearchFilters:
+  type: object
+  description: MCP tool log search filters
+  properties:
+    tool_names:
+      type: array
+      items:
+        type: string
+      description: Filter by tool names
+    server_labels:
+      type: array
+      items:
+        type: string
+      description: Filter by server labels
+    status:
+      type: array
+      items:
+        type: string
+      description: Filter by execution status
+    llm_request_ids:
+      type: array
+      items:
+        type: string
+      description: Filter by linked LLM request IDs
+    start_time:
+      type: string
+      format: date-time
+      description: Filter by start time (RFC3339 format)
+    end_time:
+      type: string
+      format: date-time
+      description: Filter by end time (RFC3339 format)
+    min_latency:
+      type: number
+      description: Filter by minimum latency
+    max_latency:
+      type: number
+      description: Filter by maximum latency
+    content_search:
+      type: string
+      description: Search in tool arguments and results
+
+MCPToolLogStats:
+  type: object
+  description: MCP tool log statistics
+  properties:
+    total_executions:
+      type: integer
+      description: Total number of tool executions
+    success_rate:
+      type: number
+      description: Success rate percentage
+    average_latency:
+      type: number
+      description: Average execution latency in milliseconds
+    total_cost:
+      type: number
+      description: Total cost in dollars for all executions
+
+SearchMCPLogsResponse:
+  type: object
+  description: Search MCP logs response
+  properties:
+    logs:
+      type: array
+      items:
+        $ref: '#/MCPToolLogEntry'
+    pagination:
+      type: object
+      required:
+        - total_count
+      properties:
+        limit:
+          type: integer
+        offset:
+          type: integer
+        sort_by:
+          type: string
+        order:
+          type: string
+        total_count:
+          type: integer
+          format: int64
+          description: Total number of items matching the query
+    stats:
+      $ref: '#/MCPToolLogStats'
+    has_logs:
+      type: boolean
+      description: Whether any logs exist in the system
+
+MCPLogsFilterDataResponse:
+  type: object
+  description: Available MCP log filter data
+  properties:
+    tool_names:
+      type: array
+      items:
+        type: string
+      description: All unique tool names
+    server_labels:
+      type: array
+      items:
+        type: string
+      description: All unique server labels
+    virtual_keys:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: string
+            description: Virtual key ID
+          name:
+            type: string
+            description: Virtual key name
+          value:
+            type: string
+            description: Virtual key value (redacted if applicable)
+      description: All unique virtual keys
+
+DeleteMCPLogsRequest:
+  type: object
+  description: Delete MCP logs request
+  required:
+    - ids
+  properties:
+    ids:
+      type: array
+      items:
+        type: string
+      description: Array of log IDs to delete
+
 SearchFilters:
   type: object
   description: Log search filters

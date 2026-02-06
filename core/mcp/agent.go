@@ -5,9 +5,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/bytedance/gopkg/util/logger"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+
+type AgentModeExecutor struct {
+	logger schemas.Logger
+}
 
 // ExecuteAgentForChatRequest handles the agent mode execution loop for Chat API.
 // It orchestrates iterative tool execution up to the maximum depth, handling
@@ -20,21 +26,21 @@ import (
 //   - initialResponse: The initial chat response containing tool calls
 //   - makeReq: Function to make subsequent chat requests during agent execution
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
 //   - *schemas.BifrostChatResponse: The final response after agent execution
 //   - *schemas.BifrostError: Any error that occurred during agent execution
-func ExecuteAgentForChatRequest(
+func (a *AgentModeExecutor) ExecuteAgentForChatRequest(
 	ctx *schemas.BifrostContext,
 	maxAgentDepth int,
 	originalReq *schemas.BifrostChatRequest,
 	initialResponse *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
-	clientManager ClientManager,
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	clientManager ClientManager,	
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
 	adapter := &chatAPIAdapter{
@@ -43,7 +49,7 @@ func ExecuteAgentForChatRequest(
 		makeReq:         makeReq,
 	}
 
-	result, err := executeAgent(ctx, maxAgentDepth, adapter, fetchNewRequestIDFunc, executeToolFunc, clientManager)
+	result, err := a.executeAgent(ctx, maxAgentDepth, adapter, fetchNewRequestIDFunc, executeToolFunc, clientManager)
 	if err != nil {
 		return nil, err
 	}
@@ -73,20 +79,20 @@ func ExecuteAgentForChatRequest(
 //   - initialResponse: The initial responses response containing tool calls
 //   - makeReq: Function to make subsequent responses requests during agent execution
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
 //   - *schemas.BifrostResponsesResponse: The final response after agent execution
 //   - *schemas.BifrostError: Any error that occurred during agent execution
-func ExecuteAgentForResponsesRequest(
+func (a *AgentModeExecutor) ExecuteAgentForResponsesRequest(
 	ctx *schemas.BifrostContext,
 	maxAgentDepth int,
 	originalReq *schemas.BifrostResponsesRequest,
 	initialResponse *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 	clientManager ClientManager,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	// Create adapter for Responses API
@@ -96,7 +102,7 @@ func ExecuteAgentForResponsesRequest(
 		makeReq:         makeReq,
 	}
 
-	result, err := executeAgent(ctx, maxAgentDepth, adapter, fetchNewRequestIDFunc, executeToolFunc, clientManager)
+	result, err := a.executeAgent(ctx, maxAgentDepth, adapter, fetchNewRequestIDFunc, executeToolFunc, clientManager)
 	if err != nil {
 		return nil, err
 	}
@@ -125,22 +131,20 @@ func ExecuteAgentForResponsesRequest(
 //   - maxAgentDepth: Maximum number of agent iterations allowed
 //   - adapter: API adapter that abstracts differences between Chat and Responses APIs
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for each iteration
-//   - executeToolFunc: Function to execute individual tool calls
+//   - executeToolFunc: Function to execute individual tool calls using unified MCP request/response
 //   - clientManager: Client manager for accessing MCP clients and tools
 //
 // Returns:
 //   - interface{}: The final response after agent execution (type depends on adapter)
 //   - *schemas.BifrostError: Any error that occurred during agent execution
-func executeAgent(
+func (a *AgentModeExecutor) executeAgent(
 	ctx *schemas.BifrostContext,
 	maxAgentDepth int,
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
-	executeToolFunc func(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error),
-	clientManager ClientManager,
+	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
+	clientManager ClientManager,	
 ) (interface{}, *schemas.BifrostError) {
-	logger.Debug("Entering agent mode - detected tool calls in response")
-
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
 
@@ -162,11 +166,8 @@ func executeAgent(
 		depth++
 		toolCalls := adapter.extractToolCalls(currentResponse)
 		if len(toolCalls) == 0 {
-			logger.Debug("No more tool calls found, exiting agent mode")
 			break
 		}
-
-		logger.Debug(fmt.Sprintf("Agent mode depth %d: executing %d tool calls", depth, len(toolCalls)))
 
 		// Separate tools into auto-executable and non-auto-executable groups
 		var autoExecutableTools []schemas.ChatAssistantMessageToolCall
@@ -182,10 +183,10 @@ func executeAgent(
 			toolName := *toolCall.Function.Name
 			client := clientManager.GetClientForTool(toolName)
 			if client == nil {
-				// Allow code mode list and read tool tools
-				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile {
+				// Allow code mode list, read, and docs tools (all read-only operations)
+				if toolName == ToolTypeListToolFiles || toolName == ToolTypeReadToolFile || toolName == ToolTypeGetToolDocs {
 					autoExecutableTools = append(autoExecutableTools, toolCall)
-					logger.Debug(fmt.Sprintf("Tool %s can be auto-executed", toolName))
+					logger.Debug("Tool %s can be auto-executed", toolName)
 					continue
 				} else if toolName == ToolTypeExecuteToolCode {
 					// Build allowed auto-execution tools map for code mode validation
@@ -194,14 +195,14 @@ func executeAgent(
 					// Parse tool arguments
 					var arguments map[string]interface{}
 					if err := sonic.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-						logger.Debug(fmt.Sprintf("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err))
+						logger.Debug("%s Failed to parse tool arguments: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
 
 					code, ok := arguments["code"].(string)
 					if !ok || code == "" {
-						logger.Debug(fmt.Sprintf("%s Code parameter missing or empty", CodeModeLogPrefix))
+						logger.Debug("%s Code parameter missing or empty", CodeModeLogPrefix)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
@@ -209,59 +210,58 @@ func executeAgent(
 					// Step 1: Convert literal \n escape sequences to actual newlines for parsing
 					codeWithNewlines := strings.ReplaceAll(code, "\\n", "\n")
 					if len(codeWithNewlines) != len(code) {
-						logger.Debug(fmt.Sprintf("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix))
+						logger.Debug("%s Converted literal \\n escape sequences to actual newlines", CodeModeLogPrefix)
 					}
 
 					// Step 2: Extract tool calls from code during AST formation
 					extractedToolCalls, err := extractToolCallsFromCode(codeWithNewlines)
 					if err != nil {
-						logger.Debug(fmt.Sprintf("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err))
+						logger.Debug("%s Failed to parse code for tool calls: %v", CodeModeLogPrefix, err)
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 						continue
 					}
 
-					logger.Debug(fmt.Sprintf("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls)))
+					logger.Debug("%s Extracted %d tool call(s) from code", CodeModeLogPrefix, len(extractedToolCalls))
 
 					// Step 3: Validate all tool calls against allowedAutoExecutionTools
 					canAutoExecute := true
 					if len(extractedToolCalls) > 0 {
 						// If there are tool calls, we need allowedAutoExecutionTools to validate them
 						if len(allowedAutoExecutionTools) == 0 {
-							logger.Debug(fmt.Sprintf("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix))
+							logger.Debug("%s Validation failed: no allowed auto-execution tools configured", CodeModeLogPrefix)
 							canAutoExecute = false
 						} else {
-							logger.Debug(fmt.Sprintf("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools)))
+							logger.Debug("%s Validating %d tool call(s) against %d allowed server(s)", CodeModeLogPrefix, len(extractedToolCalls), len(allowedAutoExecutionTools))
 
 							// Validate each tool call
 							for _, extractedToolCall := range extractedToolCalls {
 								isAllowed := isToolCallAllowedForCodeMode(extractedToolCall.serverName, extractedToolCall.toolName, allClientNames, allowedAutoExecutionTools)
 								if !isAllowed {
-									logger.Debug(fmt.Sprintf("%s Tool call %s.%s: allowed=%v", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName, isAllowed))
-									logger.Debug(fmt.Sprintf("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName))
+									logger.Debug("%s Validation failed: tool call %s.%s not in auto-execute list", CodeModeLogPrefix, extractedToolCall.serverName, extractedToolCall.toolName)
 									canAutoExecute = false
 									break
 								}
 							}
 							if canAutoExecute {
-								logger.Debug(fmt.Sprintf("%s All tool calls validated successfully", CodeModeLogPrefix))
+								logger.Debug("%s All tool calls validated successfully", CodeModeLogPrefix)
 							}
 						}
 					} else {
-						logger.Debug(fmt.Sprintf("%s No tool calls found in code, skipping validation", CodeModeLogPrefix))
+						logger.Debug("%s No tool calls found in code, skipping validation", CodeModeLogPrefix)
 					}
 
 					// Add to appropriate list based on validation result
 					if canAutoExecute {
 						autoExecutableTools = append(autoExecutableTools, toolCall)
-						logger.Debug(fmt.Sprintf("Tool %s can be auto-executed (validation passed)", toolName))
+						logger.Debug("Tool %s can be auto-executed (validation passed)", toolName)
 					} else {
 						nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-						logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed (validation failed)", toolName))
+						logger.Debug("Tool %s cannot be auto-executed (validation failed)", toolName)
 					}
 					continue
 				}
 				// Else, if client not found, treat as non-auto-executable (can be a manually passed tool)
-				logger.Debug(fmt.Sprintf("Client not found for tool %s, treating as non-auto-executable", toolName))
+				logger.Debug("Client not found for tool %s, treating as non-auto-executable", toolName)
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
 				continue
 			}
@@ -269,15 +269,15 @@ func executeAgent(
 			// Check if tool can be auto-executed
 			if canAutoExecuteTool(toolName, client.ExecutionConfig) {
 				autoExecutableTools = append(autoExecutableTools, toolCall)
-				logger.Debug(fmt.Sprintf("Tool %s can be auto-executed", toolName))
+				logger.Debug("Tool %s can be auto-executed", toolName)
 			} else {
 				nonAutoExecutableTools = append(nonAutoExecutableTools, toolCall)
-				logger.Debug(fmt.Sprintf("Tool %s cannot be auto-executed", toolName))
+				logger.Debug("Tool %s cannot be auto-executed", toolName)
 			}
 		}
 
-		logger.Debug(fmt.Sprintf("Auto-executable tools: %d", len(autoExecutableTools)))
-		logger.Debug(fmt.Sprintf("Non-auto-executable tools: %d", len(nonAutoExecutableTools)))
+		logger.Debug("Auto-executable tools: %d", len(autoExecutableTools))
+		logger.Debug("Non-auto-executable tools: %d", len(nonAutoExecutableTools))
 
 		// Execute auto-executable tools first
 		var executedToolResults []*schemas.ChatMessage
@@ -292,12 +292,24 @@ func executeAgent(
 			for _, toolCall := range autoExecutableTools {
 				go func(toolCall schemas.ChatAssistantMessageToolCall) {
 					defer wg.Done()
-					toolResult, toolErr := executeToolFunc(ctx, toolCall)
+					// Create MCP request for this tool call
+					mcpRequest := &schemas.BifrostMCPRequest{
+						RequestType:                  schemas.MCPRequestTypeChatToolCall,
+						ChatAssistantMessageToolCall: &toolCall,
+					}
+
+					mcpResponse, toolErr := executeToolFunc(ctx, mcpRequest)
 					if toolErr != nil {
 						logger.Warn("Tool execution failed: %v", toolErr)
 						channelToolResults <- createToolResultMessage(toolCall, "", toolErr)
+					} else if mcpResponse != nil && mcpResponse.ChatMessage != nil {
+						channelToolResults <- mcpResponse.ChatMessage
+					} else if mcpResponse != nil && mcpResponse.ChatMessage == nil {
+						// Send empty result when mcpResponse is non-nil but ChatMessage is nil
+						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					} else {
-						channelToolResults <- toolResult
+						// Fallback: send empty result when both mcpResponse and toolErr are nil
+						channelToolResults <- createToolResultMessage(toolCall, "", nil)
 					}
 				}(toolCall)
 			}
@@ -320,7 +332,7 @@ func executeAgent(
 
 		// If there are non-auto-executable tools, return them immediately without continuing the loop
 		if len(nonAutoExecutableTools) > 0 {
-			logger.Debug(fmt.Sprintf("Found %d non-auto-executable tools, returning them immediately without continuing the loop", len(nonAutoExecutableTools)))
+			logger.Debug("Found %d non-auto-executable tools, returning them immediately without continuing the loop", len(nonAutoExecutableTools))
 			// Return as is if its the first iteration
 			if depth == 1 && len(allExecutedToolResults) == 0 {
 				return currentResponse, nil
@@ -349,7 +361,6 @@ func executeAgent(
 		currentResponse = response
 	}
 
-	logger.Debug(fmt.Sprintf("Agent mode completed after %d iterations", depth))
 	return currentResponse, nil
 }
 
@@ -457,8 +468,9 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 				autoExecutableTools = append(autoExecutableTools, "*")
 				continue
 			}
-			// Use parsed tool name (as it appears in code)
-			parsedToolName := parseToolName(originalToolName)
+			// Replace - with _ for code mode compatibility, then parse for JS compatibility
+			toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
+			parsedToolName := parseToolName(toolNameForCode)
 			autoExecutableTools = append(autoExecutableTools, parsedToolName)
 		}
 

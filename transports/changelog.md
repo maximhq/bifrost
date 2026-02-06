@@ -1,6 +1,15 @@
-- feat: pinecone vector db support
-- feat: configurable MCP health check method (ping or listTools)
-- feat: adds new streaming callback for plugins
-- fix: fixes streaming chunks coming in batches. adds test cases for detecting the same.
-- fix: implement structured output handling for Anthropic models on Vertex where the beta structured-output header is unsupported
-- fix: duplicate error when adding first MCP server
+- fix: duplicate mcp server creation when adding non oauth mcp client
+- feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
+- feat: real-time governance updates - budget/rate-limit changes are now pushed to clients via WebSocket instead of polling
+- feat: cross-provider model matching - governance configs for `gpt-4o` now correctly apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: add `from_memory=true` query parameter for faster governance reads (virtual keys, model configs, provider governance)
+- feat: add `GET /api/models/base` endpoint for listing distinct base model names with search/filter support
+- feat: base model selection in model limits UI when no provider is selected
+- fix: edit sheets now show live data instead of stale cached values
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage
+- fix: embedding thought signature in tool call id for valid tool calling cycle in gemini chat
+- feat: request path override functionality to support full URLs (with scheme and host) as well as custom paths
+- fix: missing and duplicated tool results in Bedrock - [@hhieuu](https://github.com/hhieuu)
+- fix: errored request logs are now not counted in missing cost filter
+- feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID
+- fix: if governance is disabled set enforce virtual key header to false

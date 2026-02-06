@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime/multipart"
 	"strconv"
 	"strings"
 
@@ -61,6 +62,10 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *openai.OpenAIImageGenerationRequest:
 				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *openai.OpenAIImageEditRequest:
+				r.Model = setAzureModelName(r.Model, deploymentIDStr)
+			case *openai.OpenAIImageVariationRequest:
+				r.Model = setAzureModelName(r.Model, deploymentIDStr)
 			case *schemas.BifrostListModelsRequest:
 				r.Provider = schemas.Azure
 			}
@@ -112,6 +117,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.TextCompletionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAITextCompletionRequest{}
 			},
@@ -161,6 +169,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ChatCompletionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
@@ -210,6 +221,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
@@ -264,6 +278,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CountTokensRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
@@ -300,6 +317,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.EmbeddingRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIEmbeddingRequest{}
 			},
@@ -336,6 +356,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.SpeechRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAISpeechRequest{}
 			},
@@ -377,6 +400,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.TranscriptionRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAITranscriptionRequest{}
 			},
@@ -427,6 +453,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageGenerationRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &openai.OpenAIImageGenerationRequest{}
 			},
@@ -466,6 +495,108 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	for _, path := range []string{
+		"/v1/images/edits",
+		"/images/edits",
+		"/openai/deployments/{deployment-id}/images/edits",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageEditRequest
+			},
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIImageEditRequest{}
+			},
+			RequestParser: parseOpenAIImageEditMultipartRequest, // Handle multipart form parsing
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if imageEditReq, ok := req.(*openai.OpenAIImageEditRequest); ok {
+					return &schemas.BifrostRequest{
+						ImageEditRequest: imageEditReq.ToBifrostImageEditRequest(ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid image edit request type")
+			},
+			ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			StreamConfig: &StreamConfig{
+				ImageGenerationStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error) {
+					if resp.ExtraFields.Provider == schemas.OpenAI {
+						if resp.ExtraFields.RawResponse != nil {
+							return string(resp.Type), resp.ExtraFields.RawResponse, nil
+						}
+					}
+					return string(resp.Type), resp, nil
+				},
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
+	for _, path := range []string{
+		"/v1/images/variations",
+		"/images/variations",
+		"/openai/deployments/{deployment-id}/images/variations",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ImageVariationRequest
+			},
+			GetRequestTypeInstance: func() interface{} {
+				return &openai.OpenAIImageVariationRequest{}
+			},
+			RequestParser: parseOpenAIImageVariationMultipartRequest,
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if imageVariationReq, ok := req.(*openai.OpenAIImageVariationRequest); ok {
+					return &schemas.BifrostRequest{
+						ImageVariationRequest: imageVariationReq.ToBifrostImageVariationRequest(ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid image variation request type")
+			},
+			ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+				if resp.ExtraFields.Provider == schemas.OpenAI {
+					if resp.ExtraFields.RawResponse != nil {
+						return resp.ExtraFields.RawResponse, nil
+					}
+				}
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			StreamConfig: &StreamConfig{
+				ImageGenerationStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error) {
+					if resp.ExtraFields.Provider == schemas.OpenAI {
+						if resp.ExtraFields.RawResponse != nil {
+							return string(resp.Type), resp.ExtraFields.RawResponse, nil
+						}
+					}
+					return string(resp.Type), resp, nil
+				},
+				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+					return err
+				},
+			},
+			PreCallback: AzureEndpointPreHook(handlerStore),
+		})
+	}
 	return routes
 }
 
@@ -482,6 +613,9 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ListModelsRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
@@ -546,6 +680,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCreateRequest{}
 			},
@@ -655,6 +792,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchListRequest{}
 			},
@@ -701,6 +841,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchRetrieveRequest{}
 			},
@@ -752,6 +895,9 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.BatchCancelRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostBatchCancelRequest{}
 			},
@@ -807,6 +953,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileUploadRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileUploadRequest{}
 			},
@@ -858,6 +1007,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileListRequest{}
 			},
@@ -905,6 +1057,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileRetrieveRequest{}
 			},
@@ -951,6 +1106,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileDeleteRequest{}
 			},
@@ -999,6 +1157,9 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.FileContentRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostFileContentRequest{}
 			},
@@ -1370,6 +1531,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerCreateRequest{}
 			},
@@ -1409,6 +1573,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerListRequest{}
 			},
@@ -1444,6 +1611,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerRetrieveRequest{}
 			},
@@ -1479,6 +1649,9 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerDeleteRequest{}
 			},
@@ -1606,6 +1779,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileCreateRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileCreateRequest{}
 			},
@@ -1639,6 +1815,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileListRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileListRequest{}
 			},
@@ -1671,6 +1850,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileRetrieveRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileRetrieveRequest{}
 			},
@@ -1703,6 +1885,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileContentRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileContentRequest{}
 			},
@@ -1735,6 +1920,9 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeOpenAI,
 			Path:   pathPrefix + path,
 			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ContainerFileDeleteRequest
+			},
 			GetRequestTypeInstance: func() interface{} {
 				return &schemas.BifrostContainerFileDeleteRequest{}
 			},
@@ -1986,6 +2174,274 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		transcriptionReq.Stream = &stream
 	}
 
+	return nil
+}
+
+// parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests
+func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	imageEditReq, ok := req.(*openai.OpenAIImageEditRequest)
+	if !ok {
+		return errors.New("invalid request type for image edit")
+	}
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return err
+	}
+
+	// Extract model (required)
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		return errors.New("model field is required")
+	}
+	imageEditReq.Model = modelValues[0]
+
+	// Extract prompt (required)
+	promptValues := form.Value["prompt"]
+	if len(promptValues) == 0 || promptValues[0] == "" {
+		return errors.New("prompt field is required")
+	}
+	prompt := promptValues[0]
+
+	// Extract images (required) - handle both "image[]" and "image"
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+
+	if len(imageFiles) == 0 {
+		return errors.New("at least one image is required")
+	}
+
+	// Read all image files
+	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	for _, fileHeader := range imageFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		// Read file data
+		fileData, err := io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+
+		images = append(images, schemas.ImageInput{
+			Image: fileData,
+		})
+	}
+
+	// Create image edit input
+	imageEditReq.Input = &schemas.ImageEditInput{
+		Images: images,
+		Prompt: prompt,
+	}
+
+	// Extract optional parameters
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			return errors.New("invalid n value")
+		}
+		imageEditReq.N = &n
+	}
+
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		size := sizeValues[0]
+		imageEditReq.Size = &size
+	}
+
+	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
+		quality := qualityValues[0]
+		imageEditReq.Quality = &quality
+	}
+
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		responseFormat := responseFormatValues[0]
+		imageEditReq.ResponseFormat = &responseFormat
+	}
+
+	if backgroundValues := form.Value["background"]; len(backgroundValues) > 0 && backgroundValues[0] != "" {
+		background := backgroundValues[0]
+		imageEditReq.Background = &background
+	}
+
+	if inputFidelityValues := form.Value["input_fidelity"]; len(inputFidelityValues) > 0 && inputFidelityValues[0] != "" {
+		inputFidelity := inputFidelityValues[0]
+		imageEditReq.InputFidelity = &inputFidelity
+	}
+
+	if partialImagesValues := form.Value["partial_images"]; len(partialImagesValues) > 0 && partialImagesValues[0] != "" {
+		partialImages, err := strconv.Atoi(partialImagesValues[0])
+		if err != nil {
+			return errors.New("invalid partial_images value")
+		}
+		imageEditReq.PartialImages = &partialImages
+	}
+
+	if outputFormatValues := form.Value["output_format"]; len(outputFormatValues) > 0 && outputFormatValues[0] != "" {
+		outputFormat := outputFormatValues[0]
+		imageEditReq.OutputFormat = &outputFormat
+	}
+
+	if numInferenceStepsValues := form.Value["num_inference_steps"]; len(numInferenceStepsValues) > 0 && numInferenceStepsValues[0] != "" {
+		numInferenceSteps, err := strconv.Atoi(numInferenceStepsValues[0])
+		if err != nil {
+			return errors.New("invalid num_inference_steps value")
+		}
+		imageEditReq.NumInferenceSteps = &numInferenceSteps
+	}
+
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			return errors.New("invalid seed value")
+		}
+		imageEditReq.Seed = &seed
+	}
+
+	if outputCompressionValues := form.Value["output_compression"]; len(outputCompressionValues) > 0 && outputCompressionValues[0] != "" {
+		outputCompression, err := strconv.Atoi(outputCompressionValues[0])
+		if err != nil {
+			return errors.New("invalid output_compression value")
+		}
+		imageEditReq.OutputCompression = &outputCompression
+	}
+
+	if negativePromptValues := form.Value["negative_prompt"]; len(negativePromptValues) > 0 && negativePromptValues[0] != "" {
+		negativePrompt := negativePromptValues[0]
+		imageEditReq.NegativePrompt = &negativePrompt
+	}
+
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		user := userValues[0]
+		imageEditReq.User = &user
+	}
+
+	// Extract type (required for Bedrock, optional for others)
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		editType := typeValues[0]
+		imageEditReq.Type = &editType
+	}
+
+	// Extract mask if present
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
+		maskFile := maskFiles[0]
+		file, err := maskFile.Open()
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		maskData, err := io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+		imageEditReq.Mask = maskData
+	}
+
+	// Extract stream parameter
+	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
+		stream, err := strconv.ParseBool(streamValues[0])
+		if err != nil {
+			return errors.New("invalid stream value")
+		}
+		imageEditReq.Stream = &stream
+	}
+
+	// Extract fallbacks
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		imageEditReq.Fallbacks = fallbackValues
+	}
+
+	return nil
+}
+
+// parseOpenAIImageVariationMultipartRequest parses multipart/form-data for image variation requests
+func parseOpenAIImageVariationMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	imageVariationReq, ok := req.(*openai.OpenAIImageVariationRequest)
+	if !ok {
+		return errors.New("invalid request type for image variation")
+	}
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return err
+	}
+
+	// Extract model (required)
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		return errors.New("model field is required")
+	}
+	imageVariationReq.Model = modelValues[0]
+
+	// Extract image (required) - handle both "image[]" and "image"
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+
+	if len(imageFiles) == 0 {
+		return errors.New("at least one image is required")
+	}
+
+	// Read first image file (image variation only uses the first image)
+	fileHeader := imageFiles[0]
+	file, err := fileHeader.Open()
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Read file data
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+
+	// Create image variation input
+	imageVariationReq.Input = &schemas.ImageVariationInput{
+		Image: schemas.ImageInput{
+			Image: fileData,
+		},
+	}
+
+	// Extract optional parameters
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			return errors.New("invalid n value")
+		}
+		imageVariationReq.N = &n
+	}
+
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		size := sizeValues[0]
+		imageVariationReq.Size = &size
+	}
+
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		responseFormat := responseFormatValues[0]
+		imageVariationReq.ResponseFormat = &responseFormat
+	}
+
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		user := userValues[0]
+		imageVariationReq.User = &user
+	}
+	// Extract fallbacks
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		imageVariationReq.Fallbacks = fallbackValues
+	}
 	return nil
 }
 

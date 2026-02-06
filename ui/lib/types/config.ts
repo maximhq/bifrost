@@ -28,6 +28,7 @@ export interface AzureKeyConfig {
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
+	scopes?: string[];
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
@@ -37,6 +38,7 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
+	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
@@ -162,6 +164,9 @@ export type RequestType =
 	| "transcription_stream"
 	| "image_generation"
 	| "image_generation_stream"
+	| "image_edit"
+	| "image_edit_stream"
+	| "image_variation"
 	| "count_tokens"
 	| "batch_create"
 	| "batch_list"
@@ -173,6 +178,7 @@ export type RequestType =
 	| "file_retrieve"
 	| "file_delete"
 	| "file_content"
+	| "mcp_tool_execution"
 	| "container_create"
 	| "container_list"
 	| "container_retrieve"
@@ -198,6 +204,9 @@ export interface AllowedRequests {
 	transcription_stream: boolean;
 	image_generation: boolean;
 	image_generation_stream: boolean;
+	image_edit: boolean;
+	image_edit_stream: boolean;
+	image_variation: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
 }
@@ -376,6 +385,7 @@ export interface CoreConfig {
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
+	mcp_tool_sync_interval: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -396,6 +406,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
+	mcp_tool_sync_interval: 10,
 	allowed_headers: [],
 };
 

@@ -121,7 +121,11 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // completeRequest sends a request to Anthropic's API and handles the response.
@@ -262,7 +266,9 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToAnthropicTextCompletionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToAnthropicTextCompletionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -323,20 +329,20 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Use struct directly for JSON marshaling
@@ -388,23 +394,21 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	}
 
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-	var betaHeaders []string
-
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		anthropicReq.Stream = schemas.Ptr(true)
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			anthropicReq.Stream = schemas.Ptr(true)
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Prepare Anthropic headers
@@ -416,10 +420,6 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	}
 	if key.Value.GetValue() != "" {
 		headers["x-api-key"] = key.Value.GetValue()
-	}
-	// Add beta headers if any features require them
-	if len(betaHeaders) > 0 {
-		headers["anthropic-beta"] = strings.Join(betaHeaders, ",")
 	}
 
 	// Use shared Anthropic streaming logic
@@ -1705,6 +1705,21 @@ func (provider *AnthropicProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
+// ImageEdit is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+}
+
+// ImageEditStream is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
+}
+
 // FileUpload uploads a file to Anthropic's Files API.
 func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
@@ -1754,6 +1769,7 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
+	appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
 	req.SetBody(buf.Bytes())
 
 	// Make request
@@ -1847,6 +1863,7 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 		req.Header.Set("x-api-key", key.Value.GetValue())
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
+	appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -1944,6 +1961,7 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
+		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -2020,6 +2038,7 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
+		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
 
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -2128,6 +2147,7 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 			req.Header.Set("x-api-key", key.Value.GetValue())
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
+		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
 		// Make request
 		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 		if bifrostErr != nil {
@@ -2186,23 +2206,23 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	}
 
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicResponsesRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
+	// Remove max_tokens and temperature for count_tokens endpoint
 	var payload map[string]any
 	if err := sonic.Unmarshal(jsonData, &payload); err == nil {
 		delete(payload, "max_tokens")

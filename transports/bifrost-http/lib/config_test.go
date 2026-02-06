@@ -330,18 +330,27 @@ EXPECTED BEHAVIORS SUMMARY
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/vectorstore"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -356,13 +365,16 @@ type MockConfigStore struct {
 	frameworkConfig  *tables.TableFrameworkConfig
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
-	envKeys          map[string][]configstore.EnvKeyInfo
 	plugins          []*tables.TablePlugin
 
 	// Track update calls for verification
 	clientConfigUpdated    bool
 	providersConfigUpdated bool
-	mcpConfigsCreated      []schemas.MCPClientConfig
+	mcpConfigsCreated      []*schemas.MCPClientConfig
+	mcpClientConfigUpdates []struct {
+		ID     string
+		Config tables.TableMCPClient
+	}
 	governanceItemsCreated struct {
 		budgets     []tables.TableBudget
 		rateLimits  []tables.TableRateLimit
@@ -376,7 +388,6 @@ type MockConfigStore struct {
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
 		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		envKeys:   make(map[string][]configstore.EnvKeyInfo),
 	}
 }
 
@@ -440,22 +451,67 @@ func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig,
 	return m.mcpConfig, nil
 }
 
+func (m *MockConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
+	return nil, nil
+}
+
 func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error) {
 	return nil, nil
 }
 
-func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig schemas.MCPClientConfig) error {
-	if m.mcpConfig == nil {
-		m.mcpConfig = &schemas.MCPConfig{
-			ClientConfigs: []schemas.MCPClientConfig{},
-		}
-	}
+func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
 	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig schemas.MCPClientConfig) error {
+func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error {
+	m.mcpClientConfigUpdates = append(m.mcpClientConfigUpdates, struct {
+		ID     string
+		Config tables.TableMCPClient
+	}{
+		ID:     id,
+		Config: *clientConfig,
+	})
+
+	// Initialize m.mcpConfig if nil (same pattern as CreateMCPClientConfig)
+	if m.mcpConfig == nil {
+		m.mcpConfig = &schemas.MCPConfig{
+			ClientConfigs: []*schemas.MCPClientConfig{},
+		}
+	}
+
+	// Update the in-memory state to ensure GetMCPConfig returns updated data
+	for i := range m.mcpConfig.ClientConfigs {
+		if m.mcpConfig.ClientConfigs[i].ID == id {
+			// Found the entry, update it with the new config
+			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
+				ID:                 clientConfig.ClientID,
+				Name:               clientConfig.Name,
+				IsCodeModeClient:   clientConfig.IsCodeModeClient,
+				ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
+				ConnectionString:   clientConfig.ConnectionString,
+				StdioConfig:        clientConfig.StdioConfig,
+				Headers:            clientConfig.Headers,
+				ToolsToExecute:     clientConfig.ToolsToExecute,
+				ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+			}
+			return nil
+		}
+	}
+	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
+	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
+		ID:                 clientConfig.ClientID,
+		Name:               clientConfig.Name,
+		IsCodeModeClient:   clientConfig.IsCodeModeClient,
+		ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
+		ConnectionString:   clientConfig.ConnectionString,
+		StdioConfig:        clientConfig.StdioConfig,
+		Headers:            clientConfig.Headers,
+		ToolsToExecute:     clientConfig.ToolsToExecute,
+		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+	})
+
 	return nil
 }
 
@@ -856,6 +912,77 @@ func (m *MockConfigStore) FlushSessions(ctx context.Context) error {
 
 // Plugins
 func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.TablePlugin, tx ...*gorm.DB) error {
+	return nil
+}
+
+// OAuth config
+func (m *MockConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthConfigByState(ctx context.Context, state string) (*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	return nil
+}
+
+// OAuth token
+func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableOauthToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time) ([]*tables.TableOauthToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error {
+	return nil
+}
+
+// Routing rules
+func (m *MockConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetRedactedRoutingRules(ctx context.Context, ids []string) ([]tables.TableRoutingRule, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1371,7 +1498,7 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 func TestLoadConfig_MCP_Merge(t *testing.T) {
 	// Setup DB MCP config
 	dbMCPConfig := &schemas.MCPConfig{
-		ClientConfigs: []schemas.MCPClientConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1",
 				Name:           "db-client-1",
@@ -1387,7 +1514,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 
 	// Setup file MCP config with some overlapping and some new
 	fileMCPConfig := &schemas.MCPConfig{
-		ClientConfigs: []schemas.MCPClientConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1", // Same ID - should be skipped
 				Name:           "different-name",
@@ -1407,7 +1534,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 
 	// Simulate merge logic
-	clientConfigsToAdd := make([]schemas.MCPClientConfig, 0)
+	clientConfigsToAdd := make([]*schemas.MCPClientConfig, 0)
 	for _, newClientConfig := range fileMCPConfig.ClientConfigs {
 		found := false
 		for _, existingClientConfig := range dbMCPConfig.ClientConfigs {
@@ -3313,9 +3440,9 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	sameKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-original-123"),                  // SAME
-		Models: []string{"gpt-4", "gpt-3.5-turbo"}, // SAME
-		Weight: 1.5,                                // SAME
+		Value:  *schemas.NewEnvVar("sk-original-123"), // SAME
+		Models: []string{"gpt-4", "gpt-3.5-turbo"},    // SAME
+		Weight: 1.5,                                   // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -3412,7 +3539,7 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-456"),                             // CHANGED!
+		Value:  *schemas.NewEnvVar("sk-new-456"),         // CHANGED!
 		Models: []string{"gpt-4", "gpt-3.5-turbo", "o1"}, // CHANGED!
 		Weight: 2.0,                                      // CHANGED!
 	}
@@ -3512,9 +3639,9 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	changedKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-456"),            // CHANGED
-		Models: []string{"gpt-4", "o1"}, // CHANGED
-		Weight: 2.0,                     // CHANGED
+		Value:  *schemas.NewEnvVar("sk-new-456"), // CHANGED
+		Models: []string{"gpt-4", "o1"},          // CHANGED
+		Weight: 2.0,                              // CHANGED
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
@@ -3595,8 +3722,8 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 		ID:     "key-1",
 		Name:   "openai-key",
 		Value:  *schemas.NewEnvVar("sk-original-123"), // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Models: []string{"gpt-4"},                     // SAME
+		Weight: 1.0,                                   // SAME
 	}
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
@@ -3664,9 +3791,9 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	fileKey := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key",
-		Value:  *schemas.NewEnvVar("sk-new-value"),                   // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0,                              // CHANGED
+		Value:  *schemas.NewEnvVar("sk-new-value"), // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
+		Weight: 2.0,                                // CHANGED
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
@@ -3777,9 +3904,9 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  *schemas.NewEnvVar("sk-key-1"),        // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-key-1"), // SAME
+		Models: []string{"gpt-4"},              // SAME
+		Weight: 1.0,                            // SAME
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-2",
@@ -3906,9 +4033,9 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	fileKey1 := schemas.Key{
 		ID:     "key-1",
 		Name:   "openai-key-1",
-		Value:  *schemas.NewEnvVar("sk-key-1"),        // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-key-1"), // SAME
+		Models: []string{"gpt-4"},              // SAME
+		Weight: 1.0,                            // SAME
 	}
 
 	fileConfig := configstore.ProviderConfig{
@@ -4031,16 +4158,16 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	fileUnchangedKey := schemas.Key{
 		ID:     "key-unchanged",
 		Name:   "unchanged-key",
-		Value:  *schemas.NewEnvVar("sk-unchanged"),    // SAME
-		Models: []string{"gpt-4"}, // SAME
-		Weight: 1.0,               // SAME
+		Value:  *schemas.NewEnvVar("sk-unchanged"), // SAME
+		Models: []string{"gpt-4"},                  // SAME
+		Weight: 1.0,                                // SAME
 	}
 	fileChangedKey := schemas.Key{
 		ID:     "key-changed",
 		Name:   "changed-key",
-		Value:  *schemas.NewEnvVar("sk-NEW-value"),                   // CHANGED
-		Models: []string{"gpt-4", "gpt-4-turbo"}, // CHANGED
-		Weight: 2.0,                              // CHANGED
+		Value:  *schemas.NewEnvVar("sk-NEW-value"), // CHANGED
+		Models: []string{"gpt-4", "gpt-4-turbo"},   // CHANGED
+		Weight: 2.0,                                // CHANGED
 	}
 	newFileKey := schemas.Key{
 		ID:     "key-new",
@@ -4381,7 +4508,7 @@ func TestKeyHashComparison_AzureConfigSyncScenarios(t *testing.T) {
 		dbKey := schemas.Key{
 			ID:     "key-1",
 			Name:   "azure-key",
-			Value:  *schemas.NewEnvVar("azure-api-key-123")	,
+			Value:  *schemas.NewEnvVar("azure-api-key-123"),
 			Weight: 1,
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"),
@@ -5172,7 +5299,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://new-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),              // Changed!
+					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
 					Deployments: map[string]string{
 						"gpt-4":  "gpt-4-deployment",
 						"gpt-4o": "gpt-4o-deployment", // Added!
@@ -5740,7 +5867,7 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://myazure.openai.azure.com"), // Same
-					APIVersion: schemas.NewEnvVar("2024-02-01"),            // Same
+					APIVersion: schemas.NewEnvVar("2024-02-01"),                        // Same
 					Deployments: map[string]string{
 						"gpt-4": "gpt-4-deployment", // Same
 					},
@@ -5832,7 +5959,7 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
 					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
-					Region:    schemas.NewEnvVar("us-east-1"),                     // Same
+					Region:    schemas.NewEnvVar("us-east-1"),                                 // Same
 					Deployments: map[string]string{
 						"claude-3": "anthropic.claude-3-sonnet-20240229-v1:0", // Same
 					},
@@ -5922,7 +6049,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 				Weight: 1,
 				AzureKeyConfig: &schemas.AzureKeyConfig{
 					Endpoint:   *schemas.NewEnvVar("https://NEW-azure.openai.azure.com"), // Changed!
-					APIVersion: schemas.NewEnvVar("2024-10-21"),              // Changed!
+					APIVersion: schemas.NewEnvVar("2024-10-21"),                          // Changed!
 					Deployments: map[string]string{
 						"gpt-4o": "gpt-4o-deployment", // Added!
 					},
@@ -6133,12 +6260,12 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		t.Error("Expected different hash for virtual keys with different Name")
 	}
 
-	// Different value should produce SAME hash (Value is intentionally excluded - it's a generated secret)
+	// Different value should produce different hash
 	vk4 := tables.TableVirtualKey{
 		ID:          "vk-1",
 		Name:        "test-vk",
 		Description: "Test virtual key",
-		Value:       "vk_different", // Different value - should NOT affect hash
+		Value:       "vk_different", // Different value
 		IsActive:    true,
 		TeamID:      &teamID,
 		BudgetID:    &budgetID,
@@ -6149,8 +6276,8 @@ func TestGenerateVirtualKeyHash(t *testing.T) {
 		t.Fatalf("Failed to generate hash: %v", err)
 	}
 
-	if hash1 != hash4 {
-		t.Error("Expected same hash for virtual keys with different Value (Value is excluded from hash)")
+	if hash1 == hash4 {
+		t.Error("Expected different hash for virtual keys with different Value")
 	}
 
 	// Different IsActive should produce different hash
@@ -8941,7 +9068,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 		Name:           "test-mcp-client",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client: %v", err)
 	}
@@ -9030,7 +9157,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		Name:           "mcp-client-1",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig1)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig1)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 1: %v", err)
 	}
@@ -9040,7 +9167,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		Name:           "mcp-client-2",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClientConfig2)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClientConfig2)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 2: %v", err)
 	}
@@ -9352,7 +9479,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 		Name:           "mcp-client-1",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClient1Config)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClient1Config)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 1: %v", err)
 	}
@@ -9362,7 +9489,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 		Name:           "mcp-client-2",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 	}
-	err = config1.ConfigStore.CreateMCPClientConfig(ctx, mcpClient2Config)
+	err = config1.ConfigStore.CreateMCPClientConfig(ctx, &mcpClient2Config)
 	if err != nil {
 		t.Fatalf("Failed to create MCP client 2: %v", err)
 	}
@@ -9517,8 +9644,8 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 
 	// Create MCP clients
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-1", Name: "mcp-1", ConnectionType: schemas.MCPConnectionTypeHTTP})
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-2", Name: "mcp-2", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-1", Name: "mcp-1", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-2", Name: "mcp-2", ConnectionType: schemas.MCPConnectionTypeHTTP})
 
 	mcpClient1, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-1")
 	mcpClient2, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-2")
@@ -9639,7 +9766,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	}
 
 	// Create MCP client
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
 	// Create VK with MCP config
@@ -9733,7 +9860,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	}
 
 	// Create MCP client
-	config1.ConfigStore.CreateMCPClientConfig(ctx, schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
+	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
 	config1.ConfigStore.Close(ctx)
@@ -9817,6 +9944,290 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	}
 
 	t.Log("✓ VK with combined provider and MCP configs created successfully")
+}
+
+// TestSQLite_VKMCPConfig_MCPClientNameResolution tests that mcp_client_name is resolved to MCPClientID
+// when loading virtual keys from config.json. This tests the fix for the foreign key constraint violation
+// that occurred when config.json used mcp_client_name but the database expected mcp_client_id.
+func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	keyID := uuid.NewString()
+	providers := map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: keyID, Name: "openai-key", Value: *schemas.NewEnvVar("sk-test123"), Weight: 1},
+			},
+		},
+	}
+
+	// First, create config.json with MCP client configs
+	mcpConfig := &schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{
+			{
+				ID:               "weather-mcp",
+				Name:             "WeatherService",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewEnvVar("http://localhost:8080/mcp"),
+			},
+			{
+				ID:               "calendar-mcp",
+				Name:             "CalendarService",
+				ConnectionType:   schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewEnvVar("http://localhost:8081/mcp"),
+			},
+		},
+	}
+
+	// Create initial config data with MCP but no virtual keys
+	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
+	configData.MCP = mcpConfig
+	createConfigFile(t, tempDir, configData)
+
+	// First load to set up MCP clients in DB
+	config1, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+
+	// Verify MCP clients were created
+	weatherClient, err := config1.ConfigStore.GetMCPClientByName(ctx, "WeatherService")
+	if err != nil || weatherClient == nil {
+		t.Fatalf("WeatherService MCP client not found: %v", err)
+	}
+	calendarClient, err := config1.ConfigStore.GetMCPClientByName(ctx, "CalendarService")
+	if err != nil || calendarClient == nil {
+		t.Fatalf("CalendarService MCP client not found: %v", err)
+	}
+	t.Logf("MCP clients created: WeatherService ID=%d, CalendarService ID=%d", weatherClient.ID, calendarClient.ID)
+
+	config1.ConfigStore.Close(ctx)
+
+	// Now create config.json with virtual key using mcp_client_name (not mcp_client_id)
+	// This simulates the real-world scenario where config.json uses human-readable names
+	dbPath := filepath.Join(tempDir, "config.db")
+	cfgPath := filepath.Join(tempDir, "config.json")
+	configJSON := fmt.Sprintf(`{
+		"$schema": "https://www.getbifrost.ai/schema",
+		"config_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": %s
+			}
+		},
+		"providers": {
+			"openai": {
+				"keys": [
+					{
+						"id": "%s",
+						"name": "openai-key",
+						"value": "sk-test123",
+						"weight": 1
+					}
+				]
+			}
+		},
+		"mcp": {
+			"client_configs": [
+				{
+					"id": "weather-mcp",
+					"name": "WeatherService",
+					"connection_type": "http",
+					"http_url": "http://localhost:8080/mcp"
+				},
+				{
+					"id": "calendar-mcp",
+					"name": "CalendarService",
+					"connection_type": "http",
+					"http_url": "http://localhost:8081/mcp"
+				}
+			]
+		},
+		"governance": {
+			"virtual_keys": [
+				{
+					"id": "vk-with-mcp-names",
+					"name": "test-vk-mcp-names",
+					"description": "VK using mcp_client_name instead of mcp_client_id",
+					"value": "vk_test_mcp_names_123",
+					"is_active": true,
+					"mcp_configs": [
+						{
+							"mcp_client_name": "WeatherService",
+							"tools_to_execute": ["get_weather", "get_forecast"]
+						},
+						{
+							"mcp_client_name": "CalendarService",
+							"tools_to_execute": ["*"]
+						}
+					],
+					"provider_configs": [
+						{
+							"provider": "openai",
+							"weight": 1.0
+						}
+					]
+				}
+			]
+		}
+	}`, fmt.Sprintf("%q", dbPath), keyID)
+
+	// Write the config file directly
+	err = os.WriteFile(cfgPath, []byte(configJSON), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write config.json: %v", err)
+	}
+
+	// Load config - this should resolve mcp_client_name to MCPClientID
+	config2, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("LoadConfig with mcp_client_name failed: %v", err)
+	}
+	defer config2.ConfigStore.Close(ctx)
+
+	// Verify VK was created
+	vk, err := config2.ConfigStore.GetVirtualKey(ctx, "vk-with-mcp-names")
+	if err != nil {
+		t.Fatalf("Failed to get VK: %v", err)
+	}
+	if vk == nil {
+		t.Fatal("VK not found in DB")
+	}
+	t.Logf("✓ VK created: %s", vk.ID)
+
+	// Verify MCP configs were created with correct MCPClientIDs
+	mcpConfigs, err := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-with-mcp-names")
+	if err != nil {
+		t.Fatalf("Failed to get MCP configs: %v", err)
+	}
+
+	if len(mcpConfigs) != 2 {
+		t.Fatalf("Expected 2 MCP configs, got %d", len(mcpConfigs))
+	}
+
+	// Build a map of MCPClientID to config for easier verification
+	configByClientID := make(map[uint]tables.TableVirtualKeyMCPConfig)
+	for _, mc := range mcpConfigs {
+		configByClientID[mc.MCPClientID] = mc
+	}
+
+	// Verify WeatherService config
+	weatherConfig, ok := configByClientID[weatherClient.ID]
+	if !ok {
+		t.Errorf("MCP config for WeatherService (ID=%d) not found", weatherClient.ID)
+	} else {
+		if len(weatherConfig.ToolsToExecute) != 2 {
+			t.Errorf("Expected 2 tools for WeatherService, got %d", len(weatherConfig.ToolsToExecute))
+		}
+		t.Logf("✓ WeatherService MCP config: MCPClientID=%d, tools=%v", weatherConfig.MCPClientID, weatherConfig.ToolsToExecute)
+	}
+
+	// Verify CalendarService config
+	calendarConfig, ok := configByClientID[calendarClient.ID]
+	if !ok {
+		t.Errorf("MCP config for CalendarService (ID=%d) not found", calendarClient.ID)
+	} else {
+		if len(calendarConfig.ToolsToExecute) != 1 || calendarConfig.ToolsToExecute[0] != "*" {
+			t.Errorf("Expected tools=[\"*\"] for CalendarService, got %v", calendarConfig.ToolsToExecute)
+		}
+		t.Logf("✓ CalendarService MCP config: MCPClientID=%d, tools=%v", calendarConfig.MCPClientID, calendarConfig.ToolsToExecute)
+	}
+
+	t.Log("✓ mcp_client_name was successfully resolved to MCPClientID")
+}
+
+// TestSQLite_VKMCPConfig_MCPClientNameNotFound tests graceful handling when mcp_client_name doesn't exist
+func TestSQLite_VKMCPConfig_MCPClientNameNotFound(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+
+	keyID := uuid.NewString()
+
+	// Create config.json with a virtual key that references a non-existent MCP client
+	configJSON := fmt.Sprintf(`{
+		"$schema": "https://www.getbifrost.ai/schema",
+		"config_store": {
+			"enabled": true,
+			"type": "sqlite",
+			"config": {
+				"path": "%s/config.db"
+			}
+		},
+		"providers": {
+			"openai": {
+				"keys": [
+					{
+						"id": "%s",
+						"name": "openai-key",
+						"value": "sk-test123",
+						"weight": 1
+					}
+				]
+			}
+		},
+		"governance": {
+			"virtual_keys": [
+				{
+					"id": "vk-missing-mcp",
+					"name": "test-vk-missing-mcp",
+					"description": "VK referencing non-existent MCP client",
+					"value": "vk_test_missing_123",
+					"is_active": true,
+					"mcp_configs": [
+						{
+							"mcp_client_name": "NonExistentService",
+							"tools_to_execute": ["some_tool"]
+						}
+					],
+					"provider_configs": [
+						{
+							"provider": "openai",
+							"weight": 1.0
+						}
+					]
+				}
+			]
+		}
+	}`, tempDir, keyID)
+
+	// Write the config file
+	err := os.WriteFile(tempDir+"/config.json", []byte(configJSON), 0644)
+	if err != nil {
+		t.Fatalf("Failed to write config.json: %v", err)
+	}
+
+	// Load config - should not fail, but should skip the unresolvable MCP config
+	config, err := LoadConfig(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("LoadConfig should not fail when MCP client name is not found: %v", err)
+	}
+	defer config.ConfigStore.Close(ctx)
+
+	// Verify VK was still created
+	vk, err := config.ConfigStore.GetVirtualKey(ctx, "vk-missing-mcp")
+	if err != nil {
+		t.Fatalf("Failed to get VK: %v", err)
+	}
+	if vk == nil {
+		t.Fatal("VK should have been created even with unresolvable MCP config")
+	}
+	t.Logf("✓ VK created despite unresolvable MCP client: %s", vk.ID)
+
+	// Verify MCP configs - should be empty since the client doesn't exist
+	mcpConfigs, err := config.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-missing-mcp")
+	if err != nil {
+		t.Fatalf("Failed to get MCP configs: %v", err)
+	}
+
+	if len(mcpConfigs) != 0 {
+		t.Errorf("Expected 0 MCP configs (unresolvable should be skipped), got %d", len(mcpConfigs))
+	} else {
+		t.Log("✓ Unresolvable MCP config was gracefully skipped")
+	}
 }
 
 // TestGenerateKeyHash_StableOrdering verifies that key hash is stable regardless of Models slice order
@@ -12323,15 +12734,15 @@ func TestGenerateKeyHash_RuntimeVsMigrationParity(t *testing.T) {
 	t.Run("Models_GORMRoundTrip", func(t *testing.T) {
 		models := []string{"gpt-4", "gpt-3.5-turbo", "gpt-4-turbo"}
 
-	keyToSave := tables.TableKey{
-		Name:       "test-key-models-" + uuid.New().String(),
-		KeyID:      uuid.New().String(),
-		ProviderID: provider.ID,
-		Provider:   "openai",
-		Value:      *schemas.NewEnvVar("sk-123"),
-		Models:     models,
-		Weight:     ptrFloat64(1.5),
-	}
+		keyToSave := tables.TableKey{
+			Name:       "test-key-models-" + uuid.New().String(),
+			KeyID:      uuid.New().String(),
+			ProviderID: provider.ID,
+			Provider:   "openai",
+			Value:      *schemas.NewEnvVar("sk-123"),
+			Models:     models,
+			Weight:     ptrFloat64(1.5),
+		}
 
 		// Generate hash using schemas.Key (what the hash function expects)
 		schemaKey := schemas.Key{
@@ -13655,7 +14066,7 @@ func TestKeyHashComparison_VertexConfigSyncScenarios(t *testing.T) {
 				ProjectID: *schemas.NewEnvVar("my-project-123"),
 				Region:    *schemas.NewEnvVar("us-central1"),
 				Deployments: map[string]string{
-					"gemini-pro":    "gemini-pro-endpoint",
+					"gemini-pro":     "gemini-pro-endpoint",
 					"gemini-1.5-pro": "gemini-15-pro-endpoint", // Added!
 				},
 			},
@@ -14057,8 +14468,8 @@ func TestKeyHashComparison_AzureDeploymentsChange(t *testing.T) {
 			AzureKeyConfig: &schemas.AzureKeyConfig{
 				Endpoint: *schemas.NewEnvVar("https://myazure.openai.azure.com"),
 				Deployments: map[string]string{
-					"gpt-4":   "gpt-4-deployment",
-					"gpt-4o":  "gpt-4o-deployment", // Added
+					"gpt-4":  "gpt-4-deployment",
+					"gpt-4o": "gpt-4o-deployment", // Added
 				},
 			},
 		}
@@ -14446,5 +14857,643 @@ func TestKeyHashComparison_VertexDeploymentsChange(t *testing.T) {
 		if dbHash == fileHash {
 			t.Error("Expected different hash when Vertex deployments go from nil to non-empty")
 		}
+	})
+}
+
+// ===================================================================================
+// CONFIG SCHEMA SYNC TEST
+// ===================================================================================
+// This test ensures that the JSON schema (config.schema.json) and the Go structs
+// remain synchronized at ALL levels (not just top-level). It validates that:
+//   - All properties in the JSON schema have corresponding fields in Go structs
+//   - All JSON-tagged fields in Go structs have corresponding properties in the schema
+//   - Nested types (ClientConfig, GovernanceConfig, etc.) match their schema definitions
+//
+// This prevents schema drift when new configuration options are added.
+// ===================================================================================
+
+// schemaTypeMapping defines a mapping between a JSON schema path and its corresponding Go type
+type schemaTypeMapping struct {
+	SchemaPath string       // Path in schema (e.g., "client", "governance.budgets")
+	GoType     reflect.Type // The Go type to validate against
+	IsArray    bool         // True if the schema path refers to array items
+}
+
+// getSchemaTypeMappings returns all mappings between JSON schema paths and Go types
+func getSchemaTypeMappings() []schemaTypeMapping {
+	return []schemaTypeMapping{
+		// Top-level ConfigData fields
+		{"", reflect.TypeOf(ConfigData{}), false},
+
+		// Client config
+		{"client", reflect.TypeOf(configstore.ClientConfig{}), false},
+		{"client.header_filter_config", reflect.TypeOf(tables.GlobalHeaderFilterConfig{}), false},
+
+		// Auth config (top-level)
+		{"auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
+
+		// Framework config
+		{"framework", reflect.TypeOf(framework.FrameworkConfig{}), false},
+		{"framework.pricing", reflect.TypeOf(modelcatalog.Config{}), false},
+
+		// MCP config
+		{"mcp", reflect.TypeOf(schemas.MCPConfig{}), false},
+		{"mcp.client_configs", reflect.TypeOf(schemas.MCPClientConfig{}), true},
+		{"mcp.client_configs.stdio_config", reflect.TypeOf(schemas.MCPStdioConfig{}), false},
+		{"mcp.tool_manager_config", reflect.TypeOf(schemas.MCPToolManagerConfig{}), false},
+
+		// Governance config
+		{"governance", reflect.TypeOf(configstore.GovernanceConfig{}), false},
+		{"governance.budgets", reflect.TypeOf(tables.TableBudget{}), true},
+		{"governance.rate_limits", reflect.TypeOf(tables.TableRateLimit{}), true},
+		{"governance.customers", reflect.TypeOf(tables.TableCustomer{}), true},
+		{"governance.teams", reflect.TypeOf(tables.TableTeam{}), true},
+		{"governance.virtual_keys", reflect.TypeOf(tables.TableVirtualKey{}), true},
+		{"governance.virtual_keys.provider_configs", reflect.TypeOf(tables.TableVirtualKeyProviderConfig{}), true},
+		{"governance.virtual_keys.mcp_configs", reflect.TypeOf(tables.TableVirtualKeyMCPConfig{}), true},
+		{"governance.auth_config", reflect.TypeOf(configstore.AuthConfig{}), false},
+
+		// Plugins
+		{"plugins", reflect.TypeOf(schemas.PluginConfig{}), true},
+	}
+}
+
+// enterpriseSchemaPaths are schema paths that exist only in enterprise version
+var enterpriseSchemaPaths = map[string]bool{
+	"cluster_config":       true,
+	"saml_config":          true,
+	"load_balancer_config": true,
+	"guardrails_config":    true,
+}
+
+// excludedGoFields are Go struct fields that should not be in the schema (internal use only)
+// These include:
+// - Database/ORM fields (created_at, updated_at, config_hash)
+// - GORM relationship fields (budget, team, customer, etc.)
+// - Internal state fields not meant for config files
+var excludedGoFields = map[string]map[string]bool{
+	// ClientConfig - MCP fields are managed at MCP level, not client level
+	"configstore.ClientConfig": {
+		"ConfigHash":              true,
+		"allowed_headers":         true, // Internal use
+		"mcp_agent_depth":         true, // Managed via MCP config
+		"mcp_code_mode_binding_level": true,
+		"mcp_tool_execution_timeout":  true,
+		"mcp_tool_sync_interval":      true,
+	},
+	"configstore.ProviderConfig": {"ConfigHash": true},
+	// GovernanceConfig - some fields are internal/enterprise
+	"configstore.GovernanceConfig": {
+		"model_configs": true, // Internal
+		"providers":     true, // Internal
+		"routing_rules": true, // Internal
+	},
+	// Table types have DB-specific fields
+	"tables.TableBudget": {
+		"config_hash": true,
+		"created_at":  true,
+		"updated_at":  true,
+	},
+	"tables.TableRateLimit": {
+		"config_hash": true,
+		"created_at":  true,
+		"updated_at":  true,
+	},
+	"tables.TableCustomer": {
+		"config_hash":  true,
+		"created_at":   true,
+		"updated_at":   true,
+		"budget":       true, // GORM relation
+		"teams":        true, // GORM relation
+		"virtual_keys": true, // GORM relation
+	},
+	"tables.TableTeam": {
+		"config_hash":  true,
+		"created_at":   true,
+		"updated_at":   true,
+		"budget":       true, // GORM relation
+		"customer":     true, // GORM relation
+		"virtual_keys": true, // GORM relation
+	},
+	"tables.TableVirtualKey": {
+		"config_hash": true,
+		"created_at":  true,
+		"updated_at":  true,
+		"budget":      true, // GORM relation
+		"rate_limit":  true, // GORM relation
+		"team":        true, // GORM relation
+		"customer":    true, // GORM relation
+	},
+	"tables.TableVirtualKeyProviderConfig": {
+		"budget":     true, // GORM relation
+		"rate_limit": true, // GORM relation
+	},
+	"tables.TableVirtualKeyMCPConfig": {
+		"mcp_client": true, // GORM relation
+	},
+	// MCP types have internal state fields
+	"schemas.MCPConfig": {
+		"tool_sync_interval": true, // Internal
+	},
+	"schemas.MCPClientConfig": {
+		"client_id":            true, // Internal ID
+		"state":                true, // Runtime state
+		"is_code_mode_client":  true, // Internal
+		"auth_type":            true, // Internal
+		"oauth_config_id":      true, // Internal
+		"is_ping_available":    true, // Runtime state
+		"tool_sync_interval":   true, // Internal
+		"tool_pricing":         true, // Internal
+		"tools_to_auto_execute": true, // Internal
+		"tools_to_execute":     true, // Moved to VK MCP config
+		"connection_string":    true, // Use specific config types instead
+		"headers":              true, // Internal
+	},
+	"schemas.MCPToolManagerConfig": {
+		"code_mode_binding_level": true, // Internal
+	},
+	"schemas.PluginConfig":            {},
+	"framework.FrameworkConfig":       {},
+	"modelcatalog.Config":             {},
+	"tables.GlobalHeaderFilterConfig": {},
+	"configstore.AuthConfig":          {},
+	"schemas.MCPStdioConfig":          {},
+	"lib.ConfigData":                  {},
+	"vectorstore.Config":              {},
+	"configstore.Config":              {},
+	"logstore.Config":                 {},
+}
+
+// excludedSchemaFields are schema fields that don't exist in Go structs (schema-only documentation)
+var excludedSchemaFields = map[string]map[string]bool{
+	"client": {
+		"allowed_headers": true, // Not in ClientConfig
+	},
+	"governance.virtual_keys.provider_configs": {
+		"keys": true, // Complex nested type, validated separately
+	},
+	"mcp.client_configs": {
+		"websocket_config": true, // Schema documents all connection types
+		"http_config":      true, // Schema documents all connection types
+	},
+}
+
+// loadJSONSchema loads and parses the JSON schema file
+func loadJSONSchema(t *testing.T) map[string]interface{} {
+	_, currentFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "Failed to get current file path")
+
+	testDir := filepath.Dir(currentFile)
+	schemaPath := filepath.Join(testDir, "..", "..", "config.schema.json")
+
+	schemaData, err := os.ReadFile(schemaPath)
+	require.NoError(t, err, "Failed to read config.schema.json at %s", schemaPath)
+
+	var schema map[string]interface{}
+	err = json.Unmarshal(schemaData, &schema)
+	require.NoError(t, err, "Failed to parse config.schema.json")
+
+	return schema
+}
+
+// resolveSchemaRef resolves a $ref reference in the schema
+func resolveSchemaRef(schema map[string]interface{}, ref string) map[string]interface{} {
+	// refs look like "#/$defs/some_type"
+	if !strings.HasPrefix(ref, "#/$defs/") {
+		return nil
+	}
+	defName := strings.TrimPrefix(ref, "#/$defs/")
+
+	defs, ok := schema["$defs"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	def, ok := defs[defName].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	return def
+}
+
+// getSchemaPropertiesAtPath gets the properties object at a given path in the schema
+func getSchemaPropertiesAtPath(schema map[string]interface{}, path string) map[string]interface{} {
+	if path == "" {
+		// Root level
+		props, _ := schema["properties"].(map[string]interface{})
+		return props
+	}
+
+	parts := strings.Split(path, ".")
+	current := schema["properties"].(map[string]interface{})
+
+	for i, part := range parts {
+		prop, ok := current[part].(map[string]interface{})
+		if !ok {
+			return nil
+		}
+
+		// Check if this is a $ref
+		if ref, ok := prop["$ref"].(string); ok {
+			prop = resolveSchemaRef(schema, ref)
+			if prop == nil {
+				return nil
+			}
+		}
+
+		// If this is the last part, get its properties
+		if i == len(parts)-1 {
+			// Check for array items
+			if prop["type"] == "array" {
+				items, ok := prop["items"].(map[string]interface{})
+				if !ok {
+					return nil
+				}
+				// Check if items is a $ref
+				if ref, ok := items["$ref"].(string); ok {
+					items = resolveSchemaRef(schema, ref)
+					if items == nil {
+						return nil
+					}
+				}
+				props, _ := items["properties"].(map[string]interface{})
+				return props
+			}
+			props, _ := prop["properties"].(map[string]interface{})
+			return props
+		}
+
+		// Navigate deeper
+		// Check for array items
+		if prop["type"] == "array" {
+			items, ok := prop["items"].(map[string]interface{})
+			if !ok {
+				return nil
+			}
+			// Check if items is a $ref
+			if ref, ok := items["$ref"].(string); ok {
+				items = resolveSchemaRef(schema, ref)
+				if items == nil {
+					return nil
+				}
+			}
+			current, ok = items["properties"].(map[string]interface{})
+			if !ok {
+				return nil
+			}
+		} else {
+			current, ok = prop["properties"].(map[string]interface{})
+			if !ok {
+				return nil
+			}
+		}
+	}
+
+	return current
+}
+
+// getGoStructFields extracts JSON field names from a Go struct type
+func getGoStructFields(t reflect.Type) map[string]bool {
+	fields := make(map[string]bool)
+
+	// Handle pointer types
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+
+	if t.Kind() != reflect.Struct {
+		return fields
+	}
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		// Handle tags like `json:"field_name,omitempty"`
+		tagParts := strings.Split(jsonTag, ",")
+		fieldName := tagParts[0]
+		if fieldName != "" && fieldName != "-" {
+			fields[fieldName] = true
+		}
+	}
+
+	return fields
+}
+
+// getTypeName returns a short name for a type (for exclusion map lookup)
+func getTypeName(t reflect.Type) string {
+	if t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	pkgPath := t.PkgPath()
+	// Extract just the package name from the full path
+	parts := strings.Split(pkgPath, "/")
+	pkgName := parts[len(parts)-1]
+	return pkgName + "." + t.Name()
+}
+
+// TestConfigSchemaSync validates that config.schema.json and all Go structs are in sync.
+// This test recursively validates all nested types, ensuring complete synchronization.
+func TestConfigSchemaSync(t *testing.T) {
+	schema := loadJSONSchema(t)
+
+	mappings := getSchemaTypeMappings()
+	var allErrors []string
+
+	for _, mapping := range mappings {
+		// Skip enterprise-only paths
+		if enterpriseSchemaPaths[mapping.SchemaPath] {
+			continue
+		}
+
+		// Get schema properties at this path
+		schemaProps := getSchemaPropertiesAtPath(schema, mapping.SchemaPath)
+		if schemaProps == nil && mapping.SchemaPath != "" {
+			// For struct/array mappings, missing schema path is a test failure
+			// Only simple-type mappings (none currently defined) would be acceptable to skip
+			goTypeKind := mapping.GoType.Kind()
+			if goTypeKind == reflect.Struct || mapping.IsArray {
+				t.Fatalf("Schema path not found for struct/array mapping: SchemaPath=%q, GoType=%v, IsArray=%v",
+					mapping.SchemaPath, mapping.GoType, mapping.IsArray)
+			}
+			// Simple types can be skipped
+			continue
+		}
+
+		// Get Go struct fields
+		goFields := getGoStructFields(mapping.GoType)
+
+		typeName := getTypeName(mapping.GoType)
+		excludedGo := excludedGoFields[typeName]
+		if excludedGo == nil {
+			excludedGo = make(map[string]bool)
+		}
+		excludedSchema := excludedSchemaFields[mapping.SchemaPath]
+		if excludedSchema == nil {
+			excludedSchema = make(map[string]bool)
+		}
+
+		// Find fields in schema but missing from Go struct
+		for prop := range schemaProps {
+			if !goFields[prop] && !excludedSchema[prop] && !enterpriseSchemaPaths[prop] {
+				allErrors = append(allErrors, fmt.Sprintf(
+					"[%s] Field '%s' in schema but missing from %s",
+					mapping.SchemaPath, prop, typeName))
+			}
+		}
+
+		// Find fields in Go struct but missing from schema
+		for field := range goFields {
+			_, inSchema := schemaProps[field]
+			if schemaProps != nil && !inSchema && !excludedGo[field] {
+				allErrors = append(allErrors, fmt.Sprintf(
+					"[%s] Field '%s' in %s but missing from schema",
+					mapping.SchemaPath, field, typeName))
+			}
+		}
+	}
+
+	// Sort errors for consistent output
+	sort.Strings(allErrors)
+
+	if len(allErrors) > 0 {
+		t.Errorf("Schema sync errors found (%d total):\n%s\n\n"+
+			"To fix:\n"+
+			"- Add missing fields to Go structs, OR\n"+
+			"- Add missing fields to config.schema.json, OR\n"+
+			"- Add to excludedGoFields/excludedSchemaFields if intentionally different",
+			len(allErrors), strings.Join(allErrors, "\n"))
+	} else {
+		t.Logf("Schema sync validated: %d type mappings checked, all fields match", len(mappings))
+	}
+}
+
+// TestConfigSchemaSyncTopLevel is a simpler test that only checks top-level properties
+// This is kept for backwards compatibility and as a quick smoke test
+func TestConfigSchemaSyncTopLevel(t *testing.T) {
+	// Enterprise-only features: These fields exist in the JSON schema for documentation
+	// and validation purposes, but are only available in the enterprise version.
+	enterpriseSchemaFields := map[string]bool{
+		"cluster_config":       true,
+		"saml_config":          true,
+		"load_balancer_config": true,
+		"guardrails_config":    true,
+	}
+
+	schema := loadJSONSchema(t)
+	schemaProps, ok := schema["properties"].(map[string]interface{})
+	require.True(t, ok, "JSON schema must have a 'properties' field")
+
+	// Extract JSON tag names from ConfigData struct
+	structProps := getGoStructFields(reflect.TypeOf(ConfigData{}))
+
+	// Find mismatches
+	var missingInStruct, missingInSchema []string
+
+	for prop := range schemaProps {
+		if !structProps[prop] && !enterpriseSchemaFields[prop] {
+			missingInStruct = append(missingInStruct, prop)
+		}
+	}
+
+	for prop := range structProps {
+		if schemaProps[prop] == nil {
+			missingInSchema = append(missingInSchema, prop)
+		}
+	}
+
+	if len(missingInStruct) > 0 {
+		sort.Strings(missingInStruct)
+		t.Errorf("Fields in schema but missing from ConfigData: %v", missingInStruct)
+	}
+
+	if len(missingInSchema) > 0 {
+		sort.Strings(missingInSchema)
+		t.Errorf("Fields in ConfigData but missing from schema: %v", missingInSchema)
+	}
+
+	if len(missingInStruct) == 0 && len(missingInSchema) == 0 {
+		matchedCount := 0
+		for prop := range schemaProps {
+			if structProps[prop] {
+				matchedCount++
+			}
+		}
+		t.Logf("Top-level sync validated: %d properties match (%d enterprise-only excluded)",
+			matchedCount, len(enterpriseSchemaFields))
+	}
+}
+
+// ===================================================================================
+// AUTH CONFIG PASSWORD HASHING TESTS
+// ===================================================================================
+
+func TestIsBcryptHash(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"bcrypt $2a$ prefix", "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
+		{"bcrypt $2b$ prefix", "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
+		{"bcrypt $2y$ prefix", "$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
+		{"plain text password", "mypassword", false},
+		{"empty string", "", false},
+		{"partial prefix $2a", "$2a", false},
+		{"different hash format", "$argon2id$v=19$m=65536,t=3,p=4$...", false},
+		{"sha256 hash", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isBcryptHash(tt.input)
+			if result != tt.expected {
+				t.Errorf("isBcryptHash(%q) = %v, want %v", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("plain text password gets hashed", func(t *testing.T) {
+		mockStore := NewMockConfigStore()
+		config := &Config{
+			ConfigStore: mockStore,
+		}
+		plainPassword := "mysecretpassword"
+		configData := &ConfigData{
+			AuthConfig: &configstore.AuthConfig{
+				AdminUserName: "admin",
+				AdminPassword: plainPassword,
+				IsEnabled:     true,
+			},
+		}
+
+		loadAuthConfigFromFile(ctx, config, configData)
+
+		// Verify auth config was stored
+		storedAuth, err := mockStore.GetAuthConfig(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, storedAuth)
+
+		// Verify password was hashed (not plain text)
+		require.NotEqual(t, plainPassword, storedAuth.AdminPassword, "password should be hashed, not plain text")
+
+		// Verify the stored hash is a valid bcrypt hash
+		require.True(t, isBcryptHash(storedAuth.AdminPassword), "stored password should be a bcrypt hash")
+
+		// Verify the hash can be used to verify the original password
+		match, err := encrypt.CompareHash(storedAuth.AdminPassword, plainPassword)
+		require.NoError(t, err)
+		require.True(t, match, "hashed password should match original plain text password")
+	})
+
+	t.Run("already hashed password is not re-hashed", func(t *testing.T) {
+		mockStore := NewMockConfigStore()
+		config := &Config{
+			ConfigStore: mockStore,
+		}
+		// Create a bcrypt hash of a password
+		originalPassword := "originalpassword"
+		hashedPassword, err := encrypt.Hash(originalPassword)
+		require.NoError(t, err)
+
+		configData := &ConfigData{
+			AuthConfig: &configstore.AuthConfig{
+				AdminUserName: "admin",
+				AdminPassword: hashedPassword,
+				IsEnabled:     true,
+			},
+		}
+
+		loadAuthConfigFromFile(ctx, config, configData)
+
+		// Verify auth config was stored
+		storedAuth, err := mockStore.GetAuthConfig(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, storedAuth)
+
+		// Verify password was NOT re-hashed (should be the same hash)
+		require.Equal(t, hashedPassword, storedAuth.AdminPassword, "already hashed password should not be re-hashed")
+
+		// Verify the stored hash still works to verify the original password
+		match, err := encrypt.CompareHash(storedAuth.AdminPassword, originalPassword)
+		require.NoError(t, err)
+		require.True(t, match, "stored hash should still verify against original password")
+	})
+
+	t.Run("empty password is not hashed", func(t *testing.T) {
+		mockStore := NewMockConfigStore()
+		config := &Config{
+			ConfigStore: mockStore,
+		}
+		configData := &ConfigData{
+			AuthConfig: &configstore.AuthConfig{
+				AdminUserName: "admin",
+				AdminPassword: "",
+				IsEnabled:     true,
+			},
+		}
+
+		loadAuthConfigFromFile(ctx, config, configData)
+
+		// Verify auth config was stored
+		storedAuth, err := mockStore.GetAuthConfig(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, storedAuth)
+
+		// Verify empty password remains empty
+		require.Equal(t, "", storedAuth.AdminPassword, "empty password should remain empty")
+	})
+
+	t.Run("auth config not loaded when DB already has config", func(t *testing.T) {
+		mockStore := NewMockConfigStore()
+		existingPassword := "$2a$10$existinghashvaluehere1234567890123456789012345678901234"
+		mockStore.authConfig = &configstore.AuthConfig{
+			AdminUserName: "existingadmin",
+			AdminPassword: existingPassword,
+			IsEnabled:     true,
+		}
+		config := &Config{
+			ConfigStore: mockStore,
+		}
+		configData := &ConfigData{
+			AuthConfig: &configstore.AuthConfig{
+				AdminUserName: "newadmin",
+				AdminPassword: "newpassword",
+				IsEnabled:     false,
+			},
+		}
+
+		loadAuthConfigFromFile(ctx, config, configData)
+
+		// Verify the existing config was NOT overwritten
+		storedAuth, err := mockStore.GetAuthConfig(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, storedAuth)
+		require.Equal(t, "existingadmin", storedAuth.AdminUserName, "existing username should be preserved")
+		require.Equal(t, existingPassword, storedAuth.AdminPassword, "existing password should be preserved")
+		require.True(t, storedAuth.IsEnabled, "existing enabled status should be preserved")
+	})
+
+	t.Run("nil auth config in file is skipped", func(t *testing.T) {
+		mockStore := NewMockConfigStore()
+		config := &Config{
+			ConfigStore: mockStore,
+		}
+		configData := &ConfigData{
+			AuthConfig: nil,
+		}
+
+		loadAuthConfigFromFile(ctx, config, configData)
+
+		// Verify no auth config was stored
+		storedAuth, err := mockStore.GetAuthConfig(ctx)
+		require.NoError(t, err)
+		require.Nil(t, storedAuth, "no auth config should be stored when file config is nil")
 	})
 }

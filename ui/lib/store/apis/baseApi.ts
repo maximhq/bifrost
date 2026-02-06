@@ -141,6 +141,7 @@ export const baseApi = createApi({
 	baseQuery: baseQueryWithErrorHandling,
 	tagTypes: [
 		"Logs",
+		"MCPLogs",
 		"Providers",
 		"MCPClients",
 		"Config",
@@ -155,6 +156,7 @@ export const baseApi = createApi({
 		"HealthCheck",
 		"DBKeys",
 		"Models",
+		"BaseModels",
 		"ModelConfigs",
 		"ProviderGovernance",
 		"Plugins",
@@ -170,6 +172,8 @@ export const baseApi = createApi({
 		"Permissions",
 		"APIKeys",
 		"OAuth2Config",
+		"RoutingRules",
+		"MCPToolGroups",
 	],
 	endpoints: () => ({}),
 });

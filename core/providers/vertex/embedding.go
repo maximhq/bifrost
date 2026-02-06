@@ -9,7 +9,11 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 	if bifrostReq == nil || bifrostReq.Input == nil || (bifrostReq.Input.Text == nil && bifrostReq.Input.Texts == nil) {
 		return nil
 	}
-
+	// Create the request
+	vertexReq := &VertexEmbeddingRequest{}
+	if bifrostReq.Params != nil {
+		vertexReq.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 	var texts []string
 	if bifrostReq.Input.Text != nil {
 		texts = []string{*bifrostReq.Input.Text}
@@ -27,21 +31,18 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 		// Add optional task_type and title from params
 		if bifrostReq.Params != nil {
 			if taskTypeStr, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["task_type"]); ok {
+				delete(vertexReq.ExtraParams, "task_type")
 				instance.TaskType = taskTypeStr
 			}
 			if title, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["title"]); ok {
+				delete(vertexReq.ExtraParams, "title")
 				instance.Title = title
 			}
 		}
 
 		instances = append(instances, instance)
 	}
-
-	// Create the request
-	vertexReq := &VertexEmbeddingRequest{
-		Instances: instances,
-	}
-
+	vertexReq.Instances = instances
 	// Add parameters if present
 	if bifrostReq.Params != nil {
 		parameters := &VertexEmbeddingParameters{}
@@ -50,6 +51,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 		autoTruncate := true
 		if bifrostReq.Params.ExtraParams != nil {
 			if autoTruncateVal, ok := schemas.SafeExtractBool(bifrostReq.Params.ExtraParams["autoTruncate"]); ok {
+				delete(vertexReq.ExtraParams, "autoTruncate")
 				autoTruncate = autoTruncateVal
 			}
 		}
@@ -57,6 +59,7 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) *Vert
 
 		// Add outputDimensionality if specified
 		if bifrostReq.Params.Dimensions != nil {
+			delete(vertexReq.ExtraParams, "dimensions")
 			parameters.OutputDimensionality = bifrostReq.Params.Dimensions
 		}
 

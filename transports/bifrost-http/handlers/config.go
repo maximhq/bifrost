@@ -322,8 +322,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		restartReasons = append(restartReasons, "Governance enabled")
 	}
 	updatedConfig.EnableGovernance = payload.ClientConfig.EnableGovernance
-
-	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceGovernanceHeader
+	if !payload.ClientConfig.EnableGovernance {
+		// If governance is disabled, we will disable the enforcement of the governance header
+		updatedConfig.EnforceGovernanceHeader = false
+	} else {
+		updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceGovernanceHeader
+	}
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
 	if payload.ClientConfig.MaxRequestBodySizeMB != currentConfig.MaxRequestBodySizeMB {

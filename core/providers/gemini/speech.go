@@ -116,6 +116,7 @@ func ToGeminiSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) (*GeminiGen
 			if bifrostReq.Params.VoiceConfig.Voice != nil || len(bifrostReq.Params.VoiceConfig.MultiVoiceConfig) > 0 {
 				addSpeechConfigToGenerationConfig(&geminiReq.GenerationConfig, bifrostReq.Params.VoiceConfig)
 			}
+			geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		}
 	}
 	return geminiReq, nil
@@ -157,6 +158,11 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 					bifrostResp.Audio = audioData
 				}
 			}
+
+			// Set usage information
+			if response.UsageMetadata != nil {
+				bifrostResp.Usage = convertGeminiUsageMetadataToSpeechUsage(response.UsageMetadata)
+			}
 		}
 	}
 	return bifrostResp, nil
@@ -182,6 +188,11 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 			},
 			Role: string(RoleModel),
 		},
+	}
+
+	// Set usage metadata if present
+	if bifrostResp.Usage != nil {
+		genaiResp.UsageMetadata = convertBifrostSpeechUsageToGeminiUsageMetadata(bifrostResp.Usage)
 	}
 
 	genaiResp.Candidates = []*Candidate{candidate}
