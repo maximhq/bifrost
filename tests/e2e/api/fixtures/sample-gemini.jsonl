@@ -1,0 +1,2 @@
+{"custom_id": "integration-test-1", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-2.0-flash", "messages": [{"role": "user", "content": "Say hello"}]}}
+{"custom_id": "integration-test-2", "method": "POST", "url": "/v1/chat/completions", "body": {"model": "gemini-2.0-flash", "messages": [{"role": "user", "content": "Say goodbye"}]}}

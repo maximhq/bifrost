@@ -48,6 +48,7 @@ transports/schema/config.schema.json
 
 # Test reports
 test-reports
+tests/e2e/api/newman-reports
 
 # AI Agent specific
 settings.local.json
