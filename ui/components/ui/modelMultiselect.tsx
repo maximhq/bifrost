@@ -49,7 +49,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		keys,
 		value,
 		onChange,
-		placeholder = "Select models...",
+		placeholder = "Search models...",
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,

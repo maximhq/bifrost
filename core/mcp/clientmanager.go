@@ -280,8 +280,6 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		OauthConfigID:    client.ExecutionConfig.OauthConfigID,
 		State:            client.ExecutionConfig.State,
 		InProcessServer:  client.ExecutionConfig.InProcessServer,
-		IsPingAvailable:  client.ExecutionConfig.IsPingAvailable,
-		ToolSyncInterval: client.ExecutionConfig.ToolSyncInterval,
 		ConfigHash:       client.ExecutionConfig.ConfigHash,
 		ToolPricing:      maps.Clone(client.ExecutionConfig.ToolPricing),
 		// Updatable fields - copy from updated config with proper cloning
@@ -290,6 +288,8 @@ func (m *MCPManager) UpdateClient(id string, updatedConfig *schemas.MCPClientCon
 		Headers:            maps.Clone(updatedConfig.Headers),
 		ToolsToExecute:     slices.Clone(updatedConfig.ToolsToExecute),
 		ToolsToAutoExecute: slices.Clone(updatedConfig.ToolsToAutoExecute),
+		IsPingAvailable:    updatedConfig.IsPingAvailable,
+		ToolSyncInterval:   updatedConfig.ToolSyncInterval,
 	}
 
 	// Atomically replace the config pointer

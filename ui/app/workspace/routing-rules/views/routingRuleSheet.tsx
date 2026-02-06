@@ -453,14 +453,30 @@ export function RoutingRuleSheet({
 								<Label htmlFor="model" className="text-sm">
 									Model
 								</Label>
-								<ModelMultiselect
-									provider={provider || undefined}
-									value={model}
-									onChange={(value) => setValue("model", value)}
-									placeholder="Select a model... (optional)"
-									isSingleSelect
-									loadModelsOnEmptyProvider
-								/>
+								<div className="flex gap-2">
+									<div className="flex-1">
+										<ModelMultiselect
+											provider={provider || undefined}
+											value={model}
+											onChange={(value) => setValue("model", value)}
+											placeholder="Select a model... (optional)"
+											isSingleSelect
+											loadModelsOnEmptyProvider
+										/>
+									</div>
+									{model && (
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={() => setValue("model", "")}
+											className="h-9 px-2"
+											title="Clear model selection"
+										>
+											<X className="h-4 w-4" />
+										</Button>
+									)}
+								</div>
 								{errors.model && <p className="text-destructive text-sm">{errors.model.message}</p>}
 							</div>
 						</div>
