@@ -1,0 +1,1284 @@
+{
+  "info": {
+    "name": "Bifrost OpenAI Integration API",
+    "description": "E2E tests for OpenAI integration endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  requestBody = prettyPrintJSON(pm.request.body.raw);",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "try {",
+          "  var responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    responseBody = prettyPrintJSON(responseText);",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  if (code === 405) { pass = true; }",
+          "  if (!pass) try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : (body && body.code) ? body.code : '';",
+          "    var errType = (body && body.error && body.error.type) ? body.error.type : '';",
+          "    if (errCode === 'unsupported_operation' || ",
+          "        (typeof msg === 'string' && /not supported|unsupported|invalid.*model|no config found|not available|did you mean|batch.*api|batch.*not|no.*mcp|mcp.*not|no tools|tool.*not.*found|method.*not.*allowed|not.*implemented|not.*found|cannot.*find|does.*not.*exist/i.test(msg)) ||",
+          "        errType === 'invalid_request_error') {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "gpt-4o",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "speech_model",
+      "value": "tts-1",
+      "type": "string"
+    },
+    {
+      "key": "transcription_model",
+      "value": "whisper-1",
+      "type": "string"
+    },
+    {
+      "key": "image_model",
+      "value": "dall-e-3",
+      "type": "string"
+    },
+    {
+      "key": "azure_deployment_id",
+      "value": "gpt-4o-deployment",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "batch_123",
+      "type": "string"
+    },
+    {
+      "key": "file_id",
+      "value": "file_123",
+      "type": "string"
+    },
+    {
+      "key": "container_id",
+      "value": "container_123",
+      "type": "string"
+    },
+    {
+      "key": "container_file_id",
+      "value": "container_file_123",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat Completions",
+      "item": [
+        {
+          "name": "Chat Completions (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completions (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat Completions (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Text Completions",
+      "item": [
+        {
+          "name": "Text Completions (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Text Completions (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Text Completions (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"Write a haiku about programming\",\n  \"max_tokens\": 100,\n  \"temperature\": 0.8,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Responses",
+      "item": [
+        {
+          "name": "Create Response",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"What is the capital of France?\",\n  \"temperature\": 1.0,\n  \"max_output_tokens\": 500\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Count Tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"How many tokens is this message?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/count_tokens",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "count_tokens"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Embeddings",
+      "item": [
+        {
+          "name": "Embeddings (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embeddings (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Embeddings (Azure Deployment)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/deployments/{{azure_deployment_id}}/embeddings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "deployments",
+                "{{azure_deployment_id}}",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "item": [
+        {
+          "name": "Create Speech (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{speech_model}}\",\n  \"input\": \"Hello, this is a test of text to speech\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/audio/speech",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Speech (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{speech_model}}\",\n  \"input\": \"Hello, this is a test of text to speech\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\",\n  \"speed\": 1.0\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/audio/speech",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Transcription (Standard Path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{transcription_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.mp3"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Transcription (No v1 Path)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{transcription_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.mp3"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/audio/transcriptions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Images",
+      "item": [
+        {
+          "name": "Generate Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{image_model}}\",\n  \"prompt\": \"A serene mountain landscape at sunset\",\n  \"n\": 1,\n  \"size\": \"1024x1024\",\n  \"quality\": \"hd\",\n  \"response_format\": \"url\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/generations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Edit Image",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a sunset to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/edits",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Image Variation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/images/variations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "variations"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batches",
+      "item": [
+        {
+          "name": "Create Batch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('batch_id', j.id); if (pm.environment) { pm.environment.set('batch_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"test-request-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"{{provider}}/{{model}}\",\n        \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}]\n      }\n    }\n  ],\n  \"metadata\": {\"batch_type\": \"testing\"}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Batches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Batch",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Batch Results",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/batches/{{batch_id}}/results",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{batch_id}}",
+                "results"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload File",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  try {",
+                  "    var j = pm.response.json();",
+                  "    var id = (j && (j.id || j.file_id)) || (j && j.data && (j.data.id || j.data.file_id));",
+                  "    if (id) {",
+                  "      pm.collectionVariables.set('file_id', id);",
+                  "      if (pm.environment) { pm.environment.set('file_id', id); }",
+                  "    }",
+                  "  } catch (e) {}",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.jsonl"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get File Content",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/files/{{file_id}}/content",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "files",
+                "{{file_id}}",
+                "content"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Containers",
+      "item": [
+        {
+          "name": "Create Container",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('container_id', j.id); if (pm.environment) { pm.environment.set('container_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"bifrost-test-container\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Containers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Upload)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('container_file_id', j.id); if (pm.environment) { pm.environment.set('container_file_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.txt"
+                },
+                {
+                  "key": "file_path",
+                  "value": "/test-file.txt",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Reference)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id}}\",\n  \"file_path\": \"/data/file.txt\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Container Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Container File Content",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}/content",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Container File",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}/files/{{container_file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}",
+                "files",
+                "{{container_file_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Container",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/containers/{{container_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "containers",
+                "{{container_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

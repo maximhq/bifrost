@@ -42,6 +42,7 @@ go.work.sum
 
 # Test reports
 test-reports
+tests/e2e/api/newman-reports
 
 # Cursor specific
 .claude
