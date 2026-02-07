@@ -2578,6 +2578,7 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 	}
 
 	bifrost.logger.Info("successfully removed provider %s", providerKey)
+	schemas.UnregisterKnownProvider(providerKey)
 	return nil
 }
 
@@ -3130,6 +3131,8 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 			break
 		}
 	}
+
+	schemas.RegisterKnownProvider(providerKey)
 
 	for range config.ConcurrencyAndBufferSize.Concurrency {
 		currentWaitGroup.Add(1)

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,8 +32,12 @@ func GetRandomString(length int) string {
 	return string(b)
 }
 
+// knownProvidersMu protects concurrent access to knownProviders.
+var knownProvidersMu sync.RWMutex
+
 // knownProviders is a set of all known provider strings for O(1) lookup.
-// Built once from StandardProviders at package init time.
+// Built once from StandardProviders at package init time, and dynamically
+// updated when custom providers are added or removed.
 // Used by ParseModelString to distinguish real provider prefixes (e.g. "openai/gpt-4o")
 // from model namespace prefixes (e.g. "meta-llama/Llama-3.1-8B").
 var knownProviders = func() map[string]bool {
@@ -43,6 +48,35 @@ var knownProviders = func() map[string]bool {
 	return m
 }()
 
+// RegisterKnownProvider adds a provider to the known providers set.
+// This allows ParseModelString to correctly parse model strings with
+// custom provider prefixes (e.g., "my-custom-provider/gpt-4").
+func RegisterKnownProvider(provider ModelProvider) {
+	knownProvidersMu.Lock()
+	defer knownProvidersMu.Unlock()
+	knownProviders[string(provider)] = true
+}
+
+// UnregisterKnownProvider removes a custom provider from the known providers set.
+// Standard providers cannot be unregistered.
+func UnregisterKnownProvider(provider ModelProvider) {
+	for _, p := range StandardProviders {
+		if p == provider {
+			return // Don't unregister standard providers
+		}
+	}
+	knownProvidersMu.Lock()
+	defer knownProvidersMu.Unlock()
+	delete(knownProviders, string(provider))
+}
+
+// IsKnownProvider checks if a provider string is known.
+func IsKnownProvider(provider string) bool {
+	knownProvidersMu.RLock()
+	defer knownProvidersMu.RUnlock()
+	return knownProviders[provider]
+}
+
 // ParseModelString extracts provider and model from a model string.
 // For model strings like "anthropic/claude", it returns ("anthropic", "claude").
 // For model strings like "claude", it returns ("", "claude").
@@ -52,7 +86,7 @@ func ParseModelString(model string, defaultProvider ModelProvider) (ModelProvide
 	// Check if model contains a provider prefix (only split on first "/" to preserve model names with "/")
 	if strings.Contains(model, "/") {
 		parts := strings.SplitN(model, "/", 2)
-		if len(parts) == 2 && knownProviders[parts[0]] {
+		if len(parts) == 2 && IsKnownProvider(parts[0]) {
 			return ModelProvider(parts[0]), parts[1]
 		}
 	}
