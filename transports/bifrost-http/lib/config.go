@@ -609,6 +609,10 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 		}
 	}
 	config.Providers = providersInConfigStore
+	// Register all loaded providers (including custom ones) as known
+	for provider := range providersInConfigStore {
+		schemas.RegisterKnownProvider(provider)
+	}
 	return nil
 }
 
@@ -1984,6 +1988,10 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 			processedProviders[provider] = providerConfig
 		}
 		config.Providers = processedProviders
+		// Register all loaded providers (including custom ones) as known
+		for provider := range processedProviders {
+			schemas.RegisterKnownProvider(provider)
+		}
 	}
 	return nil
 }
@@ -2802,6 +2810,7 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 		}
 	}
 	c.Providers[provider] = config
+	schemas.RegisterKnownProvider(provider)
 	logger.Info("added provider: %s", provider)
 	return nil
 }
@@ -2913,6 +2922,7 @@ func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvi
 		}
 	}
 	logger.Info("Removed provider: %s", provider)
+	schemas.UnregisterKnownProvider(provider)
 	return nil
 }
 
