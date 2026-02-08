@@ -376,7 +376,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				return nil, nil, false
 			}
 
-		switch chunk.ContentBlock.Type {
+			switch chunk.ContentBlock.Type {
 			case AnthropicContentBlockTypeCompaction:
 				// Compaction block - track it but don't emit yet (summary arrives in delta)
 				itemID := fmt.Sprintf("cmp_%d", outputIndex)
@@ -623,7 +623,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		if chunk.Index != nil && chunk.Delta != nil {
 			outputIndex := state.getOrCreateOutputIndex(chunk.Index)
 
-		// Handle different delta types
+			// Handle different delta types
 			switch chunk.Delta.Type {
 			case AnthropicStreamDeltaTypeCompaction:
 				if chunk.Delta.Content != nil {
@@ -3190,7 +3190,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
-						bifrostMsg.ResponsesToolMessage.Error = schemas.Ptr("Tool execution error")
+						bifrostMsg.Status = schemas.Ptr("incomplete")
 					}
 
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -3536,7 +3536,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
-						bifrostMsg.ResponsesToolMessage.Error = schemas.Ptr("Tool execution error")
+						bifrostMsg.Status = schemas.Ptr("incomplete")
 					}
 
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -3856,7 +3856,7 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3864,6 +3864,8 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
@@ -3885,7 +3887,7 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3893,6 +3895,8 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
@@ -3914,7 +3918,7 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3922,6 +3926,8 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
