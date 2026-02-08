@@ -120,3 +120,19 @@ func (logger *DefaultLogger) SetOutputType(outputType schemas.LoggerOutputType) 
 		logger.stdoutLogger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 	}
 }
+
+// NoOpLogger is a no-op implementation of schemas.Logger.
+type NoOpLogger struct{}
+
+// NewNoOpLogger creates a new NoOpLogger instance.
+func NewNoOpLogger() schemas.Logger {
+	return &NoOpLogger{}
+}
+
+func (l *NoOpLogger) Debug(string, ...any)                   {}
+func (l *NoOpLogger) Info(string, ...any)                    {}
+func (l *NoOpLogger) Warn(string, ...any)                    {}
+func (l *NoOpLogger) Error(string, ...any)                   {}
+func (l *NoOpLogger) Fatal(string, ...any)                   {}
+func (l *NoOpLogger) SetLevel(schemas.LogLevel)              {}
+func (l *NoOpLogger) SetOutputType(schemas.LoggerOutputType) {}

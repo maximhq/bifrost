@@ -247,7 +247,6 @@ func (provider *VertexProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -128,6 +128,8 @@ func (chm *ClientHealthMonitor) monitorLoop() {
 }
 
 // performHealthCheck performs a health check on the client
+// If the client is disconnected and has an existing connection, it will attempt
+// to reconnect using the client's configuration with retry logic
 func (chm *ClientHealthMonitor) performHealthCheck() {
 	// Get the client connection
 	chm.manager.mu.RLock()

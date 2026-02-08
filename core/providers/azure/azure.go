@@ -331,7 +331,6 @@ func (provider *AzureProvider) ListModels(ctx *schemas.BifrostContext, keys []sc
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 

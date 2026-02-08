@@ -35,7 +35,7 @@ By default, Bifrost does NOT automatically execute tool calls. All tool executio
 
 <CardGroup cols={2}>
   <Card title="Connect to MCP Servers" icon="plug" href="./connecting-to-servers">
-    Connect to external MCP servers via STDIO, HTTP, or SSE protocols
+    Connect to external MCP servers via STDIO, HTTP, or SSE protocols with automatic retry logic
   </Card>
   <Card title="OAuth Authentication" icon="lock" href="./oauth">
     Secure OAuth 2.0 authentication with automatic token refresh
@@ -48,6 +48,9 @@ By default, Bifrost does NOT automatically execute tool calls. All tool executio
   </Card>
   <Card title="Code Mode" icon="code" href="./code-mode">
     Let AI write Python to orchestrate multiple tools in one request
+  </Card>
+  <Card title="Connection Resilience" icon="shield-check" href="./connecting-to-servers#connection-resilience-and-retry-logic">
+    Automatic exponential backoff retry logic handles transient failures gracefully
   </Card>
   <Card title="MCP Gateway URL" icon="server" href="./gateway-url">
     Expose Bifrost as an MCP server for Claude Desktop and other clients

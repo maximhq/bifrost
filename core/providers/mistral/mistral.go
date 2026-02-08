@@ -136,7 +136,6 @@ func (provider *MistralProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 
