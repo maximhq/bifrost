@@ -2008,35 +2008,55 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 		clone := *vk
 		// Update Budget for VK in memory store
 		if clone.Budget != nil {
-			// Preserve existing usage from memory when updating budget config
-			// The usage tracker maintains current usage in memory, and we only want to update
-			// the configuration fields (max_limit, reset_duration) from the database
+			// Calculate total usage: local memory + baselines from other cluster nodes
+			var localUsage float64
 			if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
 				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					// Preserve current usage and last reset time from existing in-memory budget
-					clone.Budget.CurrentUsage = existingBudget.CurrentUsage
+					localUsage = existingBudget.CurrentUsage
 					clone.Budget.LastReset = existingBudget.LastReset
 				}
 			}
+
+			// Add baselines from other cluster nodes (if provided)
+			baselineUsage := float64(0)
+			if budgetBaselines != nil {
+				baselineUsage = budgetBaselines[clone.Budget.ID]
+			}
+
+			// Total = local + baselines from other nodes
+			clone.Budget.CurrentUsage = localUsage + baselineUsage
+
 			gs.budgets.Store(clone.Budget.ID, clone.Budget)
 		} else if existingVK.Budget != nil {
 			// Budget was removed from the virtual key, delete it from memory
 			gs.budgets.Delete(existingVK.Budget.ID)
 		}
 		if clone.RateLimit != nil {
-			// Preserve existing usage from memory when updating rate limit config
-			// The usage tracker maintains current usage in memory, and we only want to update
-			// the configuration fields (max_limit, reset_duration) from the database
+			// Calculate total usage: local memory + baselines from other cluster nodes
+			var localTokenUsage, localRequestUsage int64
 			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
 				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-					// Preserve current usage and last reset times from existing in-memory rate limit
-					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+					localTokenUsage = existingRateLimit.TokenCurrentUsage
+					localRequestUsage = existingRateLimit.RequestCurrentUsage
 					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
 					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 				}
 			}
-			// Update the rate limit in the main rateLimits sync.Map
+
+			// Add baselines from other cluster nodes (if provided)
+			baselineTokenUsage := int64(0)
+			baselineRequestUsage := int64(0)
+			if rateLimitTokensBaselines != nil {
+				baselineTokenUsage = rateLimitTokensBaselines[clone.RateLimit.ID]
+			}
+			if rateLimitRequestsBaselines != nil {
+				baselineRequestUsage = rateLimitRequestsBaselines[clone.RateLimit.ID]
+			}
+
+			// Total = local + baselines from other nodes
+			clone.RateLimit.TokenCurrentUsage = localTokenUsage + baselineTokenUsage
+			clone.RateLimit.RequestCurrentUsage = localRequestUsage + baselineRequestUsage
+
 			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 		} else if existingVK.RateLimit != nil {
 			// Rate limit was removed from the virtual key, delete it from memory
@@ -2054,16 +2074,31 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 			// Process each new/updated provider config
 			for i, pc := range clone.ProviderConfigs {
 				if pc.RateLimit != nil {
-					// Preserve existing usage from memory when updating provider config rate limit
-					if existingRateLimitValue, exists := gs.rateLimits.Load(pc.RateLimit.ID); exists && existingRateLimitValue != nil {
+					// Calculate total usage: local memory + baselines from other cluster nodes
+					var localTokenUsage, localRequestUsage int64
+					if existingRateLimitValue, rateLimitExists := gs.rateLimits.Load(pc.RateLimit.ID); rateLimitExists && existingRateLimitValue != nil {
 						if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-							// Preserve current usage and last reset times from existing in-memory rate limit
-							clone.ProviderConfigs[i].RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-							clone.ProviderConfigs[i].RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+							localTokenUsage = existingRateLimit.TokenCurrentUsage
+							localRequestUsage = existingRateLimit.RequestCurrentUsage
 							clone.ProviderConfigs[i].RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
 							clone.ProviderConfigs[i].RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
 						}
 					}
+
+					// Add baselines from other cluster nodes (if provided)
+					baselineTokenUsage := int64(0)
+					baselineRequestUsage := int64(0)
+					if rateLimitTokensBaselines != nil {
+						baselineTokenUsage = rateLimitTokensBaselines[pc.RateLimit.ID]
+					}
+					if rateLimitRequestsBaselines != nil {
+						baselineRequestUsage = rateLimitRequestsBaselines[pc.RateLimit.ID]
+					}
+
+					// Total = local + baselines from other nodes
+					clone.ProviderConfigs[i].RateLimit.TokenCurrentUsage = localTokenUsage + baselineTokenUsage
+					clone.ProviderConfigs[i].RateLimit.RequestCurrentUsage = localRequestUsage + baselineRequestUsage
+
 					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
@@ -2074,14 +2109,24 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 				}
 				// Update Budget for provider config in memory store
 				if pc.Budget != nil {
-					// Preserve existing usage from memory when updating provider config budget
+					// Calculate total usage: local memory + baselines from other cluster nodes
+					var localUsage float64
 					if existingBudgetValue, exists := gs.budgets.Load(pc.Budget.ID); exists && existingBudgetValue != nil {
 						if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-							// Preserve current usage and last reset time from existing in-memory budget
-							clone.ProviderConfigs[i].Budget.CurrentUsage = existingBudget.CurrentUsage
+							localUsage = existingBudget.CurrentUsage
 							clone.ProviderConfigs[i].Budget.LastReset = existingBudget.LastReset
 						}
 					}
+
+					// Add baselines from other cluster nodes (if provided)
+					baselineUsage := float64(0)
+					if budgetBaselines != nil {
+						baselineUsage = budgetBaselines[pc.Budget.ID]
+					}
+
+					// Total = local + baselines from other nodes
+					clone.ProviderConfigs[i].Budget.CurrentUsage = localUsage + baselineUsage
+
 					gs.budgets.Store(clone.ProviderConfigs[i].Budget.ID, clone.ProviderConfigs[i].Budget)
 				} else {
 					// Budget was removed from provider config, delete it from memory if it existed
