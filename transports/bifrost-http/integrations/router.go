@@ -48,13 +48,12 @@
 package integrations
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
-
-	"bufio"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -75,6 +74,14 @@ type ExtensionRouter interface {
 // StreamingRequest interface for requests that support streaming
 type StreamingRequest interface {
 	IsStreamingRequested() bool
+}
+
+// RequestWithSettableExtraParams is implemented by request types that accept
+// provider-specific extra parameters via the extra_params JSON key. The
+// integration router extracts extra_params from the raw request body and
+// passes them through so they propagate to the downstream provider.
+type RequestWithSettableExtraParams interface {
+	SetExtraParams(params map[string]interface{})
 }
 
 // BatchRequest wraps a Bifrost batch request with its type information.
@@ -520,6 +527,20 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 					if err := sonic.Unmarshal(rawBody, req); err != nil {
 						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
 						return
+					}
+					// Extract the "extra_params" JSON key when passthrough is
+					// explicitly enabled via x-bf-passthrough-extra-params: true.
+					// Provider-specific fields (e.g. Bedrock guardrailConfig)
+					// must be nested under "extra_params" in the request body.
+					if bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+						if rws, ok := req.(RequestWithSettableExtraParams); ok {
+							var wrapper struct {
+								ExtraParams map[string]interface{} `json:"extra_params"`
+							}
+							if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
+								rws.SetExtraParams(wrapper.ExtraParams)
+							}
+						}
 					}
 				}
 			}
