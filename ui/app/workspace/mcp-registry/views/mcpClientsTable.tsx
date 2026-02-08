@@ -135,14 +135,14 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
 					<h1 className="text-foreground text-lg font-semibold">MCP server catalog</h1>
-					<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess}>
+					<Button onClick={handleCreate} disabled={!hasCreateMCPClientAccess} data-testid="create-mcp-client-btn">
 						<Plus className="h-4 w-4" /> New MCP Server
 					</Button>
 				</CardTitle>
 				<CardDescription>Manage servers that can connect to the MCP Tools endpoint.</CardDescription>
 			</CardHeader>
 			<div className="rounded-sm border">
-				<Table>
+				<Table data-testid="mcp-clients-table">
 					<TableHeader>
 						<TableRow>
 							<TableHead>Name</TableHead>

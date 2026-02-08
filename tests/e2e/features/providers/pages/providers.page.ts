@@ -90,6 +90,8 @@ export class ProvidersPage extends BasePage {
    * Add a new key to the currently selected provider
    */
   async addKey(config: ProviderKeyConfig): Promise<void> {
+    await this.dismissToasts()
+
     // Click add key button
     await this.addKeyBtn.click()
 
@@ -116,6 +118,10 @@ export class ProvidersPage extends BasePage {
 
     // Wait for success toast
     await this.waitForSuccessToast()
+
+    // Wait for form to close and table to refresh
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
   }
 
   /**
@@ -178,15 +184,27 @@ export class ProvidersPage extends BasePage {
    * Get key row locator
    */
   getKeyRow(name: string): Locator {
-    return this.page.getByTestId(`key-row-${name}`)
+    // Try data-testid first, fall back to finding row by text content
+    return this.page.getByTestId(`key-row-${name}`).or(
+      this.page.locator('tr, [role="row"]').filter({ hasText: name })
+    )
   }
 
   /**
-   * Check if a key exists in the table
+   * Check if a key exists in the table (waits for it to appear)
    */
-  async keyExists(name: string): Promise<boolean> {
+  async keyExists(name: string, timeout: number = 5000): Promise<boolean> {
+    // Wait for network to settle first
+    await waitForNetworkIdle(this.page)
+
+    // Try to find the key with waiting
     const keyRow = this.getKeyRow(name)
-    return await keyRow.isVisible()
+    try {
+      await keyRow.waitFor({ state: 'visible', timeout })
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -195,8 +213,11 @@ export class ProvidersPage extends BasePage {
   async editKey(keyName: string, updates: Partial<ProviderKeyConfig>): Promise<void> {
     // Find the key row and open the dropdown menu
     const keyRow = this.getKeyRow(keyName)
-    // The dropdown trigger is the last button in the row (with ellipsis icon)
-    const menuBtn = keyRow.locator('button').last()
+    await keyRow.scrollIntoViewIfNeeded()
+
+    // The dropdown trigger - look for ellipsis/more button
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
     await menuBtn.click()
 
     // Wait for dropdown to appear and click Edit
@@ -233,17 +254,24 @@ export class ProvidersPage extends BasePage {
    * Delete a key
    */
   async deleteKey(keyName: string): Promise<void> {
-    // Find the key row and open the dropdown menu
+    await this.dismissToasts()
+
+    // Find the key row
     const keyRow = this.getKeyRow(keyName)
-    // The dropdown trigger is the last button in the row (with ellipsis icon)
-    const menuBtn = keyRow.locator('button').last()
+    await keyRow.scrollIntoViewIfNeeded()
+
+    // The dropdown trigger - look for ellipsis/more button (last button with svg icon)
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
     await menuBtn.click()
 
     // Click Delete in the dropdown
     await this.page.getByRole('menuitem', { name: /Delete/i }).click()
 
     // Confirm deletion in the alert dialog
-    await this.page.getByRole('button', { name: 'Delete' }).click()
+    const confirmBtn = this.page.locator('[role="alertdialog"]').getByRole('button', { name: /Delete/i })
+    await confirmBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await confirmBtn.click()
 
     // Wait for success toast
     await this.waitForSuccessToast('deleted')
@@ -291,5 +319,254 @@ export class ProvidersPage extends BasePage {
       bedrock: 'AWS Bedrock',
     }
     return labels[type] || type
+  }
+
+  // ============================================
+  // Provider Configuration Methods
+  // ============================================
+
+  /**
+   * Expand the provider level configuration accordion
+   */
+  async expandConfigAccordion(): Promise<void> {
+    const accordionTrigger = this.page.getByRole('button', { name: /Provider level configuration/i })
+    const isExpanded = await accordionTrigger.getAttribute('data-state') === 'open'
+    if (!isExpanded) {
+      await accordionTrigger.click()
+      await this.page.waitForTimeout(300)
+    }
+  }
+
+  /**
+   * Select a configuration tab
+   */
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance'): Promise<void> {
+    await this.expandConfigAccordion()
+
+    const tabLabels: Record<string, string> = {
+      network: 'Network config',
+      proxy: 'Proxy config',
+      performance: 'Performance tuning',
+      governance: 'Governance',
+    }
+
+    const tab = this.page.getByRole('tab', { name: tabLabels[tabName] })
+    await tab.click()
+    await this.page.waitForTimeout(300)
+  }
+
+  /**
+   * Get the save button for the current config tab
+   */
+  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance'): Locator {
+    const buttonNames: Record<string, string> = {
+      network: 'Save Network Configuration',
+      proxy: 'Save Proxy Configuration',
+      performance: 'Save Performance Configuration',
+      governance: 'Save Governance Configuration',
+    }
+    return this.page.getByRole('button', { name: buttonNames[configType] })
+  }
+
+  // ============================================
+  // Performance Configuration
+  // ============================================
+
+  /**
+   * Get concurrency input
+   */
+  getConcurrencyInput(): Locator {
+    return this.page.getByLabel('Concurrency')
+  }
+
+  /**
+   * Get buffer size input
+   */
+  getBufferSizeInput(): Locator {
+    return this.page.getByLabel('Buffer Size')
+  }
+
+  /**
+   * Get raw request switch
+   */
+  getRawRequestSwitch(): Locator {
+    return this.page.getByLabel('Include Raw Request').locator('..').locator('button[role="switch"]')
+  }
+
+  /**
+   * Get raw response switch
+   */
+  getRawResponseSwitch(): Locator {
+    return this.page.getByLabel('Include Raw Response').locator('..').locator('button[role="switch"]')
+  }
+
+  /**
+   * Set performance configuration
+   */
+  async setPerformanceConfig(config: {
+    concurrency?: number
+    bufferSize?: number
+    rawRequest?: boolean
+    rawResponse?: boolean
+  }): Promise<void> {
+    await this.selectConfigTab('performance')
+
+    if (config.concurrency !== undefined) {
+      const input = this.getConcurrencyInput()
+      await input.clear()
+      await input.fill(String(config.concurrency))
+    }
+
+    if (config.bufferSize !== undefined) {
+      const input = this.getBufferSizeInput()
+      await input.clear()
+      await input.fill(String(config.bufferSize))
+    }
+
+    if (config.rawRequest !== undefined) {
+      const switchEl = this.getRawRequestSwitch()
+      const isChecked = await switchEl.getAttribute('data-state') === 'checked'
+      if (isChecked !== config.rawRequest) {
+        await switchEl.click()
+      }
+    }
+
+    if (config.rawResponse !== undefined) {
+      const switchEl = this.getRawResponseSwitch()
+      const isChecked = await switchEl.getAttribute('data-state') === 'checked'
+      if (isChecked !== config.rawResponse) {
+        await switchEl.click()
+      }
+    }
+  }
+
+  // ============================================
+  // Proxy Configuration
+  // ============================================
+
+  /**
+   * Get proxy type select
+   */
+  getProxyTypeSelect(): Locator {
+    return this.page.getByLabel('Proxy Type').locator('..').locator('button[role="combobox"]')
+  }
+
+  /**
+   * Set proxy configuration
+   */
+  async setProxyConfig(config: {
+    type: 'http' | 'socks5' | 'environment' | 'none'
+    url?: string
+    username?: string
+    password?: string
+  }): Promise<void> {
+    await this.selectConfigTab('proxy')
+
+    // Select proxy type
+    const proxySelect = this.getProxyTypeSelect()
+    await proxySelect.click()
+    await this.page.getByRole('option', { name: new RegExp(config.type, 'i') }).click()
+
+    // Fill additional fields if not 'none' or 'environment'
+    if (config.type === 'http' || config.type === 'socks5') {
+      if (config.url) {
+        await this.page.getByLabel('Proxy URL').fill(config.url)
+      }
+      if (config.username) {
+        await this.page.getByLabel('Username').fill(config.username)
+      }
+      if (config.password) {
+        await this.page.getByLabel('Password').fill(config.password)
+      }
+    }
+  }
+
+  // ============================================
+  // Network Configuration
+  // ============================================
+
+  /**
+   * Set network configuration
+   */
+  async setNetworkConfig(config: {
+    baseUrl?: string
+    timeout?: number
+    maxRetries?: number
+    initialBackoff?: number
+    maxBackoff?: number
+  }): Promise<void> {
+    await this.selectConfigTab('network')
+
+    if (config.baseUrl !== undefined) {
+      const input = this.page.getByLabel(/Base URL/i)
+      await input.clear()
+      await input.fill(config.baseUrl)
+    }
+
+    if (config.timeout !== undefined) {
+      const input = this.page.getByLabel(/Timeout/i)
+      await input.clear()
+      await input.fill(String(config.timeout))
+    }
+
+    if (config.maxRetries !== undefined) {
+      const input = this.page.getByLabel(/Max Retries/i)
+      await input.clear()
+      await input.fill(String(config.maxRetries))
+    }
+
+    if (config.initialBackoff !== undefined) {
+      const input = this.page.getByLabel(/Initial Backoff/i)
+      await input.clear()
+      await input.fill(String(config.initialBackoff))
+    }
+
+    if (config.maxBackoff !== undefined) {
+      const input = this.page.getByLabel(/Max Backoff/i)
+      await input.clear()
+      await input.fill(String(config.maxBackoff))
+    }
+  }
+
+  // ============================================
+  // Governance Configuration (Budget/Rate Limits)
+  // ============================================
+
+  /**
+   * Set governance configuration (budget and rate limits)
+   */
+  async setGovernanceConfig(config: {
+    budgetLimit?: number
+    tokenLimit?: number
+    requestLimit?: number
+  }): Promise<void> {
+    await this.selectConfigTab('governance')
+
+    if (config.budgetLimit !== undefined) {
+      const input = this.page.locator('#providerBudgetMaxLimit')
+      await input.clear()
+      await input.fill(String(config.budgetLimit))
+    }
+
+    if (config.tokenLimit !== undefined) {
+      const input = this.page.locator('#providerTokenMaxLimit')
+      await input.clear()
+      await input.fill(String(config.tokenLimit))
+    }
+
+    if (config.requestLimit !== undefined) {
+      const input = this.page.locator('#providerRequestMaxLimit')
+      await input.clear()
+      await input.fill(String(config.requestLimit))
+    }
+  }
+
+  /**
+   * Check if governance tab is visible (depends on permissions)
+   */
+  async isGovernanceTabVisible(): Promise<boolean> {
+    await this.expandConfigAccordion()
+    const tab = this.page.getByRole('tab', { name: 'Governance' })
+    return await tab.isVisible().catch(() => false)
   }
 }

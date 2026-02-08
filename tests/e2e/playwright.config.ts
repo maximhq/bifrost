@@ -22,7 +22,15 @@ export default defineConfig({
 
   // Reporter to use
   reporter: [
-    ['html', { open: 'never' }],
+    [
+      'html',
+      {
+        // Write the HTML report to the repo root so `npx playwright show-report`
+        // (run from the project root) can find it at `./playwright-report`.
+        outputFolder: '../../playwright-report',
+        open: 'never',
+      },
+    ],
     ['list'],
   ],
 
@@ -80,5 +88,11 @@ export default defineConfig({
     reuseExistingServer: true,
     cwd: '../../ui',
     timeout: 120000,
+    env: {
+      NEXT_PUBLIC_DISABLE_PROFILER: '1',
+    },
   },
+
+  // Global setup: Build test plugin and start MCP servers; returns teardown to stop MCP servers
+  globalSetup: require.resolve('./global-setup'),
 })
