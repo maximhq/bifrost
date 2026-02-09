@@ -35,6 +35,14 @@ type LocalGovernanceStore struct {
 	providers    sync.Map // string -> *Provider (Provider name -> Provider with preloaded relationships)
 	routingRules sync.Map // string -> []*TableRoutingRule (key: "scope:scopeID" -> rules, scopeID="" for global)
 
+	// Last DB usages for budgets and rate limits
+	LastDBUsagesBudgetsMu            sync.RWMutex       // Last DB usages for budgets
+	LastDBUsagesRateLimitsRequestsMu sync.RWMutex       // Mutex for last DB usages for rate limits requests
+	LastDBUsagesRateLimitsTokensMu   sync.RWMutex       // Mutex for last DB usages for rate limits tokens
+	LastDBUsagesBudgets              map[string]float64 // Map for last DB usages for budgets
+	LastDBUsagesRequestsRateLimits   map[string]int64   // Map for last DB usages for rate limits requests
+	LastDBUsagesTokensRateLimits     map[string]int64   // Map for last DB usages for rate limits tokens
+
 	// CEL caching layer for routing rules
 	compiledRoutingPrograms sync.Map // string -> cel.Program (key: ruleID -> compiled CEL program)
 	routingCELEnv           *cel.Env // Singleton CEL environment reused for all compilations
@@ -143,10 +151,13 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 	}
 
 	store := &LocalGovernanceStore{
-		configStore:   configStore,
-		logger:        logger,
-		routingCELEnv: env,
-		modelMatcher:  modelMatcher,
+		configStore:                    configStore,
+		logger:                         logger,
+		routingCELEnv:                  env,
+		modelMatcher:                   modelMatcher,
+		LastDBUsagesBudgets:            make(map[string]float64),
+		LastDBUsagesRequestsRateLimits: make(map[string]int64),
+		LastDBUsagesTokensRateLimits:   make(map[string]int64),
 	}
 
 	if configStore != nil {
@@ -1162,7 +1173,9 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 			oldUsage := copiedBudget.CurrentUsage
 			copiedBudget.CurrentUsage = 0
 			copiedBudget.LastReset = now
-			copiedBudget.LastDBUsage = 0
+			gs.LastDBUsagesBudgetsMu.Lock()
+			gs.LastDBUsagesBudgets[copiedBudget.ID] = 0
+			gs.LastDBUsagesBudgetsMu.Unlock()
 
 			// Atomically replace the entry using the original key
 			gs.budgets.Store(key, &copiedBudget)
@@ -1220,7 +1233,9 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 					if now.Sub(copiedRateLimit.TokenLastReset) >= duration {
 						copiedRateLimit.TokenCurrentUsage = 0
 						copiedRateLimit.TokenLastReset = now
-						copiedRateLimit.LastDBTokenUsage = 0
+						gs.LastDBUsagesRateLimitsTokensMu.Lock()
+						gs.LastDBUsagesTokensRateLimits[copiedRateLimit.ID] = 0
+						gs.LastDBUsagesRateLimitsTokensMu.Unlock()
 					}
 				}
 			}
@@ -1230,7 +1245,9 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 					if now.Sub(copiedRateLimit.RequestLastReset) >= duration {
 						copiedRateLimit.RequestCurrentUsage = 0
 						copiedRateLimit.RequestLastReset = now
-						copiedRateLimit.LastDBRequestUsage = 0
+						gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+						gs.LastDBUsagesRequestsRateLimits[copiedRateLimit.ID] = 0
+						gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
 					}
 				}
 			}
@@ -1820,6 +1837,28 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		}
 		return true
 	})
+
+	// Load last DB usages from database entities (assign and populate inside mutexes to avoid race with ResetExpired*InMemory)
+	gs.LastDBUsagesBudgetsMu.Lock()
+	gs.LastDBUsagesBudgets = make(map[string]float64)
+	for i := range budgets {
+		budget := &budgets[i]
+		gs.LastDBUsagesBudgets[budget.ID] = budget.CurrentUsage
+	}
+	gs.LastDBUsagesBudgetsMu.Unlock()
+
+	gs.LastDBUsagesRateLimitsRequestsMu.Lock()
+	gs.LastDBUsagesRateLimitsTokensMu.Lock()
+	gs.LastDBUsagesRequestsRateLimits = make(map[string]int64)
+	gs.LastDBUsagesTokensRateLimits = make(map[string]int64)
+	for i := range rateLimits {
+		rateLimit := &rateLimits[i]
+		gs.LastDBUsagesRequestsRateLimits[rateLimit.ID] = rateLimit.RequestCurrentUsage
+		gs.LastDBUsagesTokensRateLimits[rateLimit.ID] = rateLimit.TokenCurrentUsage
+	}
+	gs.LastDBUsagesRateLimitsTokensMu.Unlock()
+	gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
+
 }
 
 // UTILITY FUNCTIONS
