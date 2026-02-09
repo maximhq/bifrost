@@ -42,6 +42,11 @@ logs:
         description: Comma-separated list of routing rule IDs to filter by
         schema:
           type: string
+      - name: routing_engine_used
+        in: query
+        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        schema:
+          type: string
       - name: start_time
         in: query
         description: Start time filter (RFC3339 format)
@@ -198,6 +203,11 @@ logs-stats:
       - name: routing_rule_ids
         in: query
         description: Comma-separated list of routing rule IDs to filter by
+        schema:
+          type: string
+      - name: routing_engine_used
+        in: query
+        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
         schema:
           type: string
       - name: start_time

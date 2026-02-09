@@ -15,4 +15,5 @@
 - fix: if governance is disabled set enforce virtual key header to false
 - feat: adds retry logic to MCP client connection establishment and tool retrieval
 - fix: force reload pricing now correctly resets the model pool and adds new models to the catalog
+- feat: add routing engine used to log entries and telemetry metrics
 - fix: tool sync interval in mcp catalog

@@ -19,6 +19,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	parentRequestID string,
 	timestamp time.Time,
 	fallbackIndex int,
+	routingEngineUsed string,
 	data *InitialLogData,
 ) error {
 	entry := &logstore.Log{
@@ -42,6 +43,9 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
+	}
+	if routingEngineUsed != "" {
+		entry.RoutingEngineUsed = &routingEngineUsed
 	}
 	return p.store.CreateIfNotExists(ctx, entry)
 }
@@ -463,6 +467,21 @@ func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 			}
 		}
 		return KeyPair{}
+	})
+}
+
+// GetAvailableRoutingEngines returns all unique routing engine types used in logs
+func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string {
+	result, err := p.store.FindAll(ctx, "routing_engine_used IS NOT NULL AND routing_engine_used != ''", "routing_engine_used")
+	if err != nil {
+		p.logger.Error("failed to get available routing engines: %w", err)
+		return []string{}
+	}
+	return p.extractUniqueStrings(result, func(log *logstore.Log) string {
+		if log.RoutingEngineUsed != nil {
+			return *log.RoutingEngineUsed
+		}
+		return ""
 	})
 }
 

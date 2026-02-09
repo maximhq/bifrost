@@ -153,7 +153,7 @@ export interface ImageMessageData {
 	prompt?: string;
 	revised_prompt?: string;
 	index?: number;
-	output_format?: string; 
+	output_format?: string;
 }
 
 export interface BifrostImageGenerationOutput {
@@ -298,6 +298,7 @@ export interface LogEntry {
 	fallback_index: number;
 	selected_key_id: string;
 	virtual_key_id?: string;
+	routing_engine_used?: string;
 	routing_rule_id?: string;
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
@@ -334,6 +335,7 @@ export interface LogFilters {
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
+	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format

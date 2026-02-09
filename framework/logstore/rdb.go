@@ -64,6 +64,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.RoutingRuleIDs) > 0 {
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
+	if len(filters.RoutingEngineUsed) > 0 {
+		baseQuery = baseQuery.Where("routing_engine_used IN ?", filters.RoutingEngineUsed)
+	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
 	}

@@ -529,6 +529,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// Update the model field in the request body
 		body["model"] = string(selectedProvider) + "/" + refinedModel
 	}
+	ctx.SetValue(schemas.BifrostContextKeyRoutingEngineUsed, "governance")
 
 	// Check if fallbacks field is already present
 	_, hasFallbacks := body["fallbacks"]
@@ -650,6 +651,7 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			// For regular requests, update in body
 			body["model"] = decision.Provider + "/" + decision.Model
 		}
+		ctx.SetValue(schemas.BifrostContextKeyRoutingEngineUsed, "routing-rule")
 
 		// Add fallbacks if present
 		if len(decision.Fallbacks) > 0 {

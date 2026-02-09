@@ -70,6 +70,7 @@ type LogMessage struct {
 	SelectedKeyName    string                             // Selected key name
 	VirtualKeyID       string                             // Virtual key ID
 	VirtualKeyName     string                             // Virtual key name
+	RoutingEngineUsed  string                             // Routing engine used ("routing-rule", "governance", "loadbalancing")
 	RoutingRuleID      string                             // Routing rule ID
 	RoutingRuleName    string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
@@ -318,11 +319,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		logMsg.RequestID = requestID
 	}
 
-	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	routingEngineUsed := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRoutingEngineUsed)
 
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
 	logMsg.FallbackIndex = fallbackIndex
+	logMsg.RoutingEngineUsed = routingEngineUsed
 
 	go func(msg *LogMessage) {
 		defer p.putLogMessage(msg) // Return to pool when done
@@ -332,6 +335,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			msg.ParentRequestID,
 			msg.Timestamp,
 			msg.FallbackIndex,
+			msg.RoutingEngineUsed,
 			msg.InitialData,
 		); err != nil {
 			p.logger.Warn("failed to insert initial log entry for request %s: %v", msg.RequestID, err)
@@ -357,6 +361,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 					Status:                      "processing",
 					Stream:                      false, // Initially false, will be updated if streaming
 					CreatedAt:                   msg.Timestamp,
+				}
+				if msg.RoutingEngineUsed != "" {
+					initialEntry.RoutingEngineUsed = &msg.RoutingEngineUsed
 				}
 				callback(p.ctx, initialEntry)
 			}
@@ -392,13 +399,13 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
-	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
 	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
 
@@ -788,8 +795,8 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Get virtual key information from context - using same method as normal LLM logging
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
 	go func() {
 		entry := &logstore.MCPToolLog{
@@ -863,8 +870,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	}
 
 	// Extract virtual key ID and name from context (set by governance plugin)
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-id"))
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKey("bf-governance-virtual-key-name"))
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
 
 	go func() {
 		updates := make(map[string]interface{})

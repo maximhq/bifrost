@@ -61,6 +61,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVirtualKeyColumnsToMCPToolLogs(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRoutingEngineUsedColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -982,6 +985,39 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding virtual key columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_engine_used_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "routing_engine_used") {
+				if err := migrator.AddColumn(&Log{}, "routing_engine_used"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_engine_used") {
+				if err := migrator.DropColumn(&Log{}, "routing_engine_used"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing engine used column: %s", err.Error())
 	}
 	return nil
 }

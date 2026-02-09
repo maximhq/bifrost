@@ -22,8 +22,8 @@ import {
 } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, Status, StatusColors } from "@/lib/constants/logs";
+import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
+import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status, StatusColors } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
 import { Clipboard, DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
 import moment from "moment";
@@ -305,7 +305,18 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							)}
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
-						{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
+							{log.routing_engine_used && (
+								<div className="flex flex-col gap-2">
+									<span className="text-sm font-medium text-muted-foreground">Routing Engine Used</span>
+									<Badge className={RoutingEngineUsedColors[log.routing_engine_used as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}>
+										<div className="flex items-center gap-2">
+											{RoutingEngineUsedIcons[log.routing_engine_used as keyof typeof RoutingEngineUsedIcons]?.()}
+											<span>{RoutingEngineUsedLabels[log.routing_engine_used as keyof typeof RoutingEngineUsedLabels] ?? log.routing_engine_used}</span>
+										</div>
+									</Badge>
+								</div>
+							)}
+							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
 
 							{/* Display audio params if present */}
 							{(log.params as any)?.audio && (

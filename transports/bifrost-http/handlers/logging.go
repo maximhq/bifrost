@@ -88,6 +88,9 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
 		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
+	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
+		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -259,6 +262,9 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
 		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
+	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
+		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -344,6 +350,9 @@ func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
 	}
 	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
 		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
+	}
+	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
+		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
 	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
@@ -458,6 +467,9 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
 		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
 	}
+	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
+		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
+	}
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
 			filters.StartTime = &t
@@ -567,6 +579,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	selectedKeys := h.logManager.GetAvailableSelectedKeys(ctx)
 	virtualKeys := h.logManager.GetAvailableVirtualKeys(ctx)
 	routingRules := h.logManager.GetAvailableRoutingRules(ctx)
+	routingEngines := h.logManager.GetAvailableRoutingEngines(ctx)
 
 	// Extract IDs for redaction lookup
 	selectedKeyIDs := make([]string, len(selectedKeys))
@@ -644,7 +657,7 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 		routingRulesArray = append(routingRulesArray, rule)
 	}
 
-	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray})
+	SendJSON(ctx, map[string]interface{}{"models": models, "selected_keys": selectedKeysArray, "virtual_keys": virtualKeysArray, "routing_rules": routingRulesArray, "routing_engines": routingEngines})
 }
 
 // deleteLogs handles DELETE /api/logs - Delete logs by their IDs

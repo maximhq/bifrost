@@ -1,3 +1,4 @@
 - feat: add base_model support to model catalog for cross-provider model matching
 - feat: add GetBaseModelName, IsSameModel, and GetDistinctBaseModelNames methods to ModelCatalog for resolving model aliases and checking model equivalence
 - feat: add database migration for base_model column on model pricing table
+- feat: add database migration for routing_engine_used column on logs table

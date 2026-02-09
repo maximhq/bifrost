@@ -4,7 +4,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { RequestTypeLabels, RequestTypes, Statuses } from "@/lib/constants/logs";
+import { RequestTypeLabels, RequestTypes, RoutingEngineUsedLabels, Statuses } from "@/lib/constants/logs";
 import { getErrorMessage, useGetAvailableFilterDataQuery, useGetProvidersQuery, useRecalculateLogCostsMutation } from "@/lib/store";
 import type { LogFilters as LogFiltersType } from "@/lib/types/logs";
 import { cn } from "@/lib/utils";
@@ -120,6 +120,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	const availableSelectedKeys = filterData?.selected_keys || [];
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const availableRoutingRules = filterData?.routing_rules || [];
+	const availableRoutingEngines = filterData?.routing_engines || [];
 
 	// Create mappings from name to ID for keys and virtual keys
 	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
@@ -182,6 +183,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			"Selected Keys": "selected_key_ids",
 			"Virtual Keys": "virtual_key_ids",
 			"Routing Rules": "routing_rule_ids",
+			"Routing Engines": "routing_engine_used",
 		};
 
 		const filterKey = filterKeyMap[category];
@@ -216,6 +218,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 			"Selected Keys": "selected_key_ids",
 			"Virtual Keys": "virtual_key_ids",
 			"Routing Rules": "routing_rule_ids",
+			"Routing Engines": "routing_engine_used",
 		};
 
 		const filterKey = filterKeyMap[category];
@@ -256,6 +259,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 		Models: filterDataLoading ? ["Loading models..."] : availableModels,
 		"Selected Keys": filterDataLoading ? ["Loading selected keys..."] : availableSelectedKeys.map((key) => key.name),
 		"Virtual Keys": filterDataLoading ? ["Loading virtual keys..."] : availableVirtualKeys.map((key) => key.name),
+		"Routing Engines": filterDataLoading ? ["Loading routing engines..."] : availableRoutingEngines,
 		"Routing Rules": filterDataLoading ? ["Loading routing rules..."] : availableRoutingRules.map((rule) => rule.name),
 	} as const;
 
@@ -355,7 +359,8 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 												(category === "Models" && filterDataLoading) ||
 												(category === "Selected Keys" && filterDataLoading) ||
 												(category === "Virtual Keys" && filterDataLoading) ||
-												(category === "Routing Rules" && filterDataLoading);
+												(category === "Routing Rules" && filterDataLoading) ||
+												(category === "Routing Engines" && filterDataLoading);
 											return (
 												<CommandItem
 													key={value}
@@ -375,7 +380,8 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 														)}
 													</div>
 													<span className={cn("lowercase", isLoading && "text-muted-foreground")}>
-														{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] : value}
+														{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] :
+															category === "Routing Engines" ? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value) : value}
 													</span>
 												</CommandItem>
 											);

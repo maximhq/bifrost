@@ -100,6 +100,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		"method",
 		"virtual_key_id",
 		"virtual_key_name",
+		"routing_engine_used",
 		"routing_rule_id",
 		"routing_rule_name",
 		"selected_key_id",
@@ -318,39 +319,41 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		return result, bifrostErr, nil
 	}
 
-	virtualKeyID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	virtualKeyName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
-	routingRuleID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
-	routingRuleName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	virtualKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName)
+	routingRuleID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID)
+	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 
-	selectedKeyID := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
-	selectedKeyName := getStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
+	selectedKeyName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName)
 
-	numberOfRetries := getIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
-	fallbackIndex := getIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
+	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
+	routingEngineUsed := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRoutingEngineUsed)
 
-	teamID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
-	teamName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
-	customerID := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
-	customerName := getStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
+	teamID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamID)
+	teamName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamName)
+	customerID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerID)
+	customerName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerName)
 
 	// Extract ALL context values BEFORE spawning the goroutine.
 	labelValues := map[string]string{
-		"provider":          string(provider),
-		"model":             model,
-		"method":            string(requestType),
-		"virtual_key_id":    virtualKeyID,
-		"virtual_key_name":  virtualKeyName,
-		"routing_rule_id":   routingRuleID,
-		"routing_rule_name": routingRuleName,
-		"selected_key_id":   selectedKeyID,
-		"selected_key_name": selectedKeyName,
-		"number_of_retries": strconv.Itoa(numberOfRetries),
-		"fallback_index":    strconv.Itoa(fallbackIndex),
-		"team_id":           teamID,
-		"team_name":         teamName,
-		"customer_id":       customerID,
-		"customer_name":     customerName,
+		"provider":            string(provider),
+		"model":               model,
+		"method":              string(requestType),
+		"virtual_key_id":      virtualKeyID,
+		"virtual_key_name":    virtualKeyName,
+		"routing_engine_used": routingEngineUsed,
+		"routing_rule_id":     routingRuleID,
+		"routing_rule_name":   routingRuleName,
+		"selected_key_id":     selectedKeyID,
+		"selected_key_name":   selectedKeyName,
+		"number_of_retries":   strconv.Itoa(numberOfRetries),
+		"fallback_index":      strconv.Itoa(fallbackIndex),
+		"team_id":             teamID,
+		"team_name":           teamName,
+		"customer_id":         customerID,
+		"customer_name":       customerName,
 	}
 
 	// Get all custom prometheus labels from context BEFORE the goroutine

@@ -234,4 +234,16 @@ export const RequestTypeColors = {
 	file_content: "bg-blue-100 text-blue-800",
 } as const;
 
+export const RoutingEngineUsedLabels = {
+	"routing-rule": "Routing Rule",
+	governance: "Governance",
+	loadbalancing: "Loadbalancing",
+} as const;
+
+export const RoutingEngineUsedColors = {
+	"routing-rule": "bg-blue-100 text-blue-800",
+	governance: "bg-green-100 text-green-800",
+	loadbalancing: "bg-red-100 text-red-800",
+} as const;
+
 export type Status = (typeof Statuses)[number];

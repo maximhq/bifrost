@@ -54,6 +54,9 @@ type LogManager interface {
 	// GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
 	GetAvailableRoutingRules(ctx context.Context) []KeyPair
 
+	// GetAvailableRoutingEngines returns all unique routing engine types from logs
+	GetAvailableRoutingEngines(ctx context.Context) []string
+
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
 
@@ -152,6 +155,11 @@ func (p *PluginLogManager) GetAvailableVirtualKeys(ctx context.Context) []KeyPai
 // GetAvailableRoutingRules returns all unique routing rule ID-Name pairs from logs
 func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 	return p.plugin.GetAvailableRoutingRules(ctx)
+}
+
+// GetAvailableRoutingEngines returns all unique routing engine types from logs
+func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
+	return p.plugin.GetAvailableRoutingEngines(ctx)
 }
 
 // DeleteLog deletes a log from the log store
@@ -319,26 +327,6 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
-}
-
-// getStringFromContext safely extracts a string value from context
-func getStringFromContext(ctx context.Context, key any) string {
-	if value := ctx.Value(key); value != nil {
-		if str, ok := value.(string); ok {
-			return str
-		}
-	}
-	return ""
-}
-
-// getIntFromContext safely extracts an int value from context
-func getIntFromContext(ctx context.Context, key any) int {
-	if value := ctx.Value(key); value != nil {
-		if intVal, ok := value.(int); ok {
-			return intVal
-		}
-	}
-	return 0
 }
 
 // convertToProcessedStreamResponse converts a StreamAccumulatorResult to ProcessedStreamResponse
