@@ -33,6 +33,11 @@ func (r *OpenAITextCompletionRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAITextCompletionRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.TextCompletionParameters.ExtraParams = params
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAITextCompletionRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
@@ -54,6 +59,11 @@ func (r *OpenAIEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.EmbeddingParameters.ExtraParams = params
+}
+
 // OpenAIChatRequest represents an OpenAI chat completion request
 type OpenAIChatRequest struct {
 	Model    string          `json:"model"`
@@ -73,6 +83,11 @@ type OpenAIChatRequest struct {
 
 func (r *OpenAIChatRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+func (r *OpenAIChatRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ChatParameters.ExtraParams = params
 }
 
 type OpenAIMessage struct {
@@ -535,6 +550,11 @@ func (r *OpenAIResponsesRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIResponsesRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ResponsesParameters.ExtraParams = params
+}
+
 type OpenAIResponsesRequest struct {
 	Model string                      `json:"model"`
 	Input OpenAIResponsesRequestInput `json:"input"`
@@ -641,6 +661,11 @@ func (r *OpenAISpeechRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAISpeechRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.SpeechParameters.ExtraParams = params
+}
+
 // OpenAITranscriptionRequest represents an OpenAI transcription request
 // Note: This is used for JSON body parsing, actual form parsing is handled in the router
 type OpenAITranscriptionRequest struct {
@@ -700,6 +725,11 @@ func (r *OpenAIImageGenerationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageGenerationRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageGenerationParameters.ExtraParams = params
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (r *OpenAIImageGenerationRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
@@ -743,6 +773,11 @@ func (r *OpenAIImageEditRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageEditParameters.ExtraParams = params
+}
+
 // OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.
 type OpenAIImageVariationRequest struct {
 	Model string                       `json:"model"`
@@ -756,6 +791,11 @@ type OpenAIImageVariationRequest struct {
 
 func (r *OpenAIImageVariationRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
+}
+
+func (r *OpenAIImageVariationRequest) SetExtraParams(params map[string]interface{}) {
+	r.ExtraParams = params
+	r.ImageVariationParameters.ExtraParams = params
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
