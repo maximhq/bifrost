@@ -1947,7 +1947,7 @@ func TestStore_CheckModelBudget_CrossProviderModelMatch(t *testing.T) {
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
@@ -1967,7 +1967,7 @@ func TestStore_CheckModelBudget_CrossProviderModelMatch_WithinLimit(t *testing.T
 	budget := buildBudget("budget1", 100.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
@@ -1985,7 +1985,7 @@ func TestStore_CheckModelRateLimit_CrossProviderModelMatch(t *testing.T) {
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Token limit at max
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
@@ -2005,7 +2005,7 @@ func TestStore_UpdateModelBudgetUsage_CrossProviderModelMatch(t *testing.T) {
 	budget := buildBudget("budget1", 100.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
@@ -2033,7 +2033,7 @@ func TestStore_UpdateModelRateLimitUsage_CrossProviderModelMatch(t *testing.T) {
 	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000, 0) // Low token limit
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
@@ -2059,7 +2059,7 @@ func TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly(t *testing.T) {
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
 
-	mc := newMockModelMatcher(t)
+	mc := newTestModelCatalog(t)
 	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},

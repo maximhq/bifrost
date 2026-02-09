@@ -325,46 +325,13 @@ func fetchDatasheetBaseIndex() {
 	datasheetBaseIndex = index
 }
 
-// mockModelMatcher implements ModelMatcher for testing.
-// It fetches the default datasheet to build a base model index,
-// matching the production ModelCatalog.GetBaseModelName behavior:
-// 1. Direct lookup in base model index
-// 2. Strip provider prefix and retry lookup
-// 3. Fallback to algorithmic date/version stripping
-type mockModelMatcher struct {
-	baseModelIndex map[string]string
-}
-
-func (m *mockModelMatcher) GetBaseModelName(model string) string {
-	// Step 1: Direct lookup in base model index
-	if base, ok := m.baseModelIndex[model]; ok {
-		return base
-	}
-
-	// Step 2: Strip provider prefix and try again
-	_, baseName := schemas.ParseModelString(model, "")
-	if baseName != model {
-		if base, ok := m.baseModelIndex[baseName]; ok {
-			return base
-		}
-	}
-
-	// Step 3: Fallback to algorithmic date/version stripping
-	return schemas.BaseModelName(baseName)
-}
-
-func (m *mockModelMatcher) IsSameModel(model1, model2 string) bool {
-	if model1 == model2 {
-		return true
-	}
-	return m.GetBaseModelName(model1) == m.GetBaseModelName(model2)
-}
-
-func newMockModelMatcher(t *testing.T) ModelMatcher {
+// newTestModelCatalog creates a test ModelCatalog using the fetched datasheet base model index.
+// This provides proper nil-pointer semantics (unlike an interface wrapper).
+func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
 	t.Helper()
 	datasheetOnce.Do(fetchDatasheetBaseIndex)
 	if datasheetErr != nil {
-		t.Skipf("skipping: failed to fetch datasheet for mock model matcher: %v", datasheetErr)
+		t.Skipf("skipping: failed to fetch datasheet for test model catalog: %v", datasheetErr)
 	}
-	return &mockModelMatcher{baseModelIndex: datasheetBaseIndex}
+	return modelcatalog.NewTestCatalog(datasheetBaseIndex)
 }

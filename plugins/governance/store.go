@@ -13,15 +13,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"gorm.io/gorm"
 )
-
-// ModelMatcher provides cross-provider model name matching.
-// This is satisfied by *modelcatalog.ModelCatalog.
-type ModelMatcher interface {
-	GetBaseModelName(model string) string
-	IsSameModel(model1, model2 string) bool
-}
 
 // LocalGovernanceStore provides in-memory cache for governance data with fast, non-blocking access
 type LocalGovernanceStore struct {
@@ -50,8 +44,8 @@ type LocalGovernanceStore struct {
 	// Config store for refresh operations
 	configStore configstore.ConfigStore
 
-	// Model matcher for cross-provider model matching (optional)
-	modelMatcher ModelMatcher
+	// Model catalog for cross-provider model matching (optional)
+	modelCatalog *modelcatalog.ModelCatalog
 
 	// Logger
 	logger schemas.Logger
@@ -141,9 +135,9 @@ type GovernanceStore interface {
 }
 
 // NewLocalGovernanceStore creates a new in-memory governance store
-// The modelMatcher parameter is optional (can be nil) and enables cross-provider model matching
+// The modelCatalog parameter is optional (can be nil) and enables cross-provider model matching
 // for governance lookups (e.g., "openai/gpt-4o" matching config for "gpt-4o").
-func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelMatcher ModelMatcher) (*LocalGovernanceStore, error) {
+func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configStore configstore.ConfigStore, governanceConfig *configstore.GovernanceConfig, modelCatalog *modelcatalog.ModelCatalog) (*LocalGovernanceStore, error) {
 	// Create singleton CEL environment once for all routing rule compilations
 	env, err := createCELEnvironment()
 	if err != nil {
@@ -154,7 +148,7 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 		configStore:                    configStore,
 		logger:                         logger,
 		routingCELEnv:                  env,
-		modelMatcher:                   modelMatcher,
+		modelCatalog:                   modelCatalog,
 		LastDBUsagesBudgets:            make(map[string]float64),
 		LastDBUsagesRequestsRateLimits: make(map[string]int64),
 		LastDBUsagesTokensRateLimits:   make(map[string]int64),
@@ -599,8 +593,8 @@ func (gs *LocalGovernanceStore) CheckProviderRateLimit(ctx context.Context, requ
 // Returns the matching config and the display name for error messages.
 func (gs *LocalGovernanceStore) findModelOnlyConfig(model string) (*configstoreTables.TableModelConfig, string) {
 	// If modelMatcher is available, try normalized base model name first (cross-provider matching)
-	if gs.modelMatcher != nil {
-		baseName := gs.modelMatcher.GetBaseModelName(model)
+	if gs.modelCatalog != nil {
+		baseName := gs.modelCatalog.GetBaseModelName(model)
 		if baseName != model {
 			if value, exists := gs.modelConfigs.Load(baseName); exists && value != nil {
 				if mc, ok := value.(*configstoreTables.TableModelConfig); ok && mc != nil {
@@ -1787,8 +1781,8 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 		} else {
 			// Global config (applies to all providers) - store under normalized model name
 			key := mc.ModelName
-			if gs.modelMatcher != nil {
-				key = gs.modelMatcher.GetBaseModelName(mc.ModelName)
+			if gs.modelCatalog != nil {
+				key = gs.modelCatalog.GetBaseModelName(mc.ModelName)
 			}
 			gs.modelConfigs.Store(key, mc)
 		}
@@ -2406,8 +2400,8 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(mc *configstoreTables.
 		gs.modelConfigs.Store(key, &clone)
 	} else {
 		key := clone.ModelName
-		if gs.modelMatcher != nil {
-			key = gs.modelMatcher.GetBaseModelName(clone.ModelName)
+		if gs.modelCatalog != nil {
+			key = gs.modelCatalog.GetBaseModelName(clone.ModelName)
 		}
 		gs.modelConfigs.Store(key, &clone)
 	}

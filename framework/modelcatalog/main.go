@@ -682,3 +682,17 @@ func (mc *ModelCatalog) Cleanup() error {
 
 	return nil
 }
+
+// NewTestCatalog creates a minimal ModelCatalog for testing purposes.
+// It does not start background sync workers or connect to external services.
+func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
+	if baseModelIndex == nil {
+		baseModelIndex = make(map[string]string)
+	}
+	return &ModelCatalog{
+		modelPool:      make(map[schemas.ModelProvider][]string),
+		baseModelIndex: baseModelIndex,
+		pricingData:    make(map[string]configstoreTables.TableModelPricing),
+		done:           make(chan struct{}),
+	}
+}
