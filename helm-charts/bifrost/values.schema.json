@@ -843,8 +843,7 @@
                 },
                 "required": [
                   "id",
-                  "name",
-                  "value"
+                  "name"
                 ]
               }
             },
@@ -1833,7 +1832,6 @@
       },
       "required": [
         "name",
-        "value",
         "weight"
       ]
     },
