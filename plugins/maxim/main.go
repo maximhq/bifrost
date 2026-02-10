@@ -681,6 +681,183 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 	return result, bifrostErr, nil
 }
 
+// PreMCPHook handles MCP (Model Context Protocol) tool call requests.
+// It creates a tool span in the trace (similar to how PreLLMHook creates a generation).
+// Tool call information is extracted and prepared for logging in PostMCPHook.
+//
+// The hook:
+// - Creates a new trace for the tool call
+// - Creates a tool span within the trace
+// - Stores trace and tool IDs in context
+// - Stores tool name and server information
+//
+// Parameters:
+//   - ctx: Pointer to the schemas.BifrostContext
+//   - req: The MCP request containing tool call information
+//
+// Returns:
+//   - *schemas.BifrostMCPRequest: The original request, unmodified
+//   - *schemas.MCPPluginShortCircuit: Short-circuit response (nil for normal flow)
+//   - error: Any error that occurred during processing
+func (plugin *Plugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	// Get effective log repo ID (header > default > skip)
+	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
+	if effectiveLogRepoID == "" {
+		// No logging destination configured, skip logging
+		return req, nil, nil
+	}
+
+	// Extract tool name from request
+	toolName := req.GetToolName()
+	if toolName == "" {
+		toolName = "unknown_tool"
+	}
+
+	// Get or create logger
+	logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+	if err != nil {
+		return req, nil, nil
+	}
+
+	// Create a new trace for this tool call
+	traceID := uuid.New().String()
+	traceName := fmt.Sprintf("mcp_tool_call_%s", toolName)
+	traceConfig := logging.TraceConfig{
+		Id:   traceID,
+		Name: maxim.StrPtr(traceName),
+	}
+
+	trace := logger.Trace(&traceConfig)
+	trace.SetInput(toolName)
+
+	// Create a tool span/generation in the trace
+	toolCallID := uuid.New().String()
+	toolCallConfig := logging.GenerationConfig{
+		Id:       toolCallID,
+		Model:    "mcp_tool",
+		Provider: "mcp",
+		Name:     &toolName,
+	}
+
+	logger.AddGenerationToTrace(traceID, &toolCallConfig)
+
+	// Store trace and tool call IDs in context for PostMCPHook
+	if ctx != nil {
+		ctx.SetValue(TraceIDKey, traceID)
+		ctx.SetValue(GenerationIDKey, toolCallID)
+		// Store tool name and server for later use
+		ctx.SetValue(schemas.BifrostContextKey("mcp_tool_name"), toolName)
+	}
+
+	return req, nil, nil
+}
+
+// PostMCPHook handles MCP tool call responses.
+// It completes the tool span by adding the tool's output and results.
+// This follows the same pattern as PostLLMHook for consistency.
+//
+// The hook:
+// - Retrieves trace and tool IDs from context
+// - Adds tool output to the tool span
+// - Adds error information if present
+// - Ends the tool span and trace
+// - Flushes logs
+//
+// Parameters:
+//   - ctx: Pointer to the schemas.BifrostContext containing trace/tool IDs
+//   - resp: The MCP response from the tool call
+//   - bifrostErr: Any error that occurred during the tool call
+//
+// Returns:
+//   - *schemas.BifrostMCPResponse: The original response, unmodified
+//   - *schemas.BifrostError: The original error, unmodified
+//   - error: Any error that occurred during logging
+func (plugin *Plugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+	// Get effective log repo ID
+	effectiveLogRepoID := plugin.getEffectiveLogRepoID(ctx)
+	if effectiveLogRepoID == "" {
+		return resp, bifrostErr, nil
+	}
+
+	// Capture context values BEFORE goroutine to avoid race conditions
+	toolCallID, hasToolCallID := ctx.Value(GenerationIDKey).(string)
+	traceID, hasTraceID := ctx.Value(TraceIDKey).(string)
+	toolName, _ := ctx.Value(schemas.BifrostContextKey("mcp_tool_name")).(string)
+
+	// If no tool call was created in PreMCPHook, skip logging
+	if !hasToolCallID || !hasTraceID {
+		return resp, bifrostErr, nil
+	}
+
+	// Log asynchronously (non-blocking)
+	go func() {
+		logger, err := plugin.getOrCreateLogger(effectiveLogRepoID)
+		if err != nil {
+			return
+		}
+
+		// Add tool output to the tool span
+		if bifrostErr != nil {
+			// Log error
+			message := ""
+			code := ""
+			errorType := ""
+			if bifrostErr.Error != nil {
+				message = bifrostErr.Error.Message
+				if bifrostErr.Error.Code != nil {
+					code = *bifrostErr.Error.Code
+				}
+				if bifrostErr.Error.Type != nil {
+					errorType = *bifrostErr.Error.Type
+				}
+			}
+			toolErr := logging.GenerationError{
+				Message: message,
+				Code:    &code,
+				Type:    &errorType,
+			}
+			logger.SetGenerationError(toolCallID, &toolErr)
+		} else if resp != nil {
+			// Add tool output to the tool call span
+			var toolOutput string
+			if resp.ChatMessage != nil && resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
+				toolOutput = *resp.ChatMessage.Content.ContentStr
+			} else if resp.ResponsesMessage != nil && resp.ResponsesMessage.Content != nil && resp.ResponsesMessage.Content.ContentStr != nil {
+				toolOutput = *resp.ResponsesMessage.Content.ContentStr
+			}
+
+			// Create a simple response to log as output
+			// We can add the output as tags or as a response
+			if toolOutput != "" {
+				logger.AddTagToGeneration(toolCallID, "output", toolOutput)
+			}
+		}
+
+		// Add tool metadata tags
+		logger.AddTagToGeneration(toolCallID, "tool_name", toolName)
+		if resp != nil {
+			if resp.ExtraFields.ClientName != "" {
+				logger.AddTagToGeneration(toolCallID, "server", resp.ExtraFields.ClientName)
+				logger.AddTagToTrace(traceID, "server", resp.ExtraFields.ClientName)
+			}
+			if resp.ExtraFields.Latency > 0 {
+				logger.AddTagToGeneration(toolCallID, "latency_ms", fmt.Sprintf("%d", resp.ExtraFields.Latency))
+			}
+		}
+
+		logger.AddTagToTrace(traceID, "tool_name", toolName)
+
+		// End the tool span and trace
+		logger.EndGeneration(toolCallID)
+		logger.EndTrace(traceID)
+
+		// Flush logs
+		logger.Flush()
+	}()
+
+	return resp, bifrostErr, nil
+}
+
 func (plugin *Plugin) Cleanup() error {
 	// Flush all loggers
 	plugin.loggerMutex.RLock()
