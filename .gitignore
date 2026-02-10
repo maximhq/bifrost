@@ -37,6 +37,9 @@ target/
 go.work
 go.work.sum
 
+# Generated schema copy (created by go generate)
+transports/schema/config.schema.json
+
 # Sqlite DBs
 *.db
 *.db-shm

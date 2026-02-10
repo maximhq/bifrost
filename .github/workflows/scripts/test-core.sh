@@ -17,10 +17,14 @@ for mcp_dir in examples/mcps/*/; do
     if [ -f "$mcp_dir/go.mod" ]; then
       echo "  Building $mcp_name (Go)..."
       mkdir -p "$mcp_dir/bin"
-      cd "$mcp_dir" && go build -o "bin/$mcp_name" . && cd - > /dev/null
+      pushd "$mcp_dir" > /dev/null
+      GOWORK=off go build -o "bin/$mcp_name" .
+      popd > /dev/null
     elif [ -f "$mcp_dir/package.json" ]; then
       echo "  Building $mcp_name (TypeScript)..."
-      cd "$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null
+      pushd "$mcp_dir" > /dev/null
+      npm install --silent && npm run build
+      popd > /dev/null
     fi
   fi
 done

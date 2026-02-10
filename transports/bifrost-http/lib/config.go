@@ -412,6 +412,10 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		fmt.Println("")
 		logger.Warn("config file %s does not include \"$schema\":\"https://www.getbifrost.ai/schema\". Use our official schema file to avoid unexpected behavior.", absConfigFilePath)
 	}
+	// Validate config file against the schema - fatal on validation errors
+	if err := ValidateConfigSchema(data); err != nil {
+		logger.Error("config validation failed: %v. You can find the official schema at https://www.getbifrost.ai/schema. Some features may not work as expected unless you fix the config file.", err)
+	}
 	// If config file exists, we will use it to bootstrap config tables
 	logger.Info("loading configuration from: %s", absConfigFilePath)
 	return loadConfigFromFile(ctx, config, data)

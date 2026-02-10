@@ -34,6 +34,9 @@ fi
 # Repository root (3 levels up from .github/workflows/scripts)
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
+# Setup Go workspace for CI (go.work is gitignored, must be regenerated)
+source "$SCRIPT_DIR/setup-go-workspace.sh"
+
 # Configuration
 DB_TYPE="${1:-all}"
 

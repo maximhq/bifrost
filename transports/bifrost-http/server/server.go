@@ -107,7 +107,7 @@ type BifrostHTTPServer struct {
 	LogsCleaner    *logstore.LogsCleaner
 
 	Client *bifrost.Bifrost
-	Config *lib.Config
+	Config *lib.Config	
 
 	Server *fasthttp.Server
 	Router *router.Router

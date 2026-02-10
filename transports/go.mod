@@ -20,6 +20,7 @@ require (
 	github.com/maximhq/bifrost/plugins/semanticcache v1.4.17
 	github.com/maximhq/bifrost/plugins/telemetry v1.4.19
 	github.com/prometheus/client_golang v1.23.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
 	gorm.io/driver/sqlite v1.6.0

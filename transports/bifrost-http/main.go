@@ -69,6 +69,7 @@ import (
 //go:embed all:ui
 var uiContent embed.FS
 
+
 var Version string
 
 var logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
