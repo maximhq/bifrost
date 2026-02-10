@@ -705,3 +705,289 @@ false
 {{- end }}
 {{- $config | toJson }}
 {{- end }}
+
+{{/*
+Validation template - validates required fields from config.schema.json
+Call this template at the beginning of deployment/stateful templates
+*/}}
+{{- define "bifrost.validate" -}}
+
+{{/* Validate semantic cache plugin when enabled */}}
+{{- if .Values.bifrost.plugins.semanticCache.enabled }}
+{{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required when semantic cache is enabled. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface" }}
+{{- end }}
+{{- if not .Values.bifrost.plugins.semanticCache.config.keys }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required when semantic cache is enabled. Provide at least one API key for the embedding provider." }}
+{{- end }}
+{{- if not .Values.bifrost.plugins.semanticCache.config.dimension }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.dimension is required when semantic cache is enabled. This is the embedding dimension (e.g., 1536 for OpenAI text-embedding-3-small)." }}
+{{- end }}
+{{- end }}
+
+{{/* Validate OTEL plugin when enabled */}}
+{{- if .Values.bifrost.plugins.otel.enabled }}
+{{- if not .Values.bifrost.plugins.otel.config.collector_url }}
+{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
+{{- end }}
+{{- if not .Values.bifrost.plugins.otel.config.trace_type }}
+{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported value: otel" }}
+{{- end }}
+{{- if not .Values.bifrost.plugins.otel.config.protocol }}
+{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- end }}
+{{- end }}
+
+{{/* Validate Maxim plugin when enabled */}}
+{{- if .Values.bifrost.plugins.maxim.enabled }}
+{{- if and (not .Values.bifrost.plugins.maxim.config.api_key) (not .Values.bifrost.plugins.maxim.secretRef.name) }}
+{{- fail "ERROR: bifrost.plugins.maxim.config.api_key or bifrost.plugins.maxim.secretRef.name is required when Maxim plugin is enabled." }}
+{{- end }}
+{{- end }}
+
+{{/* Validate SAML/Okta config when enabled */}}
+{{- if and .Values.bifrost.saml .Values.bifrost.saml.enabled }}
+{{- if eq .Values.bifrost.saml.provider "okta" }}
+{{- if not .Values.bifrost.saml.config.issuerUrl }}
+{{- fail "ERROR: bifrost.saml.config.issuerUrl is required when SAML provider is Okta. Example: https://your-domain.okta.com/oauth2/default" }}
+{{- end }}
+{{- if not .Values.bifrost.saml.config.clientId }}
+{{- fail "ERROR: bifrost.saml.config.clientId is required when SAML provider is Okta." }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.bifrost.saml.provider "entra" }}
+{{- if not .Values.bifrost.saml.config.tenantId }}
+{{- fail "ERROR: bifrost.saml.config.tenantId is required when SAML provider is Entra (Azure AD)." }}
+{{- end }}
+{{- if not .Values.bifrost.saml.config.clientId }}
+{{- fail "ERROR: bifrost.saml.config.clientId is required when SAML provider is Entra (Azure AD)." }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate cluster config when enabled */}}
+{{- if and .Values.bifrost.cluster .Values.bifrost.cluster.enabled }}
+{{- if not .Values.bifrost.cluster.gossip }}
+{{- fail "ERROR: bifrost.cluster.gossip is required when cluster mode is enabled." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.gossip.port }}
+{{- fail "ERROR: bifrost.cluster.gossip.port is required when cluster mode is enabled." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.gossip.config }}
+{{- fail "ERROR: bifrost.cluster.gossip.config is required when cluster mode is enabled." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.gossip.config.timeoutSeconds }}
+{{- fail "ERROR: bifrost.cluster.gossip.config.timeoutSeconds is required when cluster mode is enabled." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.gossip.config.successThreshold }}
+{{- fail "ERROR: bifrost.cluster.gossip.config.successThreshold is required when cluster mode is enabled." }}
+{{- end }}
+{{- if not .Values.bifrost.cluster.gossip.config.failureThreshold }}
+{{- fail "ERROR: bifrost.cluster.gossip.config.failureThreshold is required when cluster mode is enabled." }}
+{{- end }}
+{{- if and .Values.bifrost.cluster.discovery .Values.bifrost.cluster.discovery.enabled }}
+{{- if not .Values.bifrost.cluster.discovery.type }}
+{{- fail "ERROR: bifrost.cluster.discovery.type is required when cluster discovery is enabled. Supported types: kubernetes, dns, udp, consul, etcd, mdns" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate external Weaviate when vector store type is weaviate */}}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "weaviate") }}
+{{- if .Values.vectorStore.weaviate.external.enabled }}
+{{- if not .Values.vectorStore.weaviate.external.scheme }}
+{{- fail "ERROR: vectorStore.weaviate.external.scheme is required when using external Weaviate. Values: http or https" }}
+{{- end }}
+{{- if not .Values.vectorStore.weaviate.external.host }}
+{{- fail "ERROR: vectorStore.weaviate.external.host is required when using external Weaviate." }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate external Redis when vector store type is redis */}}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "redis") }}
+{{- if .Values.vectorStore.redis.external.enabled }}
+{{- if not .Values.vectorStore.redis.external.host }}
+{{- fail "ERROR: vectorStore.redis.external.host is required when using external Redis." }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate external Qdrant when vector store type is qdrant */}}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "qdrant") }}
+{{- if .Values.vectorStore.qdrant.external.enabled }}
+{{- if not .Values.vectorStore.qdrant.external.host }}
+{{- fail "ERROR: vectorStore.qdrant.external.host is required when using external Qdrant." }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate external PostgreSQL when enabled */}}
+{{- if .Values.postgresql.external.enabled }}
+{{- if not .Values.postgresql.external.host }}
+{{- fail "ERROR: postgresql.external.host is required when using external PostgreSQL." }}
+{{- end }}
+{{- if not .Values.postgresql.external.database }}
+{{- fail "ERROR: postgresql.external.database is required when using external PostgreSQL." }}
+{{- end }}
+{{- if not .Values.postgresql.external.user }}
+{{- fail "ERROR: postgresql.external.user is required when using external PostgreSQL." }}
+{{- end }}
+{{- if not .Values.postgresql.external.sslMode }}
+{{- fail "ERROR: postgresql.external.sslMode is required when using external PostgreSQL. Values: disable, allow, prefer, require, verify-ca, verify-full" }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance budgets */}}
+{{- if .Values.bifrost.governance.budgets }}
+{{- range $idx, $budget := .Values.bifrost.governance.budgets }}
+{{- if not $budget.id }}
+{{- fail (printf "ERROR: bifrost.governance.budgets[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $budget.max_limit }}
+{{- fail (printf "ERROR: bifrost.governance.budgets[%d].max_limit is required for budget '%s'." $idx $budget.id) }}
+{{- end }}
+{{- if not $budget.reset_duration }}
+{{- fail (printf "ERROR: bifrost.governance.budgets[%d].reset_duration is required for budget '%s'. Example values: 30s, 5m, 1h, 1d, 1w, 1M, 1Y" $idx $budget.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance rate limits */}}
+{{- if .Values.bifrost.governance.rateLimits }}
+{{- range $idx, $rl := .Values.bifrost.governance.rateLimits }}
+{{- if not $rl.id }}
+{{- fail (printf "ERROR: bifrost.governance.rateLimits[%d].id is required." $idx) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance customers */}}
+{{- if .Values.bifrost.governance.customers }}
+{{- range $idx, $customer := .Values.bifrost.governance.customers }}
+{{- if not $customer.id }}
+{{- fail (printf "ERROR: bifrost.governance.customers[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $customer.name }}
+{{- fail (printf "ERROR: bifrost.governance.customers[%d].name is required for customer '%s'." $idx $customer.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance teams */}}
+{{- if .Values.bifrost.governance.teams }}
+{{- range $idx, $team := .Values.bifrost.governance.teams }}
+{{- if not $team.id }}
+{{- fail (printf "ERROR: bifrost.governance.teams[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $team.name }}
+{{- fail (printf "ERROR: bifrost.governance.teams[%d].name is required for team '%s'." $idx $team.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate governance virtual keys */}}
+{{- if .Values.bifrost.governance.virtualKeys }}
+{{- range $idx, $vk := .Values.bifrost.governance.virtualKeys }}
+{{- if not $vk.id }}
+{{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $vk.name }}
+{{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].name is required for virtual key '%s'." $idx $vk.id) }}
+{{- end }}
+{{- if not $vk.value }}
+{{- fail (printf "ERROR: bifrost.governance.virtualKeys[%d].value is required for virtual key '%s'." $idx $vk.id) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate guardrails rules */}}
+{{- if .Values.bifrost.guardrails.rules }}
+{{- range $idx, $rule := .Values.bifrost.guardrails.rules }}
+{{- if not $rule.id }}
+{{- fail (printf "ERROR: bifrost.guardrails.rules[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $rule.name }}
+{{- fail (printf "ERROR: bifrost.guardrails.rules[%d].name is required for rule id '%v'." $idx $rule.id) }}
+{{- end }}
+{{- if not (hasKey $rule "enabled") }}
+{{- fail (printf "ERROR: bifrost.guardrails.rules[%d].enabled is required for rule '%s'." $idx $rule.name) }}
+{{- end }}
+{{- if not $rule.cel_expression }}
+{{- fail (printf "ERROR: bifrost.guardrails.rules[%d].cel_expression is required for rule '%s'." $idx $rule.name) }}
+{{- end }}
+{{- if not $rule.apply_to }}
+{{- fail (printf "ERROR: bifrost.guardrails.rules[%d].apply_to is required for rule '%s'. Values: input, output, both" $idx $rule.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate guardrails providers */}}
+{{- if .Values.bifrost.guardrails.providers }}
+{{- range $idx, $provider := .Values.bifrost.guardrails.providers }}
+{{- if not $provider.id }}
+{{- fail (printf "ERROR: bifrost.guardrails.providers[%d].id is required." $idx) }}
+{{- end }}
+{{- if not $provider.provider_name }}
+{{- fail (printf "ERROR: bifrost.guardrails.providers[%d].provider_name is required for provider id '%v'." $idx $provider.id) }}
+{{- end }}
+{{- if not $provider.policy_name }}
+{{- fail (printf "ERROR: bifrost.guardrails.providers[%d].policy_name is required for provider '%s'." $idx $provider.provider_name) }}
+{{- end }}
+{{- if not (hasKey $provider "enabled") }}
+{{- fail (printf "ERROR: bifrost.guardrails.providers[%d].enabled is required for provider '%s'." $idx $provider.provider_name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate MCP client configs when MCP is enabled */}}
+{{- if .Values.bifrost.mcp.enabled }}
+{{- if .Values.bifrost.mcp.clientConfigs }}
+{{- range $idx, $client := .Values.bifrost.mcp.clientConfigs }}
+{{- if not $client.name }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].name is required." $idx) }}
+{{- end }}
+{{- if not $client.connectionType }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http" $idx $client.name) }}
+{{- end }}
+{{- if eq $client.connectionType "stdio" }}
+{{- if not $client.stdioConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].stdioConfig is required when connectionType is 'stdio' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not $client.stdioConfig.command }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].stdioConfig.command is required for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- end }}
+{{- if eq $client.connectionType "websocket" }}
+{{- if not $client.websocketConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].websocketConfig is required when connectionType is 'websocket' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not $client.websocketConfig.url }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].websocketConfig.url is required for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- end }}
+{{- if eq $client.connectionType "http" }}
+{{- if not $client.httpConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig is required when connectionType is 'http' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not $client.httpConfig.url }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/* Validate custom plugins */}}
+{{- if .Values.bifrost.plugins.custom }}
+{{- range $idx, $plugin := .Values.bifrost.plugins.custom }}
+{{- if not $plugin.name }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].name is required." $idx) }}
+{{- end }}
+{{- if not (hasKey $plugin "enabled") }}
+{{- fail (printf "ERROR: bifrost.plugins.custom[%d].enabled is required for plugin '%s'." $idx $plugin.name) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{- end -}}

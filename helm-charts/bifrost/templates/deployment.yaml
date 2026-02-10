@@ -5,6 +5,7 @@
 {{- if not .Values.image.tag }}
 {{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/maximhq/bifrost/tags" }}
 {{- end }}
+{{- include "bifrost.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
