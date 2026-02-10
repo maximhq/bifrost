@@ -847,6 +847,60 @@
                 ]
               }
             },
+            "routingRules": {
+              "type": "array",
+              "description": "Routing rules for dynamic provider/model selection based on CEL expressions",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "cel_expression": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": ["global", "team", "customer", "virtual_key"],
+                    "default": "global"
+                  },
+                  "scope_id": {
+                    "type": ["string", "null"]
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "default": 0
+                  },
+                  "query": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "required": ["id", "name"]
+              }
+            },
             "authConfig": {
               "$ref": "#/$defs/authConfig"
             }
