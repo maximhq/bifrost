@@ -80,6 +80,64 @@ export interface BifrostTranscribe {
 	segments?: TranscriptionSegment[];
 }
 
+// Model and related types for list models response
+export interface Model {
+	id: string;
+	canonical_slug?: string;
+	name?: string;
+	deployment?: string;
+	created?: number;
+	context_length?: number;
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	architecture?: Architecture;
+	pricing?: Pricing;
+	top_provider?: TopProvider;
+	per_request_limits?: PerRequestLimits;
+	supported_parameters?: string[];
+	default_parameters?: DefaultParameters;
+	hugging_face_id?: string;
+	description?: string;
+	owned_by?: string;
+	supported_methods?: string[];
+}
+
+export interface Architecture {
+	modality?: string;
+	tokenizer?: string;
+	instruct_type?: string;
+	input_modalities?: string[];
+	output_modalities?: string[];
+}
+
+export interface Pricing {
+	prompt?: string;
+	completion?: string;
+	request?: string;
+	image?: string;
+	web_search?: string;
+	internal_reasoning?: string;
+	input_cache_read?: string;
+	input_cache_write?: string;
+}
+
+export interface TopProvider {
+	is_moderated?: boolean;
+	context_length?: number;
+	max_completion_tokens?: number;
+}
+
+export interface PerRequestLimits {
+	prompt_tokens?: number;
+	completion_tokens?: number;
+}
+
+export interface DefaultParameters {
+	temperature?: number;
+	top_p?: number;
+	frequency_penalty?: number;
+}
+
 // Message content types
 export type MessageContentType =
 	| "text"
@@ -315,6 +373,7 @@ export interface LogEntry {
 	image_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
+	list_models_output?: Model[];
 	tools?: Tool[];
 	tool_calls?: ToolCall[];
 	latency?: number;

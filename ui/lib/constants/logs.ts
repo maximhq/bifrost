@@ -30,6 +30,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
+	"list_models",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -122,6 +123,7 @@ export const RequestTypeLabels = {
 	"audio.transcription.chunk": "Transcription Stream",
 
 	// Request Types
+	list_models: "List Models",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -185,6 +187,7 @@ export const RequestTypeColors = {
 	completion: "bg-yellow-100 text-yellow-800",
 
 	// Request Types
+	list_models: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 

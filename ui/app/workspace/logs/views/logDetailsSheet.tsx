@@ -573,6 +573,23 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
 				)}
 
+				{log.list_models_output &&
+				(
+					<div className="w-full rounded-sm border">
+						<div className="border-b px-6 py-2 text-sm font-medium">List Models Output ({log.list_models_output.length})</div>
+						<CodeEditor
+							className="z-0 w-full"
+							shouldAdjustInitialHeight={true}
+							maxHeight={250}
+							wrap={true}
+							code={JSON.stringify(log.list_models_output, null, 2)}
+							lang="json"
+							readonly={true}
+							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+						/>
+					</div>
+				)}
+
 				{/* Show conversation history for chat/text completions */}
 				{log.input_history && log.input_history.length > 1 && (
 					<>

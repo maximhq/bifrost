@@ -188,6 +188,7 @@ const (
 	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
 	BifrostContextKeyRoutingEngineUsed                   BifrostContextKey = "bifrost-routing-engine-used"                      // string (set by bifrost - DO NOT SET THIS MANUALLY) - either "routing-rule", "governance" or "loadbalancing"
+	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 )
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
@@ -251,6 +252,8 @@ type BifrostRequest struct {
 // GetRequestFields returns the provider, model, and fallbacks from the request.
 func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model string, fallbacks []Fallback) {
 	switch {
+	case br.ListModelsRequest != nil:
+		return br.ListModelsRequest.Provider, "", nil
 	case br.TextCompletionRequest != nil:
 		return br.TextCompletionRequest.Provider, br.TextCompletionRequest.Model, br.TextCompletionRequest.Fallbacks
 	case br.ChatRequest != nil:
@@ -345,6 +348,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 
 func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
+	case br.ListModelsRequest != nil:
+		br.ListModelsRequest.Provider = provider
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Provider = provider
 	case br.ChatRequest != nil:
@@ -489,6 +494,7 @@ func (r *BifrostMCPRequest) GetToolArguments() interface{} {
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
+	ListModelsResponse            *BifrostListModelsResponse
 	TextCompletionResponse        *BifrostTextCompletionResponse
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
@@ -524,6 +530,8 @@ type BifrostResponse struct {
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
+	case r.ListModelsResponse != nil:
+		return &r.ListModelsResponse.ExtraFields
 	case r.TextCompletionResponse != nil:
 		return &r.TextCompletionResponse.ExtraFields
 	case r.ChatResponse != nil:

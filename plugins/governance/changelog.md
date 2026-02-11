@@ -1,0 +1,6 @@
+- feat: cross-provider model matching - budget/rate-limit configs for `gpt-4o` now apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: expand GovernanceData with ModelConfigs and Providers for in-memory reads
+- feat: added routing rules for dynamic routing of requests based on predefined rules
+- feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
+- feat: plugin now filters `/v1/models` responses based on virtual key configurations
+- chore: upgrade core to 1.4.1 and framework to 1.2.19

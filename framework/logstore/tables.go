@@ -107,6 +107,7 @@ type Log struct {
 	SpeechOutput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
 	TranscriptionOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
 	ImageGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput      string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
 	CacheDebug            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
 	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
@@ -143,7 +144,7 @@ type Log struct {
 	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
-
+	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
@@ -277,6 +278,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.ListModelsOutputParsed != nil {
+		if data, err := json.Marshal(l.ListModelsOutputParsed); err != nil {
+			return err
+		} else {
+			l.ListModelsOutput = string(data)
+		}
+	}
+
 	if l.ParamsParsed != nil {
 		if data, err := json.Marshal(l.ParamsParsed); err != nil {
 			return err
@@ -404,6 +413,13 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ErrorDetailsParsed = nil
+		}
+	}
+
+	if l.ListModelsOutput != "" {
+		if err := json.Unmarshal([]byte(l.ListModelsOutput), &l.ListModelsOutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.ListModelsOutputParsed = nil
 		}
 	}
 

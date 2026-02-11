@@ -39,7 +39,8 @@ const (
 type UpdateLogData struct {
 	Status                string
 	TokenUsage            *schemas.BifrostLLMUsage
-	Cost                  *float64 // Cost in dollars from pricing plugin
+	Cost                  *float64        // Cost in dollars from pricing plugin
+	ListModelsOutput      []schemas.Model // For list models requests
 	ChatOutput            *schemas.ChatMessage
 	ResponsesOutput       []schemas.ResponsesMessage
 	EmbeddingOutput       []schemas.EmbeddingData
@@ -605,6 +606,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 					if extraFields.RawResponse != nil {
 						updateData.RawResponse = extraFields.RawResponse
+					}
+					if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
+						updateData.ListModelsOutput = result.ListModelsResponse.Data
 					}
 					if result.TextCompletionResponse != nil {
 						if len(result.TextCompletionResponse.Choices) > 0 {

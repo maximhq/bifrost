@@ -36,6 +36,7 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.Status = ""
 	data.TokenUsage = nil
 	data.ChatOutput = nil
+	data.ListModelsOutput = nil
 	data.ResponsesOutput = nil
 	data.ErrorDetails = nil
 	data.SpeechOutput = nil

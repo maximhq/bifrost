@@ -487,6 +487,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	}
 
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
 	defer bfCtx.Cancel()
 
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -719,7 +720,9 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			modelData, listModelsErr := s.Client.ListModelsRequest(s.Ctx, &schemas.BifrostListModelsRequest{
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
 			})
 			if listModelsErr != nil {
@@ -734,6 +737,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			bfCtx.Cancel()
 		}
 	}
 	return nil
@@ -1144,7 +1148,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			modelData, listModelsErr := s.Client.ListModelsRequest(s.Ctx, &schemas.BifrostListModelsRequest{
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+
+			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
 			})
 			if modelData != nil && len(modelData.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
@@ -1165,6 +1172,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			bfCtx.Cancel()
 		}
 	}
 

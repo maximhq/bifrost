@@ -361,7 +361,7 @@ func (provider *ReplicateProvider) ListModels(ctx *schemas.BifrostContext, keys 
 	startTime := time.Now()
 	providerName := provider.GetProviderKey()
 
-	deploymentsResponse, err := providerUtils.HandleMultipleListModelsRequests(
+	response, err := providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
 		request,
@@ -371,14 +371,7 @@ func (provider *ReplicateProvider) ListModels(ctx *schemas.BifrostContext, keys 
 		return nil, err
 	}
 
-	// Apply pagination to the combined results
-	response := &schemas.BifrostListModelsResponse{
-		Data: deploymentsResponse.Data,
-	}
-
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
-
-	// Set metadata
+	// Update metadata with total latency
 	latency := time.Since(startTime)
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.RequestType = schemas.ListModelsRequest

@@ -53,3 +53,45 @@ func getWeight(w *float64) float64 {
 	}
 	return *w
 }
+
+// filterModelsForVirtualKey filters models based on virtual key's provider configs
+// Returns only models that are allowed by the virtual key's ProviderConfigs
+func (p *GovernancePlugin) filterModelsForVirtualKey(
+	models []schemas.Model,
+	virtualKeyValue string,
+) []schemas.Model {
+	// Get virtual key configuration
+	vk, exists := p.store.GetVirtualKey(virtualKeyValue)
+	if !exists {
+		p.logger.Warn("[Governance] Virtual key not found for list models filtering: %s", virtualKeyValue)
+		return []schemas.Model{} // VK not found, return empty list
+	}
+
+	// Empty ProviderConfigs means all models are allowed
+	if len(vk.ProviderConfigs) == 0 {
+		return models
+	}
+
+	// Filter models based on ProviderConfigs
+	filteredModels := make([]schemas.Model, 0, len(models))
+	for _, model := range models {
+		provider, modelName := schemas.ParseModelString(model.ID, "")
+
+		// Check if this provider/model combination is allowed
+		isAllowed := false
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == string(provider) {
+				if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, pc.AllowedModels) {
+					isAllowed = true
+					break
+				}
+			}
+		}
+
+		if isAllowed {
+			filteredModels = append(filteredModels, model)
+		}
+	}
+
+	return filteredModels
+}

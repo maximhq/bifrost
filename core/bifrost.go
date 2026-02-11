@@ -369,80 +369,17 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
-	// Preparing request
-	request := &schemas.BifrostListModelsRequest{
-		Provider:    req.Provider,
-		PageSize:    req.PageSize,
-		PageToken:   req.PageToken,
-		ExtraParams: req.ExtraParams,
-	}
-	// Getting provider from the memory
-	provider := bifrost.getProviderByKey(req.Provider)
-	if provider == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "provider not found for list models request",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ListModelsRequest,
-				Provider:    req.Provider,
-			},
-		}
-	}
 
-	// Determine the base provider type for key requirement checks
-	baseProvider := req.Provider
-	config, err := bifrost.account.GetConfigForProvider(req.Provider)
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ListModelsRequest
+	bifrostReq.ListModelsRequest = req
+
+	resp, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
-		bifrostErr := newBifrostErrorFromMsg(fmt.Sprintf("failed to get config for provider %s: %v", req.Provider, err.Error()))
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType: schemas.ListModelsRequest,
-			Provider:    req.Provider,
-		}
-		return nil, bifrostErr
-	}
-	if config == nil {
-		bifrostErr := newBifrostErrorFromMsg(fmt.Sprintf("config is nil for provider %s", req.Provider))
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			RequestType: schemas.ListModelsRequest,
-			Provider:    req.Provider,
-		}
-		return nil, bifrostErr
-	}
-	if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
-		baseProvider = config.CustomProviderConfig.BaseProviderType
+		return nil, err
 	}
 
-	var keys []schemas.Key
-	if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
-		keys, err = bifrost.getAllSupportedKeys(ctx, req.Provider, baseProvider)
-		if err != nil {
-			bifrostErr := newBifrostError(err)
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				RequestType: schemas.ListModelsRequest,
-				Provider:    req.Provider,
-			}
-			return nil, bifrostErr
-		}
-	}
-
-	// Store tracer in context BEFORE calling requestHandler, so streaming goroutines
-	// have access to it for completing deferred spans when the stream ends.
-	// The streaming goroutine captures the context when it starts, so these values
-	// must be set before requestHandler() is called.
-	ctx.SetValue(schemas.BifrostContextKeyTracer, bifrost.getTracer())
-
-	response, bifrostErr := executeRequestWithRetries(ctx, config, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return provider.ListModels(ctx, keys, request)
-	}, schemas.ListModelsRequest, req.Provider, "", nil, bifrost.logger)
-	if bifrostErr != nil {
-		bifrostErr.ExtraFields.RequestType = schemas.ListModelsRequest
-		bifrostErr.ExtraFields.Provider = req.Provider
-		// Return response even on error if it contains KeyStatuses for tracking
-		return response, bifrostErr
-	}
-	return response, nil
+	return resp.ListModelsResponse, nil
 }
 
 // ListAllModels lists all models from all configured providers.
@@ -4252,20 +4189,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		key := schemas.Key{}
 		var keys []schemas.Key
 		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
-			// Determine if this is a multi-key batch/file/container operation
-			// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
-			isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
-			isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
-			isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
-
-			if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp {
-				var modelPtr *string
-				if model != "" {
-					modelPtr = &model
-				}
-				keys, err = bifrost.getKeysForBatchAndFileOps(req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
+			// ListModels needs all enabled/supported keys so providers can aggregate
+			// and report per-key statuses (KeyStatuses).
+			if req.RequestType == schemas.ListModelsRequest {
+				keys, err = bifrost.getAllSupportedKeys(req.Context, provider.GetProviderKey(), baseProvider)
 				if err != nil {
-					bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
+					bifrost.logger.Debug("error getting supported keys for list models: %v", err)
 					req.Err <- schemas.BifrostError{
 						IsBifrostError: false,
 						Error: &schemas.ErrorField{
@@ -4281,39 +4210,69 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					continue
 				}
 			} else {
-				// Use the custom provider name for actual key selection, but pass base provider type for key validation
-				// Start span for key selection
-				keyTracer := bifrost.getTracer()
-				keySpanCtx, keyHandle := keyTracer.StartSpan(req.Context, "key.selection", schemas.SpanKindInternal)
-				keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, string(provider.GetProviderKey()))
-				keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
+				// Determine if this is a multi-key batch/file/container operation
+				// BatchCreate, FileUpload, ContainerCreate, ContainerFileCreate use single key; other batch/file/container ops use multiple keys
+				isMultiKeyBatchOp := isBatchRequestType(req.RequestType) && req.RequestType != schemas.BatchCreateRequest
+				isMultiKeyFileOp := isFileRequestType(req.RequestType) && req.RequestType != schemas.FileUploadRequest
+				isMultiKeyContainerOp := isContainerRequestType(req.RequestType) && req.RequestType != schemas.ContainerCreateRequest && req.RequestType != schemas.ContainerFileCreateRequest
 
-				key, err = bifrost.selectKeyFromProviderForModel(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
-				if err != nil {
-					keyTracer.SetAttribute(keyHandle, "error", err.Error())
-					keyTracer.EndSpan(keyHandle, schemas.SpanStatusError, err.Error())
-					bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
-					req.Err <- schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: model,
-							RequestType:    req.RequestType,
-						},
+				if isMultiKeyBatchOp || isMultiKeyFileOp || isMultiKeyContainerOp {
+					var modelPtr *string
+					if model != "" {
+						modelPtr = &model
 					}
-					continue
+					keys, err = bifrost.getKeysForBatchAndFileOps(req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
+					if err != nil {
+						bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
+						req.Err <- schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: err.Error(),
+								Error:   err,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       provider.GetProviderKey(),
+								ModelRequested: model,
+								RequestType:    req.RequestType,
+							},
+						}
+						continue
+					}
+				} else {
+					// Use the custom provider name for actual key selection, but pass base provider type for key validation
+					// Start span for key selection
+					keyTracer := bifrost.getTracer()
+					keySpanCtx, keyHandle := keyTracer.StartSpan(req.Context, "key.selection", schemas.SpanKindInternal)
+					keyTracer.SetAttribute(keyHandle, schemas.AttrProviderName, string(provider.GetProviderKey()))
+					keyTracer.SetAttribute(keyHandle, schemas.AttrRequestModel, model)
+
+					key, err = bifrost.selectKeyFromProviderForModel(req.Context, req.RequestType, provider.GetProviderKey(), model, baseProvider)
+					if err != nil {
+						keyTracer.SetAttribute(keyHandle, "error", err.Error())
+						keyTracer.EndSpan(keyHandle, schemas.SpanStatusError, err.Error())
+						bifrost.logger.Debug("error selecting key for model %s: %v", model, err)
+						req.Err <- schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: err.Error(),
+								Error:   err,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       provider.GetProviderKey(),
+								ModelRequested: model,
+								RequestType:    req.RequestType,
+							},
+						}
+						continue
+					}
+					keyTracer.SetAttribute(keyHandle, "key.id", key.ID)
+					keyTracer.SetAttribute(keyHandle, "key.name", key.Name)
+					keyTracer.EndSpan(keyHandle, schemas.SpanStatusOk, "")
+					// Update context with span ID for subsequent operations
+					req.Context.SetValue(schemas.BifrostContextKeySpanID, keySpanCtx.Value(schemas.BifrostContextKeySpanID))
+					req.Context.SetValue(schemas.BifrostContextKeySelectedKeyID, key.ID)
+					req.Context.SetValue(schemas.BifrostContextKeySelectedKeyName, key.Name)
 				}
-				keyTracer.SetAttribute(keyHandle, "key.id", key.ID)
-				keyTracer.SetAttribute(keyHandle, "key.name", key.Name)
-				keyTracer.EndSpan(keyHandle, schemas.SpanStatusOk, "")
-				// Update context with span ID for subsequent operations
-				req.Context.SetValue(schemas.BifrostContextKeySpanID, keySpanCtx.Value(schemas.BifrostContextKeySpanID))
-				req.Context.SetValue(schemas.BifrostContextKeySelectedKeyID, key.ID)
-				req.Context.SetValue(schemas.BifrostContextKeySelectedKeyName, key.Name)
 			}
 		}
 		// Create plugin pipeline for streaming requests outside retry loop to prevent leaks
@@ -4413,6 +4372,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
+	case schemas.ListModelsRequest:
+		listModelsResponse, bifrostError := provider.ListModels(req.Context, keys, req.BifrostRequest.ListModelsRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ListModelsResponse = listModelsResponse
 	case schemas.TextCompletionRequest:
 		textCompletionResponse, bifrostError := provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest)
 		if bifrostError != nil {

@@ -109,6 +109,15 @@ func (p *LoggerPlugin) updateLogEntry(
 			}
 		}
 
+		if data.ListModelsOutput != nil {
+			tempEntry.ListModelsOutputParsed = data.ListModelsOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize list models output: %v", err)
+			} else {
+				updates["list_models_output"] = tempEntry.ListModelsOutput
+			}
+		}
+
 		if data.EmbeddingOutput != nil {
 			tempEntry.EmbeddingOutputParsed = data.EmbeddingOutput
 			if err := tempEntry.SerializeFields(); err != nil {
