@@ -638,18 +638,24 @@ false
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.otel.config | default dict }}
-{{- if $inputConfig.service_name }}
-{{- $_ := set $otelConfig "service_name" $inputConfig.service_name }}
+{{- $profiles := list }}
+{{- range $inputConfig.profiles | default list }}
+{{- $profile := dict }}
+{{- if .name }}{{- $_ := set $profile "name" .name }}{{- end }}
+{{- if hasKey . "enabled" }}{{- $_ := set $profile "enabled" .enabled }}{{- end }}
+{{- if .service_name }}{{- $_ := set $profile "service_name" .service_name }}{{- end }}
+{{- if .collector_url }}{{- $_ := set $profile "collector_url" .collector_url }}{{- end }}
+{{- if .trace_type }}{{- $_ := set $profile "trace_type" .trace_type }}{{- end }}
+{{- if .protocol }}{{- $_ := set $profile "protocol" .protocol }}{{- end }}
+{{- if .headers }}{{- $_ := set $profile "headers" .headers }}{{- end }}
+{{- if .tls_ca_cert }}{{- $_ := set $profile "tls_ca_cert" .tls_ca_cert }}{{- end }}
+{{- if hasKey . "insecure" }}{{- $_ := set $profile "insecure" .insecure }}{{- end }}
+{{- if hasKey . "metrics_enabled" }}{{- $_ := set $profile "metrics_enabled" .metrics_enabled }}{{- end }}
+{{- if .metrics_endpoint }}{{- $_ := set $profile "metrics_endpoint" .metrics_endpoint }}{{- end }}
+{{- if .metrics_push_interval }}{{- $_ := set $profile "metrics_push_interval" .metrics_push_interval }}{{- end }}
+{{- $profiles = append $profiles $profile }}
 {{- end }}
-{{- if $inputConfig.collector_url }}
-{{- $_ := set $otelConfig "collector_url" $inputConfig.collector_url }}
-{{- end }}
-{{- if $inputConfig.trace_type }}
-{{- $_ := set $otelConfig "trace_type" $inputConfig.trace_type }}
-{{- end }}
-{{- if $inputConfig.protocol }}
-{{- $_ := set $otelConfig "protocol" $inputConfig.protocol }}
-{{- end }}
+{{- $_ := set $otelConfig "profiles" $profiles }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.datadog.enabled }}
@@ -727,14 +733,19 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate OTEL plugin when enabled */}}
 {{- if .Values.bifrost.plugins.otel.enabled }}
-{{- if not .Values.bifrost.plugins.otel.config.collector_url }}
-{{- fail "ERROR: bifrost.plugins.otel.config.collector_url is required when OTEL plugin is enabled. Provide the URL of your OpenTelemetry collector." }}
+{{- if not .Values.bifrost.plugins.otel.config.profiles }}
+{{- fail "ERROR: bifrost.plugins.otel.config.profiles is required when OTEL plugin is enabled. Provide at least one profile." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.trace_type }}
-{{- fail "ERROR: bifrost.plugins.otel.config.trace_type is required when OTEL plugin is enabled. Supported value: otel" }}
+{{- range $i, $profile := .Values.bifrost.plugins.otel.config.profiles }}
+{{- if not $profile.collector_url }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].collector_url is required. Provide the URL of your OpenTelemetry collector." $i) }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.otel.config.protocol }}
-{{- fail "ERROR: bifrost.plugins.otel.config.protocol is required when OTEL plugin is enabled. Supported values: http, grpc" }}
+{{- if not $profile.trace_type }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].trace_type is required. Supported value: otel" $i) }}
+{{- end }}
+{{- if not $profile.protocol }}
+{{- fail (printf "ERROR: bifrost.plugins.otel.config.profiles[%d].protocol is required. Supported values: http, grpc" $i) }}
+{{- end }}
 {{- end }}
 {{- end }}
 

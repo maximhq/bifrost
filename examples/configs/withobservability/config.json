@@ -27,10 +27,16 @@
         "enabled": true,
         "name": "otel",
         "config": {
-          "service_name": "bifrost",
-          "collector_url": "http://localhost:4318/v1/traces",
-          "trace_type": "otel",
-          "protocol": "http"
+          "profiles": [
+            {
+              "name": "default",
+              "enabled": true,
+              "service_name": "bifrost",
+              "collector_url": "http://localhost:4318/v1/traces",
+              "trace_type": "otel",
+              "protocol": "http"
+            }
+          ]
         }
       }
     ]

@@ -95,7 +95,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return semanticcache.Init(ctx, semanticConfig, logger, bifrostConfig.VectorStore)
 
 	case otel.PluginName:
-		otelConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
+		otelConfig, err := marshalOtelConfig(pluginConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal otel plugin config: %w", err)
 		}
@@ -111,6 +111,34 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
+}
+
+// marshalOtelConfig handles both legacy (flat) and new (profiles) OTel config formats.
+// Legacy format: { "service_name": "...", "collector_url": "...", ... }
+// New format: { "profiles": [{ "name": "...", "service_name": "...", ... }] }
+func marshalOtelConfig(pluginConfig any) (*otel.Config, error) {
+	// First try to marshal as the new profiles-based Config
+	newConfig, err := MarshalPluginConfig[otel.Config](pluginConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	// If profiles are present, use the new format directly
+	if len(newConfig.Profiles) > 0 {
+		return newConfig, nil
+	}
+
+	// Otherwise, treat as legacy flat format: marshal into a single ProfileConfig
+	profileConfig, err := MarshalPluginConfig[otel.ProfileConfig](pluginConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse legacy otel config: %w", err)
+	}
+	if profileConfig.Name == "" {
+		profileConfig.Name = "default"
+	}
+	return &otel.Config{
+		Profiles: []otel.ProfileConfig{*profileConfig},
+	}, nil
 }
 
 // loadCustomPlugin loads a plugin from a shared object file

@@ -527,9 +527,11 @@ export const performanceFormSchema = z.object({
 	send_back_raw_response: z.boolean(),
 });
 
-// OTEL Configuration Schema
-export const otelConfigSchema = z
+// OTEL Profile Configuration Schema (single profile)
+export const otelProfileConfigSchema = z
 	.object({
+		name: z.string().optional(),
+		enabled: z.boolean().default(true),
 		service_name: z.string().optional(),
 		collector_url: z.string().min(1, "Collector address is required"),
 		trace_type: z
@@ -632,10 +634,14 @@ export const otelConfigSchema = z
 		}
 	});
 
-// OTEL form schema for the OtelFormFragment
+// OTEL Configuration Schema (wraps multiple profiles)
+export const otelConfigSchema = z.object({
+	profiles: z.array(otelProfileConfigSchema),
+});
+
+// OTEL form schema for the OtelFormFragment (single profile editing)
 export const otelFormSchema = z.object({
-	enabled: z.boolean().default(false),
-	otel_config: otelConfigSchema,
+	otel_profile: otelProfileConfigSchema,
 });
 
 // Maxim Configuration Schema
@@ -873,6 +879,7 @@ export type NetworkFormConfigSchema = z.infer<typeof networkFormConfigSchema>;
 export type ProxyFormConfigSchema = z.infer<typeof proxyFormConfigSchema>;
 export type NetworkAndProxyFormSchema = z.infer<typeof networkAndProxyFormSchema>;
 export type ProxyOnlyFormSchema = z.infer<typeof proxyOnlyFormSchema>;
+export type OtelProfileConfigSchema = z.infer<typeof otelProfileConfigSchema>;
 export type OtelConfigSchema = z.infer<typeof otelConfigSchema>;
 export type OtelFormSchema = z.infer<typeof otelFormSchema>;
 export type MaximConfigSchema = z.infer<typeof maximConfigSchema>;
