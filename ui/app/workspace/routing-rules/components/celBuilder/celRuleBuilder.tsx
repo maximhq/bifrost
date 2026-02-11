@@ -8,25 +8,26 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Check, Copy } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
-import "react-querybuilder/dist/query-builder.css";
 import { getRoutingFields } from "@/lib/config/celFieldsRouting";
 import { celOperatorsRouting } from "@/lib/config/celOperatorsRouting";
 import { convertRuleGroupToCEL } from "@/lib/utils/celConverterRouting";
+import { Check, Copy, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Field, QueryBuilder, RuleGroupType } from "react-querybuilder";
+import "react-querybuilder/dist/query-builder.css";
 import { ActionButton } from "./actionButton";
 import { CombinatorSelector } from "./combinatorSelector";
 import { FieldSelector } from "./fieldSelector";
 import { OperatorSelector } from "./operatorSelector";
-import { ValueEditor } from "./valueEditor";
 import { QueryBuilderWrapper } from "./queryBuilderWrapper";
+import { ValueEditor } from "./valueEditor";
 
 interface CELRuleBuilderProps {
 	onChange?: (celExpression: string, query: RuleGroupType) => void;
 	initialQuery?: RuleGroupType;
 	providers?: string[];
 	models?: string[];
+	allowCustomModels?: boolean;
 	isLoading?: boolean;
 }
 
@@ -41,6 +42,7 @@ export function CELRuleBuilder({
 	providers = [],
 	models = [],
 	isLoading = false,
+	allowCustomModels = false,
 }: CELRuleBuilderProps) {
 	const [query, setQuery] = useState<RuleGroupType>(initialQuery || defaultQuery);
 	const [celExpression, setCelExpression] = useState("");
@@ -92,6 +94,7 @@ export function CELRuleBuilder({
 							fields={fields}
 							query={query}
 							onQueryChange={setQuery}
+							context={{ allowCustomModels }}
 							controlClassnames={{ queryBuilder: "queryBuilder-branches" }}
 							operators={celOperatorsRouting.map((op) => ({
 								name: op.name,
@@ -119,13 +122,7 @@ export function CELRuleBuilder({
 			<div className="space-y-2">
 				<div className="flex items-center justify-between">
 					<Label>CEL Expression Preview</Label>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={handleCopy}
-						disabled={!celExpression}
-						className="gap-2"
-					>
+					<Button variant="outline" size="sm" onClick={handleCopy} disabled={!celExpression} className="gap-2">
 						{copied ? (
 							<>
 								<Check className="h-4 w-4" />
@@ -139,12 +136,7 @@ export function CELRuleBuilder({
 						)}
 					</Button>
 				</div>
-				<Textarea
-					value={celExpression || "No rules defined yet"}
-					readOnly
-					className="font-mono text-sm"
-					rows={4}
-				/>
+				<Textarea value={celExpression || "No rules defined yet"} readOnly className="font-mono text-sm" rows={4} />
 			</div>
 		</div>
 	);

@@ -19,6 +19,8 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
+	/** Allow users to enter custom values not in the predefined list */
+	allowCustomValuesForSingleSelect?: boolean;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -53,8 +55,10 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
+		allowCustomValuesForSingleSelect = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
+	const allowCreate = allowCustomValuesForSingleSelect || !isSingleSelect;
 
 	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
 	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
@@ -218,9 +222,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			onChange={handleChange}
 			reload={loadOptions}
 			debounce={300}
-			isCreatable={!isSingleSelect}
-			dynamicOptionCreation={!isSingleSelect}
-			createOptionText={isSingleSelect ? undefined : "Press enter to add new model"}
+			isCreatable={allowCreate}
+			dynamicOptionCreation={allowCreate}
+			createOptionText={allowCreate ? "Press enter to add new model" : undefined}
 			defaultOptions={defaultOptions.length > 0 ? defaultOptions : [] as Option<ModelOption>[]}
 			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
 			placeholder={placeholder}

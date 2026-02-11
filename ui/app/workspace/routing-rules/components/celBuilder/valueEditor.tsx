@@ -17,7 +17,10 @@ import { RenderProviderIcon, ProviderIconType } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
 
-export function ValueEditor({ value, handleOnChange, operator, fieldData, type }: ValueEditorProps) {
+export function ValueEditor({ value, handleOnChange, operator, fieldData, type, context }: ValueEditorProps) {
+	// Extract allowCustomModels from context
+	const allowCustomModels = context?.allowCustomModels ?? false;
+
 	// Compute all conditions upfront before any early returns
 	const isArrayOperator = operator === "in" || operator === "notIn";
 	const isRegexOperator = operator === "matches";
@@ -97,6 +100,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 					onChange={handleMultiModelChange}
 					placeholder="Select models..."
 					loadModelsOnEmptyProvider
+					allowCustomValuesForSingleSelect
 					className="!min-h-9 w-[360px]"
 				/>
 			);
@@ -110,6 +114,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type }
 				placeholder="Select a model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
+				allowCustomValuesForSingleSelect
 				className="w-[360px] border-input"
 			/>
 		);

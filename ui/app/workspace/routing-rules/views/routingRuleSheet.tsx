@@ -394,6 +394,7 @@ export function RoutingRuleSheet({
 							onChange={handleQueryChange}
 							providers={availableProviders}
 							models={availableModels}
+							allowCustomModels={true}
 						/>
 					</div>
 
