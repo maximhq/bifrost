@@ -386,7 +386,65 @@
           "type": "object",
           "properties": {
             "telemetry": {
-              "$ref": "#/$defs/pluginBase"
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "push_gateway": {
+                      "type": "object",
+                      "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Whether to enable pushing metrics to the Push Gateway",
+                          "default": false
+                        },
+                        "push_gateway_url": {
+                          "type": "string",
+                          "description": "URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091)",
+                          "format": "uri"
+                        },
+                        "job_name": {
+                          "type": "string",
+                          "description": "Job label for pushed metrics",
+                          "default": "bifrost"
+                        },
+                        "instance_id": {
+                          "type": "string",
+                          "description": "Instance identifier for grouping metrics. If not set, hostname is used automatically."
+                        },
+                        "push_interval": {
+                          "type": "integer",
+                          "description": "How often to push metrics in seconds",
+                          "default": 15,
+                          "minimum": 1,
+                          "maximum": 300
+                        },
+                        "basic_auth": {
+                          "type": "object",
+                          "description": "Basic authentication credentials for the Push Gateway",
+                          "properties": {
+                            "username": {
+                              "type": "string",
+                              "description": "Username for basic authentication"
+                            },
+                            "password": {
+                              "type": "string",
+                              "description": "Password for basic authentication"
+                            }
+                          },
+                          "required": ["username", "password"]
+                        }
+                      },
+                      "required": ["push_gateway_url"]
+                    }
+                  }
+                }
+              }
             },
             "logging": {
               "$ref": "#/$defs/pluginBase"
