@@ -262,10 +262,13 @@ bifrost:
     otel:
       enabled: false
       config:
-        service_name: "bifrost"
-        collector_url: ""
-        trace_type: "otel"
-        protocol: "grpc"
+        profiles:
+          - name: "default"
+            enabled: true
+            service_name: "bifrost"
+            collector_url: ""
+            trace_type: "otel"
+            protocol: "grpc"
 
     datadog:
       enabled: false

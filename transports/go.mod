@@ -17,6 +17,7 @@ require (
 	github.com/maximhq/bifrost/plugins/logging v1.4.19
 	github.com/maximhq/bifrost/plugins/maxim v1.5.18
 	github.com/maximhq/bifrost/plugins/otel v1.1.19
+	github.com/maximhq/bifrost/plugins/prometheus v0.0.0-00010101000000-000000000000
 	github.com/maximhq/bifrost/plugins/semanticcache v1.4.18
 	github.com/maximhq/bifrost/plugins/telemetry v1.4.20
 	github.com/prometheus/client_golang v1.23.2

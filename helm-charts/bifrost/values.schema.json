@@ -626,24 +626,61 @@
                 "config": {
                   "type": "object",
                   "properties": {
-                    "service_name": {
-                      "type": "string"
-                    },
-                    "collector_url": {
-                      "type": "string"
-                    },
-                    "trace_type": {
-                      "type": "string",
-                      "enum": [
-                        "otel"
-                      ]
-                    },
-                    "protocol": {
-                      "type": "string",
-                      "enum": [
-                        "http",
-                        "grpc"
-                      ]
+                    "profiles": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "service_name": {
+                            "type": "string"
+                          },
+                          "collector_url": {
+                            "type": "string"
+                          },
+                          "trace_type": {
+                            "type": "string",
+                            "enum": [
+                              "otel"
+                            ]
+                          },
+                          "protocol": {
+                            "type": "string",
+                            "enum": [
+                              "http",
+                              "grpc"
+                            ]
+                          },
+                          "headers": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "tls_ca_cert": {
+                            "type": "string"
+                          },
+                          "insecure": {
+                            "type": "boolean"
+                          },
+                          "metrics_enabled": {
+                            "type": "boolean"
+                          },
+                          "metrics_endpoint": {
+                            "type": "string"
+                          },
+                          "metrics_push_interval": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 300
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -659,9 +696,7 @@
                 "properties": {
                   "config": {
                     "required": [
-                      "collector_url",
-                      "trace_type",
-                      "protocol"
+                      "profiles"
                     ]
                   }
                 }

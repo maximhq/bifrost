@@ -70,7 +70,7 @@ func hexToBytes(hexStr string, length int) []byte {
 }
 
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan
-func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
+func (p *otelProfile) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceSpan {
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		otelSpans = append(otelSpans, p.convertSpanToOTELSpan(trace.TraceID, span))
@@ -81,14 +81,14 @@ func (p *OtelPlugin) convertTraceToResourceSpan(trace *schemas.Trace) *ResourceS
 			Attributes: p.getResourceAttributes(),
 		},
 		ScopeSpans: []*ScopeSpan{{
-			Scope:  p.getInstrumentationScope(),
-			Spans:  otelSpans,
+			Scope: p.getInstrumentationScope(),
+			Spans: otelSpans,
 		}},
 	}
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
+func (p *otelProfile) convertSpanToOTELSpan(traceID string, span *schemas.Span) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -110,7 +110,7 @@ func (p *OtelPlugin) convertSpanToOTELSpan(traceID string, span *schemas.Span) *
 }
 
 // getResourceAttributes returns the resource attributes for the OTEL span
-func (p *OtelPlugin) getResourceAttributes() []*KeyValue {
+func (p *otelProfile) getResourceAttributes() []*KeyValue {
 	attrs := []*KeyValue{
 		kvStr("service.name", p.serviceName),
 		kvStr("service.version", p.bifrostVersion),
@@ -123,7 +123,7 @@ func (p *OtelPlugin) getResourceAttributes() []*KeyValue {
 }
 
 // getInstrumentationScope returns the instrumentation scope for OTEL
-func (p *OtelPlugin) getInstrumentationScope() *commonpb.InstrumentationScope {
+func (p *otelProfile) getInstrumentationScope() *commonpb.InstrumentationScope {
 	return &commonpb.InstrumentationScope{
 		Name:    p.serviceName,
 		Version: p.bifrostVersion,
