@@ -304,6 +304,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
 			bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, url)
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+			bifrostCtx.SetValue(schemas.BifrostContextKeyDirectKey, "")
 		} else {
 			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
 			passthroughHeaders := extractPassthroughHeaders(headers, provider)
@@ -391,6 +392,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
+			PreCallback: checkAnthropicPassthrough,
 		},
 	}
 }
