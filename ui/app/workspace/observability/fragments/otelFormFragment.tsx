@@ -297,7 +297,12 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, isLoadi
 										</p>
 									</div>
 									<div className="ml-auto">
-										<Switch checked={field.value} onCheckedChange={field.onChange} disabled={!hasOtelAccess} />
+										<Switch
+											data-testid="otel-metrics-export-toggle"
+											checked={field.value}
+											onCheckedChange={field.onChange}
+											disabled={!hasOtelAccess}
+										/>
 									</div>
 								</div>
 							</FormItem>

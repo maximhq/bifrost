@@ -90,7 +90,6 @@ function normalizeHeaders(parsed: Record<string, string | EnvVarLike>): Record<s
  * Create SSE MCP client data.
  * URL and headers are injected via workflow env: MCP_SSE_URL, MCP_SSE_HEADERS (JSON).
  * Supports: {"Authorization":"Bearer ...","K":"V"} or {"Authorization":{"value":"...","env_var":"","from_env":false}}.
- * When unset, uses local http://localhost:3001/sse and no headers (no secrets in code).
  */
 export function createSSEClientData(overrides: Partial<MCPClientConfig> = {}): MCPClientConfig {
   const connectionUrl = "https://ts-mcp-sse-proxy.fly.dev/npx%20-y%20exa-mcp-server/sse"

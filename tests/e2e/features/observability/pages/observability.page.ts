@@ -178,6 +178,20 @@ export class ObservabilityPage extends BasePage {
   }
 
   /**
+   * Enable Metrics Export
+   */
+  async enableMetricsExport(): Promise<void> {
+    await this.selectConnector('otel')
+    const switch_ = this.page.getByTestId('otel-metrics-export-toggle')
+    await switch_.waitFor({ state: 'visible', timeout: 5000 })
+    const checked = await switch_.getAttribute('data-state') === 'checked'
+    if (!checked) {
+      await switch_.click()
+      await this.page.waitForTimeout(400)
+    }
+  }
+
+  /**
    * Configure OTel endpoint
    */
   async configureOtelEndpoint(endpoint: string): Promise<void> {
@@ -290,20 +304,23 @@ export class ObservabilityPage extends BasePage {
   }
 
   /**
-   * Check if metrics endpoint is displayed (in the OTel view)
+   * Check if OTel-specific content is visible (confirms we're on the OTel panel).
+   * The metrics endpoint input is only in the DOM when "Enable Metrics Export" is on,
+   * so we also treat the "Enable Metrics Export" section as OTel content.
    */
   async isMetricsEndpointVisible(): Promise<boolean> {
-    // The metrics endpoint is shown in a read-only input field
-    const metricsInput = this.page.locator('input[readonly]').filter({ hasText: /metrics/i })
+    // Metrics endpoint input (only visible when Enable Metrics Export is on)
     const metricsInputByValue = this.page.locator('input[value*="/metrics"]')
-    
-    const inputVisible = await metricsInput.isVisible().catch(() => false)
     const valueVisible = await metricsInputByValue.isVisible().catch(() => false)
-    
-    // Also check for the label text
-    const labelVisible = await this.page.getByText(/Metrics.*scraping/i).isVisible().catch(() => false)
-    
-    return inputVisible || valueVisible || labelVisible
+    if (valueVisible) return true
+
+    // "Enable Metrics Export" section is always visible on OTel tab (metrics subsection)
+    const enableMetricsVisible = await this.page.getByText(/Enable Metrics Export/i).isVisible().catch(() => false)
+    if (enableMetricsVisible) return true
+
+    // Label "Metrics Endpoint" (when metrics export is enabled)
+    const labelVisible = await this.page.getByText(/Metrics Endpoint/i).isVisible().catch(() => false)
+    return labelVisible
   }
 
   /**

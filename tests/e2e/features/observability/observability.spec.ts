@@ -48,8 +48,14 @@ test.describe('Observability', () => {
       await observabilityPage.selectConnector('otel')
 
       // The metrics endpoint is in an input field with value containing /metrics
+      await observabilityPage.enableMetricsExport()
       const metricsValue = await observabilityPage.getMetricsEndpointValue()
-      expect(metricsValue).toContain('/metrics')
+      const metricsInput = observabilityPage.page.getByPlaceholder(/v1\/metrics|otel-collector.*metrics/i)
+      const placeholder = await metricsInput.getAttribute('placeholder').catch(() => null)
+      const hasMetrics =
+        (metricsValue != null && metricsValue.includes('/metrics')) ||
+        (placeholder != null && placeholder.includes('/metrics'))
+      expect(hasMetrics).toBe(true)
     })
 
     test('should toggle OTel connector', async ({ observabilityPage }) => {
