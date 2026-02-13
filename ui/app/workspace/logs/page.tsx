@@ -636,7 +636,7 @@ export default function LogsPage() {
 			}
 		}
 		if (filters.routing_engine_used?.length) {
-			if (!log.routing_engine_used || !filters.routing_engine_used.includes(log.routing_engine_used)) {
+			if (!log.routing_engines_used || !log.routing_engines_used.some((engine) => filters.routing_engine_used!.includes(engine))) {
 				return false;
 			}
 		}

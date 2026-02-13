@@ -220,7 +220,7 @@ func (bc *BifrostContext) Value(key any) any {
 func (bc *BifrostContext) SetValue(key, value any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return
 	}
 	bc.valuesMu.Lock()
@@ -232,17 +232,17 @@ func (bc *BifrostContext) SetValue(key, value any) {
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it
-func (bc *BifrostContext) GetAndSetValue(key any, value any) any {	
+func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}
 	if bc.userValues == nil {
 		bc.userValues = make(map[any]any)
-	}	
+	}
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
 	return oldValue
@@ -280,4 +280,20 @@ func (bc *BifrostContext) GetParentCtxWithUserValues() context.Context {
 	}
 	bc.valuesMu.RUnlock()
 	return parentCtx
+}
+
+// AppendToContext appends a value to the context list value.
+// Parameters:
+//   - ctx: The Bifrost context
+//   - key: The key to append the value to
+//   - value: The value to append
+func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, value T) {
+	if ctx == nil {
+		return
+	}
+	existingValues, ok := ctx.Value(key).([]T)
+	if !ok {
+		existingValues = []T{}
+	}
+	ctx.SetValue(key, append(existingValues, value))
 }

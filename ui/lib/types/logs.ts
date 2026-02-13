@@ -356,7 +356,7 @@ export interface LogEntry {
 	fallback_index: number;
 	selected_key_id: string;
 	virtual_key_id?: string;
-	routing_engine_used?: string;
+	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;

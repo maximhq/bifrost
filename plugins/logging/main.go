@@ -69,11 +69,11 @@ type LogMessage struct {
 	FallbackIndex      int                                // Fallback index
 	SelectedKeyID      string                             // Selected key ID
 	SelectedKeyName    string                             // Selected key name
-	VirtualKeyID       string                             // Virtual key ID
-	VirtualKeyName     string                             // Virtual key name
-	RoutingEngineUsed  string                             // Routing engine used ("routing-rule", "governance", "loadbalancing")
-	RoutingRuleID      string                             // Routing rule ID
-	RoutingRuleName    string                             // Routing rule name
+	VirtualKeyID        string                             // Virtual key ID
+	VirtualKeyName      string                             // Virtual key name
+	RoutingEnginesUsed  []string                           // List of routing engines used
+	RoutingRuleID       string                             // Routing rule ID
+	RoutingRuleName     string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
@@ -321,12 +321,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
-	routingEngineUsed := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRoutingEngineUsed)
+	// Get routing engines array
+	routingEngines := []string{}
+	if engines, ok := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string); ok {
+		routingEngines = engines
+	}
 
 	logMsg.Timestamp = createdTimestamp
 	logMsg.InitialData = initialData
 	logMsg.FallbackIndex = fallbackIndex
-	logMsg.RoutingEngineUsed = routingEngineUsed
+	logMsg.RoutingEnginesUsed = routingEngines
 
 	go func(msg *LogMessage) {
 		defer p.putLogMessage(msg) // Return to pool when done
@@ -336,7 +340,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			msg.ParentRequestID,
 			msg.Timestamp,
 			msg.FallbackIndex,
-			msg.RoutingEngineUsed,
+			msg.RoutingEnginesUsed,
 			msg.InitialData,
 		); err != nil {
 			p.logger.Warn("failed to insert initial log entry for request %s: %v", msg.RequestID, err)
@@ -363,8 +367,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 					Stream:                      false, // Initially false, will be updated if streaming
 					CreatedAt:                   msg.Timestamp,
 				}
-				if msg.RoutingEngineUsed != "" {
-					initialEntry.RoutingEngineUsed = &msg.RoutingEngineUsed
+				if len(msg.RoutingEnginesUsed) > 0 {
+					initialEntry.RoutingEnginesUsed = msg.RoutingEnginesUsed
 				}
 				callback(p.ctx, initialEntry)
 			}

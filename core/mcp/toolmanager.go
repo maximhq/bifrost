@@ -301,7 +301,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 
 	// Get integration user agent for duplicate checking
 	var integrationUserAgentStr string
-	integrationUserAgent := ctx.Value(schemas.BifrostContextKey("integration-user-agent"))
+	integrationUserAgent := ctx.Value(schemas.BifrostContextKeyUserAgent)
 	if integrationUserAgent != nil {
 		if str, ok := integrationUserAgent.(string); ok {
 			integrationUserAgentStr = str

@@ -90,7 +90,7 @@ type Log struct {
 	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEngineUsed     *string   `gorm:"type:varchar(255);index:idx_logs_routing_engine_used" json:"routing_engine_used"`
+	RoutingEnginesUsedStr *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID         *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName       *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
@@ -127,6 +127,7 @@ type Log struct {
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - these will be populated when needed
+	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"` // Virtual field deserialized from JSON
 	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
 	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
@@ -190,6 +191,14 @@ func (l *Log) AfterFind(tx *gorm.DB) error {
 
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *Log) SerializeFields() error {
+	// Serialize routing engines to comma-separated string
+	if len(l.RoutingEnginesUsed) > 0 {
+		engineStr := strings.Join(l.RoutingEnginesUsed, ",")
+		l.RoutingEnginesUsedStr = &engineStr
+	} else {
+		l.RoutingEnginesUsedStr = nil
+	}
+
 	if l.InputHistoryParsed != nil {
 		if data, err := json.Marshal(l.InputHistoryParsed); err != nil {
 			return err
@@ -471,6 +480,13 @@ func (l *Log) DeserializeFields() error {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
 		}
+	}
+
+	if l.RoutingEnginesUsedStr != nil && *l.RoutingEnginesUsedStr != "" {
+		// Parse comma-separated routing engines
+		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
+	} else {
+		l.RoutingEnginesUsed = []string{}
 	}
 
 	return nil

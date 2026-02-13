@@ -2274,6 +2274,10 @@
           "type": "boolean",
           "description": "Whether cluster mode is enabled"
         },
+        "region": {
+          "type": "string",
+          "description": "AWS region for cluster deployment (default: us-east-1)"
+        },
         "peers": {
           "type": "array",
           "description": "List of peer addresses",

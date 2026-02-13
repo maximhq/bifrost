@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -65,7 +66,36 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
 	}
 	if len(filters.RoutingEngineUsed) > 0 {
-		baseQuery = baseQuery.Where("routing_engine_used IN ?", filters.RoutingEngineUsed)
+		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
+		// Use delimiter-aware matching to avoid partial token matches
+		var engineConditions []string
+		var engineArgs []interface{}
+
+		// Use dialect-aware concatenation expression
+		dialect := s.db.Dialector.Name()
+		var concatExpr string
+		switch dialect {
+		case "sqlite":
+			// SQLite: use || operator for string concatenation
+			concatExpr = "',' || routing_engines_used || ','"
+		default:
+			// MySQL, Postgres, and others: use CONCAT function
+			concatExpr = "CONCAT(',', routing_engines_used, ',')"
+		}
+
+		for _, engine := range filters.RoutingEngineUsed {
+			engine = strings.TrimSpace(engine)
+			if engine == "" {
+				continue // Skip empty engine filters
+			}
+			// Match whole comma-separated tokens: expr LIKE '%,engine,%'
+			engineConditions = append(engineConditions, concatExpr+" LIKE ?")
+			engineArgs = append(engineArgs, "%,"+engine+",%")
+		}
+		// Build OR condition: (expr LIKE ? OR expr LIKE ? ...)
+		if len(engineConditions) > 0 {
+			baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+		}
 	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)

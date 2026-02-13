@@ -485,6 +485,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	p.logger.Debug("[Governance] Allowed providers after filtering: %v", allowedProviders)
 
 	if len(allowedProviderConfigs) == 0 {
+		// TODO: Send proper error if (overall VK budget/rate limit) or (all provider budgets/rate limits) are violated
 		// No allowed provider configs, continue without modification
 		return body, nil
 	}
@@ -529,7 +530,8 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		// Update the model field in the request body
 		body["model"] = string(selectedProvider) + "/" + refinedModel
 	}
-	ctx.SetValue(schemas.BifrostContextKeyRoutingEngineUsed, "governance")
+	// Append governance to routing engines used
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineGovernance)
 
 	// Check if fallbacks field is already present
 	_, hasFallbacks := body["fallbacks"]
@@ -645,13 +647,23 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 		// Update model in request body
 		if strings.Contains(req.Path, "/genai") {
 			// For genai, model is in URL path
-			newModel := decision.Provider + "/" + decision.Model + genaiRequestSuffix
+			newModel := decision.Model + genaiRequestSuffix
+			// Add provider prefix if present (because there can be other routing rules down stream that can add the provider)
+			if decision.Provider != "" {
+				newModel = decision.Provider + "/" + newModel
+			}
 			ctx.SetValue("model", newModel)
 		} else {
 			// For regular requests, update in body
-			body["model"] = decision.Provider + "/" + decision.Model
+			newModel := decision.Model
+			// Add provider prefix if present (because there can be other routing rules down stream that can add the provider)
+			if decision.Provider != "" {
+				newModel = decision.Provider + "/" + newModel
+			}
+			body["model"] = newModel
 		}
-		ctx.SetValue(schemas.BifrostContextKeyRoutingEngineUsed, "routing-rule")
+		// Append routing-rule to routing engines used
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineRoutingRule)
 
 		// Add fallbacks if present
 		if len(decision.Fallbacks) > 0 {

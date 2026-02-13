@@ -19,7 +19,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	parentRequestID string,
 	timestamp time.Time,
 	fallbackIndex int,
-	routingEngineUsed string,
+	routingEnginesUsed []string, // list of routing engines used
 	data *InitialLogData,
 ) error {
 	entry := &logstore.Log{
@@ -40,12 +40,10 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		SpeechInputParsed:           data.SpeechInput,
 		TranscriptionInputParsed:    data.TranscriptionInput,
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
+		RoutingEnginesUsed:          routingEnginesUsed,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
-	}
-	if routingEngineUsed != "" {
-		entry.RoutingEngineUsed = &routingEngineUsed
 	}
 	return p.store.CreateIfNotExists(ctx, entry)
 }
@@ -481,17 +479,26 @@ func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 
 // GetAvailableRoutingEngines returns all unique routing engine types used in logs
 func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string {
-	result, err := p.store.FindAll(ctx, "routing_engine_used IS NOT NULL AND routing_engine_used != ''", "routing_engine_used")
+	result, err := p.store.FindAll(ctx, "routing_engines_used IS NOT NULL", "routing_engines_used")
 	if err != nil {
 		p.logger.Error("failed to get available routing engines: %w", err)
 		return []string{}
 	}
-	return p.extractUniqueStrings(result, func(log *logstore.Log) string {
-		if log.RoutingEngineUsed != nil {
-			return *log.RoutingEngineUsed
+
+	uniqueEngines := make(map[string]bool)
+	for _, log := range result {
+		for _, engine := range log.RoutingEnginesUsed {
+			if engine != "" {
+				uniqueEngines[engine] = true
+			}
 		}
-		return ""
-	})
+	}
+
+	engines := make([]string, 0, len(uniqueEngines))
+	for engine := range uniqueEngines {
+		engines = append(engines, engine)
+	}
+	return engines
 }
 
 // GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs

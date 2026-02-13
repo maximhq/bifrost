@@ -1,3 +1,4 @@
+- feat: added multi level routing support for routing rules + vk based provider routing
 - feat: cross-provider model matching - budget/rate-limit configs for `gpt-4o` now apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
 - feat: expand GovernanceData with ModelConfigs and Providers for in-memory reads
 - feat: added routing rules for dynamic routing of requests based on predefined rules
