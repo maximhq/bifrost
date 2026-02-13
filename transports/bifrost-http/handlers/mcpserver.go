@@ -351,7 +351,7 @@ func (h *MCPServerHandler) getMCPServerForRequest(ctx *fasthttp.RequestCtx) (*se
 	defer h.mu.RUnlock()
 
 	h.config.Mu.RLock()
-	enforceVK := h.config.ClientConfig.EnforceGovernanceHeader && h.config.ClientConfig.EnableGovernance
+	enforceVK := h.config.ClientConfig.EnforceAuthOnInference && h.config.ClientConfig.EnableGovernance
 	h.config.Mu.RUnlock()
 
 	vk := getVKFromRequest(ctx)

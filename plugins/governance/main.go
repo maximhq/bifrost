@@ -36,8 +36,9 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory   *bool      `json:"is_vk_mandatory"`
-	RequiredHeaders *[]string  `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	IsVkMandatory   *bool     `json:"is_vk_mandatory"`
+	RequiredHeaders *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	IsEnterprise    bool      `json:"is_enterprise"`
 }
 
 type InMemoryStore interface {
@@ -80,6 +81,7 @@ type GovernancePlugin struct {
 
 	isVkMandatory   *bool
 	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
+	isEnterprise    bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -209,6 +211,7 @@ func Init(
 		logger:          logger,
 		isVkMandatory:   isVkMandatory,
 		requiredHeaders: requiredHeaders,
+		isEnterprise:    config != nil && config.IsEnterprise,
 		inMemoryStore:   inMemoryStore,
 	}
 	return plugin, nil
@@ -293,6 +296,7 @@ func InitFromStore(
 		inMemoryStore:   inMemoryStore,
 		isVkMandatory:   isVkMandatory,
 		requiredHeaders: requiredHeaders,
+		isEnterprise:    config != nil && config.IsEnterprise,
 	}
 	return plugin, nil
 }
@@ -782,13 +786,17 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
-	// Check if virtual key is mandatory
-	if evaluationRequest.VirtualKey == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	// Check if authentication is mandatory (either VK or user auth)
+	if evaluationRequest.VirtualKey == "" && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
+		if p.isEnterprise {
+			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
+		}
 		return nil, &schemas.BifrostError{
 			Type:       bifrost.Ptr("virtual_key_required"),
 			StatusCode: bifrost.Ptr(401),
 			Error: &schemas.ErrorField{
-				Message: "virtual key is missing in headers and is mandatory.",
+				Message: message,
 			},
 		}
 	}
@@ -796,12 +804,21 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
 	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 
-	// If model/provider checks passed and virtual key exists, evaluate virtual key checks
-	// This will overwrite the result with virtual key-specific decision
-	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
-		result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+	// Check user-level governance (enterprise-only, runs before VK checks)
+	if result.Decision == DecisionAllow {
+		result = p.resolver.EvaluateUserRequest(ctx, evaluationRequest.UserID, evaluationRequest)
 	}
-	// If model/provider checks failed, skip virtual key evaluation and proceed to final decision handling
+
+	// If model/provider checks passed, evaluate virtual key
+	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
+		if evaluationRequest.UserID != "" {
+			// User auth present: only use VK for routing/filtering (skip rate limits and budgets)
+			result = p.resolver.EvaluateVirtualKeyFiltering(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+		} else {
+			// No user auth: full VK governance (routing + limits)
+			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+		}
+	}
 
 	// Mark request as rejected in context if not allowed
 	if result.Decision != DecisionAllow {
@@ -875,6 +892,8 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	}
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 	// Getting provider and mode from the request
 	provider, model, _ := req.GetRequestFields()
 	// Create request context for evaluation
@@ -882,6 +901,7 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
+		UserID:     userID,
 	}
 	// Evaluate governance using common function
 	_, bifrostError := p.evaluateGovernanceRequest(ctx, evaluationRequest, req.RequestType)
@@ -916,6 +936,8 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 
 	// Extract cache and batch flags from context
 	isCacheRead := false
@@ -939,14 +961,18 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
 	// Always process usage tracking (with or without virtual key)
-	// If virtualKey is empty, it will be passed as empty string to postHookWorker
+	// When user auth is present, skip VK usage tracking to avoid double-counting
+	effectiveVK := virtualKey
+	if userID != "" {
+		effectiveVK = ""
+	}
+	// If effectiveVK is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage
 	if model != "" {
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			// Pass virtualKey (empty string if not present) - tracker handles this case
-			p.postHookWorker(result, provider, model, requestType, virtualKey, requestID, isCacheRead, isBatch, isFinalChunk)
+			p.postHookWorker(result, provider, model, requestType, effectiveVK, requestID, userID, isCacheRead, isBatch, isFinalChunk)
 		}()
 	}
 
@@ -977,10 +1003,13 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	// Extract user ID for enterprise user-level governance
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
 
 	// Create request context for evaluation (MCP requests don't have provider/model)
 	evaluationRequest := &EvaluationRequest{
 		VirtualKey: virtualKeyValue,
+		UserID:     userID,
 	}
 
 	// Evaluate governance using common function
@@ -1014,6 +1043,12 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
+
+	// When user auth is present, skip VK usage tracking to avoid double-counting
+	if userID != "" {
+		virtualKey = ""
+	}
 
 	// Skip if no virtual key
 	if virtualKey == "" {
@@ -1085,10 +1120,11 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - requestType: The type of the request
 //   - virtualKey: The virtual key of the request (empty string if not present)
 //   - requestID: The request ID
+//   - userID: The user ID for enterprise user-level governance (empty string if not present)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID string, _, _, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
 
@@ -1132,6 +1168,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 			TokensUsed:   int64(tokensUsed),
 			Cost:         cost,
 			RequestID:    requestID,
+			UserID:       userID,
 			IsStreaming:  isStreaming,
 			IsFinalChunk: isFinalChunk,
 			HasUsageData: tokensUsed > 0,
