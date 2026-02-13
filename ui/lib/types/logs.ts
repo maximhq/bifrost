@@ -230,6 +230,70 @@ export interface BifrostImageGenerationOutput {
 	};
 }
 
+export interface VideoCreateError {
+	code?: string;
+	message?: string;
+}
+
+export interface VideoObject {
+	id: string;
+	object: string;
+	model: string;
+	status: string;
+	created_at: number;
+	completed_at?: number;
+	expires_at?: number;
+	progress?: number;
+	prompt: string;
+	remixed_from_video_id?: string;
+	seconds: number;
+	size: string;
+	error?: VideoCreateError;
+	url?: string;
+}
+
+export interface VideoOutput {
+	type: string;
+	url?: string;
+	base64?: string;
+	content_type?: string;
+}
+export interface BifrostVideoGenerationOutput {
+	videos: VideoOutput[];
+	id?: string;
+	completed_at?: number;
+	created_at?: number;
+	error?: VideoCreateError;
+	expires_at?: number;
+	model?: string;
+	object?: string;
+	progress?: number;
+	prompt?: string;
+	remixed_from_video_id?: string;
+	seconds?: number;
+	size?: string;
+	status?: string;
+}
+
+export interface BifrostVideoDownloadOutput {
+	video_id: string;
+	content_type?: string;
+}
+
+export interface BifrostVideoDeleteOutput {
+	id: string;
+	deleted: boolean;
+	object?: string;
+}
+
+export interface BifrostVideoListOutput {
+	object: string;
+	data: VideoObject[];
+	first_id?: string;
+	has_more?: boolean;
+	last_id?: string;
+}
+
 // Tool related types
 export interface FunctionParameters {
 	type: string;
@@ -368,10 +432,16 @@ export interface LogEntry {
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
 	image_generation_output?: BifrostImageGenerationOutput;
+	video_generation_output?: BifrostVideoGenerationOutput;
+	video_retrieve_output?: BifrostVideoGenerationOutput;
+	video_download_output?: BifrostVideoDownloadOutput;
+	video_list_output?: BifrostVideoListOutput;
+	video_delete_output?: BifrostVideoDeleteOutput;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;
 	transcription_input?: TranscriptionInput;
 	image_generation_input?: { prompt: string };
+	video_generation_input?: { prompt: string };
 	speech_output?: BifrostSpeech;
 	transcription_output?: BifrostTranscribe;
 	list_models_output?: Model[];

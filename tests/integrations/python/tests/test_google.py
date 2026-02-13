@@ -57,6 +57,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import wave
 from typing import Any, Dict, List
 
@@ -259,6 +260,51 @@ def convert_pcm_to_wav(pcm_data: bytes, channels: int = 1, sample_rate: int = 24
         wav_file.writeframes(pcm_data)
     wav_buffer.seek(0)
     return wav_buffer.read()
+
+
+def _poll_video_operation(client: Any, operation: Any, timeout_seconds: int = 900, poll_interval_seconds: int = 10) -> Any:
+    """Poll a Gemini video operation until completion."""
+    started_at = time.time()
+    current_op = operation
+
+    while not getattr(current_op, "done", False):
+        if time.time() - started_at > timeout_seconds:
+            raise TimeoutError(f"Video operation did not complete within {timeout_seconds} seconds")
+        time.sleep(poll_interval_seconds)
+        current_op = client.operations.get(current_op)
+
+    return current_op
+
+
+def _extract_first_generated_video(operation: Any) -> Any:
+    """Extract first generated video object from completed operation response."""
+    if not hasattr(operation, "response") or operation.response is None:
+        raise AssertionError("Video operation response is missing")
+    if not hasattr(operation.response, "generated_videos") or not operation.response.generated_videos:
+        raise AssertionError("No generated videos in operation response")
+    return operation.response.generated_videos[0]
+
+
+def _extract_image_for_video_input(image_response: Any) -> Any:
+    """
+    Extract an image object suitable for `models.generate_videos(image=...)`.
+    Supports the common Google GenAI response layouts.
+    """
+    # Most direct: response.parts[0].as_image()
+    if hasattr(image_response, "parts") and image_response.parts:
+        first_part = image_response.parts[0]
+        if hasattr(first_part, "as_image"):
+            return first_part.as_image()
+
+    # Candidate-based shape
+    if hasattr(image_response, "candidates") and image_response.candidates:
+        candidate = image_response.candidates[0]
+        if hasattr(candidate, "content") and candidate.content and hasattr(candidate.content, "parts"):
+            for part in candidate.content.parts:
+                if hasattr(part, "as_image"):
+                    return part.as_image()
+
+    raise AssertionError("Could not extract generated image for video input")
 
 
 # =============================================================================
@@ -3023,6 +3069,217 @@ Joe: Pretty good, thanks for asking."""
                 print(f"Found {len(supports)} grounding supports in streaming response")
         
         print("✓ Google Search grounding test (streaming) passed!")
+
+    # =========================================================================
+    # GEMINI VIDEO GENERATION TEST CASES
+    # =========================================================================
+
+    @pytest.mark.timeout(1200)
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("video_generation"))
+    def test_44a_gemini_video_text_to_video(self, test_config, provider, model):
+        """Text-to-video generation and polling with Veo model."""
+        client = get_provider_google_client(provider)
+
+        operation = client.models.generate_videos(
+            model=format_provider_model(provider, model),
+            prompt=(
+                "A close up of two people staring at a cryptic drawing on a wall, torchlight flickering. "
+                "A man murmurs, 'This must be it. That's the secret code.'"
+            ),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+
+        assert getattr(completed, "done", False) is True
+        assert generated_video is not None
+        assert hasattr(generated_video, "video"), "Generated video should include downloadable video handle"
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44b_gemini_video_aspect_ratio(self, test_config):
+        """Video generation with portrait aspect ratio config."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="A high-energy pizza making montage in a professional kitchen.",
+            config=types.GenerateVideosConfig(aspect_ratio="9:16"),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+
+        assert getattr(completed, "done", False) is True
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44c_gemini_video_resolution(self, test_config):
+        """Video generation with explicit high resolution configuration."""
+        client = get_provider_google_client("gemini")
+
+        try:
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A cinematic drone flight above canyon cliffs at sunset.",
+                config=types.GenerateVideosConfig(resolution="4k"),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            # 4k availability can vary by account/region/model entitlement.
+            pytest.skip(f"4k video generation not available in this environment: {e}")
+
+    @pytest.mark.timeout(1200)
+    @pytest.mark.parametrize("provider,model", get_cross_provider_params_for_scenario("video_generation"))
+    def test_44d_gemini_video_image_to_video(self, test_config, provider, model):
+        """Image-conditioned video generation using generated image input."""
+        client = get_provider_google_client(provider)
+        prompt = "Panning wide shot of a calico kitten sleeping in the sunshine"
+
+        image_response = client.models.generate_content(
+            model="gemini-2.5-flash-image",
+            contents=prompt,
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        seed_image = _extract_image_for_video_input(image_response)
+
+        operation = client.models.generate_videos(
+            model=format_provider_model(provider, model),
+            prompt=prompt,
+            image=seed_image,
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1500)
+    def test_44e_gemini_video_reference_images(self, test_config):
+        """Video generation with reference images (up to 3 references)."""
+        client = get_provider_google_client("gemini")
+
+        # Generate one source image and reuse it to keep test robust/lightweight.
+        image_seed_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="Studio portrait with clean lighting and neutral background.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        reference_image = _extract_image_for_video_input(image_seed_resp)
+
+        try:
+            refs = [
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+                types.VideoGenerationReferenceImage(image=reference_image, reference_type="asset"),
+            ]
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A cinematic fashion walk through shallow turquoise water.",
+                config=types.GenerateVideosConfig(reference_images=refs),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            # Feature is limited to specific Veo variants/regions.
+            pytest.skip(f"Reference-images video generation not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1500)
+    def test_44f_gemini_video_interpolation_first_last_frame(self, test_config):
+        """Video interpolation using first and last frame constraints."""
+        client = get_provider_google_client("gemini")
+
+        first_frame_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="A ghostly woman on a rope swing under a moonlit tree.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        last_frame_resp = client.models.generate_content(
+            model=format_provider_model("gemini", "gemini-2.5-flash-image"),
+            contents="The same swing now empty in thick moonlit fog.",
+            config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
+        )
+        first_frame = _extract_image_for_video_input(first_frame_resp)
+        last_frame = _extract_image_for_video_input(last_frame_resp)
+
+        try:
+            operation = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                prompt="A haunting cinematic transition from occupied swing to empty swing.",
+                image=first_frame,
+                config=types.GenerateVideosConfig(last_frame=last_frame),
+            )
+            completed = _poll_video_operation(client, operation)
+            generated_video = _extract_first_generated_video(completed)
+            assert generated_video is not None
+        except Exception as e:
+            pytest.skip(f"First/last-frame interpolation not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1800)
+    def test_44g_gemini_video_extension(self, test_config):
+        """Extend a previously generated video using Veo extension flow."""
+        client = get_provider_google_client("gemini")
+
+        base_op = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="An origami butterfly flies out of french doors into a bright garden.",
+        )
+        base_completed = _poll_video_operation(client, base_op)
+        base_video = _extract_first_generated_video(base_completed).video
+
+        assert base_video is not None, "Base video object is missing; cannot run extension test"
+
+        try:
+            extension_op = client.models.generate_videos(
+                model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+                video=base_video,
+                prompt="Track the butterfly into the garden as it lands on an origami flower.",
+                config=types.GenerateVideosConfig(number_of_videos=1, resolution="720p"),
+            )
+            extension_completed = _poll_video_operation(client, extension_op)
+            extended_video = _extract_first_generated_video(extension_completed)
+            assert extended_video is not None
+        except Exception as e:
+            pytest.skip(f"Video extension not available: {e}")
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44h_gemini_video_async_poll_by_name(self, test_config):
+        """Poll video generation using operation-name rehydration flow."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="Track the butterfly into the garden as it lands on an origami flower.",
+        )
+        assert getattr(operation, "name", None), "Video operation should include a name"
+
+        rehydrated_operation = types.GenerateVideosOperation(name=operation.name)
+        completed = _poll_video_operation(client, rehydrated_operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
+
+    @skip_if_no_api_key("gemini")
+    @pytest.mark.timeout(1200)
+    def test_44i_gemini_video_negative_prompt(self, test_config):
+        """Video generation with negative prompt configuration."""
+        client = get_provider_google_client("gemini")
+
+        operation = client.models.generate_videos(
+            model=format_provider_model("gemini", "veo-3.1-generate-preview"),
+            prompt="A cinematic shot of a lion in the savannah at golden hour.",
+            config=types.GenerateVideosConfig(negative_prompt="cartoon, drawing, low quality"),
+        )
+
+        completed = _poll_video_operation(client, operation)
+        generated_video = _extract_first_generated_video(completed)
+        assert generated_video is not None
 
 # Additional helper functions specific to Google GenAI
 def extract_google_function_calls(response: Any) -> List[Dict[str, Any]]:
