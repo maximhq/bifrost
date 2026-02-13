@@ -479,7 +479,7 @@ export const coreConfigSchema = z.object({
 	enable_logging: z.boolean().default(true),
 	disable_content_logging: z.boolean().default(false),
 	enable_governance: z.boolean().default(false),
-	enforce_governance_header: z.boolean().default(false),
+	enforce_auth_on_inference: z.boolean().default(false),
 	allow_direct_keys: z.boolean().default(false),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),

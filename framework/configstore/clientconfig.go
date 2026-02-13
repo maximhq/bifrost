@@ -44,7 +44,9 @@ type ClientConfig struct {
 	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
 	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceGovernanceHeader bool                             `json:"enforce_governance_header"`           // Enforce governance on all requests
+	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceGovernanceHeader bool                             `json:"enforce_governance_header,omitempty"` // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth         bool                             `json:"enforce_scim_auth,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
 	AllowedOrigins          []string                         `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders          []string                         `json:"allowed_headers,omitempty"`           // Additional allowed headers for CORS and WebSocket
@@ -97,10 +99,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableGovernance:false"))
 	}
 
-	if c.EnforceGovernanceHeader {
-		hash.Write([]byte("enforceGovernanceHeader:true"))
+	if c.EnforceAuthOnInference {
+		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
-		hash.Write([]byte("enforceGovernanceHeader:false"))
+		hash.Write([]byte("enforceAuthOnInference:false"))
 	}
 
 	if c.AllowDirectKeys {

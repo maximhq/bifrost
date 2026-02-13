@@ -12,6 +12,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
+// rather than removed. Using a named type instead of a raw string follows Go best practices.
+type pluginDisabledKey struct{}
+
+// PluginDisabledKey is the context key used to indicate a plugin is being disabled.
+var PluginDisabledKey pluginDisabledKey
+
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")

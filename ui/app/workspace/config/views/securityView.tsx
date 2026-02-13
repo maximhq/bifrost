@@ -86,10 +86,10 @@ export default function SecurityView() {
 		const serverRequired = config.required_headers?.slice().sort().join(",");
 		const requiredChanged = localRequired !== serverRequired;
 
-		const enforceVirtualKeyChanged = localConfig.enforce_governance_header !== config.enforce_governance_header;
+		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || requiredChanged || authChanged || enforceVirtualKeyChanged || allowDirectKeysChanged;
+		return originsChanged || headersChanged || requiredChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const needsRestart = useMemo(() => {
@@ -103,7 +103,9 @@ export default function SecurityView() {
 		const serverHeaders = config.allowed_headers?.slice().sort().join(",");
 		const headersChanged = localHeaders !== serverHeaders;
 
-		return originsChanged || headersChanged;
+		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
+
+		return originsChanged || headersChanged || enforceAuthOnInferenceChanged;
 	}, [config, localConfig]);
 
 	const handleAllowedOriginsChange = useCallback((value: string) => {
@@ -253,15 +255,18 @@ export default function SecurityView() {
 						</div>
 					</div>
 				)}
-				{/* Enforce Virtual Keys */}
-				{localConfig.enable_governance && (
+				{/* Enable Auth on Inference */}
+				{(IS_ENTERPRISE || localConfig.enable_governance) && (
 					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 						<div className="space-y-0.5">
-							<label htmlFor="enforce-governance" className="text-sm font-medium">
-								Enforce Virtual Keys
+							<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
+								Enable Auth on Inference
 							</label>
 							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the virtual key header will be rejected. See{" "}
+								{IS_ENTERPRISE
+									? "Require authentication (virtual key, API key, or user token) for all inference endpoints."
+									: "Require a virtual key for all inference requests."}{" "}
+								See{" "}
 								<Link
 									href="https://docs.getbifrost.ai/features/governance/virtual-keys"
 									target="_blank"
@@ -270,13 +275,13 @@ export default function SecurityView() {
 								>
 									documentation
 								</Link>{" "}
-								for header details.
+								for details.
 							</p>
 						</div>
 						<Switch
-							id="enforce-governance"
-							checked={localConfig.enforce_governance_header}
-							onCheckedChange={(checked) => handleConfigChange("enforce_governance_header", checked)}
+							id="enforce-auth-on-inference"
+							checked={localConfig.enforce_auth_on_inference}
+							onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
 						/>
 					</div>
 				)}

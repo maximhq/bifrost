@@ -265,6 +265,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLoggingHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddEnforceSCIMAuthColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3632,6 +3638,71 @@ func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running logging_headers_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEnforceSCIMAuthColumn adds the enforce_scim_auth column to the client config table
+func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_enforce_scim_auth_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "enforce_scim_auth") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_scim_auth") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_scim_auth"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running enforce SCIM auth column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_enforce_auth_on_inference_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
+					return err
+				}
+			}
+			// Populate from old fields: set to true if either old flag was true
+			if err := tx.Exec("UPDATE config_client SET enforce_auth_on_inference = true WHERE enforce_governance_header = true OR enforce_scim_auth = true").Error; err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enforce_auth_on_inference"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running enforce auth on inference column migration: %s", err.Error())
 	}
 	return nil
 }

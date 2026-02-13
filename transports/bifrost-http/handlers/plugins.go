@@ -350,7 +350,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	} else {
-		ctx.SetUserValue("isDisabled", true)
+		ctx.SetUserValue(PluginDisabledKey, true)
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
 			return

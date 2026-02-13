@@ -338,13 +338,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		restartReasons = append(restartReasons, "Governance enabled")
 	}
 	updatedConfig.EnableGovernance = payload.ClientConfig.EnableGovernance
-	if !payload.ClientConfig.EnableGovernance {
-		// If governance is disabled, we will disable the enforcement of the governance header
-		updatedConfig.EnforceGovernanceHeader = false
-	} else {
-		updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceGovernanceHeader
-	}
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
+
+	// Handle unified auth on inference toggle
+	if payload.ClientConfig.EnforceAuthOnInference != currentConfig.EnforceAuthOnInference {
+		restartReasons = append(restartReasons, "Enforce auth on inference")
+	}
+	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
+	// Sync deprecated columns to match new field so they stay consistent in the DB
+	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference
+	updatedConfig.EnforceSCIMAuth = payload.ClientConfig.EnforceAuthOnInference
 
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value
 	if payload.ClientConfig.MaxRequestBodySizeMB > 0 {
@@ -363,7 +366,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			}
 		} else {
 			// Remove the litellmcompat plugin
-			disabledCtx := context.WithValue(ctx, "isDisabled", true)
+			disabledCtx := context.WithValue(ctx, PluginDisabledKey, true)
 			if err := h.configManager.RemovePlugin(disabledCtx, "litellmcompat"); err != nil {
 				logger.Warn("failed to remove litellmcompat plugin: %v", err)
 			}

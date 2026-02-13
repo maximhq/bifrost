@@ -861,7 +861,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 	}
 
 	// 4. Update status
-	if isDisabled, _ := ctx.Value("isDisabled").(bool); isDisabled {
+	if isDisabled, _ := ctx.Value(handlers.PluginDisabledKey).(bool); isDisabled {
 		s.markPluginDisabled(name)
 	} else {
 		s.Config.DeletePluginOverallStatus(name)

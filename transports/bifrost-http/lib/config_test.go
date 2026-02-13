@@ -11855,8 +11855,8 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		DisableContentLogging:   false,
 		LogRetentionDays:        30,
 		EnableGovernance:        true,
-		EnforceGovernanceHeader: false,
-		AllowDirectKeys:         true,
+		EnforceAuthOnInference: false,
+		AllowDirectKeys:        true,
 		AllowedOrigins:          []string{"http://localhost:3000"},
 		MaxRequestBodySizeMB:    100,
 		EnableLiteLLMFallbacks:  false,
@@ -11932,12 +11932,12 @@ func TestGenerateClientConfigHash(t *testing.T) {
 		t.Error("Different EnableGovernance should produce different hash")
 	}
 
-	// Different EnforceGovernanceHeader should produce different hash
+	// Different EnforceAuthOnInference should produce different hash
 	cc9 := cc1
-	cc9.EnforceGovernanceHeader = true
+	cc9.EnforceAuthOnInference = true
 	hash9, _ := cc9.GenerateClientConfigHash()
 	if hash1 == hash9 {
-		t.Error("Different EnforceGovernanceHeader should produce different hash")
+		t.Error("Different EnforceAuthOnInference should produce different hash")
 	}
 
 	// Different AllowDirectKeys should produce different hash
@@ -12913,7 +12913,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:   false,
 			LogRetentionDays:        30,
 			EnableGovernance:        true,
-			EnforceGovernanceHeader: false,
+			EnforceAuthOnInference: false,
 			AllowDirectKeys:         true,
 			MaxRequestBodySizeMB:    100,
 			EnableLiteLLMFallbacks:  false,
@@ -12928,7 +12928,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:   ccToSave.DisableContentLogging,
 			LogRetentionDays:        ccToSave.LogRetentionDays,
 			EnableGovernance:        ccToSave.EnableGovernance,
-			EnforceGovernanceHeader: ccToSave.EnforceGovernanceHeader,
+			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
 			AllowDirectKeys:         ccToSave.AllowDirectKeys,
 			MaxRequestBodySizeMB:    ccToSave.MaxRequestBodySizeMB,
 			EnableLiteLLMFallbacks:  ccToSave.EnableLiteLLMFallbacks,
@@ -12948,7 +12948,7 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 			DisableContentLogging:   ccFromDB.DisableContentLogging,
 			LogRetentionDays:        ccFromDB.LogRetentionDays,
 			EnableGovernance:        ccFromDB.EnableGovernance,
-			EnforceGovernanceHeader: ccFromDB.EnforceGovernanceHeader,
+			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
 			AllowDirectKeys:         ccFromDB.AllowDirectKeys,
 			MaxRequestBodySizeMB:    ccFromDB.MaxRequestBodySizeMB,
 			EnableLiteLLMFallbacks:  ccFromDB.EnableLiteLLMFallbacks,
