@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/network"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
@@ -141,6 +142,73 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
 		return latency, nil
 	}
+}
+
+// Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
+// This function is kept for backward compatibility but is no longer needed.
+func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
+	client.RetryIfErr = network.StaleConnectionRetryIfErr
+	return client
+}
+
+// ConfigureDialer configures the client's connection behavior:
+//  1. Sets up the stale-connection retry policy (see network.StaleConnectionRetryIfErr).
+//  2. Wraps the Dial function to enable TCP keepalive on all connections,
+//     proactively detecting dead connections before fasthttp tries to reuse them.
+//
+// Must be called AFTER ConfigureProxy (which may set client.Dial to a proxy
+// dialer), so the keepalive wrapper composes on top of the proxy connection.
+//
+// Keepalive parameters:
+//   - Idle 10s: first probe after 10s of inactivity (well under the 30s MaxIdleConnDuration)
+//   - Interval 5s: subsequent probes every 5s
+//   - Count 3: close after 3 failed probes
+//
+// Dead connections are detected within ~25s (10 + 5*3), before the 30s
+// MaxIdleConnDuration expires and the connection is reused.
+func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+	// Configure stale-connection retry policy
+	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	existingDial := client.Dial
+	existingDialTimeout := client.DialTimeout
+
+	keepAliveCfg := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     10 * time.Second,
+		Interval: 5 * time.Second,
+		Count:    3,
+	}
+
+	client.Dial = func(addr string) (net.Conn, error) {
+		var conn net.Conn
+		var err error
+
+		switch {
+		case existingDial != nil:
+			// Proxy or custom dial function is set — use it, then enable keepalive
+			conn, err = existingDial(addr)
+		case existingDialTimeout != nil:
+			// Preserve dial-timeout behavior
+			conn, err = existingDialTimeout(addr, client.ReadTimeout)
+		default:
+			conn, err = (&net.Dialer{
+				Timeout:         client.ReadTimeout,
+				KeepAliveConfig: keepAliveCfg,
+			}).Dial("tcp", addr)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Enable TCP keepalive on the connection
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetKeepAliveConfig(keepAliveCfg)
+		}
+		return conn, nil
+	}
+
+	return client
 }
 
 // ConfigureProxy sets up a proxy for the fasthttp client based on the provided configuration.
@@ -704,7 +772,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	var rawRequest interface{}
 	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
-		getLogger().Warn("Failed to parse raw request: %v", err)
+		getLogger().Warn("failed to parse raw request: %v", err)
 	} else {
 		extraFields.RawRequest = rawRequest
 	}
@@ -1426,11 +1494,18 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
-	// Drain any remaining data from the body stream before releasing
-	// This prevents "whitespace in header" errors when the response is reused
-	if resp.BodyStream() != nil {
-		// Drain the body stream
-		io.Copy(io.Discard, resp.BodyStream())
+	// Drain any remaining data from the body stream before releasing.
+	// This prevents "whitespace in header" errors when the connection is reused
+	// (see: https://github.com/valyala/fasthttp/issues/1743).
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
+		if closer, ok := bodyStream.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				getLogger().Warn("failed to close streaming response body: %v", err)
+			}
+		}
 	}
 	fasthttp.ReleaseResponse(resp)
 }

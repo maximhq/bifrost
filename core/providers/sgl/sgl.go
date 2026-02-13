@@ -41,9 +41,9 @@ func NewSGLProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SGL
 	// 	sglResponsePool.Put(&schemas.BifrostResponse{})
 	// }
 
-	// Configure proxy if provided
+	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	// BaseURL is required for SGLang

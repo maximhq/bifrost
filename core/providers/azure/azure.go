@@ -134,9 +134,9 @@ func NewAzureProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*A
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
-	// Configure proxy if provided
+	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	return &AzureProvider{
 		logger:              logger,
 		client:              client,

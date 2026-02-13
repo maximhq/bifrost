@@ -87,9 +87,9 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
-	// Setting proxy if provided
+	// Setting proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	// Pre-warm response pools
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		cohereResponsePool.Put(&CohereChatResponse{})

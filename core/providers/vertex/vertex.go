@@ -76,6 +76,7 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
+	client = providerUtils.ConfigureDialer(client)
 	return &VertexProvider{
 		logger:              logger,
 		client:              client,

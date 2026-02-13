@@ -50,9 +50,9 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 	// 	openAIResponsePool.Put(&schemas.BifrostResponse{})
 	// }
 
-	// Configure proxy if provided
+	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.openai.com"

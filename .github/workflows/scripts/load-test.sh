@@ -522,7 +522,7 @@ run_overhead_test() {
   echo ""
   log_info "Measuring Bifrost overhead (single instance, mocker at ${OVERHEAD_MOCKER_LATENCY_MS}ms latency)"
   log_info "Duration: ${OVERHEAD_DURATION}s at ${RATE} RPS, ~$(( RATE * OVERHEAD_MOCKER_LATENCY_MS / 1000 )) concurrent requests through Bifrost"
-  log_info "Overhead consists of: local network hop, JSON parsing/unparsing, plugins, and mocker jitter"
+  log_info "Overhead consists of: vegetta overhead and mocker timeout jitter"
   echo ""
 
   local target_file="${WORK_DIR}/vegeta-target.json"
@@ -616,7 +616,7 @@ EOF
   if [ "$failed" -eq 1 ]; then
     echo ""
     log_error "FAILED: Bifrost overhead exceeded tiered thresholds"
-    log_error "Overhead ignores the mocker jitter, local network request queuing. In real-world the P99 overhead will be approximately 100 microseconds."
+    log_error "Overhead  consists of: vegetta overhead and mocker timeout jitter. In real-world the P99 overhead will be approximately 100 microseconds."
     echo ""
     echo -e "${RED}| Bucket | Overhead (µs) | Threshold (µs) |${NC}"
     echo -e "${RED}|--------|---------------|----------------|${NC}"

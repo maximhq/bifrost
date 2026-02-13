@@ -84,7 +84,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	}
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = defaultInferenceBaseURL
 	}
