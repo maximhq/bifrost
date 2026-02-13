@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -211,6 +212,26 @@ var imageVariationParamsKnownFields = map[string]bool{
 	"user":            true,
 }
 
+// videoGenerationParamsKnownFields contains known fields for video generation requests
+// Based on VideoGenerationInput and VideoGenerationParameters structs
+var videoGenerationParamsKnownFields = map[string]bool{
+	"model":           true,
+	"prompt":          true,
+	"input_reference": true,
+	"seconds":         true,
+	"size":            true,
+	"negative_prompt": true,
+	"seed":            true,
+	"video_uri":       true,
+	"audio":           true,
+	"fallbacks":       true,
+}
+
+var videoRemixParamsKnownFields = map[string]bool{
+	"prompt":    true,
+	"fallbacks": true,
+}
+
 var transcriptionParamsKnownFields = map[string]bool{
 	"model":           true,
 	"file":            true,
@@ -324,6 +345,12 @@ type ImageVariationHTTPRequest struct {
 	BifrostParams
 }
 
+type VideoGenerationHTTPRequest struct {
+	*schemas.VideoGenerationInput
+	*schemas.VideoGenerationParameters
+	BifrostParams
+}
+
 // UnmarshalJSON unmarshals the responses request input
 func (r *ResponsesRequestInput) UnmarshalJSON(data []byte) error {
 	var str string
@@ -405,6 +432,17 @@ type TranscriptionRequest struct {
 	*schemas.TranscriptionInput
 	BifrostParams
 	*schemas.TranscriptionParameters
+}
+
+type VideoGenerationRequest struct {
+	*schemas.VideoGenerationInput
+	BifrostParams
+	*schemas.VideoGenerationParameters
+}
+type VideoRemixRequest struct {
+	*schemas.VideoGenerationInput
+	BifrostParams
+	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
 type CountTokensRequest struct {
@@ -598,6 +636,19 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
+	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
+
+	// Video API endpoints (parameterized routes need explicit request type middleware)
+	videoListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoListRequest)}, middlewares...)
+	videoRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoRetrieveRequest)}, middlewares...)
+	videoDownloadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDownloadRequest)}, middlewares...)
+	videoDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDeleteRequest)}, middlewares...)
+	videoRemixMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoRemixRequest)}, middlewares...)
+	r.GET("/v1/videos", lib.ChainMiddlewares(h.videoList, videoListMW...))
+	r.GET("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoRetrieve, videoRetrieveMW...))
+	r.GET("/v1/videos/{video_id}/content", lib.ChainMiddlewares(h.videoDownload, videoDownloadMW...))
+	r.DELETE("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoDelete, videoDeleteMW...))
+	r.POST("/v1/videos/{video_id}/remix", lib.ChainMiddlewares(h.videoRemix, videoRemixMW...))
 
 	// Batch API endpoints (parameterized routes need explicit request type middleware)
 	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
@@ -2066,6 +2117,333 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 
 	// Execute request (no streaming for variations)
 	resp, bifrostErr := h.client.ImageVariationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoGeneration handles POST /v1/videos - Processes video generation requests
+func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
+	var req VideoGenerationRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Create BifrostVideoGenerationRequest directly using segregated structure
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.VideoGenerationInput == nil || req.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
+		return
+	}
+
+	if req.VideoGenerationParameters == nil {
+		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.VideoGenerationParameters.ExtraParams = extraParams
+	}
+
+	bifrostReq := &schemas.BifrostVideoGenerationRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.VideoGenerationInput,
+		Params:    req.VideoGenerationParameters,
+		Fallbacks: fallbacks,
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		cancel()
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	resp, bifrostErr := h.client.VideoGenerationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoRetrieve handles GET /v1/videos/{video_id} - Retrieve a video generation job
+func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	provider := schemas.ModelProvider(idParts[1])
+
+	// Build Bifrost video retrieve request
+	bifrostVideoReq := &schemas.BifrostVideoRetrieveRequest{
+		Provider: provider,
+		ID:       idParts[0],
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoRetrieveRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoDownload handles GET /v1/videos/{video_id}/content - Download video content
+func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// take variant from query parameters
+	variant := string(ctx.QueryArgs().Peek("variant"))
+
+	// Build Bifrost video download request
+	bifrostVideoReq := &schemas.BifrostVideoDownloadRequest{
+		Provider: schemas.ModelProvider(idParts[1]),
+		ID:       idParts[0],
+	}
+
+	if variant != "" {
+		bifrostVideoReq.Variant = schemas.Ptr(schemas.VideoDownloadVariant(variant))
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoDownloadRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Set appropriate headers for binary download
+	ctx.Response.Header.Set("Content-Type", resp.ContentType)
+	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Content)))
+	ctx.Response.SetBody(resp.Content)
+}
+
+// videoList handles GET /v1/videos - List video generation jobs
+func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost video list request
+	bifrostVideoReq := &schemas.BifrostVideoListRequest{
+		Provider: schemas.ModelProvider(provider),
+	}
+
+	// Parse optional query parameters
+	if afterBytes := ctx.QueryArgs().Peek("after"); len(afterBytes) > 0 {
+		after := string(afterBytes)
+		bifrostVideoReq.After = &after
+	}
+
+	if limitBytes := ctx.QueryArgs().Peek("limit"); len(limitBytes) > 0 {
+		limit, err := strconv.Atoi(string(limitBytes))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "invalid limit parameter")
+			return
+		}
+		bifrostVideoReq.Limit = &limit
+	}
+
+	if orderBytes := ctx.QueryArgs().Peek("order"); len(orderBytes) > 0 {
+		order := string(orderBytes)
+		bifrostVideoReq.Order = &order
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoListRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoDelete handles DELETE /v1/videos/{video_id} - Delete a video generation job
+func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// Build Bifrost video delete request
+	bifrostVideoReq := &schemas.BifrostVideoDeleteRequest{
+		Provider: schemas.ModelProvider(idParts[1]),
+		ID:       idParts[0],
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoDeleteRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoRemix handles POST /v1/videos/{video_id}/remix - Remix an existing video
+func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// Parse request body
+	var req VideoRemixRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Validate prompt
+	if req.VideoGenerationInput == nil || req.VideoGenerationInput.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	provider := schemas.ModelProvider(idParts[1])
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), videoRemixParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.ExtraParams = extraParams
+	}
+
+	// Build Bifrost video remix request
+	bifrostVideoReq := &schemas.BifrostVideoRemixRequest{
+		Provider: provider,
+		ID:       idParts[0],
+		Input: &schemas.VideoGenerationInput{
+			Prompt: req.VideoGenerationInput.Prompt,
+		},
+		ExtraParams: req.ExtraParams,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoRemixRequest(bifrostCtx, bifrostVideoReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

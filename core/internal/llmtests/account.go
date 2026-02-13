@@ -50,6 +50,11 @@ type TestScenarios struct {
 	ImageEditStream        bool // Streaming image edit functionality
 	ImageVariation         bool // Image variation functionality
 	ImageVariationStream   bool // Streaming image variation functionality (if supported)
+	VideoGeneration        bool // Video generation functionality
+	VideoRetrieve          bool // Video retrieve functionality
+	VideoDownload          bool // Video download functionality
+	VideoList              bool // Video list functionality
+	VideoDelete            bool // Video delete functionality
 	BatchCreate            bool // Batch API create functionality
 	BatchList              bool // Batch API list functionality
 	BatchRetrieve          bool // Batch API retrieve functionality
@@ -105,6 +110,7 @@ type ComprehensiveTestConfig struct {
 	ImageEditFallbacks       []schemas.Fallback     // Fallbacks for image editing
 	ImageVariationModel      string                 // Model for image variation
 	ImageVariationFallbacks  []schemas.Fallback     // Fallbacks for image variation
+	VideoGenerationModel     string                 // Model for video generation
 	ExternalTTSProvider      schemas.ModelProvider  // External TTS provider to use for testing
 	ExternalTTSModel         string                 // External TTS model to use for testing
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
@@ -147,6 +153,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.XAI,
 		schemas.Replicate,
 		schemas.VLLM,
+		schemas.Runway,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -255,6 +262,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 						"o1":                     "o1",
 						"gpt-image-1":            "gpt-image-1",
 						"text-embedding-ada-002": "text-embedding-ada-002",
+						"sora-2":                 "sora-2",
 					},
 					ClientID:     schemas.NewEnvVar("env.AZURE_CLIENT_ID"),
 					ClientSecret: schemas.NewEnvVar("env.AZURE_CLIENT_SECRET"),
@@ -278,6 +286,8 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.Vertex:
+		//https://aiplatform.googleapis.com/v1/projects/maxim-development-433105/locations/global/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation
+
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
@@ -286,6 +296,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				VertexKeyConfig: &schemas.VertexKeyConfig{
 					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
 					Region:          *schemas.NewEnvVar(getEnvWithDefault("VERTEX_REGION", "us-central1")),
+					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
+				},
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+			{
+				Value:  *schemas.NewEnvVar("env.VERTEX_API_KEY"),
+				Models: []string{"veo-3.1-generate-preview"},
+				Weight: 1.0,
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID:       *schemas.NewEnvVar("env.VERTEX_PROJECT_ID"),
+					Region:          *schemas.NewEnvVar("global"),
 					AuthCredentials: *schemas.NewEnvVar("env.VERTEX_CREDENTIALS"),
 				},
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -410,6 +431,15 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewEnvVar("env.REPLICATE_API_KEY"),
+				Models:         []string{},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.Runway:
+		return []schemas.Key{
+			{
+				Value:          *schemas.NewEnvVar("env.RUNWAY_API_KEY"),
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
@@ -714,6 +744,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			},
 		}, nil
 	case schemas.Replicate:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 300,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.Runway:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 300,

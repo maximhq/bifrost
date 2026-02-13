@@ -42,6 +42,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
 		RoutingEnginesUsed:          routingEnginesUsed,
 		MetadataParsed:              data.Metadata,
+		VideoGenerationInputParsed:  data.VideoGenerationInput,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
@@ -154,6 +155,51 @@ func (p *LoggerPlugin) updateLogEntry(
 				p.logger.Error("failed to serialize image generation output: %v", err)
 			} else {
 				updates["image_generation_output"] = tempEntry.ImageGenerationOutput
+			}
+		}
+
+		if data.VideoGenerationOutput != nil {
+			tempEntry.VideoGenerationOutputParsed = data.VideoGenerationOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize video generation output: %v", err)
+			} else {
+				updates["video_generation_output"] = tempEntry.VideoGenerationOutput
+			}
+		}
+
+		if data.VideoRetrieveOutput != nil {
+			tempEntry.VideoRetrieveOutputParsed = data.VideoRetrieveOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize video retrieve output: %v", err)
+			} else {
+				updates["video_retrieve_output"] = tempEntry.VideoRetrieveOutput
+			}
+		}
+
+		if data.VideoDownloadOutput != nil {
+			tempEntry.VideoDownloadOutputParsed = data.VideoDownloadOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize video download output: %v", err)
+			} else {
+				updates["video_download_output"] = tempEntry.VideoDownloadOutput
+			}
+		}
+
+		if data.VideoListOutput != nil {
+			tempEntry.VideoListOutputParsed = data.VideoListOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize video list output: %v", err)
+			} else {
+				updates["video_list_output"] = tempEntry.VideoListOutput
+			}
+		}
+
+		if data.VideoDeleteOutput != nil {
+			tempEntry.VideoDeleteOutputParsed = data.VideoDeleteOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize video delete output: %v", err)
+			} else {
+				updates["video_delete_output"] = tempEntry.VideoDeleteOutput
 			}
 		}
 
@@ -683,6 +729,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		nil,
 		nil,
 		nil,
+		nil,
 	)
 
 	// For cache misses, combine base cost with embedding cost if available
@@ -724,6 +771,7 @@ func (p *LoggerPlugin) calculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCa
 		},
 		schemas.EmbeddingRequest,
 		false,
+		nil,
 		nil,
 		nil,
 		nil,

@@ -40,7 +40,8 @@ func TestGemini(t *testing.T) {
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel: "gemini-3-pro-preview",
+		ReasoningModel:       "gemini-3-pro-preview",
+		VideoGenerationModel: "veo-3.1-generate-preview",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -58,6 +59,9 @@ func TestGemini(t *testing.T) {
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
 			ImageEdit:             true,
+			VideoGeneration:       true,
+			VideoRetrieve:         true,
+			VideoDownload:         true,
 			FileBase64:            true,
 			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,
@@ -195,7 +199,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 // for both streaming and non-streaming responses to enable round-trip compatibility
 func TestThoughtSignatureInToolCalls(t *testing.T) {
 	thoughtSig := []byte{0x01, 0x02, 0x03, 0x04, 0x05} // Sample signature
-	
+
 	tests := []struct {
 		name     string
 		response *gemini.GenerateContentResponse
@@ -277,9 +281,9 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 
 			require.NotNil(t, bifrostResp, "Response should not be nil")
 			require.NotEmpty(t, bifrostResp.Choices, "Should have choices")
-			
+
 			choice := bifrostResp.Choices[0]
-			
+
 			// Get tool calls from appropriate response type
 			var toolCalls []schemas.ChatAssistantMessageToolCall
 			if tt.isStream {
@@ -297,15 +301,15 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			require.Len(t, toolCalls, 1, "Should have exactly one tool call")
 			toolCall := toolCalls[0]
 			require.NotNil(t, toolCall.ID, "Tool call must have ID")
-			
+
 			// Verify thought signature is embedded in the ID (format: "call_id_ts_base64sig")
 			assert.Contains(t, *toolCall.ID, "_ts_", "Tool call ID must contain thought signature separator")
-			
+
 			// Verify we can extract the thought signature from the ID for round-trip
 			parts := strings.SplitN(*toolCall.ID, "_ts_", 2)
 			require.Len(t, parts, 2, "Should be able to split ID into base and signature")
 			assert.NotEmpty(t, parts[1], "Signature part should not be empty")
-			
+
 			// Verify reasoning details also contain the signature (backward compatibility)
 			var reasoningDetails []schemas.ChatReasoningDetails
 			if tt.isStream {
@@ -313,7 +317,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			} else {
 				reasoningDetails = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ReasoningDetails
 			}
-			
+
 			assert.NotEmpty(t, reasoningDetails, "Should have reasoning details")
 			foundEncrypted := false
 			for _, detail := range reasoningDetails {

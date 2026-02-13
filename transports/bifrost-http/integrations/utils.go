@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -367,4 +368,23 @@ func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	}
 	// Default to API mode
 	return true
+}
+
+// ParseProviderScopedVideoID parses a provider-scoped video ID in the form "id:provider".
+// The ID portion is automatically URL-decoded to restore the original ID.
+func ParseProviderScopedVideoID(videoID string) (schemas.ModelProvider, string, error) {
+	parts := strings.SplitN(videoID, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("video_id must be in id:provider format")
+	}
+	provider := schemas.ModelProvider(parts[1])
+	rawID := parts[0]
+
+	// URL decode the ID to restore original characters (e.g., %2F -> /)
+	// This handles IDs from all providers that may contain special characters
+	if decoded, err := url.PathUnescape(rawID); err == nil {
+		rawID = decoded
+	}
+
+	return provider, rawID, nil
 }

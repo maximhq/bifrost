@@ -48,6 +48,11 @@ type UpdateLogData struct {
 	SpeechOutput          *schemas.BifrostSpeechResponse          // For non-streaming speech responses
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
 	ImageGenerationOutput *schemas.BifrostImageGenerationResponse // For non-streaming image generation responses
+	VideoGenerationOutput *schemas.BifrostVideoGenerationResponse // For non-streaming video generation responses
+	VideoRetrieveOutput   *schemas.BifrostVideoGenerationResponse // For non-streaming video retrieve responses
+	VideoDownloadOutput   *schemas.BifrostVideoDownloadResponse   // For non-streaming video download responses
+	VideoListOutput       *schemas.BifrostVideoListResponse       // For non-streaming video list responses
+	VideoDeleteOutput     *schemas.BifrostVideoDeleteResponse     // For non-streaming video delete responses
 	RawRequest            interface{}
 	RawResponse           interface{}
 }
@@ -94,6 +99,7 @@ type InitialLogData struct {
 	SpeechInput           *schemas.SpeechInput
 	TranscriptionInput    *schemas.TranscriptionInput
 	ImageGenerationInput  *schemas.ImageGenerationInput
+	VideoGenerationInput  *schemas.VideoGenerationInput
 	Tools                 []schemas.ChatTool
 	Metadata              map[string]interface{}
 }
@@ -346,6 +352,38 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 			initialData.Params = req.ImageGenerationRequest.Params
 			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
+		case schemas.VideoGenerationRequest:
+			initialData.Params = req.VideoGenerationRequest.Params
+			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
+		case schemas.VideoRemixRequest:
+			initialData.Params = map[string]interface{}{
+				"video_id": req.VideoRemixRequest.ID,
+			}
+			initialData.VideoGenerationInput = req.VideoRemixRequest.Input
+		case schemas.VideoRetrieveRequest:
+			initialData.Params = map[string]interface{}{
+				"video_id": req.VideoRetrieveRequest.ID,
+			}
+		case schemas.VideoDownloadRequest:
+			initialData.Params = map[string]interface{}{
+				"video_id": req.VideoDownloadRequest.ID,
+			}
+		case schemas.VideoListRequest:
+			params := map[string]interface{}{}
+			if req.VideoListRequest.After != nil {
+				params["after"] = *req.VideoListRequest.After
+			}
+			if req.VideoListRequest.Limit != nil {
+				params["limit"] = *req.VideoListRequest.Limit
+			}
+			if req.VideoListRequest.Order != nil {
+				params["order"] = *req.VideoListRequest.Order
+			}
+			initialData.Params = params
+		case schemas.VideoDeleteRequest:
+			initialData.Params = map[string]interface{}{
+				"video_id": req.VideoDeleteRequest.ID,
+			}
 		}
 	}
 
@@ -417,6 +455,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 					ParamsParsed:                msg.InitialData.Params,
 					ToolsParsed:                 msg.InitialData.Tools,
 					MetadataParsed:              msg.InitialData.Metadata,
+					VideoGenerationInputParsed:  msg.InitialData.VideoGenerationInput,
 					Status:                      "processing",
 					Stream:                      false, // Initially false, will be updated if streaming
 					CreatedAt:                   msg.Timestamp,
@@ -712,6 +751,25 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 					if result.ImageGenerationResponse != nil {
 						updateData.ImageGenerationOutput = result.ImageGenerationResponse
+					}
+					if result.VideoGenerationResponse != nil {
+						switch requestType {
+						case schemas.VideoGenerationRequest:
+							updateData.VideoGenerationOutput = result.VideoGenerationResponse
+						case schemas.VideoRetrieveRequest:
+							updateData.VideoRetrieveOutput = result.VideoGenerationResponse
+						case schemas.VideoRemixRequest:
+							updateData.VideoGenerationOutput = result.VideoGenerationResponse
+						}
+					}
+					if result.VideoDownloadResponse != nil {
+						updateData.VideoDownloadOutput = result.VideoDownloadResponse
+					}
+					if result.VideoListResponse != nil {
+						updateData.VideoListOutput = result.VideoListResponse
+					}
+					if result.VideoDeleteResponse != nil {
+						updateData.VideoDeleteOutput = result.VideoDeleteResponse
 					}
 				}
 			}

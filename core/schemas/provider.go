@@ -202,6 +202,12 @@ type AllowedRequests struct {
 	ImageEdit             bool `json:"image_edit"`
 	ImageEditStream       bool `json:"image_edit_stream"`
 	ImageVariation        bool `json:"image_variation"`
+	VideoGeneration       bool `json:"video_generation"`
+	VideoRetrieve         bool `json:"video_retrieve"`
+	VideoDownload         bool `json:"video_download"`
+	VideoDelete           bool `json:"video_delete"`
+	VideoList             bool `json:"video_list"`
+	VideoRemix            bool `json:"video_remix"`
 	BatchCreate           bool `json:"batch_create"`
 	BatchList             bool `json:"batch_list"`
 	BatchRetrieve         bool `json:"batch_retrieve"`
@@ -268,6 +274,18 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ImageEditStream
 	case ImageVariationRequest:
 		return ar.ImageVariation
+	case VideoGenerationRequest:
+		return ar.VideoGeneration
+	case VideoRetrieveRequest:
+		return ar.VideoRetrieve
+	case VideoDownloadRequest:
+		return ar.VideoDownload
+	case VideoDeleteRequest:
+		return ar.VideoDelete
+	case VideoListRequest:
+		return ar.VideoList
+	case VideoRemixRequest:
+		return ar.VideoRemix
 	case BatchCreateRequest:
 		return ar.BatchCreate
 	case BatchListRequest:
@@ -421,6 +439,18 @@ type Provider interface {
 		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
 	// ImageVariation performs an image variation request
 	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	// VideoGeneration performs a video generation request
+	VideoGeneration(ctx *BifrostContext, key Key, request *BifrostVideoGenerationRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	// VideoRetrieve retrieves a video from the provider
+	VideoRetrieve(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	// VideoDownload downloads a video from the provider
+	VideoDownload(ctx *BifrostContext, key Key, request *BifrostVideoDownloadRequest) (*BifrostVideoDownloadResponse, *BifrostError)
+	// VideoDelete deletes a video from the provider
+	VideoDelete(ctx *BifrostContext, key Key, request *BifrostVideoDeleteRequest) (*BifrostVideoDeleteResponse, *BifrostError)
+	// VideoList lists videos from the provider
+	VideoList(ctx *BifrostContext, key Key, request *BifrostVideoListRequest) (*BifrostVideoListResponse, *BifrostError)
+	// VideoRemix remixes a video from the provider
+	VideoRemix(ctx *BifrostContext, key Key, request *BifrostVideoRemixRequest) (*BifrostVideoGenerationResponse, *BifrostError)
 	// BatchCreate creates a new batch job for asynchronous processing
 	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
 	// BatchList lists batch jobs

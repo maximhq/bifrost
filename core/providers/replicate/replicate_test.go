@@ -30,6 +30,7 @@ func TestReplicate(t *testing.T) {
 		TextModel:            "openai/gpt-4.1-mini",
 		ImageGenerationModel: "black-forest-labs/flux-dev",
 		ImageEditModel:       "black-forest-labs/flux-dev",
+		VideoGenerationModel: "openai/sora-2-pro",
 		FileExtraParams: map[string]interface{}{
 			"owner":  os.Getenv("REPLICATE_OWNER"),
 			"expiry": 1830297599,
@@ -62,6 +63,9 @@ func TestReplicate(t *testing.T) {
 			FileRetrieve:          true,
 			FileDelete:            true,
 			FileContent:           false,
+			VideoGeneration:       true,
+			VideoRetrieve:         true,
+			VideoDownload:         true,
 		},
 	}
 

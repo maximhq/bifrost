@@ -1484,6 +1484,322 @@ func (provider *AzureProvider) ImageVariation(ctx *schemas.BifrostContext, key s
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// VideoGeneration creates a video using Azure's OpenAI-compatible Sora API.
+// This delegates to the OpenAI handler with Azure-specific URL and authentication.
+func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	deployment, bifrostErr := provider.getModelDeployment(key, request.Model)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	// Build Azure URL for OpenAI-compatible video generation endpoint
+	url := fmt.Sprintf("%s/openai/v1/videos", endpoint)
+
+	response, bifrostErr := openai.HandleOpenAIVideoGenerationRequest(
+		ctx,
+		provider.client,
+		url,
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.ModelDeployment = deployment
+
+	return response, nil
+}
+
+// VideoRetrieve retrieves the status of a video from Azure's OpenAI-compatible API.
+func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build Azure URL - use deployment if available, otherwise use base path
+	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	// Get authentication headers
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, openai.ParseOpenAIError(resp, schemas.VideoRetrieveRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Parse OpenAI's video response (Azure uses same schema)
+	response := &schemas.BifrostVideoGenerationResponse{}
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if response.ID != "" {
+		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	}
+	if response.RemixedFromVideoID != nil && *response.RemixedFromVideoID != "" {
+		remixID := providerUtils.AddVideoIDProviderSuffix(*response.RemixedFromVideoID, providerName)
+		response.RemixedFromVideoID = &remixID
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.VideoRetrieveRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
+// VideoDownload downloads video content from Azure's OpenAI-compatible API.
+func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", providerName)
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build Azure URL
+	url := fmt.Sprintf("%s/openai/v1/videos/%s/content", endpoint, videoID)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodGet)
+
+	// Get authentication headers
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, openai.ParseOpenAIError(resp, schemas.VideoDownloadRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Get content type from response
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		// Default to video/mp4 if not specified
+		contentType = "video/mp4"
+	}
+
+	// Create response
+	response := &schemas.BifrostVideoDownloadResponse{
+		VideoID:     request.ID,
+		Content:     append([]byte(nil), body...),
+		ContentType: contentType,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.VideoDownloadRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}
+
+	return response, nil
+}
+
+// VideoDelete deletes a video from Azure's OpenAI-compatible API.
+func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", providerName)
+	}
+
+	// Build Azure URL
+	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID)
+
+	response, bifrostErr := openai.HandleOpenAIVideoDeleteRequest(
+		ctx,
+		provider.client,
+		url,
+		videoID,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		providerName,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return response, nil
+}
+
+// VideoList lists videos from Azure's OpenAI-compatible API.
+func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	if err := provider.validateKeyConfig(key); err != nil {
+		return nil, err
+	}
+
+	apiVersion := key.AzureKeyConfig.APIVersion
+	if apiVersion == nil || apiVersion.GetValue() == "" {
+		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
+	}
+
+	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
+	}
+
+	// Build Azure URL
+	baseURL := fmt.Sprintf("%s/openai/v1/videos", endpoint)
+
+	response, bifrostErr := openai.HandleOpenAIVideoListRequest(
+		ctx,
+		provider.client,
+		baseURL,
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return response, nil
+}
+
+// VideoRemix is not supported by Azure provider.
+func (provider *AzureProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
+}
+
 // validateKeyConfig validates the key configuration.
 // It checks if the key config is set, the endpoint is set, and the deployments are set.
 // Returns an error if any of the checks fail.
