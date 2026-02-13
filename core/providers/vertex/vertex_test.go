@@ -34,6 +34,7 @@ func TestVertex(t *testing.T) {
 		ReasoningModel:       "claude-4.5-haiku",
 		ImageGenerationModel: "gemini-2.5-flash-image",
 		ImageEditModel:       "imagen-3.0-capability-001",
+		VideoGenerationModel: "veo-3.1-generate-preview",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -49,6 +50,9 @@ func TestVertex(t *testing.T) {
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
 			ImageEdit:             true,
+			VideoGeneration:       true,
+			VideoRetrieve:         true,
+			VideoDownload:         true,
 			MultipleImages:        true,
 			CompleteEnd2End:       true,
 			FileBase64:            true,

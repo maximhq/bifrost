@@ -58,6 +58,7 @@ providers:
     file_delete: "gpt-4o-mini"
     file_content: "gpt-4o-mini"
     count_tokens: "gpt-4o-mini"
+    video: "sora-2-pro"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -126,6 +127,7 @@ providers:
     image_generation: "gemini-2.5-flash-image"
     image_edit: "gemini-3-pro-image-preview"
     imagen: "imagen-4.0-generate-001"
+    video: "veo-3.1-generate-preview"
     streaming: "gemini-3-flash-preview"
     batch_create: "gemini-2.5-flash"
     batch_inline: "gemini-2.5-flash"
@@ -158,7 +160,7 @@ providers:
     imagen: "imagen-4.0-generate-001"
     streaming: "gemini-2.5-flash"
     count_tokens: "claude-sonnet-4-5"
-
+    video: "veo-3.1-generate-preview"
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -198,6 +200,14 @@ providers:
   
   nebius:
     image_generation: "black-forest-labs/flux-schnell"
+  
+  replicate:
+    video: "openai/sora-2-pro"
+
+  runway:
+    video: "gen4.5"
+    
+    
 
 # Provider availability configuration
 # Maps provider names to their API key environment variables
@@ -212,6 +222,8 @@ provider_api_keys:
   huggingface: "HUGGING_FACE_API_KEY"
   nebius: "NEBIUS_API_KEY"
   azure: "AZURE_API_KEY"
+  replicate: "REPLICATE_API_KEY"
+  runway: "RUNWAY_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -258,6 +270,7 @@ provider_scenarios:
     file_delete: true
     file_content: true
     count_tokens: true
+    video_generation: true
 
   azure:
     simple_chat: true
@@ -389,6 +402,7 @@ provider_scenarios:
     imagen: true  # Imagen via :predict endpoint
     imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
+    video_generation: true
     prompt_caching: false
     citations: false
     list_models: true
@@ -436,6 +450,7 @@ provider_scenarios:
     thinking: true
     prompt_caching: false
     list_models: true
+    video_generation: true
     responses: true
     responses_image: true
     text_completion: false
@@ -544,6 +559,12 @@ provider_scenarios:
   
   nebius:
     image_generation: true
+  
+  replicate:
+    video_generation: true
+  
+  runway:
+    video_generation: true
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types
@@ -593,6 +614,7 @@ scenario_capabilities:
   file_delete: "file_delete"  # Uses file_delete model directly
   file_content: "file_content"  # Uses file_content model directly
   count_tokens: "chat"
+  video_generation: "video"
 
 # Model capabilities matrix
 model_capabilities:

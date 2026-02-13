@@ -67,6 +67,12 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunImageEditStreamTest,
 		RunImageVariationTest,
 		RunImageVariationStreamTest,
+		RunVideoGenerationTest,
+		RunVideoRetrieveTest,
+		RunVideoDownloadTest,
+		RunVideoListTest,
+		RunVideoDeleteTest,
+		RunVideoUnsupportedTest,
 		RunBatchCreateTest,
 		RunBatchListTest,
 		RunBatchRetrieveTest,
@@ -149,6 +155,16 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ImageEditStream", testConfig.Scenarios.ImageEditStream && testConfig.ImageEditModel != ""},
 		{"ImageVariation", testConfig.Scenarios.ImageVariation && testConfig.ImageVariationModel != ""},
 		{"ImageVariationStream", testConfig.Scenarios.ImageVariationStream && testConfig.ImageVariationModel != ""},
+		{"VideoGeneration", testConfig.Scenarios.VideoGeneration && testConfig.VideoGenerationModel != ""},
+		{"VideoRetrieve", testConfig.Scenarios.VideoRetrieve && testConfig.VideoGenerationModel != ""},
+		{"VideoDownload", testConfig.Scenarios.VideoDownload && testConfig.VideoGenerationModel != ""},
+		{"VideoList", testConfig.Scenarios.VideoList},
+		{"VideoDelete", testConfig.Scenarios.VideoDelete},
+		{"VideoUnsupported", !testConfig.Scenarios.VideoGeneration &&
+			!testConfig.Scenarios.VideoRetrieve &&
+			!testConfig.Scenarios.VideoDownload &&
+			!testConfig.Scenarios.VideoList &&
+			!testConfig.Scenarios.VideoDelete},
 		{"BatchCreate", testConfig.Scenarios.BatchCreate},
 		{"BatchList", testConfig.Scenarios.BatchList},
 		{"BatchRetrieve", testConfig.Scenarios.BatchRetrieve},

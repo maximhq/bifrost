@@ -293,6 +293,26 @@ type ImageGenerationStreamResponseConverter func(ctx *schemas.BifrostContext, re
 // It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
 type ImageEditResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
 
+// VideoGenerationResponseConverter is a function that converts BifrostVideoGenerationResponse to integration-specific format.
+// It takes a BifrostVideoGenerationResponse and returns the format expected by the specific integration.
+type VideoGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error)
+
+// VideoDownloadResponseConverter is a function that converts BifrostVideoDownloadResponse to integration-specific format.
+// It takes a BifrostVideoDownloadResponse and returns the format expected by the specific integration.
+type VideoDownloadResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDownloadResponse) (interface{}, error)
+
+// VideoRetrieveAsDownloadConverter is a function that converts BifrostVideoGenerationResponse to integration-specific format.
+// It takes a BifrostVideoGenerationResponse and returns the format expected by the specific integration.
+type VideoRetrieveAsDownloadConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error)
+
+// VideoDeleteResponseConverter is a function that converts BifrostVideoDeleteResponse to integration-specific format.
+// It takes a BifrostVideoDeleteResponse and returns the format expected by the specific integration.
+type VideoDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDeleteResponse) (interface{}, error)
+
+// VideoListResponseConverter is a function that converts BifrostVideoListResponse to integration-specific format.
+// It takes a BifrostVideoListResponse and returns the format expected by the specific integration.
+type VideoListResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoListResponse) (interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
@@ -387,6 +407,10 @@ type RouteConfig struct {
 	SpeechResponseConverter                SpeechResponseConverter                // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter         TranscriptionResponseConverter         // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
 	ImageGenerationResponseConverter       ImageGenerationResponseConverter       // Function to convert BifrostImageGenerationResponse to integration format (SHOULD NOT BE NIL)
+	VideoGenerationResponseConverter       VideoGenerationResponseConverter       // Function to convert BifrostVideoGenerationResponse to integration format (SHOULD NOT BE NIL)
+	VideoDownloadResponseConverter         VideoDownloadResponseConverter         // Function to convert BifrostVideoDownloadResponse to integration format (SHOULD NOT BE NIL)
+	VideoDeleteResponseConverter           VideoDeleteResponseConverter           // Function to convert BifrostVideoDeleteResponse to integration format (SHOULD NOT BE NIL)
+	VideoListResponseConverter             VideoListResponseConverter             // Function to convert BifrostVideoListResponse to integration format (SHOULD NOT BE NIL)
 	BatchCreateResponseConverter           BatchCreateResponseConverter           // Function to convert BifrostBatchCreateResponse to integration format
 	BatchListResponseConverter             BatchListResponseConverter             // Function to convert BifrostBatchListResponse to integration format
 	BatchRetrieveResponseConverter         BatchRetrieveResponseConverter         // Function to convert BifrostBatchRetrieveResponse to integration format
@@ -997,6 +1021,178 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageVariationResponse)
+	case bifrostReq.VideoGenerationRequest != nil:
+		videoGenerationResponse, bifrostErr := g.client.VideoGenerationRequest(bifrostCtx, bifrostReq.VideoGenerationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoGenerationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoGenerationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoGenerationResponse)
+	case bifrostReq.VideoRetrieveRequest != nil:
+		videoRetrieveResponse, bifrostErr := g.client.VideoRetrieveRequest(bifrostCtx, bifrostReq.VideoRetrieveRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoRetrieveResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoRetrieveResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoRetrieveResponse)
+	case bifrostReq.VideoDownloadRequest != nil:
+		videoDownloadResponse, bifrostErr := g.client.VideoDownloadRequest(bifrostCtx, bifrostReq.VideoDownloadRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoDownloadResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoDownloadResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoDownloadResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDownloadResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoDownloadResponseConverter(bifrostCtx, videoDownloadResponse)
+
+		// If converter returns binary content, write directly with content-type.
+		if err == nil {
+			if rawBytes, ok := response.([]byte); ok {
+				contentType := videoDownloadResponse.ContentType
+				if contentType == "" {
+					contentType = "application/octet-stream"
+				}
+				ctx.Response.Header.Set("Content-Type", contentType)
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
+		}
+	case bifrostReq.VideoDeleteRequest != nil:
+		videoDeleteResponse, bifrostErr := g.client.VideoDeleteRequest(bifrostCtx, bifrostReq.VideoDeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoDeleteResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoDeleteResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoDeleteResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDeleteResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoDeleteResponseConverter(bifrostCtx, videoDeleteResponse)
+	case bifrostReq.VideoRemixRequest != nil:
+		videoRemixResponse, bifrostErr := g.client.VideoRemixRequest(bifrostCtx, bifrostReq.VideoRemixRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoRemixResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoRemixResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoRemixResponse)
+	case bifrostReq.VideoListRequest != nil:
+
+		// extract provider from header
+		providerHeader := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-video-list-provider")))
+		if providerHeader != "" {
+			bifrostReq.VideoListRequest.Provider = schemas.ModelProvider(providerHeader)
+		} else if bifrostReq.VideoListRequest.Provider == "" {
+			bifrostReq.VideoListRequest.Provider = schemas.OpenAI
+		}
+		videoListResponse, bifrostErr := g.client.VideoListRequest(bifrostCtx, bifrostReq.VideoListRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoListResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoListResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoListResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoListResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoListResponseConverter(bifrostCtx, videoListResponse)
+
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {

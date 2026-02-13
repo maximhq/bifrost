@@ -91,6 +91,9 @@ type PricingEntry struct {
 	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
 	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
 	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	// Video generation pricing
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced

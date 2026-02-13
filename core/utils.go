@@ -266,6 +266,17 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileDeleteRequest
 }
 
+// isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
+func isModellessVideoRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
+		schemas.VideoDeleteRequest:
+		return true
+	default:
+		return false
+	}
+}
+
 // IsFinalChunk returns true if the given context is a final chunk.
 func IsFinalChunk(ctx *schemas.BifrostContext) bool {
 	if ctx == nil {

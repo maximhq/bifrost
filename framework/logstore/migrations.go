@@ -151,6 +151,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddHistogramCompositeIndexes(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVideoColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1442,6 +1445,65 @@ func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB) err
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding histogram covering index: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVideoColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_video_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			videoColumns := []string{
+				"video_generation_input",
+				"video_generation_output",
+				"video_retrieve_output",
+				"video_download_output",
+				"video_list_output",
+				"video_delete_output",
+			}
+
+			for _, column := range videoColumns {
+				if !migrator.HasColumn(&Log{}, column) {
+					if err := migrator.AddColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			videoColumns := []string{
+				"video_generation_input",
+				"video_generation_output",
+				"video_retrieve_output",
+				"video_download_output",
+				"video_list_output",
+				"video_delete_output",
+			}
+
+			for _, column := range videoColumns {
+				if migrator.HasColumn(&Log{}, column) {
+					if err := migrator.DropColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding video columns: %s", err.Error())
 	}
 	return nil
 }
