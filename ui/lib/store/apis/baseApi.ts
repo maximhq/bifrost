@@ -175,6 +175,7 @@ export const baseApi = createApi({
 		"RoutingRules",
 		"MCPToolGroups",
 		"AuditLogs",
+		"UserGovernance",
 	],
 	endpoints: () => ({}),
 });

@@ -73,7 +73,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) { }
+		} catch (ignored) {}
 	}
 
 	// Extract audio format from request params
@@ -89,9 +89,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							{log.id && (
 								<p className="text-md max-w-full truncate">
 									Request ID:{" "}
-									<code className="text-normal cursor-pointer" onClick={() => {
-										navigator.clipboard.writeText(log.id).then(() => toast.success("Request ID copied")).catch(() => toast.error("Failed to copy"));
-									}}>
+									<code
+										className="text-normal cursor-pointer"
+										onClick={() => {
+											navigator.clipboard
+												.writeText(log.id)
+												.then(() => toast.success("Request ID copied"))
+												.catch(() => toast.error("Failed to copy"));
+										}}
+									>
 										{log.id}
 									</code>
 								</p>
@@ -99,11 +105,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
 								{log.status}
 							</Badge>
-							{log.metadata?.isAsyncRequest && (
-								<Badge variant="outline" className="bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200 uppercase">
+							{log.metadata?.isAsyncRequest ? (
+								<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
 									Async
 								</Badge>
-							)}
+							) : null}
 						</SheetTitle>
 					</div>
 					<AlertDialog>
@@ -184,8 +190,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-											} rounded-sm px-3 py-1`}
+										className={`${
+											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+										} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -198,18 +205,25 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 							{log.routing_engines_used && log.routing_engines_used.length > 0 && (
-								<LogEntryDetailsView className="w-full" label="Routing Engines Used" value={
-									<div className="flex flex-wrap gap-2">
-										{log.routing_engines_used.map((engine) => (
-											<Badge key={engine} className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}>
-												<div className="flex items-center gap-2">
-													{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.()}
-													<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
-												</div>
-											</Badge>
-										))}
-									</div>
-								} />
+								<LogEntryDetailsView
+									className="w-full"
+									label="Routing Engines Used"
+									value={
+										<div className="flex flex-wrap gap-2">
+											{log.routing_engines_used.map((engine) => (
+												<Badge
+													key={engine}
+													className={RoutingEngineUsedColors[engine as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}
+												>
+													<div className="flex items-center gap-2">
+														{RoutingEngineUsedIcons[engine as keyof typeof RoutingEngineUsedIcons]?.()}
+														<span>{RoutingEngineUsedLabels[engine as keyof typeof RoutingEngineUsedLabels] ?? engine}</span>
+													</div>
+												</Badge>
+											))}
+										</div>
+									}
+								/>
 							)}
 							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
 
@@ -349,9 +363,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<>
 									<DottedSeparator />
 									<div className="space-y-4">
-										<BlockHeader
-											title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`}
-										/>
+										<BlockHeader title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`} />
 										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 											{log.cache_debug.cache_hit ? (
 												<>
