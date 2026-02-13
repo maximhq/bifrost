@@ -48,7 +48,7 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	keys := config.Keys
 
 	if baseAccount.store.ClientConfig.EnableGovernance {
-		if v := ctx.Value(schemas.BifrostContextKey("bf-governance-include-only-keys")); v != nil {
+		if v := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys); v != nil {
 			if includeOnlyKeys, ok := v.([]string); ok {
 				if len(includeOnlyKeys) == 0 {
 					// header present but empty means "no keys allowed"

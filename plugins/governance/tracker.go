@@ -22,6 +22,7 @@ type UsageUpdate struct {
 	TokensUsed int64                 `json:"tokens_used"`
 	Cost       float64               `json:"cost"` // Cost in dollars
 	RequestID  string                `json:"request_id"`
+	UserID     string                `json:"user_id,omitempty"` // User ID for enterprise user-level governance
 
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
@@ -96,7 +97,21 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		}
 	}
 
-	// 3. Now handle virtual key-level updates (if virtual key exists)
+	// 3. Update user-level governance (enterprise-only, before VK-level)
+	if update.UserID != "" {
+		// Update user rate limit usage
+		if err := t.store.UpdateUserRateLimitUsageInMemory(ctx, update.UserID, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update user rate limit usage for user %s: %v", update.UserID, err)
+		}
+		// Update user budget usage
+		if shouldUpdateBudget && update.Cost > 0 {
+			if err := t.store.UpdateUserBudgetUsageInMemory(ctx, update.UserID, update.Cost); err != nil {
+				t.logger.Error("failed to update user budget usage for user %s: %v", update.UserID, err)
+			}
+		}
+	}
+
+	// 4. Now handle virtual key-level updates (if virtual key exists)
 	if update.VirtualKey == "" {
 		// No virtual key, provider-level and model-level updates already done above
 		return
