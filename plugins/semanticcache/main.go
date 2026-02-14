@@ -657,6 +657,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	return res, nil, nil
 }
 
+// WaitForPendingOperations blocks until all pending cache operations (goroutines) complete.
+// This is useful in tests to ensure cache entries are stored before checking for cache hits.
+func (plugin *Plugin) WaitForPendingOperations() {
+	plugin.waitGroup.Wait()
+}
+
 // Cleanup performs cleanup operations for the semantic cache plugin.
 // It removes all cached entries created by this plugin from the VectorStore only if CleanUpOnShutdown is true.
 // Identifies cache entries by the presence of semantic cache-specific fields (request_hash, cache_key).

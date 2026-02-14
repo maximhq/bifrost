@@ -1,0 +1,242 @@
+---
+title: "Bifrost AI Gateway"
+description: "The fastest way to build AI applications that never go down. A high-performance AI gateway unifying 20+ providers through a single OpenAI-compatible API."
+icon: "bridge"
+---
+
+Bifrost is a high-performance AI gateway that unifies access to 20+ providers OpenAI, Anthropic, AWS Bedrock, Google Vertex, Azure, and more, through a unified API. Deploy in seconds with zero configuration and get automatic failover, load balancing, semantic caching, and enterprise-grade governance. In sustained benchmarks at 5,000 requests per second, Bifrost adds only **11 µs** of overhead per request.
+
+<Frame>
+<img src="/media/architecture.png" alt="Bifrost architecture diagram" width="100%" />
+</Frame>
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Gateway setup" icon="server" href="/quickstart/gateway/setting-up">
+    Deploy the HTTP API gateway with a built-in web UI for visual configuration and real-time monitoring
+  </Card>
+  <Card title="Go SDK" icon="code" href="/quickstart/go-sdk/setting-up">
+    Integrate directly into your Go application for maximum performance and control
+  </Card>
+</CardGroup>
+
+---
+
+## Open source features
+
+<CardGroup cols={2}>
+  <Card title="Drop-in Replacement" icon="shuffle" href="/features/drop-in-replacement">
+    Replace existing AI SDK connections by changing just the base URL. Keep your code, gain fallbacks and governance.
+  </Card>
+  <Card title="Automatic Fallbacks" icon="list-check" href="/features/fallbacks">
+    Seamless failover between providers and models. When your primary provider fails, Bifrost switches to backups automatically.
+  </Card>
+  <Card title="Load Balancing" icon="scale-balanced" href="/features/keys-management">
+    Intelligent API key distribution with weighted load balancing, model-specific filtering, and automatic failover.
+  </Card>
+  <Card title="Virtual Keys" icon="key" href="/features/governance/virtual-keys">
+    The primary governance entity. Control access permissions, budgets, rate limits, and routing per consumer.
+  </Card>
+  <Card title="Routing" icon="arrow-progress" href="/features/governance/routing">
+    Direct requests to specific models, providers, and keys. Implement weighted strategies and automatic fallbacks.
+  </Card>
+  <Card title="Budget & Rate Limits" icon="money-bills" href="/features/governance/budget-and-limits">
+    Hierarchical cost control with budgets and rate limits at virtual key, team, and customer levels.
+  </Card>
+  <Card title="MCP Tool Filtering" icon="grid-2" href="/features/governance/mcp-tools">
+    Control which MCP tools are available per virtual key with strict allow-lists.
+  </Card>
+  <Card title="Semantic Caching" icon="database" href="/features/semantic-caching">
+    Intelligent response caching based on semantic similarity. Reduce costs and latency for similar queries.
+  </Card>
+  <Card title="Built-in Observability" icon="cube" href="/features/observability/default">
+    Monitor every AI request in real-time. Track performance, debug issues, and analyze usage patterns.
+  </Card>
+  <Card title="Prometheus Metrics" icon="chart-line" href="/features/observability/prometheus">
+    Native Prometheus metrics via scraping or Push Gateway for monitoring and alerting.
+  </Card>
+  <Card title="OpenTelemetry" icon="bolt" href="/features/observability/otel">
+    OTLP integration for distributed tracing with Grafana, New Relic, Honeycomb, and more.
+  </Card>
+  <Card title="Telemetry" icon="gauge" href="/features/telemetry">
+    Built-in Prometheus-based monitoring tracking HTTP-level and upstream provider metrics.
+  </Card>
+  <Card title="Custom Plugins" icon="puzzle-piece" href="/plugins/getting-started">
+    Extensible middleware architecture. Build Go or WASM plugins for custom logic.
+  </Card>
+  <Card title="Mocker Plugin" icon="mask" href="/features/plugins/mocker">
+    Mock AI provider responses for testing, development, and simulation.
+  </Card>
+</CardGroup>
+
+---
+
+## MCP Gateway
+
+Enable AI models to discover and execute external tools dynamically via the **Model Context Protocol**. Bifrost acts as both an MCP client and server, connecting to external tool servers and exposing tools to clients like Claude Desktop.
+
+<CardGroup cols={2}>
+  <Card title="Overview" icon="circle-info" href="/mcp/overview">
+    Learn how Bifrost integrates MCP to transform static chat models into action-capable agents.
+  </Card>
+  <Card title="Tool Execution" icon="play" href="/mcp/tool-execution">
+    Execute MCP tools with full control over approval, security validation, and conversation flow.
+  </Card>
+  <Card title="Agent Mode" icon="robot" href="/mcp/agent-mode">
+    Autonomous tool execution with configurable auto-approval for trusted operations.
+  </Card>
+  <Card title="Code Mode" icon="code" href="/mcp/code-mode">
+    Let AI write Python to orchestrate multiple tools — 50% less tokens, 40% lower latency.
+  </Card>
+  <Card title="OAuth Authentication" icon="shield" href="/mcp/oauth">
+    OAuth 2.0 authentication with automatic token refresh, PKCE, and dynamic client registration.
+  </Card>
+  <Card title="Tool Hosting" icon="toolbox" href="/mcp/tool-hosting">
+    Register custom tools directly in your application and expose them via MCP.
+  </Card>
+</CardGroup>
+
+---
+
+## Enterprise features
+
+Advanced capabilities for teams running production AI systems at scale. Enterprise deployments include private networking, custom security controls, and governance features designed for enterprise-grade reliability.
+
+<CardGroup cols={2}>
+  <Card title="Guardrails" icon="road-barrier" href="/enterprise/guardrails">
+    Content safety with AWS Bedrock Guardrails, Azure Content Safety, and Patronus AI for real-time protection.
+  </Card>
+  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
+    Predictive scaling with real-time health monitoring, automatically optimizing traffic across providers.
+  </Card>
+  <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
+    High-availability with automatic service discovery, gossip-based sync, and zero-downtime deployments.
+  </Card>
+  <Card title="Identity Providers (Okta, Entra)" icon="shield-check" href="/enterprise/advanced-governance">
+    OpenID Connect integration, user-level governance, team sync, and compliance frameworks.
+  </Card>
+  <Card title="Role-Based Access Control" icon="user-shield" href="/enterprise/rbac">
+    Fine-grained permissions with custom roles controlling access across all Bifrost resources.
+  </Card>
+  <Card title="MCP with Federated Auth" icon="screwdriver-wrench" href="/enterprise/mcp-with-fa">
+    Transform existing enterprise APIs into MCP tools using federated authentication — no code required.
+  </Card>
+  <Card title="Vault Support" icon="vault" href="/enterprise/vault-support">
+    Secure key management with HashiCorp Vault, AWS Secrets Manager, Google Secret Manager, and Azure Key Vault.
+  </Card>
+  <Card title="In-VPC Deployments" icon="cloud" href="/enterprise/invpc-deployments">
+    Deploy within your private cloud infrastructure with VPC isolation and enhanced security controls.
+  </Card>
+  <Card title="Audit Logs" icon="scroll" href="/enterprise/audit-logs">
+    Immutable audit trails for SOC 2, GDPR, HIPAA, and ISO 27001 compliance.
+  </Card>
+  <Card title="Datadog Connector" icon="dog" href="/enterprise/datadog-connector">
+    Native Datadog integration for APM traces, LLM Observability, and metrics.
+  </Card>
+  <Card title="Log Exports" icon="download" href="/enterprise/log-exports">
+    Automated export of request logs and telemetry to storage systems and data lakes.
+  </Card>
+  <Card title="Custom Plugin Development" icon="plug" href="/enterprise/custom-plugins">
+    Tailored plugin development for organization-specific AI workflows and business logic.
+  </Card>
+</CardGroup>
+
+---
+
+## SDK integrations
+
+Use Bifrost as a drop-in replacement for popular AI SDKs with zero code changes — just update the base URL.
+
+<CardGroup cols={2}>
+  <Card title="OpenAI SDK" icon="openai" href="/integrations/openai-sdk/overview">
+    Drop-in replacement for the OpenAI Python and Node.js SDKs.
+  </Card>
+  <Card title="Anthropic SDK" icon="asterisk" href="/integrations/anthropic-sdk/overview">
+    Drop-in replacement for the Anthropic Python and TypeScript SDKs.
+  </Card>
+  <Card title="Bedrock SDK" icon="aws" href="/integrations/bedrock-sdk/overview">
+    Native AWS Bedrock SDK integration with full model support.
+  </Card>
+  <Card title="GenAI SDK" icon="diamond" href="/integrations/genai-sdk/overview">
+    Drop-in replacement for the Google GenAI SDK.
+  </Card>
+  <Card title="LiteLLM" icon="train" href="/integrations/litellm-sdk">
+    Compatibility with LiteLLM proxy and SDK for unified model access.
+  </Card>
+  <Card title="LangChain" icon="link" href="/integrations/langchain-sdk">
+    Integration with the LangChain framework for building AI applications.
+  </Card>
+  <Card title="PydanticAI" icon="robot" href="/integrations/pydanticai-sdk">
+    Integration with PydanticAI for type-safe AI agent development.
+  </Card>
+</CardGroup>
+
+---
+
+## Supported providers
+
+Bifrost supports 20+ AI providers through a single unified API. Configure multiple providers and Bifrost handles routing, failover, and load balancing automatically. See the [full provider support matrix](/providers/supported-providers/overview) for detailed capability comparisons.
+
+<CardGroup cols={3}>
+  <Card title="OpenAI" icon="openai" href="/providers/supported-providers/openai">
+    GPT-4o, o1, GPT-4, and more with full feature support.
+  </Card>
+  <Card title="Anthropic" icon="asterisk" href="/providers/supported-providers/anthropic">
+    Claude 4, Claude 3.5, and Claude 3 model family.
+  </Card>
+  <Card title="AWS Bedrock" icon="aws" href="/providers/supported-providers/bedrock">
+    Multi-model access with native AWS authentication.
+  </Card>
+  <Card title="Google Vertex AI" icon="v" href="/providers/supported-providers/vertex">
+    Gemini and PaLM models with OAuth2 authentication.
+  </Card>
+  <Card title="Azure OpenAI" icon="microsoft" href="/providers/supported-providers/azure">
+    OpenAI models via Azure with deployment management.
+  </Card>
+  <Card title="Google Gemini" icon="diamond" href="/providers/supported-providers/gemini">
+    Gemini models with vision, audio, and embeddings.
+  </Card>
+  <Card title="Groq" icon="bolt" href="/providers/supported-providers/groq">
+    Ultra-fast inference with LPU hardware acceleration.
+  </Card>
+  <Card title="Mistral" icon="m" href="/providers/supported-providers/mistral">
+    Mistral and Mixtral models with tool support.
+  </Card>
+  <Card title="Cohere" icon="c" href="/providers/supported-providers/cohere">
+    Command models with chat, embeddings, and reasoning.
+  </Card>
+  <Card title="Cerebras" icon="c" href="/providers/supported-providers/cerebras">
+    High-speed inference with full streaming support.
+  </Card>
+  <Card title="Ollama" icon="o" href="/providers/supported-providers/ollama">
+    Local inference with OpenAI-compatible format.
+  </Card>
+  <Card title="Hugging Face" icon="face-smiling-hands" href="/providers/supported-providers/huggingface">
+    Inference API with chat, vision, TTS, and STT.
+  </Card>
+  <Card title="OpenRouter" icon="split" href="/providers/supported-providers/openrouter">
+    Route to multiple providers with reasoning support.
+  </Card>
+  <Card title="Perplexity" icon="hexagon-nodes" href="/providers/supported-providers/perplexity">
+    Web search integration with reasoning support.
+  </Card>
+  <Card title="ElevenLabs" icon="pause" href="/providers/supported-providers/elevenlabs">
+    Text-to-speech and speech-to-text models.
+  </Card>
+  <Card title="Nebius" icon="n" href="/providers/supported-providers/nebius">
+    OpenAI-compatible with streaming and embeddings.
+  </Card>
+  <Card title="xAI" icon="x" href="/providers/supported-providers/xai">
+    Grok models with vision and reasoning support.
+  </Card>
+  <Card title="Parasail" icon="p" href="/providers/supported-providers/parasail">
+    Chat and streaming with tool calling support.
+  </Card>
+  <Card title="Replicate" icon="R" href="/providers/supported-providers/replicate">
+    Prediction-based architecture with async modes.
+  </Card>
+  <Card title="SGL" icon="s" href="/providers/supported-providers/sgl">
+    SGLang runtime with streaming and embeddings.
+  </Card>
+</CardGroup>

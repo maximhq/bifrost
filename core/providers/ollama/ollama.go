@@ -32,7 +32,7 @@ func NewOllamaProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost:     5000,
-		MaxIdleConnDuration: 60 * time.Second,
+		MaxIdleConnDuration: 30 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
 

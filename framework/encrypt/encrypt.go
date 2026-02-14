@@ -18,7 +18,7 @@ import (
 )
 
 var encryptionKey []byte
-var logger schemas.Logger
+var logger schemas.Logger	
 
 var ErrEncryptionKeyNotInitialized = errors.New("encryption key is not initialized")
 

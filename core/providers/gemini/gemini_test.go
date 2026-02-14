@@ -485,6 +485,84 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 			},
 		},
 		{
+			// This test reproduces the bug where nested properties inside array items
+			// are *OrderedMap (from JSON deserialization) instead of map[string]interface{}.
+			// The old code only handled map[string]interface{}, silently dropping properties
+			// while keeping required, causing Gemini to reject with "property is not defined".
+			name: "NestedOrderedMapPropertiesInArrayItems",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Test nested OrderedMap properties"),
+						},
+					},
+				},
+				Params: &schemas.ChatParameters{
+					Tools: []schemas.ChatTool{
+						{
+							Type: schemas.ChatToolTypeFunction,
+							Function: &schemas.ChatToolFunction{
+								Name:        "browser_fill_form",
+								Description: schemas.Ptr("Fill form fields"),
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									// Use OrderedMap for the nested items.properties to simulate
+									// JSON deserialization, which stores nested objects as *OrderedMap
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("fields", map[string]interface{}{
+											"type":        "array",
+											"description": "Fields to fill in",
+											"items": schemas.NewOrderedMapFromPairs(
+												schemas.KV("type", "object"),
+												schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+													schemas.KV("name", map[string]interface{}{
+														"type":        "string",
+														"description": "Human-readable field name",
+													}),
+													schemas.KV("ref", map[string]interface{}{
+														"type":        "string",
+														"description": "Target field reference",
+													}),
+													schemas.KV("value", map[string]interface{}{
+														"type":        "string",
+														"description": "Value to fill",
+													}),
+												)),
+												schemas.KV("required", []interface{}{"name", "ref", "value"}),
+												schemas.KV("additionalProperties", false),
+											),
+										}),
+									),
+									Required: []string{"fields"},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Tools, 1)
+				fd := result.Tools[0].FunctionDeclarations[0]
+				assert.Equal(t, "browser_fill_form", fd.Name)
+
+				fieldsProp := fd.Parameters.Properties["fields"]
+				assert.Equal(t, gemini.Type("array"), fieldsProp.Type)
+				require.NotNil(t, fieldsProp.Items, "array items must be present")
+				assert.Equal(t, gemini.Type("object"), fieldsProp.Items.Type)
+
+				// This is the critical assertion: nested properties inside items must
+				// be preserved even when they come as *OrderedMap from JSON deserialization.
+				require.NotNil(t, fieldsProp.Items.Properties, "nested properties must not be nil - this was the bug")
+				assert.Contains(t, fieldsProp.Items.Properties, "name")
+				assert.Contains(t, fieldsProp.Items.Properties, "ref")
+				assert.Contains(t, fieldsProp.Items.Properties, "value")
+				assert.Equal(t, []string{"name", "ref", "value"}, fieldsProp.Items.Required)
+			},
+		},
+		{
 			name: "EmptyItemsObject",
 			input: &schemas.BifrostChatRequest{
 				Model: "gemini-2.0-flash",

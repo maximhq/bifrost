@@ -239,21 +239,29 @@ export class MCPRegistryPage extends BasePage {
         await this.page.waitForTimeout(500)
       }
 
-      // Fill headers when auth_type is 'headers'
+      // Fill headers when auth_type is 'headers' (required for SSE test; export MCP_SSE_HEADERS in your environment)
       if (config.authType === 'headers' && config.headers && Object.keys(config.headers).length > 0) {
+        const headersTable = this.sheet.locator('[data-testid="mcp-headers-table"]')
+        await expect(headersTable).toBeVisible({ timeout: 5000 })
         const entries = Object.entries(config.headers)
         for (let i = 0; i < entries.length; i++) {
           const [key, val] = entries[i]
           const valueStr = typeof val === 'object' && val !== null && 'value' in val ? (val as EnvVarLike).value : String(val)
-          const keyInput = this.sheet.locator(`input[data-row="${i}"][data-column="key"]`)
-          const valueInput = this.sheet.locator(`input[data-row="${i}"][data-column="value"]`).or(
-            this.sheet.locator(`[data-row="${i}"][data-column="value"] input`)
+          const keyInput = headersTable.locator(`input[data-row="${i}"][data-column="key"]`)
+          const valueInput = headersTable.locator(`input[data-row="${i}"][data-column="value"]`).or(
+            headersTable.locator(`[data-row="${i}"][data-column="value"] input`)
           )
           await keyInput.waitFor({ state: 'visible', timeout: 8000 })
+          await keyInput.scrollIntoViewIfNeeded()
+          await keyInput.click()
           await keyInput.fill(key)
-          await this.page.waitForTimeout(300)
-          await valueInput.first().fill(valueStr)
-          await this.page.waitForTimeout(300)
+          await this.page.waitForTimeout(400)
+          const valueEl = valueInput.first()
+          await valueEl.waitFor({ state: 'visible', timeout: 3000 })
+          await valueEl.scrollIntoViewIfNeeded()
+          await valueEl.click()
+          await valueEl.fill(valueStr)
+          await this.page.waitForTimeout(500)
         }
       }
 

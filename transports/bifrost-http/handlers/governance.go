@@ -168,28 +168,32 @@ type UpdateRateLimitRequest struct {
 
 // CreateTeamRequest represents the request body for creating a team
 type CreateTeamRequest struct {
-	Name       string               `json:"name" validate:"required"`
-	CustomerID *string              `json:"customer_id,omitempty"` // Team can belong to a customer
-	Budget     *CreateBudgetRequest `json:"budget,omitempty"`      // Team can have its own budget
+	Name       string                  `json:"name" validate:"required"`
+	CustomerID *string                 `json:"customer_id,omitempty"` // Team can belong to a customer
+	Budget     *CreateBudgetRequest    `json:"budget,omitempty"`      // Team can have its own budget
+	RateLimit  *CreateRateLimitRequest `json:"rate_limit,omitempty"`  // Team can have its own rate limit
 }
 
 // UpdateTeamRequest represents the request body for updating a team
 type UpdateTeamRequest struct {
-	Name       *string              `json:"name,omitempty"`
-	CustomerID *string              `json:"customer_id,omitempty"`
-	Budget     *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name       *string                 `json:"name,omitempty"`
+	CustomerID *string                 `json:"customer_id,omitempty"`
+	Budget     *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit  *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
-	Name   string               `json:"name" validate:"required"`
-	Budget *CreateBudgetRequest `json:"budget,omitempty"`
+	Name      string                  `json:"name" validate:"required"`
+	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"` // Customer can have its own rate limit
 }
 
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name      *string                 `json:"name,omitempty"`
+	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // CreateModelConfigRequest represents the request body for creating a model config
@@ -1092,6 +1096,19 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Validate rate limit if provided
+	if req.RateLimit != nil {
+		rateLimit := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+		}
+		if err := validateRateLimit(&rateLimit); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	// Creating team in database
 	var team configstoreTables.TableTeam
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -1112,6 +1129,21 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 			team.BudgetID = &budget.ID
+		}
+		if req.RateLimit != nil {
+			rateLimit := configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+				TokenResetDuration:   req.RateLimit.TokenResetDuration,
+				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+				RequestResetDuration: req.RateLimit.RequestResetDuration,
+				TokenLastReset:       time.Now(),
+				RequestLastReset:     time.Now(),
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return err
+			}
+			team.RateLimitID = &rateLimit.ID
 		}
 		if err := h.configStore.CreateTeam(ctx, &team, tx); err != nil {
 			return err
@@ -1190,6 +1222,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating team in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the team (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
 		// Update fields if provided
 		if req.Name != nil {
 			team.Name = *req.Name
@@ -1199,31 +1234,53 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			if team.BudgetID != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if team.BudgetID != nil {
+					budgetIDToDelete = *team.BudgetID
+					team.BudgetID = nil
+					team.Budget = nil
+				}
+			} else if team.BudgetID != nil {
 				// Update existing budget
-				budget, err := h.configStore.GetBudget(ctx, *team.BudgetID, tx)
-				if err != nil {
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
 					return err
 				}
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-
-				if err := h.configStore.UpdateBudget(ctx, budget, tx); err != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
 					return err
 				}
-				team.Budget = budget
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budget = &budget
 			} else {
 				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
 				budget := configstoreTables.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
 				}
 				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
 					return err
@@ -1232,9 +1289,71 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.Budget = &budget
 			}
 		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if team.RateLimitID != nil {
+					rateLimitIDToDelete = *team.RateLimitID
+					team.RateLimitID = nil
+					team.RateLimit = nil
+				}
+			} else if team.RateLimitID != nil {
+				// Update existing rate limit
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
+					return err
+				}
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				team.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				team.RateLimitID = &rateLimit.ID
+				team.RateLimit = &rateLimit
+			}
+		}
 		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {
 			return err
 		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}); err != nil {
 		SendError(ctx, 500, "Failed to update team")
@@ -1337,6 +1456,19 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Validate rate limit if provided
+	if req.RateLimit != nil {
+		rateLimit := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+		}
+		if err := validateRateLimit(&rateLimit); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	var customer configstoreTables.TableCustomer
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		customer = configstoreTables.TableCustomer{
@@ -1356,6 +1488,21 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 			customer.BudgetID = &budget.ID
+		}
+		if req.RateLimit != nil {
+			rateLimit := configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+				TokenResetDuration:   req.RateLimit.TokenResetDuration,
+				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+				RequestResetDuration: req.RateLimit.RequestResetDuration,
+				TokenLastReset:       time.Now(),
+				RequestLastReset:     time.Now(),
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return err
+			}
+			customer.RateLimitID = &rateLimit.ID
 		}
 		if err := h.configStore.CreateCustomer(ctx, &customer, tx); err != nil {
 			return err
@@ -1431,38 +1578,62 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating customer in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the customer (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
 		// Update fields if provided
 		if req.Name != nil {
 			customer.Name = *req.Name
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			if customer.BudgetID != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if customer.BudgetID != nil {
+					budgetIDToDelete = *customer.BudgetID
+					customer.BudgetID = nil
+					customer.Budget = nil
+				}
+			} else if customer.BudgetID != nil {
 				// Update existing budget
-				budget, err := h.configStore.GetBudget(ctx, *customer.BudgetID, tx)
-				if err != nil {
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
 					return err
 				}
-
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-
-				if err := h.configStore.UpdateBudget(ctx, budget, tx); err != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
 					return err
 				}
-				customer.Budget = budget
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.Budget = &budget
 			} else {
 				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
 				budget := configstoreTables.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
 				}
 				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
 					return err
@@ -1471,9 +1642,71 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				customer.Budget = &budget
 			}
 		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if customer.RateLimitID != nil {
+					rateLimitIDToDelete = *customer.RateLimitID
+					customer.RateLimitID = nil
+					customer.RateLimit = nil
+				}
+			} else if customer.RateLimitID != nil {
+				// Update existing rate limit
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
+					return err
+				}
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				customer.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				customer.RateLimitID = &rateLimit.ID
+				customer.RateLimit = &rateLimit
+			}
+		}
 		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
 			return err
 		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}); err != nil {
 		SendError(ctx, 500, "Failed to update customer")

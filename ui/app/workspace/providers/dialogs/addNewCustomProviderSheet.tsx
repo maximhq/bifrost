@@ -145,6 +145,7 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 														<SelectItem value="gemini">Gemini</SelectItem>
 														<SelectItem value="cohere">Cohere</SelectItem>
 														<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+														<SelectItem value="replicate">Replicate</SelectItem>
 													</SelectContent>
 												</Select>
 											</FormControl>

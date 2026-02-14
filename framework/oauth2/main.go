@@ -134,7 +134,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 		return fmt.Errorf("failed to update token: %w", err)
 	}
 
-	logger.Debug("OAuth token refreshed successfully", "oauth_config_id", oauthConfigID)
+	logger.Debug("OAuth token refreshed successfully oauth_config_id : %s", oauthConfigID)
 
 	return nil
 }

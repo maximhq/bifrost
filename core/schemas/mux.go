@@ -1086,6 +1086,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	// Create new BifrostResponsesResponse from Chat fields
 	responsesResp := &BifrostResponsesResponse{
 		ID:            Ptr(cr.ID),
+		Object:        "response",
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,
 		Citations:     cr.Citations,

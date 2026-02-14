@@ -40,7 +40,11 @@ func RunResponsesReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			Model:    testConfig.ReasoningModel,
 			Input:    responsesMessages,
 			Params: &schemas.ResponsesParameters{
-				MaxOutputTokens: bifrost.Ptr(1800),
+				// Reasoning models (o3, o4-mini) allocate tokens between reasoning and text output.
+				// Note: Older o1 models may not return message output via Responses API - use o3/o4-mini.
+				// OpenAI recommends reserving at least 25,000 tokens for reasoning and outputs.
+				// See: https://platform.openai.com/docs/guides/reasoning#allocating-space-for-reasoning
+				MaxOutputTokens: bifrost.Ptr(25000),
 				// Configure reasoning-specific parameters
 				Reasoning: &schemas.ResponsesParametersReasoning{
 					Effort: bifrost.Ptr("high"), // High effort for complex reasoning

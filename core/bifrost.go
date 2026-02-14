@@ -34,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openrouter"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
+	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -3091,6 +3092,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return xai.NewXAIProvider(config, bifrost.logger)
 	case schemas.ZAI:
 		return zai.NewZAIProvider(config, bifrost.logger)
+	case schemas.Replicate:
+		return replicate.NewReplicateProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -4086,6 +4089,36 @@ func executeRequestWithRetries[T any](
 		if attempts > 0 {
 			tracer.SetAttribute(handle, "retry.count", attempts)
 		}
+
+		// Add context-related attributes (selected key, virtual key, team, customer, etc.)
+		if selectedKeyID, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); ok && selectedKeyID != "" {
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyID, selectedKeyID)
+		}
+		if selectedKeyName, ok := ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string); ok && selectedKeyName != "" {
+			tracer.SetAttribute(handle, schemas.AttrSelectedKeyName, selectedKeyName)
+		}
+		if virtualKeyID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); ok && virtualKeyID != "" {
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyID, virtualKeyID)
+		}
+		if virtualKeyName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyName).(string); ok && virtualKeyName != "" {
+			tracer.SetAttribute(handle, schemas.AttrVirtualKeyName, virtualKeyName)
+		}
+		if teamID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamID).(string); ok && teamID != "" {
+			tracer.SetAttribute(handle, schemas.AttrTeamID, teamID)
+		}
+		if teamName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceTeamName).(string); ok && teamName != "" {
+			tracer.SetAttribute(handle, schemas.AttrTeamName, teamName)
+		}
+		if customerID, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerID).(string); ok && customerID != "" {
+			tracer.SetAttribute(handle, schemas.AttrCustomerID, customerID)
+		}
+		if customerName, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerName).(string); ok && customerName != "" {
+			tracer.SetAttribute(handle, schemas.AttrCustomerName, customerName)
+		}
+		if fallbackIndex, ok := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); ok {
+			tracer.SetAttribute(handle, schemas.AttrFallbackIndex, fallbackIndex)
+		}
+		tracer.SetAttribute(handle, schemas.AttrNumberOfRetries, attempts)
 
 		// Populate LLM request attributes (messages, parameters, etc.)
 		if req != nil {
@@ -5377,6 +5410,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				if len(key.VertexKeyConfig.Deployments) > 0 {
 					_, deploymentSupported = key.VertexKeyConfig.Deployments[model]
 				}
+			} else if baseProviderType == schemas.Replicate && key.ReplicateKeyConfig != nil {
+				// For Replicate, check if deployment exists for this model
+				if len(key.ReplicateKeyConfig.Deployments) > 0 {
+					_, deploymentSupported = key.ReplicateKeyConfig.Deployments[model]
+				}
 			}
 
 			if modelSupported && deploymentSupported {
@@ -5385,7 +5423,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		}
 	}
 	if len(supportedKeys) == 0 {
-		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex {
+		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex || baseProviderType == schemas.Replicate {
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)

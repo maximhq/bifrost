@@ -29,9 +29,14 @@ interface TeamDialogProps {
 interface TeamFormData {
 	name: string;
 	customerId: string;
-	// Budget
-	budgetMaxLimit: number | undefined;
+	// Budget (stored as string to allow intermediate decimal states like "1.")
+	budgetMaxLimit: string;
 	budgetResetDuration: string;
+	// Rate Limit
+	tokenMaxLimit: string;
+	tokenResetDuration: string;
+	requestMaxLimit: string;
+	requestResetDuration: string;
 	isDirty: boolean;
 }
 
@@ -40,9 +45,14 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 	return {
 		name: team?.name || "",
 		customerId: team?.customer_id || "",
-		// Budget
-		budgetMaxLimit: team?.budget ? team.budget.max_limit : undefined, // Already in dollars
+		// Budget (stored as string)
+		budgetMaxLimit: team?.budget ? String(team.budget.max_limit) : "",
 		budgetResetDuration: team?.budget?.reset_duration || "1M",
+		// Rate Limit (stored as string)
+		tokenMaxLimit: team?.rate_limit?.token_max_limit ? String(team.rate_limit.token_max_limit) : "",
+		tokenResetDuration: team?.rate_limit?.token_reset_duration || "1h",
+		requestMaxLimit: team?.rate_limit?.request_max_limit ? String(team.rate_limit.request_max_limit) : "",
+		requestResetDuration: team?.rate_limit?.request_reset_duration || "1h",
 	};
 };
 
@@ -70,12 +80,21 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 			customerId: formData.customerId,
 			budgetMaxLimit: formData.budgetMaxLimit,
 			budgetResetDuration: formData.budgetResetDuration,
+			tokenMaxLimit: formData.tokenMaxLimit,
+			tokenResetDuration: formData.tokenResetDuration,
+			requestMaxLimit: formData.requestMaxLimit,
+			requestResetDuration: formData.requestResetDuration,
 		};
 		setFormData((prev) => ({
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.customerId, formData.budgetMaxLimit, formData.budgetResetDuration, initialState]);
+	}, [formData.name, formData.customerId, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+
+	// Parse string values to numbers for validation and submission
+	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
+	const tokenMaxLimitNum = formData.tokenMaxLimit ? parseInt(formData.tokenMaxLimit) : undefined;
+	const requestMaxLimitNum = formData.requestMaxLimit ? parseInt(formData.requestMaxLimit) : undefined;
 
 	// Validation
 	const validator = useMemo(
@@ -90,12 +109,28 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 				// Budget validation
 				...(formData.budgetMaxLimit
 					? [
-							Validator.minValue(formData.budgetMaxLimit || 0, 0.01, "Budget max limit must be greater than $0.01"),
+							Validator.minValue(budgetMaxLimitNum || 0, 0.01, "Budget max limit must be greater than $0.01"),
 							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
 						]
 					: []),
+
+				// Rate limit validation - token limits
+				...(formData.tokenMaxLimit
+					? [
+							Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+						]
+					: []),
+
+				// Rate limit validation - request limits
+				...(formData.requestMaxLimit
+					? [
+							Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+						]
+					: []),
 			]),
-		[formData],
+		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
 	);
 
 	const updateField = <K extends keyof TeamFormData>(field: K, value: TeamFormData[K]) => {
@@ -118,12 +153,30 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 					customer_id: formData.customerId,
 				};
 
-				// Add budget if enabled
-				if (formData.budgetMaxLimit) {
+				// Detect budget changes using had/has pattern
+				const hadBudget = !!team.budget;
+				const hasBudget = !!budgetMaxLimitNum;
+				if (hasBudget) {
 					updateData.budget = {
-						max_limit: formData.budgetMaxLimit, // Already in dollars
+						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
 					};
+				} else if (hadBudget) {
+					updateData.budget = {} as UpdateTeamRequest["budget"];
+				}
+
+				// Detect rate limit changes using had/has pattern
+				const hadRateLimit = !!team.rate_limit;
+				const hasRateLimit = !!tokenMaxLimitNum || !!requestMaxLimitNum;
+				if (hasRateLimit) {
+					updateData.rate_limit = {
+						token_max_limit: tokenMaxLimitNum,
+						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						request_max_limit: requestMaxLimitNum,
+						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+					};
+				} else if (hadRateLimit) {
+					updateData.rate_limit = {} as UpdateTeamRequest["rate_limit"];
 				}
 
 				await updateTeam({ teamId: team.id, data: updateData }).unwrap();
@@ -136,10 +189,20 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 				};
 
 				// Add budget if enabled
-				if (formData.budgetMaxLimit) {
+				if (budgetMaxLimitNum) {
 					createData.budget = {
-						max_limit: formData.budgetMaxLimit, // Already in dollars
+						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
+					};
+				}
+
+				// Add rate limit if enabled (token or request limits)
+				if (tokenMaxLimitNum || requestMaxLimitNum) {
+					createData.rate_limit = {
+						token_max_limit: tokenMaxLimitNum,
+						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						request_max_limit: requestMaxLimitNum,
+						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
 					};
 				}
 
@@ -206,35 +269,97 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 						<NumberAndSelect
 							id="budgetMaxLimit"
 							label="Maximum Spend (USD)"
-							value={formData.budgetMaxLimit?.toString() || ""}
+							value={formData.budgetMaxLimit}
 							selectValue={formData.budgetResetDuration}
-							onChangeNumber={(value) => updateField("budgetMaxLimit", value === '' ? undefined : parseFloat(value))}
+							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
 						/>
 
-						{isEditing && team?.budget && (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<span className="text-sm">Current Usage:</span>
-									<div className="flex items-center gap-2">
-										<span className="text-sm">
-											<span className="font-mono">{formatCurrency(team.budget.current_usage)}</span> /{" "}
-											<span className="font-mono">{formatCurrency(team.budget.max_limit)}</span>
-										</span>
-										<Badge
-											variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"}
-											className="font-mono text-xs"
-										>
-											{Math.round((team.budget.current_usage / team.budget.max_limit) * 100)}%
-										</Badge>
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									<span className="text-sm">Last Reset:</span>
-									<div className="flex items-center gap-2">
-										<span className="font-mono text-sm">{formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}</span>
-									</div>
+						{/* Rate Limit Configuration - Token Limits */}
+						<NumberAndSelect
+							id="tokenMaxLimit"
+							label="Maximum Tokens"
+							value={formData.tokenMaxLimit}
+							selectValue={formData.tokenResetDuration}
+							onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
+							onChangeSelect={(value) => updateField("tokenResetDuration", value)}
+							options={resetDurationOptions}
+						/>
+
+						{/* Rate Limit Configuration - Request Limits */}
+						<NumberAndSelect
+							id="requestMaxLimit"
+							label="Maximum Requests"
+							value={formData.requestMaxLimit}
+							selectValue={formData.requestResetDuration}
+							onChangeNumber={(value) => updateField("requestMaxLimit", value)}
+							onChangeSelect={(value) => updateField("requestResetDuration", value)}
+							options={resetDurationOptions}
+						/>
+
+						{/* Current Usage Section (only shown when editing with existing limits) */}
+						{isEditing && (team?.budget || team?.rate_limit) && (
+							<div className="rounded-lg border bg-muted/50 p-4 space-y-4">
+								<p className="text-sm font-medium">Current Usage</p>
+								<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+									{team?.budget && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Budget</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
+												</span>
+												<Badge
+													variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((team.budget.current_usage / team.budget.max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(team.budget.last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
+									{team?.rate_limit?.token_max_limit && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Tokens</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{team.rate_limit.token_current_usage.toLocaleString()} / {team.rate_limit.token_max_limit.toLocaleString()}
+												</span>
+												<Badge
+													variant={team.rate_limit.token_current_usage >= team.rate_limit.token_max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((team.rate_limit.token_current_usage / team.rate_limit.token_max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(team.rate_limit.token_last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
+									{team?.rate_limit?.request_max_limit && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Requests</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{team.rate_limit.request_current_usage.toLocaleString()} / {team.rate_limit.request_max_limit.toLocaleString()}
+												</span>
+												<Badge
+													variant={team.rate_limit.request_current_usage >= team.rate_limit.request_max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((team.rate_limit.request_current_usage / team.rate_limit.request_max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(team.rate_limit.request_last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
 								</div>
 							</div>
 						)}

@@ -3405,9 +3405,9 @@ func TestDocumentFormatResponseMapping(t *testing.T) {
 		{"HTML", "html", "text/html"},
 		{"CSV", "csv", "text/csv"},
 		{"DOC", "doc", "application/msword"},
-		{"DOCX", "docx", "application/msword"},
+		{"DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
 		{"XLS", "xls", "application/vnd.ms-excel"},
-		{"XLSX", "xlsx", "application/vnd.ms-excel"},
+		{"XLSX", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
 		{"Unknown", "xyz", "application/pdf"},
 	}
 

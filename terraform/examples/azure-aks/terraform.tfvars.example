@@ -1,0 +1,66 @@
+# =============================================================================
+# Azure AKS Example — terraform.tfvars
+# WARNING: Do NOT commit this file with real secrets (API keys, passwords).
+#          Use environment variables, a secrets manager, or .gitignore this file.
+# =============================================================================
+
+region              = "eastus"
+image_tag           = "latest"
+name_prefix         = "bifrost"
+resource_group_name = "bifrost-rg"
+
+# -----------------------------------------------------------------------------
+# Config approach 1: File-based
+# Point to an existing config.json. Variable overrides below will merge on top.
+# -----------------------------------------------------------------------------
+# config_json_file = "./config.json"
+
+# -----------------------------------------------------------------------------
+# Config approach 2: Variable-based
+# Define config sections directly. These override matching keys from the file.
+# -----------------------------------------------------------------------------
+config_store = {
+  enabled = true
+  type    = "sqlite"
+  config = {
+    path = "/app/data/bifrost.db"
+  }
+}
+
+logs_store = {
+  enabled = true
+  type    = "sqlite"
+  config = {
+    path = "/app/data/bifrost-logs.db"
+  }
+}
+
+providers_config = {
+  openai = {
+    api_key = "sk-..."
+  }
+  azure = {
+    api_key     = "..."
+    resource_id = "my-azure-openai-resource"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Compute
+# -----------------------------------------------------------------------------
+desired_count        = 2
+cpu                  = 500
+memory               = 1024
+create_cluster       = true
+node_count           = 3
+create_load_balancer = true
+
+# -----------------------------------------------------------------------------
+# Autoscaling
+# -----------------------------------------------------------------------------
+# NOTE: If you are using OSS version - running multiple nodes has an effect on
+# functionality of the system. Please read
+# https://docs.getbifrost.ai/deployment-guides/how-to/multinode
+enable_autoscaling = false
+# min_capacity       = 1
+# max_capacity       = 5

@@ -25,9 +25,14 @@ interface CustomerDialogProps {
 
 interface CustomerFormData {
 	name: string;
-	// Budget
-	budgetMaxLimit: number | undefined;
+	// Budget (stored as string to allow intermediate decimal states like "1.")
+	budgetMaxLimit: string;
 	budgetResetDuration: string;
+	// Rate Limit (stored as string)
+	tokenMaxLimit: string;
+	tokenResetDuration: string;
+	requestMaxLimit: string;
+	requestResetDuration: string;
 	isDirty: boolean;
 }
 
@@ -35,9 +40,14 @@ interface CustomerFormData {
 const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, "isDirty"> => {
 	return {
 		name: customer?.name || "",
-		// Budget
-		budgetMaxLimit: customer?.budget ? customer.budget.max_limit : undefined, // Already in dollars
+		// Budget (stored as string)
+		budgetMaxLimit: customer?.budget ? String(customer.budget.max_limit) : "",
 		budgetResetDuration: customer?.budget?.reset_duration || "1M",
+		// Rate Limit (stored as string)
+		tokenMaxLimit: customer?.rate_limit?.token_max_limit ? String(customer.rate_limit.token_max_limit) : "",
+		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
+		requestMaxLimit: customer?.rate_limit?.request_max_limit ? String(customer.rate_limit.request_max_limit) : "",
+		requestResetDuration: customer?.rate_limit?.request_reset_duration || "1h",
 	};
 };
 
@@ -64,12 +74,21 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 			name: formData.name,
 			budgetMaxLimit: formData.budgetMaxLimit,
 			budgetResetDuration: formData.budgetResetDuration,
+			tokenMaxLimit: formData.tokenMaxLimit,
+			tokenResetDuration: formData.tokenResetDuration,
+			requestMaxLimit: formData.requestMaxLimit,
+			requestResetDuration: formData.requestResetDuration,
 		};
 		setFormData((prev) => ({
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.budgetMaxLimit, formData.budgetResetDuration, initialState]);
+	}, [formData.name, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+
+	// Parse string values to numbers for validation and submission
+	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
+	const tokenMaxLimitNum = formData.tokenMaxLimit ? parseInt(formData.tokenMaxLimit) : undefined;
+	const requestMaxLimitNum = formData.requestMaxLimit ? parseInt(formData.requestMaxLimit) : undefined;
 
 	// Validation
 	const validator = useMemo(
@@ -84,12 +103,28 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				// Budget validation
 				...(formData.budgetMaxLimit
 					? [
-							Validator.minValue(formData.budgetMaxLimit || 0, 0.01, "Budget max limit must be greater than $0.01"),
+							Validator.minValue(budgetMaxLimitNum || 0, 0.01, "Budget max limit must be greater than $0.01"),
 							Validator.required(formData.budgetResetDuration, "Budget reset duration is required"),
 						]
 					: []),
+
+				// Rate limit validation - token limits
+				...(formData.tokenMaxLimit
+					? [
+							Validator.minValue(tokenMaxLimitNum || 0, 1, "Token max limit must be at least 1"),
+							Validator.required(formData.tokenResetDuration, "Token reset duration is required"),
+						]
+					: []),
+
+				// Rate limit validation - request limits
+				...(formData.requestMaxLimit
+					? [
+							Validator.minValue(requestMaxLimitNum || 0, 1, "Request max limit must be at least 1"),
+							Validator.required(formData.requestResetDuration, "Request reset duration is required"),
+						]
+					: []),
 			]),
-		[formData],
+		[formData, budgetMaxLimitNum, tokenMaxLimitNum, requestMaxLimitNum],
 	);
 
 	const updateField = <K extends keyof CustomerFormData>(field: K, value: CustomerFormData[K]) => {
@@ -111,12 +146,30 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 					name: formData.name,
 				};
 
-				// Add budget if enabled
-				if (formData.budgetMaxLimit) {
+				// Detect budget changes using had/has pattern
+				const hadBudget = !!customer.budget;
+				const hasBudget = !!budgetMaxLimitNum;
+				if (hasBudget) {
 					updateData.budget = {
-						max_limit: formData.budgetMaxLimit, // Already in dollars
+						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
 					};
+				} else if (hadBudget) {
+					updateData.budget = {} as UpdateCustomerRequest["budget"];
+				}
+
+				// Detect rate limit changes using had/has pattern
+				const hadRateLimit = !!customer.rate_limit;
+				const hasRateLimit = !!tokenMaxLimitNum || !!requestMaxLimitNum;
+				if (hasRateLimit) {
+					updateData.rate_limit = {
+						token_max_limit: tokenMaxLimitNum,
+						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						request_max_limit: requestMaxLimitNum,
+						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
+					};
+				} else if (hadRateLimit) {
+					updateData.rate_limit = {} as UpdateCustomerRequest["rate_limit"];
 				}
 
 				await updateCustomer({ customerId: customer.id, data: updateData }).unwrap();
@@ -128,10 +181,20 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 				};
 
 				// Add budget if enabled
-				if (formData.budgetMaxLimit) {
+				if (budgetMaxLimitNum) {
 					createData.budget = {
-						max_limit: formData.budgetMaxLimit, // Already in dollars
+						max_limit: budgetMaxLimitNum,
 						reset_duration: formData.budgetResetDuration,
+					};
+				}
+
+				// Add rate limit if enabled (token or request limits)
+				if (tokenMaxLimitNum || requestMaxLimitNum) {
+					createData.rate_limit = {
+						token_max_limit: tokenMaxLimitNum,
+						token_reset_duration: tokenMaxLimitNum ? formData.tokenResetDuration : undefined,
+						request_max_limit: requestMaxLimitNum,
+						request_reset_duration: requestMaxLimitNum ? formData.requestResetDuration : undefined,
 					};
 				}
 
@@ -178,35 +241,97 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 						<NumberAndSelect
 							id="budgetMaxLimit"
 							label="Maximum Spend (USD)"
-							value={formData.budgetMaxLimit?.toString() || ""}
+							value={formData.budgetMaxLimit}
 							selectValue={formData.budgetResetDuration}
-							onChangeNumber={(value) => updateField("budgetMaxLimit", value === '' ? undefined : parseFloat(value))}
+							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
 						/>
-						{isEditing && customer?.budget && (
-							<div className="space-y-2">
-								<div className="flex items-center gap-2">
-									<span className="text-sm">Current Usage:</span>
-									<div className="mt-0.5 flex items-center gap-2">
-										<span className="font-mono text-sm">
-											{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
-										</span>
-										<Badge
-											variant={customer.budget.current_usage >= customer.budget.max_limit ? "destructive" : "default"}
-											className="text-xs"
-										>
-											{Math.round((customer.budget.current_usage / customer.budget.max_limit) * 100)}%
-										</Badge>
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									<span className="text-sm">Last Reset:</span>
-									<div className="mt-0.5 flex items-center gap-2">
-										<span className="font-mono text-sm">
-											{formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
-										</span>
-									</div>
+
+						{/* Rate Limit Configuration - Token Limits */}
+						<NumberAndSelect
+							id="tokenMaxLimit"
+							label="Maximum Tokens"
+							value={formData.tokenMaxLimit}
+							selectValue={formData.tokenResetDuration}
+							onChangeNumber={(value) => updateField("tokenMaxLimit", value)}
+							onChangeSelect={(value) => updateField("tokenResetDuration", value)}
+							options={resetDurationOptions}
+						/>
+
+						{/* Rate Limit Configuration - Request Limits */}
+						<NumberAndSelect
+							id="requestMaxLimit"
+							label="Maximum Requests"
+							value={formData.requestMaxLimit}
+							selectValue={formData.requestResetDuration}
+							onChangeNumber={(value) => updateField("requestMaxLimit", value)}
+							onChangeSelect={(value) => updateField("requestResetDuration", value)}
+							options={resetDurationOptions}
+						/>
+
+						{/* Current Usage Section (only shown when editing with existing limits) */}
+						{isEditing && (customer?.budget || customer?.rate_limit) && (
+							<div className="rounded-lg border bg-muted/50 p-4 space-y-4">
+								<p className="text-sm font-medium">Current Usage</p>
+								<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+									{customer?.budget && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Budget</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{formatCurrency(customer.budget.current_usage)} / {formatCurrency(customer.budget.max_limit)}
+												</span>
+												<Badge
+													variant={customer.budget.current_usage >= customer.budget.max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((customer.budget.current_usage / customer.budget.max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(customer.budget.last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
+									{customer?.rate_limit?.token_max_limit && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Tokens</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{customer.rate_limit.token_current_usage.toLocaleString()} / {customer.rate_limit.token_max_limit.toLocaleString()}
+												</span>
+												<Badge
+													variant={customer.rate_limit.token_current_usage >= customer.rate_limit.token_max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((customer.rate_limit.token_current_usage / customer.rate_limit.token_max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.token_last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
+									{customer?.rate_limit?.request_max_limit && (
+										<div className="space-y-1">
+											<p className="text-muted-foreground text-xs">Requests</p>
+											<div className="flex items-center gap-2">
+												<span className="font-mono text-sm">
+													{customer.rate_limit.request_current_usage.toLocaleString()} / {customer.rate_limit.request_max_limit.toLocaleString()}
+												</span>
+												<Badge
+													variant={customer.rate_limit.request_current_usage >= customer.rate_limit.request_max_limit ? "destructive" : "default"}
+													className="text-xs"
+												>
+													{Math.round((customer.rate_limit.request_current_usage / customer.rate_limit.request_max_limit) * 100)}%
+												</Badge>
+											</div>
+											<p className="text-muted-foreground text-xs">
+												Last Reset: {formatDistanceToNow(new Date(customer.rate_limit.request_last_reset), { addSuffix: true })}
+											</p>
+										</div>
+									)}
 								</div>
 							</div>
 						)}

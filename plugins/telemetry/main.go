@@ -4,8 +4,11 @@
 package telemetry
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -14,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/push"
 	"github.com/valyala/fasthttp"
 )
 
@@ -24,6 +28,30 @@ const (
 const (
 	startTimeKey schemas.BifrostContextKey = "bf-prom-start-time"
 )
+
+// PushGatewayConfig holds the configuration for pushing metrics to a Prometheus Push Gateway.
+// This enables accurate metrics aggregation in multi-node cluster deployments where
+// traditional /metrics scraping may miss nodes behind load balancers.
+type PushGatewayConfig struct {
+	// Enabled controls whether pushing metrics to the Push Gateway is active
+	Enabled bool `json:"enabled"`
+	// PushGatewayURL is the URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091)
+	PushGatewayURL string `json:"push_gateway_url"`
+	// JobName is the job label for pushed metrics (default: "bifrost")
+	JobName string `json:"job_name"`
+	// InstanceID is the instance label for grouping metrics. If empty, hostname is used.
+	InstanceID string `json:"instance_id"`
+	// PushInterval is how often to push metrics in seconds (default: 15)
+	PushInterval int `json:"push_interval"`
+	// BasicAuth credentials for the Push Gateway
+	BasicAuth *BasicAuthConfig `json:"basic_auth"`
+}
+
+// BasicAuthConfig holds basic authentication credentials for the Push Gateway
+type BasicAuthConfig struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
 
 // PrometheusPlugin implements the schemas.LLMPlugin interface for Prometheus metrics.
 // It tracks metrics for upstream provider requests, including:
@@ -59,11 +87,21 @@ type PrometheusPlugin struct {
 
 	defaultHTTPLabels    []string
 	defaultBifrostLabels []string
+
+	// Push gateway fields
+	pushConfig *PushGatewayConfig
+	pusher     *push.Pusher
+	pushCtx    context.Context
+	pushCancel context.CancelFunc
+	pushWg     sync.WaitGroup
+	pushMu     sync.RWMutex
+	pushActive bool
 }
 
 type Config struct {
 	CustomLabels []string `json:"custom_labels"`
 	Registry     *prometheus.Registry
+	PushGateway  *PushGatewayConfig `json:"push_gateway"`
 }
 
 // Init creates a new PrometheusPlugin with initialized metrics.
@@ -249,7 +287,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultBifrostLabels, filteredCustomLabels...),
 	)
 
-	return &PrometheusPlugin{
+	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
 		registry:                       registry,
@@ -272,7 +310,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
-	}, nil
+	}
+
+	// Start push gateway if configured
+	if config.PushGateway != nil && config.PushGateway.Enabled && config.PushGateway.PushGatewayURL != "" {
+		if err := plugin.EnablePushGateway(config.PushGateway); err != nil {
+			return nil, fmt.Errorf("failed to start push gateway: %w", err)
+		}
+	}
+
+	return plugin, nil
 }
 
 func (p *PrometheusPlugin) GetRegistry() *prometheus.Registry {
@@ -530,8 +577,132 @@ func (p *PrometheusPlugin) HTTPMiddleware(handler fasthttp.RequestHandler) fasth
 	}
 }
 
+// EnablePushGateway starts pushing metrics to a Prometheus Push Gateway.
+// If push gateway is already active, it stops the existing one first.
+func (p *PrometheusPlugin) EnablePushGateway(config *PushGatewayConfig) error {
+	if config == nil || config.PushGatewayURL == "" {
+		return fmt.Errorf("push_gateway_url is required")
+	}
+
+	// Stop existing push gateway if running
+	p.DisablePushGateway()
+
+	// Apply defaults
+	if config.JobName == "" {
+		config.JobName = "bifrost"
+	}
+	if config.PushInterval <= 0 {
+		config.PushInterval = 15
+	}
+	if config.InstanceID == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			config.InstanceID = "unknown"
+		} else {
+			config.InstanceID = hostname
+		}
+	}
+
+	// Create the pusher with the registry
+	pusher := push.New(config.PushGatewayURL, config.JobName).
+		Gatherer(p.registry).
+		Grouping("instance", config.InstanceID)
+
+	if config.BasicAuth != nil && config.BasicAuth.Username != "" {
+		pusher = pusher.BasicAuth(config.BasicAuth.Username, config.BasicAuth.Password)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	p.pushMu.Lock()
+	p.pushConfig = config
+	p.pusher = pusher
+	p.pushCtx = ctx
+	p.pushCancel = cancel
+	p.pushActive = true
+	p.pushWg.Add(1)
+	p.pushMu.Unlock()
+
+	go p.pushLoop()
+
+	p.logger.Info("push gateway started, pushing to %s every %d seconds",
+		config.PushGatewayURL, config.PushInterval)
+
+	return nil
+}
+
+// DisablePushGateway stops the push gateway loop if active
+func (p *PrometheusPlugin) DisablePushGateway() {
+	p.pushMu.Lock()
+	if !p.pushActive {
+		p.pushMu.Unlock()
+		return
+	}
+	p.pushActive = false
+	p.pushCancel()
+	p.pushMu.Unlock()
+
+	p.pushWg.Wait()
+	p.logger.Info("push gateway stopped")
+}
+
+// GetPushGatewayConfig returns the current push gateway configuration
+func (p *PrometheusPlugin) GetPushGatewayConfig() *PushGatewayConfig {
+	p.pushMu.RLock()
+	defer p.pushMu.RUnlock()
+	return p.pushConfig
+}
+
+// IsPushGatewayRunning returns whether the push gateway loop is active
+func (p *PrometheusPlugin) IsPushGatewayRunning() bool {
+	p.pushMu.RLock()
+	defer p.pushMu.RUnlock()
+	return p.pushActive
+}
+
+// pushLoop periodically pushes metrics to the Push Gateway
+func (p *PrometheusPlugin) pushLoop() {
+	defer p.pushWg.Done()
+
+	p.pushMu.RLock()
+	interval := p.pushConfig.PushInterval
+	p.pushMu.RUnlock()
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
+	// Initial push
+	p.doPush()
+
+	for {
+		select {
+		case <-p.pushCtx.Done():
+			// Final push before shutdown
+			p.logger.Info("push gateway shutting down, performing final push")
+			p.doPush()
+			return
+		case <-ticker.C:
+			p.doPush()
+		}
+	}
+}
+
+// doPush performs a single push to the Push Gateway
+func (p *PrometheusPlugin) doPush() {
+	p.pushMu.RLock()
+	pusher := p.pusher
+	p.pushMu.RUnlock()
+
+	if pusher == nil {
+		return
+	}
+
+	if err := pusher.Push(); err != nil {
+		p.logger.Error("failed to push metrics to push gateway: %v", err)
+	}
+}
+
 func (p *PrometheusPlugin) Cleanup() error {
-	// No-op. With a local registry, there's no need to unregister metrics.
-	// The registry and all its metrics will be garbage collected with the plugin instance.
+	p.DisablePushGateway()
 	return nil
 }

@@ -114,6 +114,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 										<SelectItem value="bedrock">AWS Bedrock</SelectItem>
 										<SelectItem value="cohere">Cohere</SelectItem>
 										<SelectItem value="gemini">Gemini</SelectItem>
+										<SelectItem value="replicate">Replicate</SelectItem>
 									</SelectContent>
 								</Select>
 								<FormDescription>The underlying provider this custom provider will use</FormDescription>

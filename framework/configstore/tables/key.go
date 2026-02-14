@@ -51,14 +51,18 @@ type TableKey struct {
 	BedrockDeploymentsJSON   *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
+	// Replicate config fields (embedded)
+	ReplicateDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
 	// Virtual fields for runtime use (not stored in DB)
-	Models           []string                  `gorm:"-" json:"models"`
-	AzureKeyConfig   *schemas.AzureKeyConfig   `gorm:"-" json:"azure_key_config,omitempty"`
-	VertexKeyConfig  *schemas.VertexKeyConfig  `gorm:"-" json:"vertex_key_config,omitempty"`
-	BedrockKeyConfig *schemas.BedrockKeyConfig `gorm:"-" json:"bedrock_key_config,omitempty"`
+	Models             []string                    `gorm:"-" json:"models"`
+	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
+	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
+	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
+	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -208,6 +212,21 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockDeploymentsJSON = nil
 		k.BedrockBatchS3ConfigJSON = nil
 	}
+
+	if k.ReplicateKeyConfig != nil {
+		if k.ReplicateKeyConfig.Deployments != nil {
+			data, err := sonic.Marshal(k.ReplicateKeyConfig.Deployments)
+			if err != nil {
+				return err
+			}
+			s := string(data)
+			k.ReplicateDeploymentsJSON = &s
+		} else {
+			k.ReplicateDeploymentsJSON = nil
+		}
+	} else {
+		k.ReplicateDeploymentsJSON = nil
+	}
 	return nil
 }
 
@@ -325,6 +344,16 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 
 		k.BedrockKeyConfig = bedrockConfig
+	}
+	// Reconstruct Replicate config if fields are present
+	if k.ReplicateDeploymentsJSON != nil && *k.ReplicateDeploymentsJSON != "" {
+		replicateConfig := &schemas.ReplicateKeyConfig{}
+		var deployments map[string]string
+		if err := json.Unmarshal([]byte(*k.ReplicateDeploymentsJSON), &deployments); err != nil {
+			return err
+		}
+		replicateConfig.Deployments = deployments
+		k.ReplicateKeyConfig = replicateConfig
 	}
 	return nil
 }

@@ -68,12 +68,12 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testIgnore: ['**/config/**', '**/plugins/**', '**/virtual-keys/**'],
+      testIgnore: ['**/config/**', '**/plugins/**', '**/virtual-keys/**', '**/mcp-registry/**'],
     },
     {
       name: 'chromium-serial',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: ['**/plugins/**/*.spec.ts', '**/virtual-keys/**/*.spec.ts'],
+      testMatch: ['**/plugins/**/*.spec.ts', '**/virtual-keys/**/*.spec.ts', '**/mcp-registry/**/*.spec.ts'],
       fullyParallel: false,
     },
     {

@@ -2,8 +2,8 @@ name: E2E Tests
 
 on:
   push:
-    branches: ["02-09-fix_fix_e2e_tests"]
-  
+    branches: ["02-11-fix_fix_mcp_and_virtual-key_tests"]
+
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -49,8 +49,8 @@ jobs:
       - name: Run E2E UI tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Optional: for SSE MCP tests (e.g. remote proxy). Set in repo secrets.
-          MCP_SSE_URL: ${{ secrets.MCP_SSE_URL }}
           MCP_SSE_HEADERS: ${{ secrets.MCP_SSE_HEADERS }}
         run: ./.github/workflows/scripts/test-e2e-ui.sh
 

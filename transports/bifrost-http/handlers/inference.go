@@ -42,8 +42,8 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 
 // Known fields for CompletionRequest
 var textParamsKnownFields = map[string]bool{
+	"prompt":            true,
 	"model":             true,
-	"text":              true,
 	"fallbacks":         true,
 	"best_of":           true,
 	"echo":              true,

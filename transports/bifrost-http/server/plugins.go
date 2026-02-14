@@ -50,9 +50,17 @@ func InstantiatePlugin(ctx context.Context, name string, path *string, pluginCon
 func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifrostConfig *lib.Config) (schemas.BasePlugin, error) {
 	switch name {
 	case telemetry.PluginName:
-		return telemetry.Init(&telemetry.Config{
+		telConfig := &telemetry.Config{
 			CustomLabels: bifrostConfig.ClientConfig.PrometheusLabels,
-		}, bifrostConfig.ModelCatalog, logger)
+		}
+		// Merge push gateway config if provided (e.g., from config file or UI update)
+		if pluginConfig != nil {
+			extraConfig, err := MarshalPluginConfig[telemetry.Config](pluginConfig)
+			if err == nil && extraConfig != nil && extraConfig.PushGateway != nil {
+				telConfig.PushGateway = extraConfig.PushGateway
+			}
+		}
+		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
 	case logging.PluginName:
 		loggingConfig, err := MarshalPluginConfig[logging.Config](pluginConfig)
@@ -133,6 +141,16 @@ func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	return nil
 }
 
+// getPluginConfig retrieves a plugin's config from PluginConfigs by name
+func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
+	for _, cfg := range s.Config.PluginConfigs {
+		if cfg.Name == name {
+			return cfg
+		}
+	}
+	return nil
+}
+
 // loadBuiltinPlugins loads required built-in plugins in specific order
 func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 1. Telemetry (always first - tracks everything)
@@ -158,6 +176,14 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {
 		s.markPluginDisabled(governance.PluginName)
+	}
+
+	// 4. OTEL (if configured in PluginConfigs)
+	otelConfig := s.getPluginConfig(otel.PluginName)
+	if otelConfig != nil && otelConfig.Enabled {
+		s.registerPluginWithStatus(ctx, otel.PluginName, nil, otelConfig.Config, false)
+	} else {
+		s.markPluginDisabled(otel.PluginName)
 	}
 
 	return nil

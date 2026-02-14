@@ -224,7 +224,23 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if !ok || team == nil {
 			return true // continue
 		}
-		teams[key.(string)] = team
+		// Cross-reference live budget/rate limit from standalone maps
+		clone := *team
+		if clone.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					clone.Budget = b
+				}
+			}
+		}
+		if clone.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					clone.RateLimit = rl
+				}
+			}
+		}
+		teams[key.(string)] = &clone
 		return true // continue iteration
 	})
 	customers := make(map[string]*configstoreTables.TableCustomer)
@@ -233,7 +249,23 @@ func (gs *LocalGovernanceStore) GetGovernanceData() *GovernanceData {
 		if !ok || customer == nil {
 			return true // continue
 		}
-		customers[key.(string)] = customer
+		// Cross-reference live budget/rate limit from standalone maps
+		clone := *customer
+		if clone.BudgetID != nil {
+			if liveBudget, exists := gs.budgets.Load(*clone.BudgetID); exists && liveBudget != nil {
+				if b, ok := liveBudget.(*configstoreTables.TableBudget); ok {
+					clone.Budget = b
+				}
+			}
+		}
+		if clone.RateLimitID != nil {
+			if liveRL, exists := gs.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
+				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
+					clone.RateLimit = rl
+				}
+			}
+		}
+		customers[key.(string)] = &clone
 		return true // continue iteration
 	})
 	budgets := make(map[string]*configstoreTables.TableBudget)
@@ -1387,6 +1419,30 @@ func (gs *LocalGovernanceStore) DumpRateLimits(ctx context.Context, tokenBaselin
 		return true // continue
 	})
 
+	// Collect rate limit IDs from teams
+	gs.teams.Range(func(key, value interface{}) bool {
+		team, ok := value.(*configstoreTables.TableTeam)
+		if !ok || team == nil {
+			return true // continue
+		}
+		if team.RateLimitID != nil {
+			rateLimitIDs[*team.RateLimitID] = true
+		}
+		return true // continue
+	})
+
+	// Collect rate limit IDs from customers
+	gs.customers.Range(func(key, value interface{}) bool {
+		customer, ok := value.(*configstoreTables.TableCustomer)
+		if !ok || customer == nil {
+			return true // continue
+		}
+		if customer.RateLimitID != nil {
+			rateLimitIDs[*customer.RateLimitID] = true
+		}
+		return true // continue
+	})
+
 	// Prepare rate limit usage updates with baselines
 	type rateLimitUpdate struct {
 		ID                  string
@@ -1857,7 +1913,7 @@ func (gs *LocalGovernanceStore) rebuildInMemoryStructures(ctx context.Context, c
 
 // UTILITY FUNCTIONS
 
-// collectRateLimitsFromHierarchy collects rate limits and their metadata from the hierarchy (Provider Configs → VK)
+// collectRateLimitsFromHierarchy collects rate limits and their metadata from the hierarchy (Provider Configs → VK → Team → Customer)
 func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(vk *configstoreTables.TableVirtualKey, requestedProvider schemas.ModelProvider) ([]*configstoreTables.TableRateLimit, []string) {
 	if vk == nil {
 		return nil, nil
@@ -1882,6 +1938,56 @@ func (gs *LocalGovernanceStore) collectRateLimitsFromHierarchy(vk *configstoreTa
 			if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
 				rateLimits = append(rateLimits, rateLimit)
 				rateLimitNames = append(rateLimitNames, "VK")
+			}
+		}
+	}
+
+	// Check Team rate limit if VK belongs to a team
+	var teamCustomerID string
+	if vk.TeamID != nil {
+		if teamValue, exists := gs.teams.Load(*vk.TeamID); exists && teamValue != nil {
+			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
+				if team.RateLimitID != nil {
+					if rateLimitValue, exists := gs.rateLimits.Load(*team.RateLimitID); exists && rateLimitValue != nil {
+						if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+							rateLimits = append(rateLimits, rateLimit)
+							rateLimitNames = append(rateLimitNames, "Team")
+						}
+					}
+				}
+
+				// Check if team belongs to a customer
+				if team.CustomerID != nil {
+					teamCustomerID = *team.CustomerID
+					if customerValue, exists := gs.customers.Load(*team.CustomerID); exists && customerValue != nil {
+						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
+							if customer.RateLimitID != nil {
+								if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
+									if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+										rateLimits = append(rateLimits, rateLimit)
+										rateLimitNames = append(rateLimitNames, "Customer")
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check Customer rate limit if VK directly belongs to a customer (skip if already collected via team)
+	if vk.CustomerID != nil && (teamCustomerID == "" || *vk.CustomerID != teamCustomerID) {
+		if customerValue, exists := gs.customers.Load(*vk.CustomerID); exists && customerValue != nil {
+			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
+				if customer.RateLimitID != nil {
+					if rateLimitValue, exists := gs.rateLimits.Load(*customer.RateLimitID); exists && rateLimitValue != nil {
+						if rateLimit, ok := rateLimitValue.(*configstoreTables.TableRateLimit); ok && rateLimit != nil {
+							rateLimits = append(rateLimits, rateLimit)
+							rateLimitNames = append(rateLimitNames, "Customer")
+						}
+					}
+				}
 			}
 		}
 	}
@@ -1919,6 +2025,7 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(vk *configstoreTable
 		}
 	}
 
+	var teamCustomerID string
 	if vk.TeamID != nil {
 		if teamValue, exists := gs.teams.Load(*vk.TeamID); exists && teamValue != nil {
 			if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
@@ -1933,6 +2040,7 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(vk *configstoreTable
 
 				// Check if team belongs to a customer
 				if team.CustomerID != nil {
+					teamCustomerID = *team.CustomerID
 					if customerValue, exists := gs.customers.Load(*team.CustomerID); exists && customerValue != nil {
 						if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 							if customer.BudgetID != nil {
@@ -1950,7 +2058,8 @@ func (gs *LocalGovernanceStore) collectBudgetsFromHierarchy(vk *configstoreTable
 		}
 	}
 
-	if vk.CustomerID != nil {
+	// Check Customer budget if VK directly belongs to a customer (skip if already collected via team)
+	if vk.CustomerID != nil && (teamCustomerID == "" || *vk.CustomerID != teamCustomerID) {
 		if customerValue, exists := gs.customers.Load(*vk.CustomerID); exists && customerValue != nil {
 			if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 				if customer.BudgetID != nil {
@@ -2030,6 +2139,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 	if vk == nil {
 		return // Nothing to update
 	}
+
 	// Do not update the current usage of the rate limit, as it will be updated by the usage tracker.
 	// But update if max limit or reset duration changes.
 	if existingVKValue, exists := gs.virtualKeys.Load(vk.Value); exists && existingVKValue != nil {
@@ -2037,6 +2147,7 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(vk *configstoreTables.T
 		if !ok || existingVK == nil {
 			return // Nothing to update
 		}
+
 		// Create clone to avoid modifying the original
 		clone := *vk
 		// Update Budget for VK in memory store
@@ -2186,6 +2297,11 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(team *configstoreTables.Table
 		gs.budgets.Store(team.Budget.ID, team.Budget)
 	}
 
+	// Create associated rate limit if exists
+	if team.RateLimit != nil {
+		gs.rateLimits.Store(team.RateLimit.ID, team.RateLimit)
+	}
+
 	gs.teams.Store(team.ID, team)
 }
 
@@ -2194,12 +2310,14 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(team *configstoreTables.Table
 	if team == nil {
 		return // Nothing to update
 	}
+
 	// Check if there's an existing team to get current budget state
 	if existingTeamValue, exists := gs.teams.Load(team.ID); exists && existingTeamValue != nil {
 		existingTeam, ok := existingTeamValue.(*configstoreTables.TableTeam)
 		if !ok || existingTeam == nil {
 			return // Nothing to update
 		}
+
 		// Create clone to avoid modifying the original
 		clone := *team
 
@@ -2219,6 +2337,24 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(team *configstoreTables.Table
 			gs.budgets.Delete(existingTeam.Budget.ID)
 		}
 
+		// Handle rate limit updates with consistent logic
+		if clone.RateLimit != nil {
+			// Preserve existing usage from memory when updating team rate limit config
+			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
+				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
+					// Preserve current usage and last reset time from existing in-memory rate limit
+					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
+					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
+					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
+				}
+			}
+			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		} else if existingTeam.RateLimit != nil {
+			// Rate limit was removed from the team, delete it from memory
+			gs.rateLimits.Delete(existingTeam.RateLimit.ID)
+		}
+
 		gs.teams.Store(team.ID, &clone)
 	} else {
 		gs.CreateTeamInMemory(team)
@@ -2231,12 +2367,16 @@ func (gs *LocalGovernanceStore) DeleteTeamInMemory(teamID string) {
 		return // Nothing to delete
 	}
 
-	// Get team to check for associated budget
+	// Get team to check for associated budget and rate limit
 	if teamValue, exists := gs.teams.Load(teamID); exists && teamValue != nil {
 		if team, ok := teamValue.(*configstoreTables.TableTeam); ok && team != nil {
 			// Delete associated budget if exists
 			if team.BudgetID != nil {
 				gs.budgets.Delete(*team.BudgetID)
+			}
+			// Delete associated rate limit if exists
+			if team.RateLimitID != nil {
+				gs.rateLimits.Delete(*team.RateLimitID)
 			}
 		}
 	}
@@ -2269,6 +2409,11 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(customer *configstoreTabl
 	// Create associated budget if exists
 	if customer.Budget != nil {
 		gs.budgets.Store(customer.Budget.ID, customer.Budget)
+	}
+
+	// Create associated rate limit if exists
+	if customer.RateLimit != nil {
+		gs.rateLimits.Store(customer.RateLimit.ID, customer.RateLimit)
 	}
 
 	gs.customers.Store(customer.ID, customer)
@@ -2304,6 +2449,24 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(customer *configstoreTabl
 			gs.budgets.Delete(existingCustomer.Budget.ID)
 		}
 
+		// Handle rate limit updates with consistent logic
+		if clone.RateLimit != nil {
+			// Preserve existing usage from memory when updating customer rate limit config
+			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
+				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
+					// Preserve current usage and last reset time from existing in-memory rate limit
+					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
+					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
+					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
+					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
+				}
+			}
+			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		} else if existingCustomer.RateLimit != nil {
+			// Rate limit was removed from the customer, delete it from memory
+			gs.rateLimits.Delete(existingCustomer.RateLimit.ID)
+		}
+
 		gs.customers.Store(customer.ID, &clone)
 	} else {
 		gs.CreateCustomerInMemory(customer)
@@ -2316,12 +2479,16 @@ func (gs *LocalGovernanceStore) DeleteCustomerInMemory(customerID string) {
 		return // Nothing to delete
 	}
 
-	// Get customer to check for associated budget
+	// Get customer to check for associated budget and rate limit
 	if customerValue, exists := gs.customers.Load(customerID); exists && customerValue != nil {
 		if customer, ok := customerValue.(*configstoreTables.TableCustomer); ok && customer != nil {
 			// Delete associated budget if exists
 			if customer.BudgetID != nil {
 				gs.budgets.Delete(*customer.BudgetID)
+			}
+			// Delete associated rate limit if exists
+			if customer.RateLimitID != nil {
+				gs.rateLimits.Delete(*customer.RateLimitID)
 			}
 		}
 	}
@@ -2567,7 +2734,7 @@ func (gs *LocalGovernanceStore) updateBudgetReferences(resetBudget *configstoreT
 	})
 }
 
-// updateRateLimitReferences updates all VKs and provider configs that reference a reset rate limit
+// updateRateLimitReferences updates all VKs, teams, customers, users and provider configs that reference a reset rate limit
 func (gs *LocalGovernanceStore) updateRateLimitReferences(resetRateLimit *configstoreTables.TableRateLimit) {
 	rateLimitID := resetRateLimit.ID
 	// Update VKs that reference this rate limit
@@ -2597,6 +2764,34 @@ func (gs *LocalGovernanceStore) updateRateLimitReferences(resetRateLimit *config
 
 		if needsUpdate {
 			gs.virtualKeys.Store(key, &clone)
+		}
+		return true // continue
+	})
+
+	// Update teams that reference this rate limit
+	gs.teams.Range(func(key, value interface{}) bool {
+		team, ok := value.(*configstoreTables.TableTeam)
+		if !ok || team == nil {
+			return true // continue
+		}
+		if team.RateLimitID != nil && *team.RateLimitID == rateLimitID {
+			clone := *team
+			clone.RateLimit = resetRateLimit
+			gs.teams.Store(key, &clone)
+		}
+		return true // continue
+	})
+
+	// Update customers that reference this rate limit
+	gs.customers.Range(func(key, value interface{}) bool {
+		customer, ok := value.(*configstoreTables.TableCustomer)
+		if !ok || customer == nil {
+			return true // continue
+		}
+		if customer.RateLimitID != nil && *customer.RateLimitID == rateLimitID {
+			clone := *customer
+			clone.RateLimit = resetRateLimit
+			gs.customers.Store(key, &clone)
 		}
 		return true // continue
 	})

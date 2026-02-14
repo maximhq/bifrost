@@ -531,8 +531,9 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- governance_model_pricing (model pricing data - with ALL columns)
+-- NOTE: base_model column is added dynamically via append_dynamic_inserts() for schema compatibility
 INSERT INTO governance_model_pricing (id, model, provider, input_cost_per_token, output_cost_per_token, mode, input_cost_per_video_per_second, input_cost_per_audio_per_second, input_cost_per_character, output_cost_per_character, input_cost_per_token_above128k_tokens, input_cost_per_character_above128k_tokens, input_cost_per_image_above128k_tokens, input_cost_per_video_per_second_above128k_tokens, input_cost_per_audio_per_second_above128k_tokens, output_cost_per_token_above128k_tokens, output_cost_per_character_above128k_tokens, input_cost_per_token_above_200k_tokens, output_cost_per_token_above_200k_tokens, cache_creation_input_token_cost_above_200k_tokens, cache_read_input_token_cost_above_200k_tokens, cache_read_input_token_cost, cache_creation_input_token_cost, input_cost_per_token_batches, output_cost_per_token_batches, input_cost_per_image_token, output_cost_per_image_token, input_cost_per_image, output_cost_per_image, cache_read_input_image_token_cost)
-VALUES 
+VALUES
   (1, 'gpt-4', 'openai', 0.00003, 0.00006, 'chat', NULL, NULL, NULL, NULL, 0.00006, NULL, NULL, NULL, NULL, 0.00012, NULL, NULL, NULL, NULL, NULL, 0.000015, 0.000045, 0.000015, 0.00003, NULL, NULL, NULL, NULL, NULL),
   (2, 'claude-3-opus', 'anthropic', 0.000015, 0.000075, 'chat', NULL, NULL, 0.00000125, 0.00000625, 0.00002, 0.00000150, NULL, NULL, NULL, 0.0001, 0.0000075, 0.000025, 0.000125, 0.0000375, 0.0000075, 0.0000075, 0.0000375, 0.0000075, 0.0000375, NULL, NULL, 0.02, 0.04, NULL)
 ON CONFLICT DO NOTHING;
@@ -554,6 +555,7 @@ ON CONFLICT DO NOTHING;
 -- ============================================================================
 
 -- config_keys (references config_providers) - with ALL columns including Azure/Vertex/Bedrock fields
+-- NOTE: azure_scopes column is added dynamically via append_dynamic_inserts() for schema compatibility
 INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, created_at, updated_at)
 SELECT 'migration-test-key-openai', id, 'openai', 'key-migration-uuid-001', 'sk-migration-test-fake-key-value-openai', '["gpt-4", "gpt-3.5-turbo"]', 1.0, true, 'key-hash-001', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, $now, $now
 FROM config_providers WHERE name = 'openai'
@@ -640,8 +642,9 @@ ON CONFLICT DO NOTHING;
 -- ============================================================================
 
 -- logs (main log table) - with ALL columns
+-- NOTE: routing_engine_used column is added dynamically via append_dynamic_inserts() for schema compatibility
 INSERT INTO logs (id, parent_request_id, timestamp, object_type, provider, model, number_of_retries, fallback_index, selected_key_id, selected_key_name, virtual_key_id, virtual_key_name, routing_rule_id, routing_rule_name, input_history, responses_input_history, output_message, responses_output, embedding_output, params, tools, tool_calls, speech_input, transcription_input, image_generation_input, speech_output, transcription_output, image_generation_output, cache_debug, latency, token_usage, cost, status, error_details, stream, content_summary, raw_request, raw_response, prompt_tokens, completion_tokens, total_tokens, created_at)
-VALUES 
+VALUES
   ('log-migration-test-001', NULL, $past, 'chat_completion', 'openai', 'gpt-4', 0, 0, 'key-migration-uuid-001', 'migration-test-key-openai', 'vk-migration-test-1', 'Migration Test Virtual Key 1', 'rule-migration-test-1', 'Migration Test Rule One', '[{"role":"user","content":"Hello"}]', '', '{"role":"assistant","content":"Hi there!"}', '', '', '{"temperature":0.7}', '[]', '[]', '', '', '', '', '', '', '', 1250.5, '{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}', 0.0045, 'success', '', false, 'Test summary', '{"model":"gpt-4"}', '{"id":"resp-001"}', 10, 20, 30, $past),
   ('log-migration-test-002', 'log-migration-test-001', $past, 'chat_completion', 'anthropic', 'claude-3-opus', 1, 0, 'key-migration-uuid-002', 'migration-test-key-anthropic', 'vk-migration-test-2', 'Migration Test Virtual Key 2', NULL, NULL, '[{"role":"user","content":"Test"}]', '', '{"role":"assistant","content":"Response"}', '', '', '{}', '[]', '[]', '', '', '', '', '', '', '', 2500.75, '{"prompt_tokens":5,"completion_tokens":15,"total_tokens":20}', 0.0125, 'success', '', true, '', '', '', 5, 15, 20, $past),
   ('log-migration-test-003', NULL, $past, 'embedding', 'openai', 'text-embedding-3-small', 0, 0, 'key-migration-uuid-001', 'migration-test-key-openai', NULL, NULL, NULL, NULL, '', '', '', '', '[[0.1,0.2,0.3]]', '{}', '[]', '[]', '', '', '', '', '', '', '', 500.0, '{"prompt_tokens":8,"total_tokens":8}', NULL, 'error', '{"message":"Rate limit exceeded"}', false, '', '', '', 8, 0, 8, $past)
@@ -663,21 +666,87 @@ EOF
   log_info "Generated faker SQL: $output_file"
 }
 
-# Append dynamic config_mcp_clients INSERT to faker SQL based on current schema
+# Append dynamic INSERTs to faker SQL based on current schema
 # Must be called AFTER the database schema is created (e.g., after bifrost starts/stops)
+# Handles columns that may not exist in older schema versions
 append_dynamic_mcp_clients_insert() {
   local db_type="$1"
   local faker_sql="$2"
   local config_db="${3:-}"  # Only used for SQLite
-  
+
   local now
+  local past
   if [ "$db_type" = "postgres" ]; then
     now="NOW()"
+    past="NOW() - INTERVAL '1 day'"
     generate_mcp_clients_insert_postgres "$now" "$faker_sql"
+    append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
+    past="datetime('now', '-1 day')"
     generate_mcp_clients_insert_sqlite "$now" "$faker_sql" "$config_db"
+    append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
+}
+
+# Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
+# Uses UPDATE instead of modifying the INSERT to keep the static INSERTs working for all versions
+append_dynamic_columns_postgres() {
+  local now="$1"
+  local past="$2"
+  local output_file="$3"
+
+  echo "" >> "$output_file"
+  echo "-- Dynamic column coverage for newer columns (generated based on schema)" >> "$output_file"
+
+  # config_keys.azure_scopes (added in v1.4.5)
+  # Set to NULL for coverage - config sync resets this column on startup so non-null values
+  # would cause a snapshot comparison diff
+  if column_exists_postgres "config_keys" "azure_scopes"; then
+    echo "UPDATE config_keys SET azure_scopes = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # governance_model_pricing.base_model (added in v1.4.5)
+  if column_exists_postgres "governance_model_pricing" "base_model"; then
+    echo "UPDATE governance_model_pricing SET base_model = 'claude-3-opus-20240229' WHERE model = 'claude-3-opus';" >> "$output_file"
+  fi
+
+  # logs.routing_engine_used (added in v1.4.5)
+  if column_exists_postgres "logs" "routing_engine_used"; then
+    echo "UPDATE logs SET routing_engine_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+}
+
+# Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
+append_dynamic_columns_sqlite() {
+  local now="$1"
+  local past="$2"
+  local output_file="$3"
+  local config_db="$4"
+
+  echo "" >> "$output_file"
+  echo "-- Dynamic column coverage for newer columns (generated based on schema)" >> "$output_file"
+
+  if [ -f "$config_db" ]; then
+    # config_keys.azure_scopes (added in v1.4.5)
+    # Set to NULL for coverage - config sync resets this column on startup
+    if column_exists_sqlite "$config_db" "config_keys" "azure_scopes"; then
+      echo "UPDATE config_keys SET azure_scopes = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # governance_model_pricing.base_model (added in v1.4.5)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "base_model"; then
+      echo "UPDATE governance_model_pricing SET base_model = 'claude-3-opus-20240229' WHERE model = 'claude-3-opus';" >> "$output_file"
+    fi
+  fi
+
+  # logs.routing_engine_used (added in v1.4.5)
+  # logs table is in a separate DB (logs_db). The faker SQL is run against both DBs,
+  # so these UPDATEs will be harmless on config_db (table doesn't exist) and work on logs_db.
+  # We always emit them - if the column doesn't exist, the UPDATE will fail silently.
+  echo "UPDATE logs SET routing_engine_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
 }
 
 # ============================================================================
@@ -685,16 +754,24 @@ append_dynamic_mcp_clients_insert() {
 # ============================================================================
 
 # Extract table -> columns mapping from the generated faker SQL
-# Output format: table_name:col1,col2,col3 (one per line, sorted)
+# Output format: table_name:col1,col2,col3 (one per line)
+# Handles INSERT INTO and UPDATE SET statements
+# Multiple lines per table are OK - the validation merges them via grep + sort -u
 extract_faker_columns() {
   local faker_sql="$1"
   local output_file="$2"
-  
+
   # Extract INSERT statements and parse table/columns
   # Handles both "INSERT INTO table (cols)" and "INSERT INTO table (cols) SELECT ..."
   grep -E "^INSERT INTO [a-z_]+ \(" "$faker_sql" | \
     sed -E 's/INSERT INTO ([a-z_]+) \(([^)]+)\).*/\1:\2/' | \
     tr -d ' ' | sort -u > "$output_file"
+
+  # Also extract UPDATE SET columns (for dynamically added columns)
+  # Pattern: UPDATE table SET col = value WHERE ...
+  grep -E "^UPDATE [a-z_]+ SET [a-z_]+" "$faker_sql" | \
+    sed -E 's/UPDATE ([a-z_]+) SET ([a-z_]+) =.*/\1:\2/' | \
+    tr -d ' ' | sort -u >> "$output_file"
 }
 
 # Check if a column exists in a PostgreSQL table

@@ -126,6 +126,10 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockDeploymentsJSON = nil
 			key.BedrockKeyConfig = nil
 
+			// Clear all Replicate-related sensitive fields
+			key.ReplicateDeploymentsJSON = nil
+			key.ReplicateKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}

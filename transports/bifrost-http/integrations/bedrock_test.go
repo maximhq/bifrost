@@ -130,7 +130,7 @@ func Test_createBedrockConverseRouteConfig(t *testing.T) {
 	assert.NotNil(t, route.PreCallback)
 
 	// Verify request instance type
-	reqInstance := route.GetRequestTypeInstance()
+	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockConverseRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockConverseRequest")
 }
@@ -146,7 +146,7 @@ func Test_createBedrockConverseStreamRouteConfig(t *testing.T) {
 	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
-	reqInstance := route.GetRequestTypeInstance()
+	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockConverseRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockConverseRequest")
 }
@@ -161,7 +161,7 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 	assert.NotNil(t, route.TextResponseConverter)
 
 	// Verify request instance type
-	reqInstance := route.GetRequestTypeInstance()
+	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
 }
@@ -177,7 +177,7 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
 
 	// Verify request instance type
-	reqInstance := route.GetRequestTypeInstance()
+	reqInstance := route.GetRequestTypeInstance(context.Background())
 	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
 	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
 }

@@ -122,6 +122,8 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

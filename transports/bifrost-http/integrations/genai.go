@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
 
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
@@ -35,7 +38,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			_, requestType := extractModelAndRequestType(ctx)
 			return requestType
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+				return &gemini.GeminiEmbeddingRequest{}
+			}
 			return &gemini.GeminiGenerationRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -71,6 +77,14 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
+			} else if geminiReq, ok := req.(*gemini.GeminiEmbeddingRequest); ok {
+				req := &gemini.GeminiGenerationRequest{
+					Model:    geminiReq.Model,
+					Requests: []gemini.GeminiEmbeddingRequest{*geminiReq},
+				}
+				return &schemas.BifrostRequest{
+					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
+				}, nil
 			}
 			return nil, errors.New("invalid request type")
 		},
@@ -128,7 +142,7 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.ListModelsRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostListModelsRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -163,7 +177,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.FileUploadRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileUploadRequest{}
 		},
 		RequestParser: parseGeminiFileUploadRequest,
@@ -196,7 +210,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.FileListRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileListRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -229,7 +243,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.FileRetrieveRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileRetrieveRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -262,7 +276,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.FileDeleteRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileDeleteRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -458,6 +472,11 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		r.IsImageEdit = isImageEditRequest(r)
 
 		return nil
+	case *gemini.GeminiEmbeddingRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
@@ -486,6 +505,9 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 			isEmbedding = true
 			break
 		}
+	}
+	if strings.HasSuffix(modelStr, ":embedContent") {
+		ctx.SetUserValue(isGeminiEmbedContentRequestContextKey, true)
 	}
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest

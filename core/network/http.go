@@ -38,7 +38,7 @@ var DefaultClientConfig = struct {
 }{
 	ReadTimeout:         60 * time.Second,
 	WriteTimeout:        60 * time.Second,
-	MaxIdleConnDuration: 120 * time.Second,
+	MaxIdleConnDuration: 30 * time.Second,
 	MaxConnsPerHost:     200,
 }
 

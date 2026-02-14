@@ -1028,8 +1028,9 @@ func RunFileContentTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 
 		response, err := WithFileContentTestRetry(t, fileContentRetryConfig, contentRetryContext, contentExpectations, "FileContent", func() (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 			contentRequest := &schemas.BifrostFileContentRequest{
-				Provider: testConfig.Provider,
-				FileID:   uploadResponse.ID,
+				Provider:    testConfig.Provider,
+				FileID:      uploadResponse.ID,
+				ExtraParams: testConfig.FileExtraParams,
 			}
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			return client.FileContentRequest(bfCtx, contentRequest)

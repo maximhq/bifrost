@@ -540,7 +540,7 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 
 // WaitForCache waits for async cache operations to complete
 func WaitForCache() {
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing

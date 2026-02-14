@@ -349,7 +349,7 @@ type RouteConfig struct {
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
 	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
-	GetRequestTypeInstance                 func() interface{}                     // Factory function to create request instance (SHOULD NOT BE NIL)
+	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
 	BatchRequestConverter                  BatchRequestConverter                  // Function to convert request to BatchRequest (for batch operations)
@@ -424,7 +424,7 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 		}
 
 		// Test that GetRequestTypeInstance returns a valid instance
-		if testInstance := route.GetRequestTypeInstance(); testInstance == nil {
+		if testInstance := route.GetRequestTypeInstance(context.Background()); testInstance == nil {
 			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance returned nil for route " + route.Path)
 			continue
 		}
@@ -492,7 +492,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Parse request body into the integration-specific request type
 		// Note: config validation is performed at startup in RegisterRoutes
-		req := config.GetRequestTypeInstance()
+		req := config.GetRequestTypeInstance(ctx)
 		var rawBody []byte
 
 		// Execute the request through Bifrost

@@ -102,10 +102,11 @@ type ConfigStore interface {
 
 	// Rate limit CRUD
 	GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error)
-	GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error)
+	GetRateLimit(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableRateLimit, error)
 	CreateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error
 	UpdateRateLimit(ctx context.Context, rateLimit *tables.TableRateLimit, tx ...*gorm.DB) error
 	UpdateRateLimits(ctx context.Context, rateLimits []*tables.TableRateLimit, tx ...*gorm.DB) error
+	DeleteRateLimit(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Budget CRUD
 	GetBudgets(ctx context.Context) ([]tables.TableBudget, error)
@@ -113,6 +114,7 @@ type ConfigStore interface {
 	CreateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudget(ctx context.Context, budget *tables.TableBudget, tx ...*gorm.DB) error
 	UpdateBudgets(ctx context.Context, budgets []*tables.TableBudget, tx ...*gorm.DB) error
+	DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error
 	UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64) error
 	UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64) error
 

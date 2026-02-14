@@ -255,8 +255,18 @@
             },
             "allowedOrigins": {
               "type": "array",
+              "description": "CORS allowed origins (supports \"*\" or URI strings)",
               "items": {
-                "type": "string"
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "const": "*"
+                  },
+                  {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                ]
               }
             },
             "enableLogging": {
@@ -386,7 +396,65 @@
           "type": "object",
           "properties": {
             "telemetry": {
-              "$ref": "#/$defs/pluginBase"
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "config": {
+                  "type": "object",
+                  "properties": {
+                    "push_gateway": {
+                      "type": "object",
+                      "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Whether to enable pushing metrics to the Push Gateway",
+                          "default": false
+                        },
+                        "push_gateway_url": {
+                          "type": "string",
+                          "description": "URL of the Prometheus Push Gateway (e.g., http://pushgateway:9091)",
+                          "format": "uri"
+                        },
+                        "job_name": {
+                          "type": "string",
+                          "description": "Job label for pushed metrics",
+                          "default": "bifrost"
+                        },
+                        "instance_id": {
+                          "type": "string",
+                          "description": "Instance identifier for grouping metrics. If not set, hostname is used automatically."
+                        },
+                        "push_interval": {
+                          "type": "integer",
+                          "description": "How often to push metrics in seconds",
+                          "default": 15,
+                          "minimum": 1,
+                          "maximum": 300
+                        },
+                        "basic_auth": {
+                          "type": "object",
+                          "description": "Basic authentication credentials for the Push Gateway",
+                          "properties": {
+                            "username": {
+                              "type": "string",
+                              "description": "Username for basic authentication"
+                            },
+                            "password": {
+                              "type": "string",
+                              "description": "Password for basic authentication"
+                            }
+                          },
+                          "required": ["username", "password"]
+                        }
+                      },
+                      "required": ["push_gateway_url"]
+                    }
+                  }
+                }
+              }
             },
             "logging": {
               "$ref": "#/$defs/pluginBase"
@@ -516,7 +584,17 @@
                       "maximum": 1
                     },
                     "ttl": {
-                      "type": "string"
+                      "description": "Time-to-live for cached responses (supports duration strings like '5m', '1h' or seconds as number, default: 5min)",
+                      "oneOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                        },
+                        {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      ]
                     },
                     "conversation_history_threshold": {
                       "type": "integer",
@@ -569,24 +647,55 @@
                   "type": "object",
                   "properties": {
                     "service_name": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Service name to be used for tracing",
+                      "default": "bifrost"
                     },
                     "collector_url": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "URL of the OpenTelemetry collector"
                     },
                     "trace_type": {
                       "type": "string",
                       "enum": [
                         "otel"
-                      ]
+                      ],
+                      "description": "Type of trace to use for the OTEL collector"
                     },
                     "protocol": {
                       "type": "string",
                       "enum": [
                         "http",
                         "grpc"
-                      ]
+                      ],
+                      "description": "Protocol to use for the OTEL collector"
+                    },
+                    "metrics_enabled": {
+                      "type": "boolean",
+                      "description": "Enable push-based metrics export via OTLP. Recommended for multi-node cluster deployments.",
+                      "default": false
+                    },
+                    "metrics_endpoint": {
+                      "type": "string",
+                      "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
+                    },
+                    "metrics_push_interval": {
+                      "type": "integer",
+                      "description": "Metrics push interval in seconds",
+                      "default": 15,
+                      "minimum": 1,
+                      "maximum": 300
                     }
+                  },
+                  "if": {
+                    "properties": {
+                      "metrics_enabled": {
+                        "const": true
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": ["metrics_endpoint"]
                   }
                 }
               },
@@ -704,28 +813,55 @@
             },
             "rateLimits": {
               "type": "array",
+              "description": "Rate limit configurations",
               "items": {
                 "type": "object",
                 "properties": {
                   "id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Rate limit ID"
                   },
                   "token_max_limit": {
-                    "type": "integer"
+                    "type": "integer",
+                    "description": "Maximum tokens allowed"
                   },
                   "token_reset_duration": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Token reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+                  },
+                  "token_current_usage": {
+                    "type": "integer",
+                    "description": "Current token usage",
+                    "default": 0
+                  },
+                  "token_last_reset": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Last time token counter was reset"
                   },
                   "request_max_limit": {
-                    "type": "integer"
+                    "type": "integer",
+                    "description": "Maximum requests allowed"
                   },
                   "request_reset_duration": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "Request reset duration (e.g., '30s', '5m', '1h', '1d', '1w', '1M', '1Y')"
+                  },
+                  "request_current_usage": {
+                    "type": "integer",
+                    "description": "Current request usage",
+                    "default": 0
+                  },
+                  "request_last_reset": {
+                    "type": "string",
+                    "format": "date-time",
+                    "description": "Last time request counter was reset"
                   }
                 },
                 "required": [
                   "id"
-                ]
+                ],
+                "additionalProperties": false
               }
             },
             "customers": {
@@ -1525,16 +1661,29 @@
                   ]
                 },
                 "host": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Weaviate server host (host:port)"
                 },
                 "apiKey": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "API key for Weaviate authentication"
                 },
                 "grpcHost": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Weaviate gRPC host (host:port)"
                 },
                 "grpcSecured": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "description": "Whether gRPC connection is secured"
+                },
+                "timeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Timeout for Weaviate operations (e.g., '5s')"
+                },
+                "className": {
+                  "type": "string",
+                  "description": "Class name for Weaviate vector store"
                 },
                 "existingSecret": {
                   "type": "string"
@@ -1588,19 +1737,74 @@
                   "type": "boolean"
                 },
                 "host": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Redis server host"
                 },
                 "port": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 65535
+                  "maximum": 65535,
+                  "description": "Redis server port"
+                },
+                "username": {
+                  "type": "string",
+                  "description": "Username for Redis AUTH"
                 },
                 "password": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Password for Redis AUTH"
                 },
                 "database": {
                   "type": "integer",
-                  "minimum": 0
+                  "minimum": 0,
+                  "default": 0,
+                  "description": "Redis database number"
+                },
+                "poolSize": {
+                  "type": "integer",
+                  "description": "Maximum number of socket connections"
+                },
+                "maxActiveConns": {
+                  "type": "integer",
+                  "description": "Maximum number of active connections"
+                },
+                "minIdleConns": {
+                  "type": "integer",
+                  "description": "Minimum number of idle connections"
+                },
+                "maxIdleConns": {
+                  "type": "integer",
+                  "description": "Maximum number of idle connections"
+                },
+                "connMaxLifetime": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Connection maximum lifetime (e.g., '30m')"
+                },
+                "connMaxIdleTime": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Connection maximum idle time (e.g., '5m')"
+                },
+                "dialTimeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Timeout for socket connection (e.g., '5s')"
+                },
+                "readTimeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Timeout for socket reads (e.g., '3s')"
+                },
+                "writeTimeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Timeout for socket writes (e.g., '3s')"
+                },
+                "contextTimeout": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+                  "description": "Timeout for Redis operations (e.g., '10s')"
                 },
                 "existingSecret": {
                   "type": "string"
@@ -1649,18 +1853,24 @@
                   "type": "boolean"
                 },
                 "host": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "Qdrant server host"
                 },
                 "port": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 65535
+                  "maximum": 65535,
+                  "default": 6334,
+                  "description": "Qdrant server port (default: 6334 for gRPC)"
                 },
                 "apiKey": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "API key for authentication"
                 },
                 "useTls": {
-                  "type": "boolean"
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Use TLS for connection"
                 },
                 "existingSecret": {
                   "type": "string"
@@ -1690,6 +1900,51 @@
             },
             "resources": {
               "type": "object"
+            }
+          }
+        },
+        "pinecone": {
+          "type": "object",
+          "description": "Pinecone configuration for vector store",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "external": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "apiKey": {
+                  "type": "string",
+                  "description": "Pinecone API key"
+                },
+                "indexHost": {
+                  "type": "string",
+                  "description": "Index host URL from Pinecone console (e.g., your-index.svc.environment.pinecone.io)"
+                },
+                "existingSecret": {
+                  "type": "string",
+                  "description": "Name of existing secret containing Pinecone API key"
+                },
+                "apiKeyKey": {
+                  "type": "string",
+                  "description": "Key in the secret containing the API key"
+                }
+              },
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "indexHost"
+                ]
+              }
             }
           }
         }
@@ -1819,74 +2074,138 @@
           "type": "object",
           "properties": {
             "endpoint": {
-              "type": "string"
+              "type": "string",
+              "description": "Azure endpoint (can use env. prefix)"
             },
             "deployments": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
-              }
+              },
+              "description": "Model to deployment mappings"
             },
             "api_version": {
-              "type": "string"
+              "type": "string",
+              "description": "Azure API version"
             }
           },
           "required": [
             "endpoint",
             "api_version"
-          ]
+          ],
+          "additionalProperties": false
         },
         "vertex_key_config": {
           "type": "object",
           "properties": {
             "project_id": {
-              "type": "string"
+              "type": "string",
+              "description": "Google Cloud project ID (can use env. prefix)"
+            },
+            "project_number": {
+              "type": "string",
+              "description": "Google Cloud project number"
             },
             "region": {
-              "type": "string"
+              "type": "string",
+              "description": "Google Cloud region"
             },
             "auth_credentials": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project_id",
-            "region"
-          ]
-        },
-        "bedrock_key_config": {
-          "type": "object",
-          "properties": {
-            "access_key": {
-              "type": "string"
-            },
-            "secret_key": {
-              "type": "string"
-            },
-            "session_token": {
-              "type": "string"
-            },
-            "region": {
-              "type": "string"
-            },
-            "arn": {
-              "type": "string"
+              "type": "string",
+              "description": "Authentication credentials (can use env. prefix)"
             },
             "deployments": {
               "type": "object",
               "additionalProperties": {
                 "type": "string"
-              }
+              },
+              "description": "Model to deployment mappings"
+            }
+          },
+          "required": [
+            "project_id",
+            "region"
+          ],
+          "additionalProperties": false
+        },
+        "bedrock_key_config": {
+          "type": "object",
+          "properties": {
+            "access_key": {
+              "type": "string",
+              "description": "AWS access key (can use env. prefix)"
+            },
+            "secret_key": {
+              "type": "string",
+              "description": "AWS secret key (can use env. prefix)"
+            },
+            "session_token": {
+              "type": "string",
+              "description": "AWS session token (can use env. prefix)"
+            },
+            "region": {
+              "type": "string",
+              "description": "AWS region"
+            },
+            "arn": {
+              "type": "string",
+              "description": "AWS ARN"
+            },
+            "deployments": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Model to deployment mappings"
             }
           },
           "required": [
             "region"
-          ]
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
         "name",
         "weight"
+      ],
+      "oneOf": [
+        {
+          "not": {
+            "anyOf": [
+              { "required": ["azure_key_config"] },
+              { "required": ["vertex_key_config"] },
+              { "required": ["bedrock_key_config"] }
+            ]
+          }
+        },
+        {
+          "required": ["azure_key_config"],
+          "not": {
+            "anyOf": [
+              { "required": ["vertex_key_config"] },
+              { "required": ["bedrock_key_config"] }
+            ]
+          }
+        },
+        {
+          "required": ["vertex_key_config"],
+          "not": {
+            "anyOf": [
+              { "required": ["azure_key_config"] },
+              { "required": ["bedrock_key_config"] }
+            ]
+          }
+        },
+        {
+          "required": ["bedrock_key_config"],
+          "not": {
+            "anyOf": [
+              { "required": ["azure_key_config"] },
+              { "required": ["vertex_key_config"] }
+            ]
+          }
+        }
       ]
     },
     "networkConfig": {
@@ -2080,41 +2399,207 @@
     },
     "virtualKeyProviderConfig": {
       "type": "object",
+      "description": "Provider configuration for a virtual key",
       "properties": {
         "id": {
-          "type": "integer"
+          "type": "integer",
+          "description": "Provider config ID"
         },
         "virtual_key_id": {
-          "type": "string"
+          "type": "string",
+          "description": "Associated virtual key ID"
         },
         "provider": {
-          "type": "string"
+          "type": "string",
+          "description": "Provider name"
         },
         "weight": {
-          "type": "number"
+          "type": "number",
+          "description": "Weight for load balancing",
+          "default": 1.0
         },
         "allowed_models": {
           "type": "array",
+          "description": "Allowed models for this provider config (empty means all models allowed)",
           "items": {
             "type": "string"
           }
         },
         "budget_id": {
-          "type": "string"
+          "type": "string",
+          "description": "Associated budget ID"
         },
         "rate_limit_id": {
-          "type": "string"
+          "type": "string",
+          "description": "Associated rate limit ID"
         },
         "keys": {
           "type": "array",
+          "description": "Provider keys for this config (empty means all keys allowed for this provider)",
           "items": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "description": "Key database ID (auto-generated)"
+              },
+              "key_id": {
+                "type": "string",
+                "description": "Key UUID identifier"
+              },
+              "name": {
+                "type": "string",
+                "description": "Key name (must be unique)"
+              },
+              "value": {
+                "type": "string",
+                "description": "API key value (can use env. prefix)"
+              },
+              "models": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Supported models for this key"
+              },
+              "weight": {
+                "type": "number",
+                "minimum": 0,
+                "default": 1.0,
+                "description": "Weight for load balancing"
+              },
+              "azure_key_config": {
+                "type": "object",
+                "properties": {
+                  "endpoint": {
+                    "type": "string",
+                    "description": "Azure endpoint (can use env. prefix)"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  },
+                  "api_version": {
+                    "type": "string",
+                    "description": "Azure API version"
+                  }
+                },
+                "required": ["endpoint", "api_version"],
+                "additionalProperties": false
+              },
+              "vertex_key_config": {
+                "type": "object",
+                "properties": {
+                  "project_id": {
+                    "type": "string",
+                    "description": "Google Cloud project ID (can use env. prefix)"
+                  },
+                  "project_number": {
+                    "type": "string",
+                    "description": "Google Cloud project number"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "Google Cloud region"
+                  },
+                  "auth_credentials": {
+                    "type": "string",
+                    "description": "Authentication credentials (can use env. prefix)"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  }
+                },
+                "required": ["project_id", "region"],
+                "additionalProperties": false
+              },
+              "bedrock_key_config": {
+                "type": "object",
+                "properties": {
+                  "access_key": {
+                    "type": "string",
+                    "description": "AWS access key (can use env. prefix)"
+                  },
+                  "secret_key": {
+                    "type": "string",
+                    "description": "AWS secret key (can use env. prefix)"
+                  },
+                  "session_token": {
+                    "type": "string",
+                    "description": "AWS session token (can use env. prefix)"
+                  },
+                  "region": {
+                    "type": "string",
+                    "description": "AWS region"
+                  },
+                  "arn": {
+                    "type": "string",
+                    "description": "AWS ARN"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment mappings"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "oneOf": [
+              {
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["azure_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["vertex_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["bedrock_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["bedrock_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] }
+                  ]
+                }
+              }
+            ],
+            "required": ["key_id", "name", "value"]
           }
         }
       },
       "required": [
         "provider"
-      ]
+      ],
+      "additionalProperties": false
     }
   }
 }

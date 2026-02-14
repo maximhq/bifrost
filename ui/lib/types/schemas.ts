@@ -148,6 +148,11 @@ export const bedrockKeyConfigSchema = z
 		},
 	);
 
+// Replicate key config schema
+export const replicateKeyConfigSchema = z.object({
+	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -178,6 +183,7 @@ export const modelProviderKeySchema = z
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
+		replicate_key_config: replicateKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
@@ -543,57 +549,91 @@ export const otelConfigSchema = z
 				message: "Please select a protocol",
 			})
 			.default("http"),
+		// TLS configuration
+		tls_ca_cert: z.string().optional(),
+		insecure: z.boolean().default(true),
+		// Metrics push configuration
+		metrics_enabled: z.boolean().default(false),
+		metrics_endpoint: z.string().optional(),
+		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 	})
 	.superRefine((data, ctx) => {
-		const value = (data.collector_url || "").trim();
-		if (!value) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-			return;
-		}
+		const protocol = data.protocol;
+		const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
 
-		if (data.protocol === "http") {
+		// Helper to validate URL format
+		const validateHttpUrl = (url: string, path: string[]) => {
 			try {
-				const u = new URL(value);
+				const u = new URL(url);
 				if (!(u.protocol === "http:" || u.protocol === "https:")) {
 					ctx.addIssue({
 						code: "custom",
-						path: ["collector_url"],
+						path,
 						message: "Must be a valid HTTP or HTTPS URL",
 					});
+					return false;
 				}
+				return true;
 			} catch {
 				ctx.addIssue({
 					code: "custom",
-					path: ["collector_url"],
+					path,
 					message: "Must be a valid HTTP or HTTPS URL",
 				});
+				return false;
 			}
-			return;
-		}
+		};
 
-		if (data.protocol === "grpc") {
-			// Only allow host:port format, reject HTTP URLs
-			const hostPortRegex = /^(?!https?:\/\/)([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\]|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/;
+		// Helper to validate host:port format
+		const validateHostPort = (value: string, path: string[], example: string) => {
 			const match = value.match(hostPortRegex);
 			if (!match) {
 				ctx.addIssue({
 					code: "custom",
-					path: ["collector_url"],
-					message: "Must be in the format <host>:<port> for gRPC (e.g. otel-collector:4317)",
+					path,
+					message: `Must be in the format <host>:<port> for gRPC (e.g. ${example})`,
 				});
-				return;
+				return false;
 			}
 			const port = Number(match[2]);
 			if (!(port >= 1 && port <= 65535)) {
 				ctx.addIssue({
 					code: "custom",
-					path: ["collector_url"],
+					path,
 					message: "Port must be between 1 and 65535",
 				});
+				return false;
+			}
+			return true;
+		};
+
+		// Validate collector_url
+		const collectorUrl = (data.collector_url || "").trim();
+		if (!collectorUrl) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["collector_url"],
+				message: "Collector address is required",
+			});
+		} else if (protocol === "http") {
+			validateHttpUrl(collectorUrl, ["collector_url"]);
+		} else if (protocol === "grpc") {
+			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
+		}
+
+		// Validate metrics_endpoint when metrics_enabled is true
+		if (data.metrics_enabled) {
+			const metricsEndpoint = (data.metrics_endpoint || "").trim();
+			if (!metricsEndpoint) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["metrics_endpoint"],
+					message: "Metrics endpoint is required when metrics push is enabled",
+				});
+			} else if (protocol === "http") {
+				validateHttpUrl(metricsEndpoint, ["metrics_endpoint"]);
+			} else if (protocol === "grpc") {
+				validateHostPort(metricsEndpoint, ["metrics_endpoint"], "otel-collector:4317");
 			}
 		}
 	});
@@ -620,6 +660,77 @@ export const maximFormSchema = z.object({
 	enabled: z.boolean().default(false),
 	maxim_config: maximConfigSchema,
 });
+
+// Prometheus Push Gateway Configuration Schema
+export const prometheusConfigSchema = z
+	.object({
+		push_gateway_url: z.string().optional(),
+		job_name: z.string().default("bifrost"),
+		instance_id: z.string().optional(),
+		push_interval: z.number().min(1).max(300).default(15),
+		basic_auth_username: z.string().optional(),
+		basic_auth_password: z.string().optional(),
+	})
+	.superRefine((data, ctx) => {
+		// Validate push_gateway_url format
+		const url = (data.push_gateway_url || "").trim();
+		if (url) {
+			try {
+				const u = new URL(url);
+				if (!(u.protocol === "http:" || u.protocol === "https:")) {
+					ctx.addIssue({
+						code: "custom",
+						path: ["push_gateway_url"],
+						message: "Must be a valid HTTP or HTTPS URL",
+					});
+				}
+			} catch {
+				ctx.addIssue({
+					code: "custom",
+					path: ["push_gateway_url"],
+					message: "Must be a valid URL (e.g., http://pushgateway:9091)",
+				});
+			}
+		}
+
+		// Validate basic auth: if one credential is provided, both must be provided
+		const hasUsername = !!data.basic_auth_username?.trim();
+		const hasPassword = !!data.basic_auth_password?.trim();
+		if (hasUsername && !hasPassword) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["basic_auth_password"],
+				message: "Password is required when username is provided",
+			});
+		}
+		if (hasPassword && !hasUsername) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["basic_auth_username"],
+				message: "Username is required when password is provided",
+			});
+		}
+	});
+
+// Prometheus form schema for the PrometheusFormFragment
+export const prometheusFormSchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		prometheus_config: prometheusConfigSchema,
+	})
+	.superRefine((data, ctx) => {
+		// When enabled, push_gateway_url is required
+		if (data.enabled) {
+			const url = (data.prometheus_config.push_gateway_url || "").trim();
+			if (!url) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["prometheus_config", "push_gateway_url"],
+					message: "Push Gateway URL is required when enabled",
+				});
+			}
+		}
+	});
 
 // MCP Client update schema
 export const mcpClientUpdateSchema = z.object({
@@ -772,6 +883,8 @@ export type OtelConfigSchema = z.infer<typeof otelConfigSchema>;
 export type OtelFormSchema = z.infer<typeof otelFormSchema>;
 export type MaximConfigSchema = z.infer<typeof maximConfigSchema>;
 export type MaximFormSchema = z.infer<typeof maximFormSchema>;
+export type PrometheusConfigSchema = z.infer<typeof prometheusConfigSchema>;
+export type PrometheusFormSchema = z.infer<typeof prometheusFormSchema>;
 export type NetworkOnlyFormSchema = z.infer<typeof networkOnlyFormSchema>;
 export type PerformanceFormSchema = z.infer<typeof performanceFormSchema>;
 export type CustomProviderConfigSchema = z.infer<typeof customProviderConfigSchema>;

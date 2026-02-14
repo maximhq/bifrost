@@ -389,7 +389,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 							/>
 							</div>
 							{form.auth_type === "headers" && (
-								<div className="space-y-2">
+								<div className="space-y-2" data-testid="mcp-headers-table">
 									<HeadersTable
 										value={form.headers || {}}
 										onChange={handleHeadersChange}

@@ -7,7 +7,7 @@ import { EnvVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
@@ -90,6 +90,16 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
+// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
+export interface ReplicateKeyConfig {
+	deployments?: Record<string, string> | string; // Allow string during editing
+}
+
+// Default ReplicateKeyConfig
+export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
+	deployments: {},
+} as const satisfies Required<ReplicateKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -102,6 +112,7 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	replicate_key_config?: ReplicateKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 }
 

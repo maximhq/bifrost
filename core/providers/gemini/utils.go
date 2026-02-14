@@ -1182,12 +1182,27 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 		}
 
 		// Handle nested properties for object types
+		// Note: properties may be *OrderedMap when deserialized from JSON (e.g. via
+		// ToolFunctionParameters), not just map[string]interface{}.
 		if props, exists := propMap["properties"]; exists {
-			if propsMap, ok := props.(map[string]interface{}); ok {
+			switch p := props.(type) {
+			case map[string]interface{}:
 				schema.Properties = make(map[string]*Schema)
-				for key, nestedProp := range propsMap {
+				for key, nestedProp := range p {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 				}
+			case *schemas.OrderedMap:
+				schema.Properties = make(map[string]*Schema)
+				p.Range(func(key string, nestedProp interface{}) bool {
+					schema.Properties[key] = convertPropertyToSchema(nestedProp)
+					return true
+				})
+			case schemas.OrderedMap:
+				schema.Properties = make(map[string]*Schema)
+				p.Range(func(key string, nestedProp interface{}) bool {
+					schema.Properties[key] = convertPropertyToSchema(nestedProp)
+					return true
+				})
 			}
 		}
 

@@ -2,7 +2,7 @@ module github.com/maximhq/bifrost/plugins/jsonparser
 
 go 1.25.5
 
-require github.com/maximhq/bifrost/core v1.4.1
+require github.com/maximhq/bifrost/core v1.4.2
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
@@ -57,10 +57,10 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
-	golang.org/x/net v0.48.0 // indirect
+	golang.org/x/crypto v0.47.0 // indirect
+	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/oauth2 v0.34.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/text v0.32.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/text v0.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

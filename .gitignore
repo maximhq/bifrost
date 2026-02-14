@@ -68,6 +68,7 @@ test-reports
 # MCP servers
 examples/mcps/**/bin/
 examples/mcps/http-no-ping-server/http-server
+examples/mcps/test-tools-server/dist/
 
 # Dependencies
 node_modules/
@@ -87,6 +88,7 @@ coverage/
 # Build output
 dist/
 
+
 # IDE
 .idea/
 .vscode/
@@ -101,3 +103,10 @@ npm-debug.log*
 
 # Playwright
 playwright/.cache/
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+!*.tfvars.example

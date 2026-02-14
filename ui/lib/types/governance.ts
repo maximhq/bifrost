@@ -29,18 +29,22 @@ export interface Team {
 	name: string;
 	customer_id?: string;
 	budget_id?: string;
+	rate_limit_id?: string;
 	// Populated relationships
 	customer?: Customer;
 	budget?: Budget;
+	rate_limit?: RateLimit;
 }
 
 export interface Customer {
 	id: string;
 	name: string;
 	budget_id?: string;
+	rate_limit_id?: string;
 	// Populated relationships
 	teams?: Team[];
 	budget?: Budget;
+	rate_limit?: RateLimit;
 }
 
 export interface DBKey {
@@ -172,22 +176,26 @@ export interface CreateTeamRequest {
 	name: string;
 	customer_id?: string;
 	budget?: CreateBudgetRequest;
+	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateTeamRequest {
 	name?: string;
 	customer_id?: string;
 	budget?: UpdateBudgetRequest;
+	rate_limit?: UpdateRateLimitRequest;
 }
 
 export interface CreateCustomerRequest {
 	name: string;
 	budget?: CreateBudgetRequest;
+	rate_limit?: CreateRateLimitRequest;
 }
 
 export interface UpdateCustomerRequest {
 	name?: string;
 	budget?: UpdateBudgetRequest;
+	rate_limit?: UpdateRateLimitRequest;
 }
 
 export interface CreateBudgetRequest {

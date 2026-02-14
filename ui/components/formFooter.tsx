@@ -24,7 +24,7 @@ export default function FormFooter({ validator, label, onCancel, isLoading, isEd
 
   return (
     <DialogFooter className="mt-4">
-      <Button variant="outline" onClick={onCancel} disabled={isLoading}>
+      <Button type="button" variant="outline" onClick={onCancel} disabled={isLoading}>
         Cancel
       </Button>
       <TooltipProvider>

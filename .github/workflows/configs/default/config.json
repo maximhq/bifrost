@@ -37,6 +37,19 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "e2e-anthropic-key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
     }
   }
 }

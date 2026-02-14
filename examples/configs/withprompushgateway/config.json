@@ -1,0 +1,210 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "OpenAI API Key",
+                    "value": "env.OPENAI_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "anthropic": {
+            "keys": [
+                {
+                    "name": "Anthropic API Key",
+                    "value": "env.ANTHROPIC_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "gemini": {
+            "keys": [
+                {
+                    "value": "env.GEMINI_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "vertex": {
+            "keys": [
+                {
+                    "name": "Vertex API Key",
+                    "vertex_key_config": {
+                        "project_id": "env.VERTEX_PROJECT_ID",
+                        "region": "env.GOOGLE_LOCATION",
+                        "auth_credentials": "env.VERTEX_CREDENTIALS"
+                    },
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "mistral": {
+            "keys": [
+                {
+                    "name": "Mistral API Key",
+                    "value": "env.MISTRAL_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "cohere": {
+            "keys": [
+                {
+                    "name": "Cohere API Key",
+                    "value": "env.COHERE_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "groq": {
+            "keys": [
+                {
+                    "name": "Groq API Key",
+                    "value": "env.GROQ_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "perplexity": {
+            "keys": [
+                {
+                    "name": "Perplexity API Key",
+                    "value": "env.PERPLEXITY_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "cerebras": {
+            "keys": [
+                {
+                    "name": "Cerebras API Key",
+                    "value": "env.CEREBRAS_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "openrouter": {
+            "keys": [
+                {
+                    "name": "OpenRouter API Key",
+                    "value": "env.OPENROUTER_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "azure": {
+            "keys": [
+                {
+                    "name": "Azure API Key",
+                    "value": "env.AZURE_API_KEY",
+                    "azure_key_config": {
+                        "endpoint": "env.AZURE_ENDPOINT",
+                        "api_version": "env.AZURE_API_VERSION"
+                    },
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "bedrock": {
+            "keys": [
+                {
+                    "name": "Bedrock API Key",
+                    "bedrock_key_config": {
+                        "access_key": "env.AWS_ACCESS_KEY_ID",
+                        "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+                        "region": "env.AWS_REGION",
+                        "arn": "env.AWS_ARN"
+                    },
+                    "weight": 1,
+                    "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        }
+    },
+    "client": {
+        "drop_excess_requests": false,
+        "initial_pool_size": 300,
+        "allowed_origins": [
+            "*"
+        ],
+        "enable_logging": true,
+        "enable_governance": false,
+        "enforce_governance_header": false,
+        "allow_direct_keys": false,
+        "max_request_body_size_mb": 100,
+        "enable_litellm_fallbacks": false
+    },
+    "config_store": {
+      "enabled": true,
+      "type": "sqlite",
+      "config":{
+        "path": "../../examples/configs/withprompushgateway/config.db"
+      }
+    },
+    "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../examples/configs/withprompushgateway/logs.db"
+        }
+    },
+    "plugins": [
+        {
+            "name": "telemetry",
+            "enabled": true,
+            "config": {
+                "push_gateway": {
+                    "enabled": true,
+                    "push_gateway_url": "http://localhost:9091",
+                    "job_name": "bifrost",
+                    "push_interval": 15,
+                    "basic_auth": {
+                        "username": "admin",
+                        "password": "admin"
+                    }
+                }
+            }
+        }
+    ]
+}

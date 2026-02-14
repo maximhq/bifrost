@@ -568,8 +568,36 @@ func (m *MockConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*ta
 	return nil
 }
 
-func (m *MockConfigStore) GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error) {
+func (m *MockConfigStore) GetRateLimit(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableRateLimit, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if m.governanceConfig == nil || len(m.governanceConfig.RateLimits) == 0 {
+		return nil
+	}
+	filtered := make([]tables.TableRateLimit, 0, len(m.governanceConfig.RateLimits))
+	for _, rl := range m.governanceConfig.RateLimits {
+		if rl.ID != id {
+			filtered = append(filtered, rl)
+		}
+	}
+	m.governanceConfig.RateLimits = filtered
+	return nil
+}
+
+func (m *MockConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
+	if m.governanceConfig == nil || len(m.governanceConfig.Budgets) == 0 {
+		return nil
+	}
+	filtered := make([]tables.TableBudget, 0, len(m.governanceConfig.Budgets))
+	for _, b := range m.governanceConfig.Budgets {
+		if b.ID != id {
+			filtered = append(filtered, b)
+		}
+	}
+	m.governanceConfig.Budgets = filtered
+	return nil
 }
 
 func (m *MockConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateLimit, error) {
@@ -14972,6 +15000,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"created_at":   true,
 		"updated_at":   true,
 		"budget":       true, // GORM relation
+		"rate_limit":   true, // GORM relation
 		"teams":        true, // GORM relation
 		"virtual_keys": true, // GORM relation
 	},
@@ -14980,6 +15009,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"created_at":   true,
 		"updated_at":   true,
 		"budget":       true, // GORM relation
+		"rate_limit":   true, // GORM relation
 		"customer":     true, // GORM relation
 		"virtual_keys": true, // GORM relation
 	},

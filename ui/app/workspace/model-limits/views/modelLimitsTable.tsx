@@ -300,7 +300,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
 													<TooltipProvider>
 														<Tooltip>
 															<TooltipTrigger asChild>

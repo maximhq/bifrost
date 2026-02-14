@@ -109,8 +109,9 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		return
 	}
 
-	// Update rate limit usage (both provider-level and VK-level) if applicable
-	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 {
+	// Update rate limit usage (VK-level, provider-config-level, team-level, customer-level) if applicable
+	// Include TeamID and CustomerID checks since rate limits can be configured at those levels
+	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 || vk.TeamID != nil || vk.CustomerID != nil {
 		if err := t.store.UpdateVirtualKeyRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
 		}

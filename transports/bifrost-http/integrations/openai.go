@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -120,7 +121,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.TextCompletionRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAITextCompletionRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -172,7 +173,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -224,7 +225,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ResponsesRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -281,7 +282,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.CountTokensRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIResponsesRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -320,7 +321,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.EmbeddingRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIEmbeddingRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -359,7 +360,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.SpeechRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAISpeechRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -403,7 +404,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.TranscriptionRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAITranscriptionRequest{}
 			},
 			RequestParser: parseTranscriptionMultipartRequest, // Handle multipart form parsing
@@ -456,7 +457,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageGenerationRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIImageGenerationRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -507,7 +508,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageEditRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIImageEditRequest{}
 			},
 			RequestParser: parseOpenAIImageEditMultipartRequest, // Handle multipart form parsing
@@ -558,7 +559,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageVariationRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIImageVariationRequest{}
 			},
 			RequestParser: parseOpenAIImageVariationMultipartRequest,
@@ -616,7 +617,7 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ListModelsRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -683,7 +684,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.BatchCreateRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostBatchCreateRequest{}
 			},
 			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -795,7 +796,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.BatchListRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostBatchListRequest{}
 			},
 			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -844,7 +845,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.BatchRetrieveRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostBatchRetrieveRequest{}
 			},
 			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -898,7 +899,7 @@ func CreateOpenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerSt
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.BatchCancelRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostBatchCancelRequest{}
 			},
 			BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -956,7 +957,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.FileUploadRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostFileUploadRequest{}
 			},
 			RequestParser: parseOpenAIFileUploadMultipartRequest,
@@ -1010,7 +1011,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.FileListRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostFileListRequest{}
 			},
 			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -1060,7 +1061,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.FileRetrieveRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostFileRetrieveRequest{}
 			},
 			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -1109,7 +1110,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.FileDeleteRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostFileDeleteRequest{}
 			},
 			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -1160,7 +1161,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.FileContentRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostFileContentRequest{}
 			},
 			FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -1534,7 +1535,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerCreateRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerCreateRequest{}
 			},
 			ContainerRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerRequest, error) {
@@ -1576,7 +1577,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerListRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerListRequest{}
 			},
 			ContainerRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerRequest, error) {
@@ -1614,7 +1615,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerRetrieveRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerRetrieveRequest{}
 			},
 			ContainerRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerRequest, error) {
@@ -1652,7 +1653,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerDeleteRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerDeleteRequest{}
 			},
 			ContainerRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerRequest, error) {
@@ -1782,7 +1783,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerFileCreateRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerFileCreateRequest{}
 			},
 			RequestParser: parseContainerFileCreateMultipartRequest,
@@ -1818,7 +1819,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerFileListRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerFileListRequest{}
 			},
 			ContainerFileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerFileRequest, error) {
@@ -1853,7 +1854,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerFileRetrieveRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerFileRetrieveRequest{}
 			},
 			ContainerFileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerFileRequest, error) {
@@ -1888,7 +1889,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerFileContentRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerFileContentRequest{}
 			},
 			ContainerFileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerFileRequest, error) {
@@ -1923,7 +1924,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ContainerFileDeleteRequest
 			},
-			GetRequestTypeInstance: func() interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostContainerFileDeleteRequest{}
 			},
 			ContainerFileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*ContainerFileRequest, error) {

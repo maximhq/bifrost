@@ -284,7 +284,7 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 	m.authConfig.Store(authConfig)
 }
 
-// InferenceMiddleware is for inference requests if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return authConfig.DisableAuthOnInference

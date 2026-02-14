@@ -333,6 +333,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
 		}
+
+		if key.ReplicateKeyConfig != nil {
+			replicateConfig := &schemas.ReplicateKeyConfig{
+				Deployments: key.ReplicateKeyConfig.Deployments,
+			}
+			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -444,6 +451,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash BedrockKeyConfig
 	if key.BedrockKeyConfig != nil {
 		data, err := sonic.Marshal(key.BedrockKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash ReplicateKeyConfig
+	if key.ReplicateKeyConfig != nil {
+		data, err := sonic.Marshal(key.ReplicateKeyConfig)
 		if err != nil {
 			return "", err
 		}
@@ -951,8 +966,8 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 type AuthConfig struct {
 	AdminUserName          *schemas.EnvVar `json:"admin_username"`
 	AdminPassword          *schemas.EnvVar `json:"admin_password"`
-	IsEnabled              bool           `json:"is_enabled"`
-	DisableAuthOnInference bool           `json:"disable_auth_on_inference"`
+	IsEnabled              bool            `json:"is_enabled"`
+	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
 }
 
 // ConfigMap maps provider names to their configurations.

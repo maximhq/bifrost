@@ -267,19 +267,20 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				}
 			}
 			dbKey := tables.TableKey{
-				Provider:         dbProvider.Name,
-				ProviderID:       dbProvider.ID,
-				KeyID:            key.ID,
-				Name:             key.Name,
-				Value:            key.Value,
-				Models:           key.Models,
-				Weight:           &key.Weight,
-				Enabled:          key.Enabled,
-				UseForBatchAPI:   key.UseForBatchAPI,
-				AzureKeyConfig:   key.AzureKeyConfig,
-				VertexKeyConfig:  key.VertexKeyConfig,
-				BedrockKeyConfig: key.BedrockKeyConfig,
-				ConfigHash:       keyHash,
+				Provider:           dbProvider.Name,
+				ProviderID:         dbProvider.ID,
+				KeyID:              key.ID,
+				Name:               key.Name,
+				Value:              key.Value,
+				Models:             key.Models,
+				Weight:             &key.Weight,
+				Enabled:            key.Enabled,
+				UseForBatchAPI:     key.UseForBatchAPI,
+				AzureKeyConfig:     key.AzureKeyConfig,
+				VertexKeyConfig:    key.VertexKeyConfig,
+				BedrockKeyConfig:   key.BedrockKeyConfig,
+				ReplicateKeyConfig: key.ReplicateKeyConfig,
+				ConfigHash:         keyHash,
 			}
 
 			// Handle Azure config
@@ -420,19 +421,20 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			return fmt.Errorf("failed to generate key hash: %w", err)
 		}
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       keyHash,
+			Provider:           dbProvider.Name,
+			ProviderID:         dbProvider.ID,
+			KeyID:              key.ID,
+			Name:               key.Name,
+			Value:              key.Value,
+			Models:             key.Models,
+			Weight:             &key.Weight,
+			Enabled:            key.Enabled,
+			UseForBatchAPI:     key.UseForBatchAPI,
+			AzureKeyConfig:     key.AzureKeyConfig,
+			VertexKeyConfig:    key.VertexKeyConfig,
+			BedrockKeyConfig:   key.BedrockKeyConfig,
+			ReplicateKeyConfig: key.ReplicateKeyConfig,
+			ConfigHash:         keyHash,
 		}
 
 		// Handle Azure config
@@ -534,19 +536,20 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 	// Create keys for this provider
 	for _, key := range configCopy.Keys {
 		dbKey := tables.TableKey{
-			Provider:         dbProvider.Name,
-			ProviderID:       dbProvider.ID,
-			KeyID:            key.ID,
-			Name:             key.Name,
-			Value:            key.Value,
-			Models:           key.Models,
-			Weight:           &key.Weight,
-			Enabled:          key.Enabled,
-			UseForBatchAPI:   key.UseForBatchAPI,
-			AzureKeyConfig:   key.AzureKeyConfig,
-			VertexKeyConfig:  key.VertexKeyConfig,
-			BedrockKeyConfig: key.BedrockKeyConfig,
-			ConfigHash:       key.ConfigHash,
+			Provider:           dbProvider.Name,
+			ProviderID:         dbProvider.ID,
+			KeyID:              key.ID,
+			Name:               key.Name,
+			Value:              key.Value,
+			Models:             key.Models,
+			Weight:             &key.Weight,
+			Enabled:            key.Enabled,
+			UseForBatchAPI:     key.UseForBatchAPI,
+			AzureKeyConfig:     key.AzureKeyConfig,
+			VertexKeyConfig:    key.VertexKeyConfig,
+			BedrockKeyConfig:   key.BedrockKeyConfig,
+			ReplicateKeyConfig: key.ReplicateKeyConfig,
+			ConfigHash:         key.ConfigHash,
 		}
 		// Handle Azure config
 		if key.AzureKeyConfig != nil {
@@ -649,17 +652,18 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
 			keys[i] = schemas.Key{
-				ID:               dbKey.KeyID,
-				Name:             dbKey.Name,
-				Value:            dbKey.Value,
-				Models:           dbKey.Models,
-				Weight:           getWeight(dbKey.Weight),
-				Enabled:          dbKey.Enabled,
-				UseForBatchAPI:   dbKey.UseForBatchAPI,
-				AzureKeyConfig:   dbKey.AzureKeyConfig,
-				VertexKeyConfig:  dbKey.VertexKeyConfig,
-				BedrockKeyConfig: dbKey.BedrockKeyConfig,
-				ConfigHash:       dbKey.ConfigHash,
+				ID:                 dbKey.KeyID,
+				Name:               dbKey.Name,
+				Value:              dbKey.Value,
+				Models:             dbKey.Models,
+				Weight:             getWeight(dbKey.Weight),
+				Enabled:            dbKey.Enabled,
+				UseForBatchAPI:     dbKey.UseForBatchAPI,
+				AzureKeyConfig:     dbKey.AzureKeyConfig,
+				VertexKeyConfig:    dbKey.VertexKeyConfig,
+				BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+				ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+				ConfigHash:         dbKey.ConfigHash,
 			}
 		}
 		providerConfig := ProviderConfig{
@@ -690,17 +694,18 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
 		keys[i] = schemas.Key{
-			ID:               dbKey.KeyID,
-			Name:             dbKey.Name,
-			Value:            dbKey.Value,
-			Models:           dbKey.Models,
-			Weight:           getWeight(dbKey.Weight),
-			Enabled:          dbKey.Enabled,
-			UseForBatchAPI:   dbKey.UseForBatchAPI,
-			AzureKeyConfig:   dbKey.AzureKeyConfig,
-			VertexKeyConfig:  dbKey.VertexKeyConfig,
-			BedrockKeyConfig: dbKey.BedrockKeyConfig,
-			ConfigHash:       dbKey.ConfigHash,
+			ID:                 dbKey.KeyID,
+			Name:               dbKey.Name,
+			Value:              dbKey.Value,
+			Models:             dbKey.Models,
+			Weight:             getWeight(dbKey.Weight),
+			Enabled:            dbKey.Enabled,
+			UseForBatchAPI:     dbKey.UseForBatchAPI,
+			AzureKeyConfig:     dbKey.AzureKeyConfig,
+			VertexKeyConfig:    dbKey.VertexKeyConfig,
+			BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+			ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+			ConfigHash:         dbKey.ConfigHash,
 		}
 	}
 	return &ProviderConfig{
@@ -1807,7 +1812,7 @@ func (s *RDBConfigStore) DeleteVirtualKeyMCPConfig(ctx context.Context, id uint,
 // GetTeams retrieves all teams from the database.
 func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error) {
 	// Preload relationships for complete information
-	query := s.db.WithContext(ctx).Preload("Customer").Preload("Budget")
+	query := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").Preload("RateLimit")
 	// Optional filtering by customer
 	if customerID != "" {
 		query = query.Where("customer_id = ?", customerID)
@@ -1822,7 +1827,7 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 // GetTeam retrieves a specific team from the database.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam
-	if err := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").First(&team, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Customer").Preload("Budget").Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1863,7 +1868,7 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var team tables.TableTeam
-		if err := tx.WithContext(ctx).Preload("Budget").First(&team, "id = ?", id).Error; err != nil {
+		if err := tx.WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&team, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -1873,8 +1878,9 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 		if err := tx.WithContext(ctx).Model(&tables.TableVirtualKey{}).Where("team_id = ?", id).Update("team_id", nil).Error; err != nil {
 			return err
 		}
-		// Store the budget ID before deleting the team
+		// Store the budget and rate limit IDs before deleting the team
 		budgetID := team.BudgetID
+		rateLimitID := team.RateLimitID
 		// Delete the team first
 		if err := tx.WithContext(ctx).Delete(&tables.TableTeam{}, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1885,6 +1891,12 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 		// Delete the team's budget if it exists
 		if budgetID != nil {
 			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
+				return err
+			}
+		}
+		// Delete the team's rate limit if it exists
+		if rateLimitID != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
 				return err
 			}
 		}
@@ -1901,7 +1913,7 @@ func (s *RDBConfigStore) DeleteTeam(ctx context.Context, id string) error {
 // GetCustomers retrieves all customers from the database.
 func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustomer, error) {
 	var customers []tables.TableCustomer
-	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Order("created_at ASC").Find(&customers).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Preload("RateLimit").Order("created_at ASC").Find(&customers).Error; err != nil {
 		return nil, err
 	}
 	return customers, nil
@@ -1910,7 +1922,7 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 // GetCustomer retrieves a specific customer from the database.
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer
-	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").First(&customer, "id = ?", id).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Teams").Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -1951,7 +1963,7 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var customer tables.TableCustomer
-		if err := tx.WithContext(ctx).Preload("Budget").First(&customer, "id = ?", id).Error; err != nil {
+		if err := tx.WithContext(ctx).Preload("Budget").Preload("RateLimit").First(&customer, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrNotFound
 			}
@@ -1965,8 +1977,9 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 		if err := tx.WithContext(ctx).Model(&tables.TableTeam{}).Where("customer_id = ?", id).Update("customer_id", nil).Error; err != nil {
 			return err
 		}
-		// Store the budget ID before deleting the customer
+		// Store the budget and rate limit IDs before deleting the customer
 		budgetID := customer.BudgetID
+		rateLimitID := customer.RateLimitID
 		// Delete the customer first
 		if err := tx.WithContext(ctx).Delete(&tables.TableCustomer{}, "id = ?", id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -1977,6 +1990,12 @@ func (s *RDBConfigStore) DeleteCustomer(ctx context.Context, id string) error {
 		// Delete the customer's budget if it exists
 		if budgetID != nil {
 			if err := tx.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", *budgetID).Error; err != nil {
+				return err
+			}
+		}
+		// Delete the customer's rate limit if it exists
+		if rateLimitID != nil {
+			if err := tx.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", *rateLimitID).Error; err != nil {
 				return err
 			}
 		}
@@ -2000,9 +2019,15 @@ func (s *RDBConfigStore) GetRateLimits(ctx context.Context) ([]tables.TableRateL
 }
 
 // GetRateLimit retrieves a specific rate limit from the database.
-func (s *RDBConfigStore) GetRateLimit(ctx context.Context, id string) (*tables.TableRateLimit, error) {
+func (s *RDBConfigStore) GetRateLimit(ctx context.Context, id string, tx ...*gorm.DB) (*tables.TableRateLimit, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
 	var rateLimit tables.TableRateLimit
-	if err := s.db.WithContext(ctx).First(&rateLimit, "id = ?", id).Error; err != nil {
+	if err := txDB.WithContext(ctx).First(&rateLimit, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2051,6 +2076,20 @@ func (s *RDBConfigStore) UpdateRateLimits(ctx context.Context, rateLimits []*tab
 		if err := txDB.WithContext(ctx).Save(rl).Error; err != nil {
 			return s.parseGormError(err)
 		}
+	}
+	return nil
+}
+
+// DeleteRateLimit deletes a rate limit from the database.
+func (s *RDBConfigStore) DeleteRateLimit(ctx context.Context, id string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Delete(&tables.TableRateLimit{}, "id = ?", id).Error; err != nil {
+		return s.parseGormError(err)
 	}
 	return nil
 }
@@ -2121,6 +2160,20 @@ func (s *RDBConfigStore) UpdateBudget(ctx context.Context, budget *tables.TableB
 		txDB = s.db
 	}
 	if err := txDB.WithContext(ctx).Save(budget).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// DeleteBudget deletes a budget from the database.
+func (s *RDBConfigStore) DeleteBudget(ctx context.Context, id string, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	if err := txDB.WithContext(ctx).Delete(&tables.TableBudget{}, "id = ?", id).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil

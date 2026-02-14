@@ -37,7 +37,7 @@ func TestOpenAI(t *testing.T) {
 			{Provider: schemas.OpenAI, Model: "whisper-1"},
 		},
 		SpeechSynthesisModel: "gpt-4o-mini-tts",
-		ReasoningModel:       "o1",
+		ReasoningModel:       "o4-mini", // o4-mini properly returns both reasoning items and message output
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
 		ImageVariationModel:  "dall-e-2",

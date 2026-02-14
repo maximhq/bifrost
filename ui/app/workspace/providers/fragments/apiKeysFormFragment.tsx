@@ -53,6 +53,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
+	const isReplicate = providerName === "replicate";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key' or 'entra_id'
@@ -460,6 +461,49 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								<FormControl>
 									<Textarea
 										placeholder='{"custom-gemini-2.5-pro": "123456789", "custom-gemini-2.0-flash-001": "987654321"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isReplicate && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name={`key.replicate_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
 										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
 										onChange={(e) => {
 											// Store as string during editing to allow intermediate invalid states

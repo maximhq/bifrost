@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -35,7 +36,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.ChatCompletionRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereChatRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -80,7 +81,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.EmbeddingRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereEmbeddingRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -112,7 +113,7 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.CountTokensRequest
 		},
-		GetRequestTypeInstance: func() interface{} {
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereCountTokensRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {

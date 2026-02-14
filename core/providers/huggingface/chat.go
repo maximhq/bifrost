@@ -1,3 +1,4 @@
+// Package huggingface provides a HuggingFace chat provider.
 package huggingface
 
 import (
@@ -8,14 +9,38 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
+// sanitizeMessagesForHuggingFace removes unsupported ChatAssistantMessage fields
+// from chat messages. HuggingFace's OpenAI-compatible API doesn't support fields
+// like reasoning_details, reasoning, annotations, audio, and refusal.
+// Only ToolCalls is preserved from ChatAssistantMessage.
+func sanitizeMessagesForHuggingFace(messages []schemas.ChatMessage) []schemas.ChatMessage {
+	sanitized := make([]schemas.ChatMessage, len(messages))
+	for i, msg := range messages {
+		sanitized[i] = schemas.ChatMessage{
+			Name:            msg.Name,
+			Role:            msg.Role,
+			Content:         msg.Content,
+			ChatToolMessage: msg.ChatToolMessage,
+		}
+		// Only preserve ToolCalls from ChatAssistantMessage
+		if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
+			sanitized[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
+				ToolCalls: msg.ChatAssistantMessage.ToolCalls,
+			}
+		}
+	}
+	return sanitized
+}
+
 func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) (*HuggingFaceChatRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, nil
 	}
 
 	// Create the HuggingFace request
+	// Sanitize messages to remove unsupported fields like reasoning_details
 	hfReq := &HuggingFaceChatRequest{
-		Messages: bifrostReq.Input,
+		Messages: sanitizeMessagesForHuggingFace(bifrostReq.Input),
 		Model:    bifrostReq.Model,
 	}
 

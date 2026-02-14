@@ -287,9 +287,12 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
     "virtual_keys": [
       {
         "id": "vk-prod-main",
-        "keys": [
+        "provider_configs": [
           {
-            "key_id": "key-prod-001"
+            "provider": "openai",
+            "allowed_keys": [
+              "key-prod-001"
+            ]
           }
         ]
       }

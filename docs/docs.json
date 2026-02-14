@@ -49,6 +49,13 @@
         "icon": "book-open-cover",
         "groups": [
           {
+            "group": "Overview",
+            "icon": "book-open-cover",
+            "pages": [
+              "overview"
+            ]
+          },
+          {
             "group": "Quick Start",
             "icon": "rocket",
             "pages": [
@@ -106,6 +113,7 @@
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
+                  "providers/supported-providers/replicate",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/xai"
@@ -381,6 +389,7 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
+          "changelogs/v1.4.6",
           "changelogs/v1.4.5",
           "changelogs/v1.4.4",
           {

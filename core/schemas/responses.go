@@ -43,7 +43,8 @@ func (r *BifrostResponsesRequest) GetRawRequestBody() []byte {
 }
 
 type BifrostResponsesResponse struct {
-	ID *string `json:"id,omitempty"` // used for internal conversions
+	ID     *string `json:"id,omitempty"` // used for internal conversions
+	Object string  `json:"object"`       // "response"
 
 	Background         *bool                               `json:"background,omitempty"`
 	Conversation       *ResponsesResponseConversation      `json:"conversation,omitempty"`
@@ -96,6 +97,13 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 		ID:        resp.ID,
 		CreatedAt: resp.CreatedAt,
 		Model:     resp.Model,
+	}
+
+	// Object - default: "response"
+	if resp.Object != "" {
+		result.Object = resp.Object
+	} else {
+		result.Object = "response"
 	}
 
 	result.Conversation = resp.Conversation
