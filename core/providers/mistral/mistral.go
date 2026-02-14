@@ -192,6 +192,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

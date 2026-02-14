@@ -51,6 +51,7 @@ const (
 	HuggingFace ModelProvider = "huggingface"
 	Nebius      ModelProvider = "nebius"
 	XAI         ModelProvider = "xai"
+	ZAI         ModelProvider = "zai"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -61,6 +62,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Gemini,
 	OpenAI,
 	HuggingFace,
+	ZAI,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -84,6 +86,7 @@ var StandardProviders = []ModelProvider{
 	HuggingFace,
 	Nebius,
 	XAI,
+	ZAI,
 }
 
 // RequestType represents the type of request being made to a provider.

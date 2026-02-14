@@ -19,6 +19,7 @@ export const KnownProvidersNames = [
 	"vertex",
 	"nebius",
 	"xai",
+	"zai",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -79,6 +80,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	huggingface: "HuggingFace",
 	nebius: "Nebius Token Factory",
 	xai: "xAI",
+	zai: "ZAI",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

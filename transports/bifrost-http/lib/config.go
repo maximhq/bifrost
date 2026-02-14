@@ -3338,10 +3338,12 @@ func ValidateCustomProviderUpdate(newConfig, existingConfig configstore.Provider
 
 	// CustomProviderKey is internally set and immutable, no validation needed
 
-	// Check if BaseProviderType is being changed
+	// Validate that the new BaseProviderType is a supported base provider
 	if newCPC.BaseProviderType != existingCPC.BaseProviderType {
-		return fmt.Errorf("provider %s: base_provider_type cannot be changed from %s to %s after creation",
-			provider, existingCPC.BaseProviderType, newCPC.BaseProviderType)
+		if !bifrost.IsSupportedBaseProvider(newCPC.BaseProviderType) {
+			return fmt.Errorf("provider %s: unsupported base_provider_type: %s",
+				provider, newCPC.BaseProviderType)
+		}
 	}
 
 	// Validate the new config (this will catch Bedrock+IsKeyLess configurations)

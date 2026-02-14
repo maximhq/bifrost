@@ -126,6 +126,7 @@ func (provider *ParasailProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

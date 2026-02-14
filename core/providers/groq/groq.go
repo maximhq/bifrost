@@ -130,6 +130,7 @@ func (provider *GroqProvider) ChatCompletionStream(ctx *schemas.BifrostContext, 
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

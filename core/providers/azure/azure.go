@@ -442,6 +442,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext,
 		nil,
 		postHookRunner,
 		customPostResponseConverter,
+		false,
 		provider.logger,
 	)
 }
@@ -632,6 +633,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			nil,
 			nil,
 			nil,
+			false,
 			postResponseConverter,
 			provider.logger,
 		)

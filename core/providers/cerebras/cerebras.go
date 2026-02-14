@@ -113,6 +113,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx *schemas.BifrostConte
 		nil,
 		postHookRunner,
 		nil,
+		false,
 		provider.logger,
 	)
 }
@@ -158,6 +159,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)
