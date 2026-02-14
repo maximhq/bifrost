@@ -61,10 +61,9 @@ cleanup-enterprise: ## Clean up enterprise directories if present
 
 install-ui: cleanup-enterprise
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
-	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@echo "$(GREEN)Node.js and npm are installed$(NC)"
-	@cd ui && npm install
-	@which next > /dev/null || (echo "$(YELLOW)Installing nextjs...$(NC)" && npm install -g next)
+	@which pnpm > /dev/null || (echo "$(RED)Error: pnpm is not installed. Please install pnpm first.$(NC)" && exit 1)
+	@echo "$(GREEN)Node.js and pnpm are installed$(NC)"
+	@cd ui && pnpm install
 	@echo "$(GREEN)UI deps are in sync$(NC)"
 
 install-air: ## Install air for hot reloading (if not already installed)
@@ -85,11 +84,11 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 			echo "$(GREEN)junit-viewer is already installed$(NC)"; \
 		else \
 			echo "$(YELLOW)Installing junit-viewer for HTML reports...$(NC)"; \
-			if npm install -g junit-viewer 2>&1; then \
+			if pnpm add -g junit-viewer 2>&1; then \
 				echo "$(GREEN)junit-viewer installed successfully$(NC)"; \
 			else \
 				echo "$(RED)Failed to install junit-viewer. HTML reports will be skipped.$(NC)"; \
-				echo "$(YELLOW)You can install it manually: npm install -g junit-viewer$(NC)"; \
+				echo "$(YELLOW)You can install it manually: pnpm add -g junit-viewer$(NC)"; \
 				exit 0; \
 			fi; \
 		fi \
@@ -110,21 +109,31 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
 	@if [ -n "$(DISABLE_PROFILER)" ]; then \
 		echo "$(CYAN)DevProfiler disabled for testing$(NC)"; \
-		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 pnpm run dev & \
 	else \
-		cd ui && npm run dev & \
+		cd ui && pnpm run dev & \
 	fi
 	@sleep 3
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
+	@mkdir -p transports/bifrost-http/ui && \
+	if [ ! -f transports/bifrost-http/ui/index.html ]; then \
+		echo "$(YELLOW)Creating placeholder so Go embed succeeds (API will start)...$(NC)"; \
+		printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Bifrost</title></head><body><p>API running. Run make build-ui for full UI.</p></body></html>' > transports/bifrost-http/ui/index.html; \
+		echo "$(YELLOW)Building full UI in background (optional)...$(NC)"; \
+		$(MAKE) build-ui || true; \
+	fi
 	@$(MAKE) setup-workspace >/dev/null
 	@if [ -f .env ]; then \
 		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
 		set -a; . ./.env; set +a; \
 	fi; \
+	AIR_BIN="$$(command -v air 2>/dev/null || echo "$(shell go env GOPATH)/bin/air")"; \
+	if [ -z "$$AIR_BIN" ] || [ ! -x "$$AIR_BIN" ]; then AIR_BIN="$(shell go env GOPATH)/bin/air"; fi; \
+	export PATH="$(shell go env GOPATH)/bin:$$PATH"; \
 	if [ -n "$(DEBUG)" ]; then \
 		echo "$(CYAN)Starting with air + delve debugger on port 2345...$(NC)"; \
 		echo "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
-		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.debug.toml -- \
+		cd transports/bifrost-http && BIFROST_UI_DEV=true $$AIR_BIN -c .air.debug.toml -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
@@ -132,7 +141,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
 			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
 	else \
-		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+		cd transports/bifrost-http && BIFROST_UI_DEV=true $$AIR_BIN -c .air.toml -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
@@ -144,7 +153,7 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 build-ui: install-ui ## Build ui
 	@echo "$(GREEN)Building ui...$(NC)"
 	@rm -rf ui/.next
-	@cd ui && npm run build && npm run copy-build
+	@cd ui && pnpm run build && pnpm run copy-build
 
 build: build-ui ## Build bifrost-http binary
 	@if [ -n "$(LOCAL)" ]; then \
@@ -266,7 +275,7 @@ docker-run: ## Run Docker container
 
 docs: ## Prepare local docs
 	@echo "$(GREEN)Preparing local docs...$(NC)"
-	@cd docs && npx --yes mintlify@latest dev
+	@cd docs && pnpm dlx mintlify@latest dev
 
 run: build ## Build and run bifrost-http (no hot reload)
 	@echo "$(GREEN)Running bifrost-http...$(NC)"
@@ -756,7 +765,7 @@ setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScr
 				fi; \
 			elif [ -f "$$mcp_dir/package.json" ]; then \
 				echo "$(CYAN)Building $$mcp_name (TypeScript)...$(NC)"; \
-				if cd "$$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then \
+				if cd "$$mcp_dir" && pnpm install && pnpm run build && cd - > /dev/null; then \
 					echo "$(GREEN)  ✓ $$mcp_name$(NC)"; \
 				else \
 					echo "$(RED)  ✗ $$mcp_name failed$(NC)"; \
@@ -1112,37 +1121,37 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		done; \
 	fi; \
 	TEST_FAILED=0; \
-	if ! which npm > /dev/null 2>&1; then \
-		echo "$(RED)Error: npm not found$(NC)"; \
-		echo "$(YELLOW)Install Node.js: https://nodejs.org/$(NC)"; \
+	if ! which pnpm > /dev/null 2>&1; then \
+		echo "$(RED)Error: pnpm not found$(NC)"; \
+		echo "$(YELLOW)Install pnpm: https://pnpm.io/installation$(NC)"; \
 		[ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ] && kill $$BIFROST_PID 2>/dev/null; \
 		[ -n "$$TAIL_PID" ] && kill $$TAIL_PID 2>/dev/null; \
 		exit 1; \
 	fi; \
-	echo "$(CYAN)Using npm$(NC)"; \
+	echo "$(CYAN)Using pnpm$(NC)"; \
 	cd tests/integrations/typescript && \
 	if [ ! -d "node_modules" ]; then \
 		echo "$(YELLOW)Installing dependencies...$(NC)"; \
-		npm install; \
+		pnpm install; \
 	fi; \
 	if [ -n "$(INTEGRATION)" ]; then \
 		if [ -n "$(TESTCASE)" ]; then \
 			echo "$(CYAN)Running $(INTEGRATION) integration test: $(TESTCASE)...$(NC)"; \
-			npm test -- tests/test-$(INTEGRATION).test.ts -t "$(TESTCASE)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+			pnpm test -- tests/test-$(INTEGRATION).test.ts -t "$(TESTCASE)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
 		elif [ -n "$(PATTERN)" ]; then \
 			echo "$(CYAN)Running $(INTEGRATION) integration tests matching '$(PATTERN)'...$(NC)"; \
-			npm test -- tests/test-$(INTEGRATION).test.ts -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+			pnpm test -- tests/test-$(INTEGRATION).test.ts -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
 		else \
 			echo "$(CYAN)Running $(INTEGRATION) integration tests...$(NC)"; \
-			npm test -- tests/test-$(INTEGRATION).test.ts $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+			pnpm test -- tests/test-$(INTEGRATION).test.ts $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
 		fi; \
 	else \
 		if [ -n "$(PATTERN)" ]; then \
 			echo "$(CYAN)Running all integration tests matching '$(PATTERN)'...$(NC)"; \
-			npm test -- -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
+			pnpm test -- -t "$(PATTERN)" $(if $(VERBOSE),--reporter=verbose,) || TEST_FAILED=1; \
 		else \
 			echo "$(CYAN)Running all integration tests...$(NC)"; \
-			npm test $(if $(VERBOSE),-- --reporter=verbose,) || TEST_FAILED=1; \
+			pnpm test $(if $(VERBOSE),-- --reporter=verbose,) || TEST_FAILED=1; \
 		fi; \
 	fi; \
 	if [ $$BIFROST_STARTED -eq 1 ] && [ -n "$$BIFROST_PID" ]; then \
@@ -1169,13 +1178,13 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 install-playwright: ## Install Playwright test dependencies
 	@echo "$(GREEN)Installing Playwright dependencies...$(NC)"
 	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
-	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
-	@cd tests/e2e && npm install
-	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
+	@which pnpm > /dev/null || (echo "$(RED)Error: pnpm is not installed. Please install pnpm first.$(NC)" && exit 1)
+	@cd tests/e2e && pnpm install
+	@cd tests/e2e && if pnpm exec playwright install --list 2>/dev/null | grep -q "chromium"; then \
 		echo "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
 	else \
 		echo "$(CYAN)Installing Chromium...$(NC)"; \
-		npx playwright install --with-deps chromium; \
+		pnpm exec playwright install --with-deps chromium; \
 	fi
 	@echo "$(GREEN)Playwright is ready$(NC)"
 
@@ -1191,17 +1200,17 @@ run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=provider
 	@if [ -n "$(FLOW)" ]; then \
 		echo "$(CYAN)Running $(FLOW) tests...$(NC)"; \
 		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config; \
+			cd tests/e2e && pnpm exec playwright test --project=chromium-config; \
 		else \
-			cd tests/e2e && npx playwright test features/$(FLOW); \
+			cd tests/e2e && pnpm exec playwright test features/$(FLOW); \
 		fi; \
 	else \
 		echo "$(CYAN)Running all E2E tests...$(NC)"; \
-		cd tests/e2e && npx playwright test; \
+		cd tests/e2e && pnpm exec playwright test; \
 	fi
 	@echo ""
 	@echo "$(GREEN)E2E tests complete$(NC)"
-	@echo "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+	@echo "$(CYAN)View HTML report: cd tests/e2e && pnpm exec playwright show-report$(NC)"
 
 run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
 	@if [ -f .env ]; then \
@@ -1209,20 +1218,20 @@ run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
 		set -a; . ./.env; set +a; \
 	fi; \
 	echo "$(GREEN)Opening Playwright UI...$(NC)"; \
-	cd tests/e2e && npx playwright test --ui
+	cd tests/e2e && pnpm exec playwright test --ui
 
 run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
 	@echo "$(GREEN)Running E2E tests in headed mode...$(NC)"
 	@if [ -n "$(FLOW)" ]; then \
 		echo "$(CYAN)Running $(FLOW) tests (headed)...$(NC)"; \
 		if [ "$(FLOW)" = "config" ]; then \
-			cd tests/e2e && npx playwright test --project=chromium-config --headed; \
+			cd tests/e2e && pnpm exec playwright test --project=chromium-config --headed; \
 		else \
-			cd tests/e2e && npx playwright test features/$(FLOW) --headed; \
+			cd tests/e2e && pnpm exec playwright test features/$(FLOW) --headed; \
 		fi; \
 	else \
 		echo "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
-		cd tests/e2e && npx playwright test --headed; \
+		cd tests/e2e && pnpm exec playwright test --headed; \
 	fi
 
 # Quick start with example config

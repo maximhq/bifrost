@@ -51,6 +51,7 @@ const (
 	HuggingFace ModelProvider = "huggingface"
 	Nebius      ModelProvider = "nebius"
 	XAI         ModelProvider = "xai"
+	ZAI         ModelProvider = "zai"
 	Replicate   ModelProvider = "replicate"
 )
 
@@ -62,6 +63,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Gemini,
 	OpenAI,
 	HuggingFace,
+	ZAI,
 	Replicate,
 }
 
@@ -86,6 +88,7 @@ var StandardProviders = []ModelProvider{
 	HuggingFace,
 	Nebius,
 	XAI,
+	ZAI,
 	Replicate,
 }
 

@@ -19,6 +19,7 @@ export const KnownProvidersNames = [
 	"vertex",
 	"nebius",
 	"xai",
+	"zai",
 	"replicate",
 ] as const;
 
@@ -80,6 +81,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	huggingface: "HuggingFace",
 	nebius: "Nebius Token Factory",
 	xai: "xAI",
+	zai: "ZAI",
 	replicate: "Replicate",
 } as const;
 

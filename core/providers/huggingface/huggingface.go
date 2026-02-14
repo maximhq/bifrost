@@ -585,6 +585,7 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 		customRequestConverter,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

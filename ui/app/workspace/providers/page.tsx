@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { ProviderLabels, ProviderNames } from "@/lib/constants/logs";
+import { getProviderLabel, ProviderNames } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	setSelectedProvider,
@@ -43,16 +43,23 @@ export default function Providers() {
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 
 	const allProviders = ProviderNames.map(
-		(p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [], status: "active" as ProviderStatus },
+		(p) =>
+			savedProviders?.find((provider) => provider.name.toLowerCase() === p.toLowerCase()) ?? {
+				name: p,
+				keys: [],
+				status: "active" as ProviderStatus,
+			},
 	).sort((a, b) => a.name.localeCompare(b.name));
 	const customProviders =
 		savedProviders
-			?.filter((provider) => !ProviderNames.includes(provider.name as KnownProvider))
+			?.filter((provider) => !ProviderNames.some((known) => known.toLowerCase() === provider.name.toLowerCase()))
 			.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
 
 	useEffect(() => {
 		if (!provider) return;
-		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
+		const newSelectedProvider =
+			allProviders.find((p) => p.name.toLowerCase() === provider.toLowerCase()) ??
+			customProviders.find((p) => p.name.toLowerCase() === provider.toLowerCase());
 		if (newSelectedProvider) {
 			dispatch(setSelectedProvider(newSelectedProvider));
 		}
@@ -161,7 +168,7 @@ export default function Providers() {
 											>
 												<div className="flex items-center gap-2">
 													<RenderProviderIcon provider={p.name as ProviderIconType} size="sm" className="h-4 w-4" />
-													<div className="text-sm">{ProviderLabels[p.name as keyof typeof ProviderLabels]}</div>
+													<div className="text-sm">{getProviderLabel(p.name)}</div>
 													<ProviderStatusBadge status={p.status} />
 												</div>
 											</TooltipTrigger>

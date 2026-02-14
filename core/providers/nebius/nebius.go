@@ -116,6 +116,7 @@ func (provider *NebiusProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		postHookRunner,
 		nil,
+		false,
 		provider.logger,
 	)
 }
@@ -173,6 +174,7 @@ func (provider *NebiusProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

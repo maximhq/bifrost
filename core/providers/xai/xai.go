@@ -110,6 +110,7 @@ func (provider *XAIProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 		ParseXAIError,
 		postHookRunner,
 		nil,
+		false,
 		provider.logger,
 	)
 }
@@ -155,6 +156,7 @@ func (provider *XAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		ParseXAIError,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

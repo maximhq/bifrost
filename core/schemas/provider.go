@@ -314,6 +314,7 @@ type CustomProviderConfig struct {
 	BaseProviderType     ModelProvider          `json:"base_provider_type"`               // Base provider type
 	AllowedRequests      *AllowedRequests       `json:"allowed_requests,omitempty"`       // Allowed requests for the custom provider
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
+	DisableStreamOptions bool                   `json:"disable_stream_options,omitempty"` // Whether to disable sending stream_options in streaming requests (some providers like ZAI do not support this OpenAI-specific parameter)
 }
 
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider

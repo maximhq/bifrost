@@ -344,6 +344,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		postHookRunner,
 		nil,
+		provider.customProviderConfig != nil && provider.customProviderConfig.DisableStreamOptions,
 		provider.logger,
 	)
 }
@@ -363,6 +364,7 @@ func HandleOpenAITextCompletionStreaming(
 	customErrorConverter ErrorConverter,
 	postHookRunner schemas.PostHookRunner,
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
+	disableStreamOptions bool,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	headers := map[string]string{
@@ -382,8 +384,10 @@ func HandleOpenAITextCompletionStreaming(
 			reqBody := ToOpenAITextCompletionRequest(request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
-				reqBody.StreamOptions = &schemas.ChatStreamOptions{
-					IncludeUsage: schemas.Ptr(true),
+				if !disableStreamOptions {
+					reqBody.StreamOptions = &schemas.ChatStreamOptions{
+						IncludeUsage: schemas.Ptr(true),
+					}
 				}
 			}
 			return reqBody, nil
@@ -777,6 +781,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		nil,
 		nil,
+		provider.customProviderConfig != nil && provider.customProviderConfig.DisableStreamOptions,
 		nil,
 		provider.logger,
 	)
@@ -798,6 +803,7 @@ func HandleOpenAIChatCompletionStreaming(
 	customRequestConverter func(*schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error),
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
+	disableStreamOptions bool,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -833,8 +839,10 @@ func HandleOpenAIChatCompletionStreaming(
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			if reqBody != nil {
 				reqBody.Stream = schemas.Ptr(true)
-				reqBody.StreamOptions = &schemas.ChatStreamOptions{
-					IncludeUsage: schemas.Ptr(true),
+				if !disableStreamOptions {
+					reqBody.StreamOptions = &schemas.ChatStreamOptions{
+						IncludeUsage: schemas.Ptr(true),
+					}
 				}
 				if postRequestConverter != nil {
 					reqBody = postRequestConverter(reqBody)

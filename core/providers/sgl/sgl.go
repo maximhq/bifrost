@@ -114,6 +114,7 @@ func (provider *SGLProvider) TextCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		postHookRunner,
 		nil,
+		false,
 		provider.logger,
 	)
 }
@@ -155,6 +156,7 @@ func (provider *SGLProvider) ChatCompletionStream(ctx *schemas.BifrostContext, p
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)

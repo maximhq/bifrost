@@ -172,6 +172,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		postHookRunner,
 		nil,
+		false,
 		provider.logger,
 	)
 }
@@ -218,6 +219,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
+		false,
 		nil,
 		provider.logger,
 	)
