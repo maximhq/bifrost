@@ -16,6 +16,7 @@ ModelProvider:
     - sgl
     - parasail
     - perplexity
+    - replicate
     - cerebras
     - gemini
     - openrouter

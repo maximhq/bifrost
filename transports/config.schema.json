@@ -173,6 +173,9 @@
         "perplexity": {
           "$ref": "#/$defs/provider"
         },
+        "replicate": {
+          "$ref": "#/$defs/provider"
+        },
         "elevenlabs": {
           "$ref": "#/$defs/provider"
         },
@@ -967,6 +970,7 @@
                         "cerebras",
                         "parasail",
                         "perplexity",
+                        "replicate",
                         "sgl",
                         "huggingface"
                       ]

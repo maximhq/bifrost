@@ -23,6 +23,8 @@ Replicate is architecturally different from other providers in Bifrost. It uses 
 | Responses API | ✅ | ✅ | `/v1/predictions` |
 | Text Completions | ✅ | ✅ | `/v1/predictions` |
 | Image Generation | ✅ | ✅ | `/v1/predictions` |
+| Image Edit | ✅ | ✅ | `/v1/predictions` |
+| Image Variation | ❌ | ❌ | - |
 | Files | ✅ | - | `/v1/files` |
 | List Models | ✅ | - | `/v1/deployments` |
 | Embeddings | ❌ | ❌ | - |
@@ -440,7 +442,90 @@ Image generation streaming provides progressive image updates as data URIs:
 
 ---
 
-# 5. Files API
+# 5. Image Edit
+
+Image edit runs as a prediction like image generation. You send one or more input images plus a prompt; the model returns edited image(s). The same **input image field mapping** as Image Generation applies (see [Field Mapping by Model](#field-mapping-by-model-1) below).
+
+**Endpoint**: `/v1/images/edits` (Bifrost) → Replicate `/v1/predictions` or deployment predictions.
+
+### Parameter Mapping
+
+| Bifrost / Request | Replicate input |
+|-------------------|-----------------|
+| `input.images` | Mapped to `image_prompt`, `input_image`, `image`, or `input_images` by model |
+| `input.prompt` | `prompt` |
+| `params.n` | `number_of_images` |
+| `params.output_format` | `output_format` |
+| `params.quality` | `quality` |
+| `params.background` | `background` |
+| `params.seed` | `seed` |
+| `params.negative_prompt` | `negative_prompt` |
+| `params.num_inference_steps` | `num_inference_steps` |
+| `params.extra_params` | Merged into prediction input |
+
+### Field Mapping by Model
+
+Input images are mapped to the same fields as in [Image Generation](#field-mapping-by-model):
+
+| Field | Models |
+|-------|--------|
+| `image_prompt` | `black-forest-labs/flux-1.1-pro`, `black-forest-labs/flux-1.1-pro-ultra`, `black-forest-labs/flux-pro`, `black-forest-labs/flux-1.1-pro-ultra-finetuned` |
+| `input_image` | `black-forest-labs/flux-kontext-pro`, `black-forest-labs/flux-kontext-max`, `black-forest-labs/flux-kontext-dev` |
+| `image` | `black-forest-labs/flux-dev`, `black-forest-labs/flux-fill-pro`, `black-forest-labs/flux-dev-lora`, `black-forest-labs/flux-krea-dev` |
+| `input_images` | All other models (default) |
+
+<Note>
+For single-image fields (`image_prompt`, `input_image`, `image`), only the first image from `input.images` is used.
+</Note>
+
+### Example
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST 'http://localhost:8080/v1/images/edits' \
+--form 'model="replicate/black-forest-labs/flux-fill-pro"' \
+--form 'image[]=@"image.png"' \
+--form 'prompt="Replace the sky with a starry night"' \
+--form 'mask=@"mask.png"'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ImageEditRequest(ctx, &schemas.BifrostImageEditRequest{
+    Provider: schemas.Replicate,
+    Model:    "black-forest-labs/flux-fill-pro",
+    Input: &schemas.ImageEditInput{
+        Prompt: "Replace the sky with a starry night",
+        Images: []schemas.ImageInput{
+            { Image: imageBytes },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### Response
+
+Same as Image Generation: single URL → `data[0].url`, array of URLs → `data[i].url`, or data URIs. Response shape is `BifrostImageGenerationResponse` with `data[].url` or `data[].b64_json`.
+
+### Streaming
+
+Image edit streaming is supported. Events use the same prediction log stream as image generation:
+
+- **Partial chunks**: `type: "image_edit.partial_image"` with `b64_json` (or data URI) until completion.
+- **Completed**: `type: "image_edit.completed"` with final image and usage.
+
+Use `Prefer: wait` for sync behavior or rely on polling (async) like other Replicate predictions.
+
+---
+
+# 6. Files API
 
 Replicate's Files API supports uploading, listing, and managing files for use in predictions.
 
@@ -531,7 +616,7 @@ curl -X POST http://localhost:8080/v1/files/file_abc123/content \
 
 ---
 
-# 6. List Models
+# 7. List Models
 
 **Endpoint**: `/v1/models`
 

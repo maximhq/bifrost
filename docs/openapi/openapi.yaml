@@ -66,8 +66,8 @@ tags:
     description: OpenAI Responses API compatible endpoints
   - name: Embeddings
     description: Text embedding generation
-  - name: Image Generations
-    description: Image generation from text prompts
+  - name: Images
+    description: Image generations, editing, and variations
   - name: Audio
     description: Speech synthesis and transcription
   - name: Count Tokens
@@ -135,6 +135,10 @@ paths:
     $ref: './paths/inference/audio.yaml#/transcriptions'
   /v1/images/generations:
     $ref: './paths/inference/images.yaml#/image-generation'
+  /v1/images/edits:
+    $ref: './paths/inference/images.yaml#/image-edit'
+  /v1/images/variations:
+    $ref: './paths/inference/images.yaml#/image-variation'
   /v1/count_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
   /v1/batches:
