@@ -4,6 +4,8 @@ package schemas
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 )
 
 const (
@@ -52,6 +54,7 @@ const (
 	Nebius      ModelProvider = "nebius"
 	XAI         ModelProvider = "xai"
 	Replicate   ModelProvider = "replicate"
+	VLLM        ModelProvider = "vllm"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -87,6 +90,7 @@ var StandardProviders = []ModelProvider{
 	Nebius,
 	XAI,
 	Replicate,
+	VLLM,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -755,22 +759,38 @@ func (e *ErrorField) MarshalJSON() ([]byte, error) {
 }
 
 func (e *ErrorField) UnmarshalJSON(data []byte) error {
-	type Alias ErrorField
 	aux := &struct {
-		Error *string `json:"error,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(e),
-	}
+		Type    *string     `json:"type,omitempty"`
+		Code    interface{} `json:"code,omitempty"`
+		Message string      `json:"message"`
+		Error   *string     `json:"error,omitempty"`
+		Param   interface{} `json:"param,omitempty"`
+		EventID *string     `json:"event_id,omitempty"`
+	}{}
 
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
 
+	e.Type = aux.Type
+	e.Message = aux.Message
+	e.Param = aux.Param
+	e.EventID = aux.EventID
 	if aux.Error != nil {
 		e.Error = errors.New(*aux.Error)
 	}
-
+	if aux.Code != nil {
+		switch v := aux.Code.(type) {
+		case string:
+			e.Code = &v
+		case float64:
+			s := strconv.FormatInt(int64(v), 10)
+			e.Code = &s
+		default:
+			s := fmt.Sprint(aux.Code)
+			e.Code = &s
+		}
+	}
 	return nil
 }
 

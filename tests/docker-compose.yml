@@ -72,7 +72,6 @@ services:
         networks:
             bifrost_network:
                 ipv4_address: 172.28.0.15
-
 networks:
     bifrost_network:
         driver: bridge
@@ -84,4 +83,4 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
-    qdrant_data:
+    qdrant_data:    

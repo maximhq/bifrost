@@ -10,6 +10,7 @@ ModelProvider:
     - bedrock
     - cohere
     - vertex
+    - vllm
     - mistral
     - ollama
     - groq

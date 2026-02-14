@@ -2290,6 +2290,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
 		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
@@ -2309,6 +2310,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	authHeader map[string]string,
 	extraHeaders map[string]string,
 	sendBackRawResponse bool,
+	accumulateText bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	customResponseHandler responseHandler[schemas.BifrostTranscriptionStreamResponse],
@@ -2414,6 +2416,7 @@ func HandleOpenAITranscriptionStreamRequest(
 
 		startTime := time.Now()
 		lastChunkTime := startTime
+		var fullTranscriptionText string
 
 		for scanner.Scan() {
 			// If context was cancelled/timed out, let defer handle it
@@ -2511,9 +2514,14 @@ func HandleOpenAITranscriptionStreamRequest(
 				response.ExtraFields.RawResponse = jsonData
 			}
 
-			if response.Usage != nil {
+			if response.Usage != nil || response.Type == schemas.TranscriptionStreamResponseTypeDone {
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+				if accumulateText {
+					response.Text = fullTranscriptionText
+				}
+
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
 				return
 			}

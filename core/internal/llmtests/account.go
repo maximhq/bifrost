@@ -143,6 +143,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Nebius,
 		schemas.XAI,
 		schemas.Replicate,
+		schemas.VLLM,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -622,6 +623,20 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 			NetworkConfig: schemas.NetworkConfig{
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10, // Cerebras is reasonably stable
+				RetryBackoffInitial:            5 * time.Second,
+				RetryBackoffMax:                3 * time.Minute,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.VLLM:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        os.Getenv("VLLM_BASE_URL"),
+				DefaultRequestTimeoutInSeconds: 120,
+				MaxRetries:                     10, // vllm is stable
 				RetryBackoffInitial:            5 * time.Second,
 				RetryBackoffMax:                3 * time.Minute,
 			},
@@ -1306,6 +1321,37 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 			ListModels:            true,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+		},
+	}, {
+		Provider:           schemas.VLLM,
+		ChatModel:          "Qwen/Qwen3-0.6B",
+		TextModel:          "Qwen/Qwen3-0.6B",
+		EmbeddingModel:     "Qwen/Qwen3-Embedding-0.6B",
+		TranscriptionModel: "openai/whisper-small",
+		Scenarios: TestScenarios{
+			SpeechSynthesis:       false, // Not supported
+			SpeechSynthesisStream: false, // Not supported
+			Transcription:         true,  // VLLM supports transcription
+			TranscriptionStream:   true,  // VLLM supports transcription streaming
+			Embedding:             true,  // VLLM supports embedding
+			ImageGeneration:       false,
+			ImageGenerationStream: false,
+			ImageEdit:             false, // VLLM does not support image editing
+			ImageEditStream:       false, // VLLM does not support streaming image editing
+			ImageVariation:        false, // VLLM does not support image variation
+			ImageVariationStream:  false, // VLLM does not support streaming image variation
+			ListModels:            true,
+			TextCompletion:        true,
+			TextCompletionStream:  true,
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			MultipleToolCalls:     true,
+			End2EndToolCalling:    true,
+		},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
 		},
 	},
 }

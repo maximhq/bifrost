@@ -129,7 +129,7 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		});
 	}, [form, provider.name, provider.network_config]);
 
-	const baseURLRequired = provider.name === "ollama" || provider.name === "sgl" || isCustomProvider;
+	const baseURLRequired = provider.name === "ollama" || provider.name === "sgl" || provider.name === "vllm" || isCustomProvider;
 
 	return (
 		<Form {...form}>

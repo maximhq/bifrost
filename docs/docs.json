@@ -125,6 +125,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
+                  "providers/supported-providers/vllm",
                   "providers/supported-providers/xai"
                 ]
               },

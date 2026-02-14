@@ -49,7 +49,7 @@ var rateLimitPatterns = []string{
 }
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
-// Excluding providers that require extra configuration. (like Ollama and SGL)
+// Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
@@ -81,13 +81,13 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Ollama and SGL are keyless and don't require API keys.
+// Some providers like Ollama, SGL, and vLLM are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return providerKey != schemas.Ollama && providerKey != schemas.SGL
+	return providerKey != schemas.Ollama && providerKey != schemas.SGL && providerKey != schemas.VLLM
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
