@@ -3,7 +3,7 @@ name: Release Pipeline
 # Triggers automatically on push to main when any version file changes
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "v1.4.6-docker-hotfix"]
 
 # Prevent concurrent runs
 concurrency:
