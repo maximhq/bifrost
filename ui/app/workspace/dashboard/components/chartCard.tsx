@@ -30,8 +30,12 @@ export function ChartCard({ title, children, headerActions, loading, testId }: C
 	return (
 		<Card className="rounded-sm px-2 py-1 shadow-none" data-testid={testId}>
 			<div className="mb-3 flex items-center justify-between">
-				<span className="text-primary pl-2 text-sm font-medium">{title}</span>
-				{headerActions && <div className="flex items-center gap-2" data-testid={testId ? `${testId}-actions` : undefined}>{headerActions}</div>}
+				<span className="text-primary pl-2 text-sm font-medium whitespace-nowrap">{title}</span>
+				{headerActions && (
+					<div className="flex items-center gap-2" data-testid={testId ? `${testId}-actions` : undefined}>
+						{headerActions}
+					</div>
+				)}
 			</div>
 			<div style={{ height: "200px" }}>{children}</div>
 		</Card>

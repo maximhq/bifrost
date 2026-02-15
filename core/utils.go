@@ -366,6 +366,16 @@ func GetIntFromContext(ctx context.Context, key any) int {
 	return 0
 }
 
+// GetBoolFromContext safely extracts a bool value from context
+func GetBoolFromContext(ctx context.Context, key any) bool {
+	if value := ctx.Value(key); value != nil {
+		if boolValue, ok := value.(bool); ok {
+			return boolValue
+		}
+	}
+	return false
+}
+
 // RedactSensitiveString redacts sensitive information in a string
 func RedactSensitiveString(s string) string {
 	if s == "" {

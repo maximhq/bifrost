@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsHistogramQuery,
@@ -28,7 +29,7 @@ import { TokenUsageChart } from "./components/tokenUsageChart";
 import { CHART_COLORS, getModelColor } from "./utils/chartUtils";
 
 // Type-safe parser for chart type URL state
-const toChartType = (value: string): ChartType => (value === 'line' ? 'line' : 'bar')
+const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
 
 // Calculate default timestamps once at module level
 const DEFAULT_END_TIME = Math.floor(Date.now() / 1000);
@@ -295,23 +296,49 @@ export default function DashboardPage() {
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
 								{urlState.cost_model === "all" ? (
-									<>
-										{availableModels.slice(0, 3).map((model, idx) => (
-											<span key={model} className="flex items-center gap-1">
-												<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-												<span className="text-muted-foreground">{model}</span>
-											</span>
-										))}
-										{availableModels.length > 3 && <span className="text-muted-foreground">+{availableModels.length - 3} more</span>}
-									</>
+									availableModels.length > 0 && (
+										<>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span className="flex items-center gap-1">
+														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+														<span className="text-muted-foreground max-w-[100px] truncate">{availableModels[0]}</span>
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>{availableModels[0]}</TooltipContent>
+											</Tooltip>
+											{availableModels.length > 1 && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="text-muted-foreground cursor-default">+{availableModels.length - 1} more</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<div className="flex flex-col gap-1">
+															{availableModels.slice(1).map((model, idx) => (
+																<span key={model} className="flex items-center gap-1">
+																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	{model}
+																</span>
+															))}
+														</div>
+													</TooltipContent>
+												</Tooltip>
+											)}
+										</>
+									)
 								) : (
-									<span className="flex items-center gap-1">
-										<span
-											className="h-2 w-2 rounded-full"
-											style={{ backgroundColor: getModelColor(availableModels.indexOf(urlState.cost_model)) }}
-										/>
-										<span className="text-muted-foreground">{urlState.cost_model}</span>
-									</span>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span className="flex items-center gap-1">
+												<span
+													className="h-2 w-2 shrink-0 rounded-full"
+													style={{ backgroundColor: getModelColor(Math.max(0, availableModels.indexOf(urlState.cost_model))) }}
+												/>
+												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.cost_model}</span>
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>{urlState.cost_model}</TooltipContent>
+									</Tooltip>
 								)}
 							</div>
 							<ModelFilterSelect models={availableModels} selectedModel={urlState.cost_model} onModelChange={handleCostModelChange} />
@@ -337,23 +364,44 @@ export default function DashboardPage() {
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
 								{urlState.usage_model === "all" ? (
-									<>
-										{availableModels.slice(0, 3).map((model, idx) => (
-											<span key={model} className="flex items-center gap-1">
-												<span className="h-2 w-2 rounded-full" style={{ backgroundColor: getModelColor(idx) }} />
-												<span className="text-muted-foreground">{model}</span>
-											</span>
-										))}
-										{availableModels.length > 3 && <span className="text-muted-foreground">+{availableModels.length - 3} more</span>}
-									</>
+									availableModels.length > 0 && (
+										<>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span className="flex items-center gap-1">
+														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+														<span className="text-muted-foreground max-w-[100px] truncate">{availableModels[0]}</span>
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>{availableModels[0]}</TooltipContent>
+											</Tooltip>
+											{availableModels.length > 1 && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="text-muted-foreground cursor-default">+{availableModels.length - 1} more</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<div className="flex flex-col gap-1">
+															{availableModels.slice(1).map((model, idx) => (
+																<span key={model} className="flex items-center gap-1">
+																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	{model}
+																</span>
+															))}
+														</div>
+													</TooltipContent>
+												</Tooltip>
+											)}
+										</>
+									)
 								) : (
 									<>
 										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
 											<span className="text-muted-foreground">Success</span>
 										</span>
 										<span className="flex items-center gap-1">
-											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.error }} />
 											<span className="text-muted-foreground">Error</span>
 										</span>
 									</>

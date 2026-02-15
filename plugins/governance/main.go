@@ -820,7 +820,10 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		p.logger.Debug("[Governance] Skipping governance for internal list models operation")
 		return req, nil, nil
 	}
-
+	// If its skip key selection - in that case we need to skip virtual key selection too
+	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
+		return req, nil, nil
+	}
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Getting provider and mode from the request

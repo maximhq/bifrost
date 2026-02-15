@@ -1,8 +1,8 @@
 "use client";
 
+import { LogDetailSheet } from "@/app/workspace/logs/sheets/logDetailsSheet";
 import { createColumns } from "@/app/workspace/logs/views/columns";
 import { EmptyState } from "@/app/workspace/logs/views/emptyState";
-import { LogDetailSheet } from "@/app/workspace/logs/views/logDetailsSheet";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import FullPageLoader from "@/components/fullPageLoader";

@@ -396,6 +396,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
+			PreCallback: checkAnthropicPassthrough,
 		},
 	}
 }

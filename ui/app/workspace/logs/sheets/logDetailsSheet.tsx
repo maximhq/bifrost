@@ -13,28 +13,32 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdownMenu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { ProviderIconType, RenderProviderIcon, RoutingEngineUsedIcons } from "@/lib/constants/icons";
-import { RequestTypeColors, RequestTypeLabels, RoutingEngineUsedColors, RoutingEngineUsedLabels, Status, StatusColors } from "@/lib/constants/logs";
+import {
+	RequestTypeColors,
+	RequestTypeLabels,
+	RoutingEngineUsedColors,
+	RoutingEngineUsedLabels,
+	Status,
+	StatusColors,
+} from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { Clipboard, DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
-import { CodeEditor } from "./codeEditor";
-import ImageView from "./imageView";
-import LogChatMessageView from "./logChatMessageView";
-import LogEntryDetailsView from "./logEntryDetailsView";
-import LogResponsesMessageView from "./logResponsesMessageView";
-import SpeechView from "./speechView";
-import TranscriptionView from "./transcriptionView";
+
+import BlockHeader from "../views/blockHeader";
+import { CodeEditor } from "../views/codeEditor";
+import CollapsibleBox from "../views/collapsibleBox";
+import ImageView from "../views/imageView";
+import LogChatMessageView from "../views/logChatMessageView";
+import LogEntryDetailsView from "../views/logEntryDetailsView";
+import LogResponsesMessageView from "../views/logResponsesMessageView";
+import SpeechView from "../views/speechView";
+import TranscriptionView from "../views/transcriptionView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -69,130 +73,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) { }
+		} catch (ignored) {}
 	}
 
-	const copyRequestBody = async () => {
-		try {
-			// Check if request is for responses, chat, speech, text completion, or embedding (exclude transcriptions)
-			const object = log.object?.toLowerCase() || "";
-			const isChat = object === "chat_completion" || object === "chat_completion_stream";
-			const isResponses = object === "responses" || object === "responses_stream";
-			const isSpeech = object === "speech" || object === "speech_stream";
-			const isTextCompletion = object === "text_completion" || object === "text_completion_stream";
-			const isEmbedding = object === "embedding";
-			const isTranscription = object === "transcription" || object === "transcription_stream";
-
-			// Skip if transcription
-			if (isTranscription) {
-				toast.error("Copy request body is not available for transcription requests");
-				return;
-			}
-
-			// Skip if not a supported request type
-			if (!isChat && !isResponses && !isSpeech && !isTextCompletion && !isEmbedding) {
-				toast.error("Copy request body is only available for chat, responses, speech, text completion, and embedding requests");
-				return;
-			}
-
-			// Helper function to extract text content from ChatMessage
-			const extractTextFromMessage = (message: any): string => {
-				if (!message || !message.content) {
-					return "";
-				}
-				if (typeof message.content === "string") {
-					return message.content;
-				}
-				if (Array.isArray(message.content)) {
-					return message.content
-						.filter((block: any) => block && block.type === "text" && block.text)
-						.map((block: any) => block.text || "")
-						.join("");
-				}
-				return "";
-			};
-
-			// Helper function to extract texts from ChatMessage content blocks (for embeddings)
-			const extractTextsFromMessage = (message: any): string[] => {
-				if (!message || !message.content) {
-					return [];
-				}
-				if (typeof message.content === "string") {
-					return message.content ? [message.content] : [];
-				}
-				if (Array.isArray(message.content)) {
-					return message.content.filter((block: any) => block && block.type === "text" && block.text).map((block: any) => block.text);
-				}
-				return [];
-			};
-
-			// Build request body following OpenAI schema
-			const requestBody: any = {
-				model: log.provider && log.model ? `${log.provider}/${log.model}` : log.model || "",
-			};
-
-			// Add messages/input/prompt based on request type
-			if (isChat && log.input_history && log.input_history.length > 0) {
-				requestBody.messages = log.input_history;
-			} else if (isResponses && log.responses_input_history && log.responses_input_history.length > 0) {
-				requestBody.input = log.responses_input_history;
-			} else if (isSpeech && log.speech_input) {
-				requestBody.input = log.speech_input.input;
-			} else if (isTextCompletion && log.input_history && log.input_history.length > 0) {
-				// For text completions, extract prompt from input_history
-				const firstMessage = log.input_history[0];
-				const prompt = extractTextFromMessage(firstMessage);
-				if (prompt) {
-					requestBody.prompt = prompt;
-				}
-			} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
-				// For embeddings, extract all texts from input_history
-				const texts: string[] = [];
-				for (const message of log.input_history) {
-					const messageTexts = extractTextsFromMessage(message);
-					texts.push(...messageTexts);
-				}
-				if (texts.length > 0) {
-					// Use single string if only one text, otherwise use array
-					requestBody.input = texts.length === 1 ? texts[0] : texts;
-				}
-			}
-
-			// Add params (excluding tools and instructions as they're handled separately in OpenAI schema)
-			if (log.params) {
-				const paramsCopy = { ...log.params };
-				// Remove tools and instructions from params as they're typically top-level in OpenAI schema
-				// Keep all other params (temperature, max_tokens, voice, etc.)
-				delete paramsCopy.tools;
-				delete paramsCopy.instructions;
-
-				// Merge remaining params into request body
-				Object.assign(requestBody, paramsCopy);
-			}
-
-			// Add tools if they exist (for chat and responses) - OpenAI schema has tools at top level
-			if ((isChat || isResponses) && log.params?.tools && Array.isArray(log.params.tools) && log.params.tools.length > 0) {
-				requestBody.tools = log.params.tools;
-			}
-
-			// Add instructions if they exist (for responses) - OpenAI schema has instructions at top level
-			if (isResponses && log.params?.instructions) {
-				requestBody.instructions = log.params.instructions;
-			}
-
-			const requestBodyJson = JSON.stringify(requestBody, null, 2);
-			navigator.clipboard
-				.writeText(requestBodyJson)
-				.then(() => {
-					toast.success("Request body copied to clipboard");
-				})
-				.catch((error) => {
-					toast.error("Failed to copy request body");
-				});
-		} catch (error) {
-			toast.error("Failed to copy request body");
-		}
-	};
 	// Extract audio format from request params
 	// Format can be in params.audio?.format or params.extra_params?.audio?.format
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
@@ -203,7 +86,16 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				<SheetHeader className="flex flex-row items-center px-0">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
-							{log.id && <p className="text-md max-w-full truncate">Request ID: {log.id}</p>}
+							{log.id && (
+								<p className="text-md max-w-full truncate">
+									Request ID:{" "}
+									<code className="text-normal cursor-pointer" onClick={() => {
+										navigator.clipboard.writeText(log.id).then(() => toast.success("Request ID copied")).catch(() => toast.error("Failed to copy"));
+									}}>
+										{log.id}
+									</code>
+								</p>
+							)}
 							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
 								{log.status}
 							</Badge>
@@ -217,11 +109,6 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
-								<DropdownMenuItem onClick={copyRequestBody}>
-									<Clipboard className="h-4 w-4" />
-									Copy request body
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
 								<AlertDialogTrigger asChild>
 									<DropdownMenuItem variant="destructive">
 										<Trash2 className="h-4 w-4" />
@@ -249,7 +136,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="-mt-4 space-y-4 rounded-sm border px-6 py-4">
+				<div className="-mt-6 space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" icon={<Timer className="h-5 w-5 text-gray-600" />} />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
@@ -292,8 +179,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-											} rounded-sm px-3 py-1`}
+										className={`${
+											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+										} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -306,14 +194,26 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							{log.fallback_index > 0 && <LogEntryDetailsView className="w-full" label="Fallback Index" value={log.fallback_index} />}
 							{log.virtual_key && <LogEntryDetailsView className="w-full" label="Virtual Key" value={log.virtual_key.name} />}
 							{log.routing_engine_used && (
-								<LogEntryDetailsView className="w-full" label="Routing Engine Used" value={
-									<Badge className={RoutingEngineUsedColors[log.routing_engine_used as keyof typeof RoutingEngineUsedColors] ?? "bg-gray-100 text-gray-800"}>
-										<div className="flex items-center gap-2">
-											{RoutingEngineUsedIcons[log.routing_engine_used as keyof typeof RoutingEngineUsedIcons]?.()}
-											<span>{RoutingEngineUsedLabels[log.routing_engine_used as keyof typeof RoutingEngineUsedLabels] ?? log.routing_engine_used}</span>
-										</div>
-									</Badge>
-								} />
+								<LogEntryDetailsView
+									className="w-full"
+									label="Routing Engine Used"
+									value={
+										<Badge
+											className={
+												RoutingEngineUsedColors[log.routing_engine_used as keyof typeof RoutingEngineUsedColors] ??
+												"bg-gray-100 text-gray-800"
+											}
+										>
+											<div className="flex items-center gap-2">
+												{RoutingEngineUsedIcons[log.routing_engine_used as keyof typeof RoutingEngineUsedIcons]?.()}
+												<span>
+													{RoutingEngineUsedLabels[log.routing_engine_used as keyof typeof RoutingEngineUsedLabels] ??
+														log.routing_engine_used}
+												</span>
+											</div>
+										</Badge>
+									}
+								/>
 							)}
 							{log.routing_rule && <LogEntryDetailsView className="w-full" label="Routing Rule" value={log.routing_rule.name} />}
 
@@ -535,8 +435,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					)}
 				</div>
 				{toolsParameter && (
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Tools ({log.params?.tools?.length || 0})</div>
+					<CollapsibleBox title={`Tools (${log.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
@@ -545,15 +444,16 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							code={toolsParameter}
 							lang="json"
 							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
-					</div>
+					</CollapsibleBox>
 				)}
 				{log.params?.instructions && (
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">Instructions</div>
-						<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">{log.params.instructions}</div>
-					</div>
+					<CollapsibleBox title="Instructions" onCopy={() => log.params?.instructions || ""}>
+						<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+							{log.params.instructions}
+						</div>
+					</CollapsibleBox>
 				)}
 
 				{/* Speech and Transcription Views */}
@@ -573,21 +473,22 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
 				)}
 
-				{log.list_models_output &&
-				(
-					<div className="w-full rounded-sm border">
-						<div className="border-b px-6 py-2 text-sm font-medium">List Models Output ({log.list_models_output.length})</div>
+				{log.list_models_output && (
+					<CollapsibleBox
+						title={`List Models Output (${log.list_models_output.length})`}
+						onCopy={() => JSON.stringify(log.list_models_output, null, 2)}
+					>
 						<CodeEditor
 							className="z-0 w-full"
 							shouldAdjustInitialHeight={true}
-							maxHeight={250}
+							maxHeight={450}
 							wrap={true}
 							code={JSON.stringify(log.list_models_output, null, 2)}
 							lang="json"
 							readonly={true}
-							options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 						/>
-					</div>
+					</CollapsibleBox>
 				)}
 
 				{/* Show conversation history for chat/text completions */}
@@ -652,24 +553,33 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Request sent to <span className="font-medium capitalize">{log.provider}</span>
 								</div>
-								<div className="w-full rounded-sm border">
+								<CollapsibleBox
+									title="Raw Request"
+									onCopy={() => {
+										try {
+											return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
+										} catch {
+											return log.raw_request || "";
+										}
+									}}
+								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
-										maxHeight={250}
+										maxHeight={450}
 										wrap={true}
 										code={(() => {
 											try {
-												return JSON.stringify(JSON.parse(log.raw_request), null, 2);
+												return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
 											} catch {
-												return log.raw_request; // Fallback to raw string if parsing fails
+												return log.raw_request || "";
 											}
 										})()}
 										lang="json"
 										readonly={true}
-										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 									/>
-								</div>
+								</CollapsibleBox>
 							</>
 						)}
 						{log.raw_response && (
@@ -677,46 +587,62 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Response from <span className="font-medium capitalize">{log.provider}</span>
 								</div>
-								<div className="w-full rounded-sm border">
+								<CollapsibleBox
+									title="Raw Response"
+									onCopy={() => {
+										try {
+											return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
+										} catch {
+											return log.raw_response || "";
+										}
+									}}
+								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
-										maxHeight={250}
+										maxHeight={450}
 										wrap={true}
 										code={(() => {
 											try {
-												return JSON.stringify(JSON.parse(log.raw_response), null, 2);
+												return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
 											} catch {
-												return log.raw_response; // Fallback to raw string if parsing fails
+												return log.raw_response || "";
 											}
 										})()}
 										lang="json"
 										readonly={true}
-										options={{ scrollBeyondLastLine: false, collapsibleBlocks: true, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
 									/>
-								</div>
+								</CollapsibleBox>
 							</>
 						)}
 						{log.error_details?.error.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
-								<div className="w-full rounded-sm border">
-									<div className="border-b px-6 py-2 text-sm font-medium">Error</div>
-									<div className="px-6 py-2 font-mono text-xs break-words">{log.error_details.error.message}</div>
-								</div>
+								<CollapsibleBox title="Error" onCopy={() => log.error_details?.error.message || ""}>
+									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+										{log.error_details.error.message}
+									</div>
+								</CollapsibleBox>
 							</>
 						)}
 						{log.error_details?.error.error && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error Details</div>
-								<div className="w-full rounded-sm border">
-									<div className="border-b px-6 py-2 text-sm font-medium">Details</div>
-									<div className="px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+								<CollapsibleBox
+									title="Details"
+									onCopy={() =>
+										typeof log.error_details?.error.error === "string"
+											? log.error_details.error.error
+											: JSON.stringify(log.error_details?.error.error, null, 2)
+									}
+								>
+									<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
 										{typeof log.error_details?.error.error === "string"
 											? log.error_details.error.error
 											: JSON.stringify(log.error_details?.error.error, null, 2)}
 									</div>
-								</div>
+								</CollapsibleBox>
 							</>
 						)}
 					</>
@@ -725,12 +651,3 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 		</Sheet>
 	);
 }
-
-const BlockHeader = ({ title, icon }: { title: string; icon: React.ReactNode }) => {
-	return (
-		<div className="flex items-center gap-2">
-			{/* {icon} */}
-			<div className="text-sm font-medium">{title}</div>
-		</div>
-	);
-};
