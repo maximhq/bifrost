@@ -14,7 +14,7 @@ const (
 	DefaultRequestTimeoutInSeconds = 30
 	DefaultBufferSize              = 5000
 	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 5000
+	DefaultStreamBufferSize        = 256
 )
 
 // Pre-defined errors for provider operations

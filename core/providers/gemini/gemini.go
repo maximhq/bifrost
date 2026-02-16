@@ -1524,21 +1524,16 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				continue
 			}
 
-			// First, check if this is an error response
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				provider.logger.Warn("Failed to parse stream data as JSON: %v", err)
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
+			// Quick check for error field (allocation-free using sonic.GetFromString)
+			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
+				// Only extract error details when we know there's an error
+				errorStr, _ := errorNode.Raw()
 				bifrostErr := &schemas.BifrostError{
 					Type:           schemas.Ptr("gemini_api_error"),
 					IsBifrostError: false,
 					Error: &schemas.ErrorField{
-						Message: fmt.Sprintf("Gemini API error: %v", errorCheck["error"]),
-						Error:   fmt.Errorf("stream error: %v", errorCheck["error"]),
+						Message: fmt.Sprintf("Gemini API error: %s", errorStr),
+						Error:   fmt.Errorf("stream error: %s", errorStr),
 					},
 					ExtraFields: schemas.BifrostErrorExtraFields{
 						RequestType:    schemas.TranscriptionStreamRequest,
@@ -1553,7 +1548,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 
 			// Parse Gemini streaming response
 			var geminiResponse GenerateContentResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &geminiResponse); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &geminiResponse); err != nil {
 				provider.logger.Warn("Failed to parse Gemini stream response: %v", err)
 				continue
 			}
@@ -2520,20 +2515,16 @@ func (provider *GeminiProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response
 func processGeminiStreamChunk(jsonData string) (*GenerateContentResponse, error) {
-	// First, check if this is an error response
-	var errorCheck map[string]interface{}
-	if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-		return nil, fmt.Errorf("failed to parse stream data as JSON: %v", err)
-	}
-
-	// Handle error responses
-	if _, hasError := errorCheck["error"]; hasError {
-		return nil, fmt.Errorf("gemini api error: %v", errorCheck["error"])
+	// Quick check for error field (allocation-free using sonic.GetFromString)
+	if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
+		// Only extract error details when we know there's an error
+		errorStr, _ := errorNode.Raw()
+		return nil, fmt.Errorf("gemini api error: %s", errorStr)
 	}
 
 	// Parse Gemini streaming response
 	var geminiResponse GenerateContentResponse
-	if err := sonic.Unmarshal([]byte(jsonData), &geminiResponse); err != nil {
+	if err := sonic.UnmarshalString(jsonData, &geminiResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
 	}
 
