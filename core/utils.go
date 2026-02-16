@@ -162,24 +162,20 @@ func IsRateLimitErrorMessage(errorMessage string) bool {
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
 // This helper function reduces code duplication when handling non-Bifrost errors.
 func newBifrostError(err error) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Message: err.Error(),
-			Error:   err,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.Error.Message = err.Error()
+	bfErr.Error.Error = err
+	return bfErr
 }
 
 // newBifrostErrorFromMsg creates a BifrostError with a custom message.
 // This helper function is used for static error messages.
 func newBifrostErrorFromMsg(message string) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Message: message,
-		},
-	}
+	err := schemas.AcquireBifrostError()
+	err.IsBifrostError = false
+	err.Error.Message = message
+	return err
 }
 
 // newBifrostMessageChan creates a channel that sends a bifrost response.
@@ -189,13 +185,13 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 
 	go func() {
 		defer close(ch)
-		ch <- &schemas.BifrostStreamChunk{
-			BifrostTextCompletionResponse:      message.TextCompletionResponse,
-			BifrostChatResponse:                message.ChatResponse,
-			BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
-			BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
-			BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
-		}
+		chunk := schemas.AcquireBifrostStreamChunk()
+		chunk.BifrostTextCompletionResponse = message.TextCompletionResponse
+		chunk.BifrostChatResponse = message.ChatResponse
+		chunk.BifrostResponsesStreamResponse = message.ResponsesStreamResponse
+		chunk.BifrostSpeechStreamResponse = message.SpeechStreamResponse
+		chunk.BifrostTranscriptionStreamResponse = message.TranscriptionStreamResponse
+		ch <- chunk
 	}()
 
 	return ch

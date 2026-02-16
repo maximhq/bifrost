@@ -52,13 +52,35 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	statusCode := fasthttp.StatusInternalServerError
 	if bifrostErr.StatusCode != nil {
-		ctx.SetStatusCode(*bifrostErr.StatusCode)
+		statusCode = *bifrostErr.StatusCode
 	} else if !bifrostErr.IsBifrostError {
-		ctx.SetStatusCode(fasthttp.StatusBadRequest)
-	} else {
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		statusCode = fasthttp.StatusBadRequest
 	}
+	ctx.SetStatusCode(statusCode)
+
+	// Log error details for observability
+	level := schemas.LogLevelWarn
+	if statusCode >= 500 {
+		level = schemas.LogLevelError
+	}
+	logBuilder := logger.LogHTTPRequest(level, "request error").
+		Str("http.method", string(ctx.Method())).
+		Str("http.target", string(ctx.RequestURI())).
+		Int("http.status_code", statusCode)
+	if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+		logBuilder = logBuilder.Str("error.message", bifrostErr.Error.Message)
+	}
+	if bifrostErr.ExtraFields != nil {
+		if bifrostErr.ExtraFields.Provider != "" {
+			logBuilder = logBuilder.Str("provider", string(bifrostErr.ExtraFields.Provider))
+		}
+		if bifrostErr.ExtraFields.ModelRequested != "" {
+			logBuilder = logBuilder.Str("model", bifrostErr.ExtraFields.ModelRequested)
+		}
+	}
+	logBuilder.Send()
 
 	ctx.SetContentType("application/json")
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {

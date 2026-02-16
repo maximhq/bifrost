@@ -46,12 +46,11 @@ func (r *MistralTranscriptionResponse) ToBifrostTranscriptionResponse() *schemas
 		return nil
 	}
 
-	response := &schemas.BifrostTranscriptionResponse{
-		Text:     r.Text,
-		Duration: r.Duration,
-		Language: r.Language,
-		Task:     schemas.Ptr("transcribe"),
-	}
+	response := schemas.AcquireBifrostTranscriptionResponse()
+	response.Text = r.Text
+	response.Duration = r.Duration
+	response.Language = r.Language
+	response.Task = schemas.Ptr("transcribe")
 
 	// Convert segments
 	if len(r.Segments) > 0 {
@@ -172,7 +171,7 @@ func (e *MistralTranscriptionStreamEvent) ToBifrostTranscriptionStreamResponse()
 		return nil
 	}
 
-	response := &schemas.BifrostTranscriptionStreamResponse{}
+	response := schemas.AcquireBifrostTranscriptionStreamResponse()
 
 	switch MistralTranscriptionStreamEventType(e.Event) {
 	case MistralTranscriptionStreamEventTextDelta:

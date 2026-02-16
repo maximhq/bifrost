@@ -564,11 +564,12 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 
 		return response, nil
 	} else {
-		response := &schemas.BifrostChatResponse{}
+		response := schemas.AcquireBifrostChatResponse()
 
 		// Use enhanced response handler with pre-allocated response
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
+			schemas.ReleaseBifrostChatResponse(response)
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 

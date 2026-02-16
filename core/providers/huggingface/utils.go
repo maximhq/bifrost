@@ -247,9 +247,6 @@ func (provider *HuggingFaceProvider) getModelInferenceProviderMapping(ctx contex
 	if resp.StatusCode() != fasthttp.StatusOK {
 		var errorResp HuggingFaceHubError
 		bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
 		if strings.TrimSpace(errorResp.Message) != "" {
 			bifrostErr.Error.Message = errorResp.Message
 		}

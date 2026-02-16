@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"sync"
 )
 
 type BifrostSpeechRequest struct {
@@ -24,6 +25,35 @@ type BifrostSpeechResponse struct {
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostSpeechResponsePool provides a pool for BifrostSpeechResponse objects.
+var bifrostSpeechResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostSpeechResponse{}
+	},
+}
+
+// AcquireBifrostSpeechResponse gets a BifrostSpeechResponse from the pool and resets it.
+func AcquireBifrostSpeechResponse() *BifrostSpeechResponse {
+	r := bifrostSpeechResponsePool.Get().(*BifrostSpeechResponse)
+	*r = BifrostSpeechResponse{}
+	return r
+}
+
+// ReleaseBifrostSpeechResponse returns a BifrostSpeechResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostSpeechResponse(r *BifrostSpeechResponse) {
+	if r == nil {
+		return
+	}
+	r.Audio = nil
+	r.Usage = nil
+	r.Alignment = nil
+	r.NormalizedAlignment = nil
+	r.AudioBase64 = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostSpeechResponsePool.Put(r)
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -133,6 +163,33 @@ type BifrostSpeechStreamResponse struct {
 	Audio       []byte                     `json:"audio"`
 	Usage       *SpeechUsage               `json:"usage"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostSpeechStreamResponsePool provides a pool for BifrostSpeechStreamResponse objects.
+var bifrostSpeechStreamResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostSpeechStreamResponse{}
+	},
+}
+
+// AcquireBifrostSpeechStreamResponse gets a BifrostSpeechStreamResponse from the pool and resets it.
+func AcquireBifrostSpeechStreamResponse() *BifrostSpeechStreamResponse {
+	r := bifrostSpeechStreamResponsePool.Get().(*BifrostSpeechStreamResponse)
+	*r = BifrostSpeechStreamResponse{}
+	return r
+}
+
+// ReleaseBifrostSpeechStreamResponse returns a BifrostSpeechStreamResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostSpeechStreamResponse(r *BifrostSpeechStreamResponse) {
+	if r == nil {
+		return
+	}
+	r.Type = ""
+	r.Audio = nil
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostSpeechStreamResponsePool.Put(r)
 }
 
 type SpeechUsageInputTokenDetails struct {

@@ -207,3 +207,173 @@ func TestNewBifrostContext_NilParent(t *testing.T) {
 		t.Errorf("Cancelled context should have Canceled error, got %v", ctx.Err())
 	}
 }
+
+// Tests for pooled BifrostContext
+
+func TestAcquireBifrostContext_BasicLifecycle(t *testing.T) {
+	// Acquire a context from the pool
+	ctx := AcquireBifrostContext(context.Background(), NoDeadline)
+
+	// Should not be cancelled initially
+	select {
+	case <-ctx.Done():
+		t.Error("Context should not be done initially")
+	default:
+		// Expected
+	}
+
+	if ctx.Err() != nil {
+		t.Errorf("New context should have nil error, got %v", ctx.Err())
+	}
+
+	// Set a value
+	ctx.SetValue("key", "value")
+	if v := ctx.Value("key"); v != "value" {
+		t.Errorf("Expected 'value', got %v", v)
+	}
+
+	// Release returns it to pool (also cancels)
+	ReleaseBifrostContext(ctx)
+
+	// After release, the context should be cancelled
+	select {
+	case <-ctx.Done():
+		// Expected - Release calls Cancel
+	default:
+		t.Error("Context should be done after Release")
+	}
+}
+
+func TestAcquireBifrostContext_ReuseAfterRelease(t *testing.T) {
+	// Acquire, use, and release
+	ctx1 := AcquireBifrostContext(context.Background(), NoDeadline)
+	ctx1.SetValue("test", "value1")
+	ReleaseBifrostContext(ctx1)
+
+	// Acquire again - may get the same object from pool
+	ctx2 := AcquireBifrostContext(context.Background(), NoDeadline)
+
+	// Should be in clean state (no leftover values)
+	if v := ctx2.Value("test"); v != nil {
+		t.Errorf("Reused context should not have old values, got %v", v)
+	}
+
+	// Should not be cancelled
+	select {
+	case <-ctx2.Done():
+		t.Error("Reused context should not be done")
+	default:
+		// Expected
+	}
+
+	if ctx2.Err() != nil {
+		t.Errorf("Reused context should have nil error, got %v", ctx2.Err())
+	}
+
+	ReleaseBifrostContext(ctx2)
+}
+
+func TestAcquireBifrostContextWithCancel(t *testing.T) {
+	ctx, cancel := AcquireBifrostContextWithCancel(context.Background())
+
+	// Should not be cancelled initially
+	select {
+	case <-ctx.Done():
+		t.Error("Context should not be done initially")
+	default:
+		// Expected
+	}
+
+	// Cancel function should release back to pool
+	cancel()
+
+	// Should be cancelled after cancel()
+	select {
+	case <-ctx.Done():
+		// Expected
+	default:
+		t.Error("Context should be done after cancel")
+	}
+}
+
+func TestAcquireBifrostContext_WithDeadline(t *testing.T) {
+	deadline := time.Now().Add(50 * time.Millisecond)
+	ctx := AcquireBifrostContext(context.Background(), deadline)
+	// Should have the deadline
+	d, ok := ctx.Deadline()
+	if !ok {
+		t.Error("Context should have a deadline")
+	}
+	if !d.Equal(deadline) {
+		t.Errorf("Expected deadline %v, got %v", deadline, d)
+	}
+	// Wait for deadline
+	time.Sleep(100 * time.Millisecond)
+	// Should be cancelled due to deadline
+	select {
+	case <-ctx.Done():
+		// Expected
+	default:
+		t.Error("Context should be done after deadline")
+	}
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Errorf("Expected DeadlineExceeded, got %v", ctx.Err())
+	}
+	ReleaseBifrostContext(ctx)
+}
+
+func TestAcquireBifrostContext_ParentCancellation(t *testing.T) {
+	parent, parentCancel := context.WithCancel(context.Background())
+
+	ctx := AcquireBifrostContext(parent, NoDeadline)
+
+	// Cancel parent
+	parentCancel()
+
+	// Wait a bit for propagation
+	time.Sleep(20 * time.Millisecond)
+
+	// Child should be cancelled
+	select {
+	case <-ctx.Done():
+		// Expected
+	default:
+		t.Error("Context should be done when parent is cancelled")
+	}
+	ReleaseBifrostContext(ctx)
+}
+
+func TestAcquireBifrostContext_MultipleAcquireReleaseCycles(t *testing.T) {
+	// Test multiple acquire/release cycles don't cause issues
+	for i := 0; i < 100; i++ {
+		ctx := AcquireBifrostContext(context.Background(), NoDeadline)
+		ctx.SetValue("iteration", i)
+		if v := ctx.Value("iteration"); v != i {
+			t.Errorf("Iteration %d: expected value %d, got %v", i, i, v)
+		}
+		ReleaseBifrostContext(ctx)
+	}
+}
+
+func TestAcquireBifrostContext_ConcurrentAccess(t *testing.T) {
+	// Test concurrent acquire/release doesn't cause races
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			for j := 0; j < 100; j++ {
+				ctx := AcquireBifrostContext(context.Background(), NoDeadline)
+				ctx.SetValue("goroutine", id)
+				ctx.SetValue("iteration", j)
+				_ = ctx.Value("goroutine")
+				_ = ctx.Value("iteration")
+				ReleaseBifrostContext(ctx)
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}

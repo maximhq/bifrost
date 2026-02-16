@@ -73,6 +73,9 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		if bifrostErr != nil {
 			t.Fatalf("❌ MultiTurnConversation_Step1 request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
+		if response1 != nil {
+			defer schemas.ReleaseBifrostChatResponse(response1)
+		}
 
 		t.Logf("✅ First turn acknowledged: %s", GetChatContent(response1))
 
@@ -140,6 +143,9 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 
 	if bifrostErr != nil {
 		t.Fatalf("❌ MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
+	}
+	if response2 != nil {
+		defer schemas.ReleaseBifrostChatResponse(response2)
 	}
 
 	// Validation already happened inside WithChatTestRetry via expectations2

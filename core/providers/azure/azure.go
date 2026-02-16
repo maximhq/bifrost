@@ -375,10 +375,11 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostTextCompletionResponse{}
+	response := schemas.AcquireBifrostTextCompletionResponse()
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
+		schemas.ReleaseBifrostTextCompletionResponse(response)
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
@@ -506,7 +507,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostChatResponse{}
+	response := schemas.AcquireBifrostChatResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -515,12 +516,14 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		defer anthropic.ReleaseAnthropicMessageResponse(anthropicResponse)
 		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, anthropicResponse, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
+			schemas.ReleaseBifrostChatResponse(response)
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		response = anthropicResponse.ToBifrostChatResponse(ctx)
 	} else {
 		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
+			schemas.ReleaseBifrostChatResponse(response)
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 	}
@@ -699,7 +702,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostResponsesResponse{}
+	response := schemas.AcquireBifrostResponsesResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -859,11 +862,12 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := schemas.AcquireBifrostEmbeddingResponse()
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
+		schemas.ReleaseBifrostEmbeddingResponse(response)
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
@@ -1143,11 +1147,12 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 							bifrostErr := schemas.AcquireBifrostError()
 							if errParseErr := sonic.Unmarshal(audioData, bifrostErr); errParseErr == nil {
 								if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-									bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-										Provider:       provider.GetProviderKey(),
-										ModelRequested: request.Model,
-										RequestType:    schemas.SpeechStreamRequest,
+									if bifrostErr.ExtraFields == nil {
+										bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 									}
+									bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+									bifrostErr.ExtraFields.ModelRequested = request.Model
+									bifrostErr.ExtraFields.RequestType = schemas.SpeechStreamRequest
 									ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 									providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 									return
@@ -1908,15 +1913,13 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostFileListResponse{
-			Object:  "list",
-			Data:    []schemas.FileObject{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileListResponse()
+		r.Object = "list"
+		r.Data = []schemas.FileObject{}
+		r.HasMore = false
+		r.ExtraFields.RequestType = schemas.FileListRequest
+		r.ExtraFields.Provider = providerName
+		return r, nil
 	}
 
 	// Validate key config
@@ -2006,16 +2009,13 @@ func (provider *AzureProvider) FileList(ctx *schemas.BifrostContext, keys []sche
 	nextCursor, hasMore := helper.BuildNextCursor(openAIResp.HasMore, lastFileID)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostFileListResponse{
-		Object:  "list",
-		Data:    files,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	bifrostResp := schemas.AcquireBifrostFileListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = files
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields.RequestType = schemas.FileListRequest
+	bifrostResp.ExtraFields.Provider = providerName
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if nextCursor != "" {
 		bifrostResp.After = &nextCursor
 	}
@@ -2188,16 +2188,16 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 		if resp.StatusCode() == fasthttp.StatusNoContent {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
-			return &schemas.BifrostFileDeleteResponse{
-				ID:      request.FileID,
-				Object:  "file",
-				Deleted: true,
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType: schemas.FileDeleteRequest,
-					Provider:    providerName,
-					Latency:     latency.Milliseconds(),
-				},
-			}, nil
+			r := schemas.AcquireBifrostFileDeleteResponse()
+			r.ID = request.FileID
+			r.Object = "file"
+			r.Deleted = true
+			r.ExtraFields = schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileDeleteRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			}
+			return r, nil
 		}
 
 		body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2220,15 +2220,14 @@ func (provider *AzureProvider) FileDelete(ctx *schemas.BifrostContext, keys []sc
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		result := &schemas.BifrostFileDeleteResponse{
-			ID:      openAIResp.ID,
-			Object:  openAIResp.Object,
-			Deleted: openAIResp.Deleted,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileDeleteRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
+		result := schemas.AcquireBifrostFileDeleteResponse()
+		result.ID = openAIResp.ID
+		result.Object = openAIResp.Object
+		result.Deleted = openAIResp.Deleted
+		result.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileDeleteRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
 		}
 
 		if sendBackRawRequest {
@@ -2330,16 +2329,16 @@ func (provider *AzureProvider) FileContent(ctx *schemas.BifrostContext, keys []s
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		return &schemas.BifrostFileContentResponse{
-			FileID:      request.FileID,
-			Content:     content,
-			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileContentRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileContentResponse()
+		r.FileID = request.FileID
+		r.Content = content
+		r.ContentType = contentType
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileContentRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr
@@ -2481,15 +2480,13 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostBatchListResponse{
-			Object:  "list",
-			Data:    []schemas.BifrostBatchRetrieveResponse{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostBatchListResponse()
+		r.Object = "list"
+		r.Data = []schemas.BifrostBatchRetrieveResponse{}
+		r.HasMore = false
+		r.ExtraFields.RequestType = schemas.BatchListRequest
+		r.ExtraFields.Provider = providerName
+		return r, nil
 	}
 
 	// Validate key config
@@ -2568,16 +2565,13 @@ func (provider *AzureProvider) BatchList(ctx *schemas.BifrostContext, keys []sch
 	nextCursor, hasMore := helper.BuildNextCursor(openAIResp.HasMore, lastBatchID)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostBatchListResponse{
-		Object:  "list",
-		Data:    batches,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	bifrostResp := schemas.AcquireBifrostBatchListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = batches
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields.RequestType = schemas.BatchListRequest
+	bifrostResp.ExtraFields.Provider = providerName
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if nextCursor != "" {
 		bifrostResp.NextCursor = &nextCursor
 	}
@@ -2773,18 +2767,15 @@ func (provider *AzureProvider) BatchCancel(ctx *schemas.BifrostContext, keys []s
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		result := &schemas.BifrostBatchCancelResponse{
-			ID:           openAIResp.ID,
-			Object:       openAIResp.Object,
-			Status:       openai.ToBifrostBatchStatus(openAIResp.Status),
-			CancellingAt: openAIResp.CancellingAt,
-			CancelledAt:  openAIResp.CancelledAt,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchCancelRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}
+		result := schemas.AcquireBifrostBatchCancelResponse()
+		result.ID = openAIResp.ID
+		result.Object = openAIResp.Object
+		result.Status = openai.ToBifrostBatchStatus(openAIResp.Status)
+		result.CancellingAt = openAIResp.CancellingAt
+		result.CancelledAt = openAIResp.CancelledAt
+		result.ExtraFields.RequestType = schemas.BatchCancelRequest
+		result.ExtraFields.Provider = providerName
+		result.ExtraFields.Latency = latency.Milliseconds()
 
 		if openAIResp.RequestCounts != nil {
 			result.RequestCounts = schemas.BatchRequestCounts{
@@ -2848,15 +2839,12 @@ func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []
 		return nil
 	})
 
-	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchResultsRequest,
-			Provider:    providerName,
-			Latency:     fileContentResp.ExtraFields.Latency,
-		},
-	}
+	batchResultsResp := schemas.AcquireBifrostBatchResultsResponse()
+	batchResultsResp.BatchID = request.BatchID
+	batchResultsResp.Results = results
+	batchResultsResp.ExtraFields.RequestType = schemas.BatchResultsRequest
+	batchResultsResp.ExtraFields.Provider = providerName
+	batchResultsResp.ExtraFields.Latency = fileContentResp.ExtraFields.Latency
 
 	if len(parseResult.Errors) > 0 {
 		batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors

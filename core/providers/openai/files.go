@@ -56,21 +56,20 @@ func ToBifrostFileStatus(status string) schemas.FileStatus {
 
 // ToBifrostFileUploadResponse converts OpenAI file response to Bifrost file upload response.
 func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
-	resp := &schemas.BifrostFileUploadResponse{
-		ID:             r.ID,
-		Object:         r.Object,
-		Bytes:          r.Bytes,
-		CreatedAt:      r.CreatedAt,
-		Filename:       r.Filename,
-		Purpose:        r.Purpose,
-		Status:         ToBifrostFileStatus(r.Status),
-		StatusDetails:  r.StatusDetails,
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileUploadResponse()
+	resp.ID = r.ID
+	resp.Object = r.Object
+	resp.Bytes = r.Bytes
+	resp.CreatedAt = r.CreatedAt
+	resp.Filename = r.Filename
+	resp.Purpose = r.Purpose
+	resp.Status = ToBifrostFileStatus(r.Status)
+	resp.StatusDetails = r.StatusDetails
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileUploadRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if sendBackRawRequest {
@@ -86,21 +85,20 @@ func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(providerName schemas.Mo
 
 // ToBifrostFileRetrieveResponse converts OpenAI file response to Bifrost file retrieve response.
 func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
-	resp := &schemas.BifrostFileRetrieveResponse{
-		ID:             r.ID,
-		Object:         r.Object,
-		Bytes:          r.Bytes,
-		CreatedAt:      r.CreatedAt,
-		Filename:       r.Filename,
-		Purpose:        r.Purpose,
-		Status:         ToBifrostFileStatus(r.Status),
-		StatusDetails:  r.StatusDetails,
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileRetrieveResponse()
+	resp.ID = r.ID
+	resp.Object = r.Object
+	resp.Bytes = r.Bytes
+	resp.CreatedAt = r.CreatedAt
+	resp.Filename = r.Filename
+	resp.Purpose = r.Purpose
+	resp.Status = ToBifrostFileStatus(r.Status)
+	resp.StatusDetails = r.StatusDetails
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileRetrieveRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if sendBackRawRequest {

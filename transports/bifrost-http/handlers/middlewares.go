@@ -95,8 +95,9 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				next(ctx)
 				return
 			}
-			// Get or create BifrostContext from fasthttp context
+			// Get BifrostContext from pool
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			defer schemas.ReleaseBifrostContext(bifrostCtx)
 			// Acquire pooled request
 			req := schemas.AcquireHTTPRequest()
 			defer schemas.ReleaseHTTPRequest(req)
@@ -152,9 +153,10 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 	}
 }
 
-// getBifrostContextFromFastHTTP gets or creates a BifrostContext from fasthttp context.
+// getBifrostContextFromFastHTTP gets a BifrostContext from the pool.
+// The caller MUST call Release() when done (typically via defer).
 func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
-	return schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	return schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
 }
 
 // fasthttpToHTTPRequest populates a pooled HTTPRequest from fasthttp context.
@@ -325,7 +327,6 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 		return func(ctx *fasthttp.RequestCtx) {
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
-				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
 				next(ctx)
 				return
 			}

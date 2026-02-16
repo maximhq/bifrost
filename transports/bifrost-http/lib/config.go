@@ -600,7 +600,7 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 	// Process provider configurations from file
 	if configData.Providers != nil {
 		for providerName, providerCfgInFile := range configData.Providers {
-			if err = processProviderFromFile(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+			if err = processProviderFromFile(providerName, providerCfgInFile, providersInConfigStore); err != nil {
 				logger.Warn("failed to process provider %s: %v", providerName, err)
 			}
 		}
@@ -620,7 +620,6 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 
 // processProviderFromFile processes a single provider configuration from config file
 func processProviderFromFile(
-	config *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
@@ -632,6 +631,13 @@ func processProviderFromFile(
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
+	}
+	// Fill zero-valued fields with defaults for partially specified configs
+	if providerCfgInFile.NetworkConfig != nil {
+		providerCfgInFile.NetworkConfig.CheckAndSetDefaults()
+	}
+	if providerCfgInFile.ConcurrencyAndBufferSize != nil {
+		providerCfgInFile.ConcurrencyAndBufferSize.CheckAndSetDefaults()
 	}
 	// Generate hash from config.json provider config
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))

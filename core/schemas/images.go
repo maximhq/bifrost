@@ -1,5 +1,7 @@
 package schemas
 
+import "sync"
+
 type ImageEventType string
 
 const (
@@ -64,6 +66,36 @@ type BifrostImageGenerationResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+// bifrostImageGenerationResponsePool provides a pool for BifrostImageGenerationResponse objects.
+var bifrostImageGenerationResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostImageGenerationResponse{}
+	},
+}
+
+// AcquireBifrostImageGenerationResponse gets a BifrostImageGenerationResponse from the pool and resets it.
+func AcquireBifrostImageGenerationResponse() *BifrostImageGenerationResponse {
+	r := bifrostImageGenerationResponsePool.Get().(*BifrostImageGenerationResponse)
+	*r = BifrostImageGenerationResponse{}
+	return r
+}
+
+// ReleaseBifrostImageGenerationResponse returns a BifrostImageGenerationResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostImageGenerationResponse(r *BifrostImageGenerationResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Created = 0
+	r.Model = ""
+	r.Data = nil
+	r.ImageGenerationResponseParameters = nil
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostImageGenerationResponsePool.Put(r)
+}
+
 type ImageGenerationResponseParameters struct {
 	Background   string `json:"background,omitempty"`
 	OutputFormat string `json:"output_format,omitempty"`
@@ -113,6 +145,51 @@ type BifrostImageGenerationStreamResponse struct {
 	RawRequest        string                     `json:"-"`
 	RawResponse       string                     `json:"-"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// bifrostImageGenerationStreamResponsePool provides a pool for BifrostImageGenerationStreamResponse objects.
+var bifrostImageGenerationStreamResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostImageGenerationStreamResponse{}
+	},
+}
+
+// AcquireBifrostImageGenerationStreamResponse gets a BifrostImageGenerationStreamResponse from the pool and resets it.
+func AcquireBifrostImageGenerationStreamResponse() *BifrostImageGenerationStreamResponse {
+	r := bifrostImageGenerationStreamResponsePool.Get().(*BifrostImageGenerationStreamResponse)
+	*r = BifrostImageGenerationStreamResponse{}
+	return r
+}
+
+// ReleaseBifrostImageGenerationStreamResponse returns a BifrostImageGenerationStreamResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostImageGenerationStreamResponse(r *BifrostImageGenerationStreamResponse) {
+	if r == nil {
+		return
+	}
+	if r.Error != nil {
+		ReleaseBifrostError(r.Error)
+	}
+	r.ID = ""
+	r.Type = ""
+	r.Index = 0
+	r.ChunkIndex = 0
+	r.PartialImageIndex = nil
+	r.SequenceNumber = 0
+	r.B64JSON = ""
+	r.URL = ""
+	r.CreatedAt = 0
+	r.Size = ""
+	r.Quality = ""
+	r.Background = ""
+	r.OutputFormat = ""
+	r.RevisedPrompt = ""
+	r.Usage = nil
+	r.Error = nil
+	r.RawRequest = ""
+	r.RawResponse = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostImageGenerationStreamResponsePool.Put(r)
 }
 
 // BifrostImageEditRequest represents an image edit request in bifrost format

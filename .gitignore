@@ -63,7 +63,6 @@ settings.local.json
 **/.coverage/
 **/.pytest_cache/
 
-
 # Nix specific
 .direnv
 .nix-store
@@ -90,7 +89,6 @@ coverage/
 
 # Build output
 dist/
-
 
 # IDE
 .idea/

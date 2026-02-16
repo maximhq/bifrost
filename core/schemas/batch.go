@@ -1,6 +1,8 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import "sync"
+
 // BatchStatus represents the status of a batch job.
 type BatchStatus string
 
@@ -121,6 +123,45 @@ type BifrostBatchCreateResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostBatchCreateResponsePool provides a pool for BifrostBatchCreateResponse objects.
+var bifrostBatchCreateResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostBatchCreateResponse{}
+	},
+}
+
+// AcquireBifrostBatchCreateResponse gets a BifrostBatchCreateResponse from the pool and resets it.
+func AcquireBifrostBatchCreateResponse() *BifrostBatchCreateResponse {
+	r := bifrostBatchCreateResponsePool.Get().(*BifrostBatchCreateResponse)
+	*r = BifrostBatchCreateResponse{}
+	return r
+}
+
+// ReleaseBifrostBatchCreateResponse returns a BifrostBatchCreateResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostBatchCreateResponse(r *BifrostBatchCreateResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Endpoint = ""
+	r.InputFileID = ""
+	r.CompletionWindow = ""
+	r.Status = ""
+	r.RequestCounts = BatchRequestCounts{}
+	r.Metadata = nil
+	r.CreatedAt = 0
+	r.ExpiresAt = nil
+	r.OutputFileID = nil
+	r.ErrorFileID = nil
+	r.ProcessingStatus = nil
+	r.ResultsURL = nil
+	r.OperationName = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostBatchCreateResponsePool.Put(r)
+}
+
 // BifrostBatchListRequest represents a request to list batch jobs.
 type BifrostBatchListRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -151,6 +192,36 @@ type BifrostBatchListResponse struct {
 	NextCursor *string `json:"next_cursor,omitempty"` // For cursor-based pagination
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostBatchListResponsePool provides a pool for BifrostBatchListResponse objects.
+var bifrostBatchListResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostBatchListResponse{}
+	},
+}
+
+// AcquireBifrostBatchListResponse gets a BifrostBatchListResponse from the pool and resets it.
+func AcquireBifrostBatchListResponse() *BifrostBatchListResponse {
+	r := bifrostBatchListResponsePool.Get().(*BifrostBatchListResponse)
+	*r = BifrostBatchListResponse{}
+	return r
+}
+
+// ReleaseBifrostBatchListResponse returns a BifrostBatchListResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostBatchListResponse(r *BifrostBatchListResponse) {
+	if r == nil {
+		return
+	}
+	r.Object = ""
+	r.Data = nil
+	r.FirstID = nil
+	r.LastID = nil
+	r.HasMore = false
+	r.NextCursor = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostBatchListResponsePool.Put(r)
 }
 
 // BifrostBatchRetrieveRequest represents a request to retrieve a batch job.
@@ -208,6 +279,56 @@ type BifrostBatchRetrieveResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostBatchRetrieveResponsePool provides a pool for BifrostBatchRetrieveResponse objects.
+var bifrostBatchRetrieveResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostBatchRetrieveResponse{}
+	},
+}
+
+// AcquireBifrostBatchRetrieveResponse gets a BifrostBatchRetrieveResponse from the pool and resets it.
+func AcquireBifrostBatchRetrieveResponse() *BifrostBatchRetrieveResponse {
+	r := bifrostBatchRetrieveResponsePool.Get().(*BifrostBatchRetrieveResponse)
+	*r = BifrostBatchRetrieveResponse{}
+	return r
+}
+
+// ReleaseBifrostBatchRetrieveResponse returns a BifrostBatchRetrieveResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostBatchRetrieveResponse(r *BifrostBatchRetrieveResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Endpoint = ""
+	r.InputFileID = ""
+	r.CompletionWindow = ""
+	r.Status = ""
+	r.RequestCounts = BatchRequestCounts{}
+	r.Metadata = nil
+	r.CreatedAt = 0
+	r.ExpiresAt = nil
+	r.InProgressAt = nil
+	r.FinalizingAt = nil
+	r.CompletedAt = nil
+	r.FailedAt = nil
+	r.ExpiredAt = nil
+	r.CancellingAt = nil
+	r.CancelledAt = nil
+	r.OutputFileID = nil
+	r.ErrorFileID = nil
+	r.Errors = nil
+	r.ProcessingStatus = nil
+	r.ResultsURL = nil
+	r.ArchivedAt = nil
+	r.OperationName = nil
+	r.Done = nil
+	r.Progress = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostBatchRetrieveResponsePool.Put(r)
+}
+
 // BifrostBatchCancelRequest represents a request to cancel a batch job.
 type BifrostBatchCancelRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -235,6 +356,36 @@ type BifrostBatchCancelResponse struct {
 	CancelledAt   *int64             `json:"cancelled_at,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostBatchCancelResponsePool provides a pool for BifrostBatchCancelResponse objects.
+var bifrostBatchCancelResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostBatchCancelResponse{}
+	},
+}
+
+// AcquireBifrostBatchCancelResponse gets a BifrostBatchCancelResponse from the pool and resets it.
+func AcquireBifrostBatchCancelResponse() *BifrostBatchCancelResponse {
+	r := bifrostBatchCancelResponsePool.Get().(*BifrostBatchCancelResponse)
+	*r = BifrostBatchCancelResponse{}
+	return r
+}
+
+// ReleaseBifrostBatchCancelResponse returns a BifrostBatchCancelResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostBatchCancelResponse(r *BifrostBatchCancelResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Status = ""
+	r.RequestCounts = BatchRequestCounts{}
+	r.CancellingAt = nil
+	r.CancelledAt = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostBatchCancelResponsePool.Put(r)
 }
 
 // BifrostBatchResultsRequest represents a request to retrieve batch results.
@@ -298,4 +449,32 @@ type BifrostBatchResultsResponse struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostBatchResultsResponsePool provides a pool for BifrostBatchResultsResponse objects.
+var bifrostBatchResultsResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostBatchResultsResponse{}
+	},
+}
+
+// AcquireBifrostBatchResultsResponse gets a BifrostBatchResultsResponse from the pool and resets it.
+func AcquireBifrostBatchResultsResponse() *BifrostBatchResultsResponse {
+	r := bifrostBatchResultsResponsePool.Get().(*BifrostBatchResultsResponse)
+	*r = BifrostBatchResultsResponse{}
+	return r
+}
+
+// ReleaseBifrostBatchResultsResponse returns a BifrostBatchResultsResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostBatchResultsResponse(r *BifrostBatchResultsResponse) {
+	if r == nil {
+		return
+	}
+	r.BatchID = ""
+	r.Results = nil
+	r.HasMore = false
+	r.NextCursor = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostBatchResultsResponsePool.Put(r)
 }

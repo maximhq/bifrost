@@ -71,6 +71,9 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		bedrockChatResponsePool.Put(&BedrockConverseResponse{})
 	}
 
+	// Strip trailing slash from BaseURL for consistent URL construction
+	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+
 	return &BedrockProvider{
 		logger:               logger,
 		client:               client,
@@ -79,6 +82,25 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 	}, nil
+}
+
+// bedrockRuntimeURL returns the base URL for bedrock-runtime API calls.
+// If networkConfig.BaseURL is set, it is used directly (for testing/proxying);
+// otherwise the standard AWS endpoint for the given region is returned.
+func (provider *BedrockProvider) bedrockRuntimeURL(region string) string {
+	if provider.networkConfig.BaseURL != "" {
+		return provider.networkConfig.BaseURL
+	}
+	return fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", region)
+}
+
+// bedrockControlPlaneURL returns the base URL for bedrock control-plane API calls
+// (e.g. list models, batch jobs). Respects networkConfig.BaseURL when set.
+func (provider *BedrockProvider) bedrockControlPlaneURL(region string) string {
+	if provider.networkConfig.BaseURL != "" {
+		return provider.networkConfig.BaseURL
+	}
+	return fmt.Sprintf("https://bedrock.%s.amazonaws.com", region)
 }
 
 // GetProviderKey returns the provider identifier for Bedrock.
@@ -98,15 +120,13 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	// Create the request with the JSON body
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("%s/model/%s", provider.bedrockRuntimeURL(region), path), bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, 0, nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error creating request",
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = "error creating request"
+		bfErr.Error.Error = err
+		return nil, 0, nil, bfErr
 	}
 
 	// Set any extra headers from network config
@@ -128,14 +148,12 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, latency, nil, bfErr
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
@@ -149,21 +167,17 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Message = schemas.ErrProviderNetworkError
+			bfErr.Error.Error = err
+			return nil, latency, nil, bfErr
 		}
-		return nil, latency, nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.Error.Message = schemas.ErrProviderDoRequest
+		bfErr.Error.Error = err
+		return nil, latency, nil, bfErr
 	}
 
 	// Extract provider response headers before closing the body
@@ -173,13 +187,11 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error reading request",
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = "error reading request"
+		bfErr.Error.Error = err
+		return nil, latency, nil, bfErr
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -191,28 +203,22 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 
 		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, latency, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RawResponse: rawErrorResponse,
-				},
-			}
+			bifrostErr := schemas.AcquireBifrostError()
+			bifrostErr.IsBifrostError = true
+			bifrostErr.StatusCode = &resp.StatusCode
+			bifrostErr.Error.Message = schemas.ErrProviderResponseUnmarshal
+			bifrostErr.Error.Error = err
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+			bifrostErr.ExtraFields.RawResponse = rawErrorResponse
+			return nil, latency, nil, bifrostErr
 		}
 
-		return nil, latency, nil, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Message,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.StatusCode = &resp.StatusCode
+		bifrostErr.Error.Message = errorResp.Message
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bifrostErr.ExtraFields.RawResponse = rawErrorResponse
+		return nil, latency, nil, bifrostErr
 	}
 
 	return body, latency, providerResponseHeaders, nil
@@ -328,7 +334,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	}
 
 	// Create HTTP request for streaming
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewReader(jsonData))
+	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("%s/model/%s", provider.bedrockRuntimeURL(region), path), bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, deployment, providerUtils.NewBifrostOperationError("error creating request", reqErr, providerName)
 	}
@@ -341,7 +347,6 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
 	} else {
-		req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, key.BedrockKeyConfig.AccessKey, key.BedrockKeyConfig.SecretKey, key.BedrockKeyConfig.SessionToken, region, "bedrock", providerName); err != nil {
 			return nil, deployment, err
@@ -352,14 +357,12 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	resp, respErr := provider.client.Do(req)
 	if respErr != nil {
 		if errors.Is(respErr, context.Canceled) {
-			return nil, deployment, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   respErr,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = respErr
+			return nil, deployment, bfErr
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
@@ -503,18 +506,16 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	// List models endpoint uses the bedrock service (not bedrock-runtime)
-	url := fmt.Sprintf("https://bedrock.%s.amazonaws.com/foundation-models?%s", region, params.Encode())
+	url := fmt.Sprintf("%s/foundation-models?%s", provider.bedrockControlPlaneURL(region), params.Encode())
 
 	// Create the GET request without a body
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error creating request",
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = "error creating request"
+		bfErr.Error.Error = err
+		return nil, bfErr
 	}
 
 	// Set any extra headers from network config
@@ -537,14 +538,12 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	resp, err := provider.client.Do(req)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
@@ -558,34 +557,28 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Message = schemas.ErrProviderNetworkError
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.Error.Message = schemas.ErrProviderDoRequest
+		bfErr.Error.Error = err
+		return nil, bfErr
 	}
 
 	// Read response body and close
 	responseBody, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "error reading request",
-				Error:   err,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = "error reading request"
+		bfErr.Error.Error = err
+		return nil, bfErr
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -805,6 +798,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 							errMsg = bedrockErr.Message
 						}
 						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
 						return
 					}
@@ -816,6 +810,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				}
 				if err := sonic.Unmarshal(message.Payload, &chunkPayload); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -836,6 +831,17 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(textResponse, nil, nil, nil, nil, nil), responseChan)
 			}
 		}
+
+		// Normal EOF: send final chunk with stream end indicator to trigger span/pipeline cleanup
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(&schemas.BifrostTextCompletionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.TextCompletionStreamRequest,
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				Latency:        time.Since(startTime).Milliseconds(),
+			},
+		}, nil, nil, nil, nil, nil), responseChan)
 	}()
 
 	return responseChan, nil
@@ -1028,6 +1034,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						}
 						errMsg := string(message.Payload)
 						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 						return
 					}
@@ -1037,6 +1044,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -1138,11 +1146,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream()
 				if bifrostErr != nil {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						RequestType:    schemas.ChatCompletionStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 					}
+					bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 					return
@@ -1393,6 +1402,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						}
 						errMsg := string(message.Payload)
 						err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 						return
 					}
@@ -1402,6 +1412,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				var streamEvent BedrockStreamEvent
 				if err := sonic.Unmarshal(message.Payload, &streamEvent); err != nil {
 					provider.logger.Debug("Failed to parse JSON from event buffer: %v, data: %s", err, string(message.Payload))
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, provider.logger)
 					return
 				}
@@ -1480,11 +1491,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 				responses, bifrostErr, _ := streamEvent.ToBifrostResponsesStream(chunkIndex, streamState)
 				if bifrostErr != nil {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						RequestType:    schemas.ResponsesStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 					}
+					bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 					return
@@ -2040,14 +2052,12 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 	}
@@ -2062,22 +2072,22 @@ func (provider *BedrockProvider) FileUpload(ctx *schemas.BifrostContext, key sch
 	// Return S3 URI as the file ID
 	s3URI := fmt.Sprintf("s3://%s/%s", bucketName, s3Key)
 
-	return &schemas.BifrostFileUploadResponse{
-		ID:             s3URI,
-		Object:         "file",
-		Bytes:          int64(len(request.File)),
-		CreatedAt:      time.Now().Unix(),
-		Filename:       filename,
-		Purpose:        request.Purpose,
-		Status:         schemas.FileStatusProcessed,
-		StorageBackend: schemas.FileStorageS3,
-		StorageURI:     s3URI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}, nil
+	r := schemas.AcquireBifrostFileUploadResponse()
+	r.ID = s3URI
+	r.Object = "file"
+	r.Bytes = int64(len(request.File))
+	r.CreatedAt = time.Now().Unix()
+	r.Filename = filename
+	r.Purpose = request.Purpose
+	r.Status = schemas.FileStatusProcessed
+	r.StorageBackend = schemas.FileStorageS3
+	r.StorageURI = s3URI
+	r.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileUploadRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+	return r, nil
 }
 
 // FileList lists files in the S3 bucket used for Bedrock batch processing from all provided keys.
@@ -2129,15 +2139,15 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostFileListResponse{
-			Object:  "list",
-			Data:    []schemas.FileObject{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileListResponse()
+		r.Object = "list"
+		r.Data = []schemas.FileObject{}
+		r.HasMore = false
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileListRequest,
+			Provider:    providerName,
+		}
+		return r, nil
 	}
 
 	region := DefaultBedrockRegion
@@ -2180,14 +2190,12 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 	}
@@ -2232,15 +2240,14 @@ func (provider *BedrockProvider) FileList(ctx *schemas.BifrostContext, keys []sc
 	nextCursor, hasMore := helper.BuildNextCursor(listResp.IsTruncated, listResp.NextContinuationToken)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostFileListResponse{
-		Object:  "list",
-		Data:    files,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	bifrostResp := schemas.AcquireBifrostFileListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = files
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileListRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 	if nextCursor != "" {
 		bifrostResp.After = &nextCursor
@@ -2301,14 +2308,12 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return nil, bfErr
 			}
 			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 			continue
@@ -2335,22 +2340,22 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 			}
 		}
 
-		return &schemas.BifrostFileRetrieveResponse{
-			ID:             request.FileID,
-			Object:         "file",
-			Bytes:          resp.ContentLength,
-			CreatedAt:      createdAt,
-			Filename:       filename,
-			Purpose:        schemas.FilePurposeBatch,
-			Status:         schemas.FileStatusProcessed,
-			StorageBackend: schemas.FileStorageS3,
-			StorageURI:     request.FileID,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileRetrieveRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileRetrieveResponse()
+		r.ID = request.FileID
+		r.Object = "file"
+		r.Bytes = resp.ContentLength
+		r.CreatedAt = createdAt
+		r.Filename = filename
+		r.Purpose = schemas.FilePurposeBatch
+		r.Status = schemas.FileStatusProcessed
+		r.StorageBackend = schemas.FileStorageS3
+		r.StorageURI = request.FileID
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileRetrieveRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr
@@ -2408,14 +2413,12 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return nil, bfErr
 			}
 			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 			continue
@@ -2431,16 +2434,16 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		resp.Body.Close()
 
-		return &schemas.BifrostFileDeleteResponse{
-			ID:      request.FileID,
-			Object:  "file",
-			Deleted: true,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileDeleteRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileDeleteResponse()
+		r.ID = request.FileID
+		r.Object = "file"
+		r.Deleted = true
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileDeleteRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr
@@ -2498,14 +2501,12 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return nil, bfErr
 			}
 			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 			continue
@@ -2530,16 +2531,16 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 			contentType = "application/octet-stream"
 		}
 
-		return &schemas.BifrostFileContentResponse{
-			FileID:      request.FileID,
-			Content:     body,
-			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileContentRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileContentResponse()
+		r.FileID = request.FileID
+		r.Content = body
+		r.ContentType = contentType
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileContentRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr
@@ -2725,14 +2726,12 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, providerUtils.EnrichError(ctx, bfErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -2760,31 +2759,30 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	})
 	if bifrostErr != nil {
 		// Return basic response if retrieve fails
-		return &schemas.BifrostBatchCreateResponse{
-			ID:          bedrockResp.JobArn,
-			Object:      "batch",
-			InputFileID: inputFileID,
-			Status:      schemas.BatchStatusValidating,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchCreateRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
-	}
-
-	// Use retrieved response for complete data
-	result := &schemas.BifrostBatchCreateResponse{
-		ID:          retrieveResp.ID,
-		Object:      "batch",
-		InputFileID: inputFileID,
-		Status:      retrieveResp.Status,
-		CreatedAt:   retrieveResp.CreatedAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
+		r := schemas.AcquireBifrostBatchCreateResponse()
+		r.ID = bedrockResp.JobArn
+		r.Object = "batch"
+		r.InputFileID = inputFileID
+		r.Status = schemas.BatchStatusValidating
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
 			RequestType: schemas.BatchCreateRequest,
 			Provider:    providerName,
 			Latency:     latency.Milliseconds(),
-		},
+		}
+		return r, nil
+	}
+
+	// Use retrieved response for complete data
+	result := schemas.AcquireBifrostBatchCreateResponse()
+	result.ID = retrieveResp.ID
+	result.Object = "batch"
+	result.InputFileID = inputFileID
+	result.Status = retrieveResp.Status
+	result.CreatedAt = retrieveResp.CreatedAt
+	result.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.BatchCreateRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if retrieveResp.ExpiresAt != nil {
@@ -2813,15 +2811,15 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostBatchListResponse{
-			Object:  "list",
-			Data:    []schemas.BifrostBatchRetrieveResponse{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostBatchListResponse()
+		r.Object = "list"
+		r.Data = []schemas.BifrostBatchRetrieveResponse{}
+		r.HasMore = false
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchListRequest,
+			Provider:    providerName,
+		}
+		return r, nil
 	}
 
 	if key.BedrockKeyConfig == nil {
@@ -2864,14 +2862,12 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 	}
@@ -2928,15 +2924,14 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	nextCursor, hasMore := helper.BuildNextCursor(apiHasMore, nativeNextToken)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostBatchListResponse{
-		Object:  "list",
-		Data:    batches,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	bifrostResp := schemas.AcquireBifrostBatchListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = batches
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.BatchListRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 	if nextCursor != "" {
 		bifrostResp.NextCursor = &nextCursor
@@ -3053,14 +3048,12 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return nil, bfErr
 			}
 			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 			continue
@@ -3093,16 +3086,15 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 			metadata["model_id"] = bedrockResp.ModelID
 		}
 
-		result := &schemas.BifrostBatchRetrieveResponse{
-			ID:       bedrockResp.JobArn,
-			Object:   "batch",
-			Status:   ToBifrostBatchStatus(bedrockResp.Status),
-			Metadata: metadata,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchRetrieveRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
+		result := schemas.AcquireBifrostBatchRetrieveResponse()
+		result.ID = bedrockResp.JobArn
+		result.Object = "batch"
+		result.Status = ToBifrostBatchStatus(bedrockResp.Status)
+		result.Metadata = metadata
+		result.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchRetrieveRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
 		}
 
 		if bedrockResp.InputDataConfig != nil {
@@ -3197,14 +3189,12 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return nil, bfErr
 			}
 			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
 			continue
@@ -3231,28 +3221,28 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 			// Return basic response if retrieve fails
 			// Compute total latency including stop + failed retrieve
 			totalLatency := time.Since(startTime)
-			return &schemas.BifrostBatchCancelResponse{
-				ID:     request.BatchID,
-				Object: "batch",
-				Status: schemas.BatchStatusCancelling,
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType: schemas.BatchCancelRequest,
-					Provider:    providerName,
-					Latency:     totalLatency.Milliseconds(),
-				},
-			}, nil
-		}
-
-		return &schemas.BifrostBatchCancelResponse{
-			ID:     retrieveResp.ID,
-			Object: "batch",
-			Status: retrieveResp.Status,
-			ExtraFields: schemas.BifrostResponseExtraFields{
+			r := schemas.AcquireBifrostBatchCancelResponse()
+			r.ID = request.BatchID
+			r.Object = "batch"
+			r.Status = schemas.BatchStatusCancelling
+			r.ExtraFields = schemas.BifrostResponseExtraFields{
 				RequestType: schemas.BatchCancelRequest,
 				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+				Latency:     totalLatency.Milliseconds(),
+			}
+			return r, nil
+		}
+
+		r := schemas.AcquireBifrostBatchCancelResponse()
+		r.ID = retrieveResp.ID
+		r.Object = "batch"
+		r.Status = retrieveResp.Status
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchCancelRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr
@@ -3325,14 +3315,13 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 
 		// Direct download succeeded, parse the content
 		results, parseErrors := parseBatchResultsJSONL(fileContentResp.Content, provider)
-		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchResultsRequest,
-				Provider:    providerName,
-				Latency:     fileContentResp.ExtraFields.Latency,
-			},
+		batchResultsResp := schemas.AcquireBifrostBatchResultsResponse()
+		batchResultsResp.BatchID = request.BatchID
+		batchResultsResp.Results = results
+		batchResultsResp.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.BatchResultsRequest,
+			Provider:    providerName,
+			Latency:     fileContentResp.ExtraFields.Latency,
 		}
 		if len(parseErrors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseErrors
@@ -3360,14 +3349,13 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 		}
 	}
 
-	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: allResults,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchResultsRequest,
-			Provider:    providerName,
-			Latency:     totalLatency,
-		},
+	batchResultsResp := schemas.AcquireBifrostBatchResultsResponse()
+	batchResultsResp.BatchID = request.BatchID
+	batchResultsResp.Results = allResults
+	batchResultsResp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.BatchResultsRequest,
+		Provider:    providerName,
+		Latency:     totalLatency,
 	}
 
 	if len(allParseErrors) > 0 {

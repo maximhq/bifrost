@@ -130,6 +130,12 @@ func RunSimpleChatTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 		if responsesError != nil {
 			t.Fatalf("❌ Responses API failed: %s", GetErrorMessage(responsesError))
 		}
+		if chatResponse != nil {
+			defer schemas.ReleaseBifrostChatResponse(chatResponse)
+		}
+		if responsesResponse != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(responsesResponse)
+		}
 
 		// Log results from both APIs
 		if chatResponse != nil {

@@ -26,7 +26,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 
@@ -569,13 +569,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<LogChatMessageView message={log.output_message} audioFormat={audioFormat} />
 							</>
 						)}
-						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error.message && (
+						{log.responses_output && log.responses_output.length > 0 && !log.error_details?.error?.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Response</div>
 								<LogResponsesMessageView messages={log.responses_output} />
 							</>
 						)}
-						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error.message && (
+						{log.embedding_output && log.embedding_output.length > 0 && !log.error_details?.error?.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Embedding</div>
 								<LogChatMessageView
@@ -677,7 +677,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
-						{log.error_details?.error.message && (
+						{log.error_details?.error?.message && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error</div>
 								<CollapsibleBox title="Error" onCopy={() => log.error_details?.error.message || ""}>
@@ -687,7 +687,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
-						{log.error_details?.error.error && (
+						{log.error_details?.error?.error && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">Error Details</div>
 								<CollapsibleBox

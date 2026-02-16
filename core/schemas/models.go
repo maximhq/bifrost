@@ -3,6 +3,8 @@ package schemas
 import (
 	"encoding/base64"
 	"fmt"
+
+	"github.com/maximhq/bifrost/core/pool"
 )
 
 // DefaultPageSize is the default page size for listing models
@@ -54,6 +56,33 @@ type BifrostListModelsResponse struct {
 	FirstID *string `json:"-"`
 	LastID  *string `json:"-"`
 	HasMore *bool   `json:"-"`
+}
+
+// bifrostListModelsResponsePool provides a pool for BifrostListModelsResponse objects.
+var bifrostListModelsResponsePool = pool.New("BifrostListModelsResponse", func() *BifrostListModelsResponse {
+	return &BifrostListModelsResponse{}
+})
+
+// AcquireBifrostListModelsResponse gets a BifrostListModelsResponse from the pool and resets it.
+func AcquireBifrostListModelsResponse() *BifrostListModelsResponse {
+	return bifrostListModelsResponsePool.Get()
+}
+
+// ReleaseBifrostListModelsResponse returns a BifrostListModelsResponse to the pool.
+
+// ReleaseBifrostListModelsResponse returns a BifrostListModelsResponse to the pool.
+func ReleaseBifrostListModelsResponse(r *BifrostListModelsResponse) {
+	if r == nil {
+		return
+	}
+	r.Data = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	r.NextPageToken = ""
+	r.KeyStatuses = nil
+	r.FirstID = nil
+	r.LastID = nil
+	r.HasMore = nil
+	bifrostListModelsResponsePool.Put(r)
 }
 
 // ApplyPagination applies offset-based pagination to a BifrostListModelsResponse.

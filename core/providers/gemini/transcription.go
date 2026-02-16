@@ -178,7 +178,7 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 // ToBifrostTranscriptionResponse converts a GenerateContentResponse to a BifrostTranscriptionResponse
 func (response *GenerateContentResponse) ToBifrostTranscriptionResponse() *schemas.BifrostTranscriptionResponse {
-	bifrostResp := &schemas.BifrostTranscriptionResponse{}
+	bifrostResp := schemas.AcquireBifrostTranscriptionResponse()
 
 	// Process candidates to extract text content
 	if len(response.Candidates) > 0 {

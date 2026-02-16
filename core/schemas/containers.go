@@ -1,6 +1,8 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import "sync"
+
 // ContainerStatus represents the status of a container.
 type ContainerStatus string
 
@@ -59,6 +61,39 @@ type BifrostContainerCreateResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostContainerCreateResponsePool provides a pool for BifrostContainerCreateResponse objects.
+var bifrostContainerCreateResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerCreateResponse{}
+	},
+}
+
+// AcquireBifrostContainerCreateResponse gets a BifrostContainerCreateResponse from the pool and resets it.
+func AcquireBifrostContainerCreateResponse() *BifrostContainerCreateResponse {
+	r := bifrostContainerCreateResponsePool.Get().(*BifrostContainerCreateResponse)
+	*r = BifrostContainerCreateResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerCreateResponse returns a BifrostContainerCreateResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerCreateResponse(r *BifrostContainerCreateResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Name = ""
+	r.CreatedAt = 0
+	r.Status = ""
+	r.ExpiresAfter = nil
+	r.LastActiveAt = nil
+	r.MemoryLimit = ""
+	r.Metadata = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerCreateResponsePool.Put(r)
+}
+
 // BifrostContainerListRequest represents a request to list containers.
 type BifrostContainerListRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -82,6 +117,36 @@ type BifrostContainerListResponse struct {
 	After   *string           `json:"after,omitempty"` // Encoded cursor for next page (includes key index for multi-key pagination)
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostContainerListResponsePool provides a pool for BifrostContainerListResponse objects.
+var bifrostContainerListResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerListResponse{}
+	},
+}
+
+// AcquireBifrostContainerListResponse gets a BifrostContainerListResponse from the pool and resets it.
+func AcquireBifrostContainerListResponse() *BifrostContainerListResponse {
+	r := bifrostContainerListResponsePool.Get().(*BifrostContainerListResponse)
+	*r = BifrostContainerListResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerListResponse returns a BifrostContainerListResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerListResponse(r *BifrostContainerListResponse) {
+	if r == nil {
+		return
+	}
+	r.Object = ""
+	r.Data = nil
+	r.FirstID = nil
+	r.LastID = nil
+	r.HasMore = false
+	r.After = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerListResponsePool.Put(r)
 }
 
 // BifrostContainerRetrieveRequest represents a request to retrieve a container.
@@ -108,6 +173,39 @@ type BifrostContainerRetrieveResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostContainerRetrieveResponsePool provides a pool for BifrostContainerRetrieveResponse objects.
+var bifrostContainerRetrieveResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerRetrieveResponse{}
+	},
+}
+
+// AcquireBifrostContainerRetrieveResponse gets a BifrostContainerRetrieveResponse from the pool and resets it.
+func AcquireBifrostContainerRetrieveResponse() *BifrostContainerRetrieveResponse {
+	r := bifrostContainerRetrieveResponsePool.Get().(*BifrostContainerRetrieveResponse)
+	*r = BifrostContainerRetrieveResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerRetrieveResponse returns a BifrostContainerRetrieveResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerRetrieveResponse(r *BifrostContainerRetrieveResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Name = ""
+	r.CreatedAt = 0
+	r.Status = ""
+	r.ExpiresAfter = nil
+	r.LastActiveAt = nil
+	r.MemoryLimit = ""
+	r.Metadata = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerRetrieveResponsePool.Put(r)
+}
+
 // BifrostContainerDeleteRequest represents a request to delete a container.
 type BifrostContainerDeleteRequest struct {
 	Provider    ModelProvider `json:"provider"`
@@ -124,6 +222,33 @@ type BifrostContainerDeleteResponse struct {
 	Deleted bool   `json:"deleted"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostContainerDeleteResponsePool provides a pool for BifrostContainerDeleteResponse objects.
+var bifrostContainerDeleteResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerDeleteResponse{}
+	},
+}
+
+// AcquireBifrostContainerDeleteResponse gets a BifrostContainerDeleteResponse from the pool and resets it.
+func AcquireBifrostContainerDeleteResponse() *BifrostContainerDeleteResponse {
+	r := bifrostContainerDeleteResponsePool.Get().(*BifrostContainerDeleteResponse)
+	*r = BifrostContainerDeleteResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerDeleteResponse returns a BifrostContainerDeleteResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerDeleteResponse(r *BifrostContainerDeleteResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Deleted = false
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerDeleteResponsePool.Put(r)
 }
 
 // =============================================================================
@@ -168,6 +293,37 @@ type BifrostContainerFileCreateResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostContainerFileCreateResponsePool provides a pool for BifrostContainerFileCreateResponse objects.
+var bifrostContainerFileCreateResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerFileCreateResponse{}
+	},
+}
+
+// AcquireBifrostContainerFileCreateResponse gets a BifrostContainerFileCreateResponse from the pool and resets it.
+func AcquireBifrostContainerFileCreateResponse() *BifrostContainerFileCreateResponse {
+	r := bifrostContainerFileCreateResponsePool.Get().(*BifrostContainerFileCreateResponse)
+	*r = BifrostContainerFileCreateResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerFileCreateResponse returns a BifrostContainerFileCreateResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerFileCreateResponse(r *BifrostContainerFileCreateResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Bytes = 0
+	r.CreatedAt = 0
+	r.ContainerID = ""
+	r.Path = ""
+	r.Source = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerFileCreateResponsePool.Put(r)
+}
+
 // BifrostContainerFileListRequest represents a request to list files in a container.
 type BifrostContainerFileListRequest struct {
 	Provider    ModelProvider `json:"provider"`
@@ -194,6 +350,36 @@ type BifrostContainerFileListResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostContainerFileListResponsePool provides a pool for BifrostContainerFileListResponse objects.
+var bifrostContainerFileListResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerFileListResponse{}
+	},
+}
+
+// AcquireBifrostContainerFileListResponse gets a BifrostContainerFileListResponse from the pool and resets it.
+func AcquireBifrostContainerFileListResponse() *BifrostContainerFileListResponse {
+	r := bifrostContainerFileListResponsePool.Get().(*BifrostContainerFileListResponse)
+	*r = BifrostContainerFileListResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerFileListResponse returns a BifrostContainerFileListResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerFileListResponse(r *BifrostContainerFileListResponse) {
+	if r == nil {
+		return
+	}
+	r.Object = ""
+	r.Data = nil
+	r.FirstID = nil
+	r.LastID = nil
+	r.HasMore = false
+	r.After = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerFileListResponsePool.Put(r)
+}
+
 // BifrostContainerFileRetrieveRequest represents a request to retrieve a container file.
 type BifrostContainerFileRetrieveRequest struct {
 	Provider    ModelProvider `json:"provider"`
@@ -217,6 +403,37 @@ type BifrostContainerFileRetrieveResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostContainerFileRetrieveResponsePool provides a pool for BifrostContainerFileRetrieveResponse objects.
+var bifrostContainerFileRetrieveResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerFileRetrieveResponse{}
+	},
+}
+
+// AcquireBifrostContainerFileRetrieveResponse gets a BifrostContainerFileRetrieveResponse from the pool and resets it.
+func AcquireBifrostContainerFileRetrieveResponse() *BifrostContainerFileRetrieveResponse {
+	r := bifrostContainerFileRetrieveResponsePool.Get().(*BifrostContainerFileRetrieveResponse)
+	*r = BifrostContainerFileRetrieveResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerFileRetrieveResponse returns a BifrostContainerFileRetrieveResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerFileRetrieveResponse(r *BifrostContainerFileRetrieveResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Bytes = 0
+	r.CreatedAt = 0
+	r.ContainerID = ""
+	r.Path = ""
+	r.Source = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerFileRetrieveResponsePool.Put(r)
+}
+
 // BifrostContainerFileContentRequest represents a request to retrieve the content of a container file.
 type BifrostContainerFileContentRequest struct {
 	Provider    ModelProvider `json:"provider"`
@@ -233,6 +450,32 @@ type BifrostContainerFileContentResponse struct {
 	ContentType string `json:"content_type"` // MIME type of the content
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostContainerFileContentResponsePool provides a pool for BifrostContainerFileContentResponse objects.
+var bifrostContainerFileContentResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerFileContentResponse{}
+	},
+}
+
+// AcquireBifrostContainerFileContentResponse gets a BifrostContainerFileContentResponse from the pool and resets it.
+func AcquireBifrostContainerFileContentResponse() *BifrostContainerFileContentResponse {
+	r := bifrostContainerFileContentResponsePool.Get().(*BifrostContainerFileContentResponse)
+	*r = BifrostContainerFileContentResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerFileContentResponse returns a BifrostContainerFileContentResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerFileContentResponse(r *BifrostContainerFileContentResponse) {
+	if r == nil {
+		return
+	}
+	r.Content = nil
+	r.ContentType = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerFileContentResponsePool.Put(r)
 }
 
 // BifrostContainerFileDeleteRequest represents a request to delete a container file.
@@ -252,4 +495,31 @@ type BifrostContainerFileDeleteResponse struct {
 	Deleted bool   `json:"deleted"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostContainerFileDeleteResponsePool provides a pool for BifrostContainerFileDeleteResponse objects.
+var bifrostContainerFileDeleteResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostContainerFileDeleteResponse{}
+	},
+}
+
+// AcquireBifrostContainerFileDeleteResponse gets a BifrostContainerFileDeleteResponse from the pool and resets it.
+func AcquireBifrostContainerFileDeleteResponse() *BifrostContainerFileDeleteResponse {
+	r := bifrostContainerFileDeleteResponsePool.Get().(*BifrostContainerFileDeleteResponse)
+	*r = BifrostContainerFileDeleteResponse{}
+	return r
+}
+
+// ReleaseBifrostContainerFileDeleteResponse returns a BifrostContainerFileDeleteResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostContainerFileDeleteResponse(r *BifrostContainerFileDeleteResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Deleted = false
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostContainerFileDeleteResponsePool.Put(r)
 }

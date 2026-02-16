@@ -1,6 +1,8 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
+import "sync"
+
 // FilePurpose represents the purpose of an uploaded file.
 type FilePurpose string
 
@@ -115,6 +117,41 @@ type BifrostFileUploadResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostFileUploadResponsePool provides a pool for BifrostFileUploadResponse objects.
+var bifrostFileUploadResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostFileUploadResponse{}
+	},
+}
+
+// AcquireBifrostFileUploadResponse gets a BifrostFileUploadResponse from the pool and resets it.
+func AcquireBifrostFileUploadResponse() *BifrostFileUploadResponse {
+	r := bifrostFileUploadResponsePool.Get().(*BifrostFileUploadResponse)
+	*r = BifrostFileUploadResponse{}
+	return r
+}
+
+// ReleaseBifrostFileUploadResponse returns a BifrostFileUploadResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostFileUploadResponse(r *BifrostFileUploadResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Bytes = 0
+	r.CreatedAt = 0
+	r.Filename = ""
+	r.Purpose = ""
+	r.Status = ""
+	r.StatusDetails = nil
+	r.ExpiresAt = nil
+	r.StorageBackend = ""
+	r.StorageURI = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostFileUploadResponsePool.Put(r)
+}
+
 // BifrostFileListRequest represents a request to list files.
 type BifrostFileListRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -150,6 +187,34 @@ type BifrostFileListResponse struct {
 	After   *string      `json:"after,omitempty"` // Continuation token for pagination
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostFileListResponsePool provides a pool for BifrostFileListResponse objects.
+var bifrostFileListResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostFileListResponse{}
+	},
+}
+
+// AcquireBifrostFileListResponse gets a BifrostFileListResponse from the pool and resets it.
+func AcquireBifrostFileListResponse() *BifrostFileListResponse {
+	r := bifrostFileListResponsePool.Get().(*BifrostFileListResponse)
+	*r = BifrostFileListResponse{}
+	return r
+}
+
+// ReleaseBifrostFileListResponse returns a BifrostFileListResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostFileListResponse(r *BifrostFileListResponse) {
+	if r == nil {
+		return
+	}
+	r.Object = ""
+	r.Data = nil
+	r.HasMore = false
+	r.After = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostFileListResponsePool.Put(r)
 }
 
 // BifrostFileRetrieveRequest represents a request to retrieve file metadata.
@@ -192,6 +257,41 @@ type BifrostFileRetrieveResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostFileRetrieveResponsePool provides a pool for BifrostFileRetrieveResponse objects.
+var bifrostFileRetrieveResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostFileRetrieveResponse{}
+	},
+}
+
+// AcquireBifrostFileRetrieveResponse gets a BifrostFileRetrieveResponse from the pool and resets it.
+func AcquireBifrostFileRetrieveResponse() *BifrostFileRetrieveResponse {
+	r := bifrostFileRetrieveResponsePool.Get().(*BifrostFileRetrieveResponse)
+	*r = BifrostFileRetrieveResponse{}
+	return r
+}
+
+// ReleaseBifrostFileRetrieveResponse returns a BifrostFileRetrieveResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostFileRetrieveResponse(r *BifrostFileRetrieveResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Bytes = 0
+	r.CreatedAt = 0
+	r.Filename = ""
+	r.Purpose = ""
+	r.Status = ""
+	r.StatusDetails = nil
+	r.ExpiresAt = nil
+	r.StorageBackend = ""
+	r.StorageURI = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostFileRetrieveResponsePool.Put(r)
+}
+
 // BifrostFileDeleteRequest represents a request to delete a file.
 type BifrostFileDeleteRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -221,6 +321,33 @@ type BifrostFileDeleteResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostFileDeleteResponsePool provides a pool for BifrostFileDeleteResponse objects.
+var bifrostFileDeleteResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostFileDeleteResponse{}
+	},
+}
+
+// AcquireBifrostFileDeleteResponse gets a BifrostFileDeleteResponse from the pool and resets it.
+func AcquireBifrostFileDeleteResponse() *BifrostFileDeleteResponse {
+	r := bifrostFileDeleteResponsePool.Get().(*BifrostFileDeleteResponse)
+	*r = BifrostFileDeleteResponse{}
+	return r
+}
+
+// ReleaseBifrostFileDeleteResponse returns a BifrostFileDeleteResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostFileDeleteResponse(r *BifrostFileDeleteResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Object = ""
+	r.Deleted = false
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostFileDeleteResponsePool.Put(r)
+}
+
 // BifrostFileContentRequest represents a request to download file content.
 type BifrostFileContentRequest struct {
 	Provider ModelProvider `json:"provider"`
@@ -248,4 +375,31 @@ type BifrostFileContentResponse struct {
 	ContentType string `json:"content_type,omitempty"` // MIME type
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostFileContentResponsePool provides a pool for BifrostFileContentResponse objects.
+var bifrostFileContentResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostFileContentResponse{}
+	},
+}
+
+// AcquireBifrostFileContentResponse gets a BifrostFileContentResponse from the pool and resets it.
+func AcquireBifrostFileContentResponse() *BifrostFileContentResponse {
+	r := bifrostFileContentResponsePool.Get().(*BifrostFileContentResponse)
+	*r = BifrostFileContentResponse{}
+	return r
+}
+
+// ReleaseBifrostFileContentResponse returns a BifrostFileContentResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostFileContentResponse(r *BifrostFileContentResponse) {
+	if r == nil {
+		return
+	}
+	r.FileID = ""
+	r.Content = nil
+	r.ContentType = ""
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostFileContentResponsePool.Put(r)
 }

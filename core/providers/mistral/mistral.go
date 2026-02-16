@@ -550,11 +550,12 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 		bifrostErr := schemas.AcquireBifrostError()
 		if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
 			if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					Provider:       providerName,
-					ModelRequested: model,
-					RequestType:    schemas.TranscriptionStreamRequest,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = model
+				bifrostErr.ExtraFields.RequestType = schemas.TranscriptionStreamRequest
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 				return

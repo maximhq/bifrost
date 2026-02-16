@@ -135,28 +135,24 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests
 		latency := time.Since(startTime)
-		return latency, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr(schemas.RequestCancelled),
-				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
-				Error:   ctx.Err(),
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+		bfErr.Error.Message = fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err())
+		bfErr.Error.Error = ctx.Err()
+		return latency, bfErr
 	case err := <-errChan:
 		// The fasthttp.Do call completed.
 		// Calculate latency for both successful and failed requests
 		latency := time.Since(startTime)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+				bfErr.Error.Message = schemas.ErrRequestCancelled
+				bfErr.Error.Error = err
+				return latency, bfErr
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
@@ -171,22 +167,18 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 			var opErr *net.OpError
 			var dnsErr *net.DNSError
 			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: schemas.ErrProviderNetworkError,
-						Error:   err,
-					},
-				}
+				bfErr := schemas.AcquireBifrostError()
+				bfErr.IsBifrostError = false
+				bfErr.Error.Message = schemas.ErrProviderNetworkError
+				bfErr.Error.Error = err
+				return latency, bfErr
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
-			return latency, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderDoRequest,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Message = schemas.ErrProviderDoRequest
+			bfErr.Error.Error = err
+			return latency, bfErr
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
@@ -644,17 +636,13 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 				rawErrorResponse = string(rawBody)
 			}
 		}
-
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: err.Error(),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.StatusCode = &statusCode
+		bfErr.Error.Message = err.Error()
+		bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bfErr.ExtraFields.RawResponse = rawErrorResponse
+		return bfErr
 	}
 
 	// Try to unmarshal decoded body for RawResponse
@@ -668,58 +656,48 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(decodedBody))
 	if len(trimmed) == 0 {
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseEmpty,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.StatusCode = &statusCode
+		bfErr.Error.Message = schemas.ErrProviderResponseEmpty
+		bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bfErr.ExtraFields.RawResponse = rawErrorResponse
+		return bfErr
 	}
 
 	// Try JSON parsing first
 	if err := sonic.Unmarshal(decodedBody, errorResp); err == nil {
 		// JSON parsing succeeded, return success
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error:          &schemas.ErrorField{},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.StatusCode = &statusCode
+		bfErr.Error.Message = schemas.ErrProviderResponseEmpty
+		bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bfErr.ExtraFields.RawResponse = rawErrorResponse
+		return bfErr
 	}
 
 	// JSON parsing failed - now check if it's an HTML response (expensive operation)
 	if IsHTMLResponse(resp, decodedBody) {
-		return &schemas.BifrostError{
-			IsBifrostError: false,
-			StatusCode:     &statusCode,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseHTML,
-				Error:   errors.New(string(decodedBody)),
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.StatusCode = &statusCode
+		bfErr.Error.Message = schemas.ErrProviderResponseHTML
+		bfErr.Error.Error = errors.New(string(decodedBody))
+		bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bfErr.ExtraFields.RawResponse = rawErrorResponse
+		return bfErr
 	}
 
 	// Not HTML either - return raw response as error message
 	message := fmt.Sprintf("provider API error: %s", string(decodedBody))
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     &statusCode,
-		Error: &schemas.ErrorField{
-			Message: message,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RawResponse: rawErrorResponse,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.StatusCode = &statusCode
+	bfErr.Error.Message = message
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.RawResponse = rawErrorResponse
+	return bfErr
 }
 
 // EnrichError attaches the raw request and response to a BifrostError.
@@ -734,6 +712,10 @@ func EnrichError(
 ) *schemas.BifrostError {
 	if bifrostErr == nil {
 		return bifrostErr
+	}
+
+	if bifrostErr.ExtraFields == nil {
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
@@ -774,12 +756,10 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(responseBody))
 	if len(trimmed) == 0 {
-		return nil, nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseEmpty,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = schemas.ErrProviderResponseEmpty
+		return nil, nil, bfErr
 	}
 
 	var wg sync.WaitGroup
@@ -821,55 +801,45 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	if structuredErr != nil {
 		// JSON parsing failed - check if it's an HTML response (expensive operation)
 		if IsHTMLResponse(nil, responseBody) {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseHTML,
-					Error:   errors.New(string(responseBody)),
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Message = schemas.ErrProviderResponseHTML
+			bfErr.Error.Error = errors.New(string(responseBody))
+			return nil, nil, bfErr
 		}
 
-		return nil, nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseUnmarshal,
-				Error:   structuredErr,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = true
+		bfErr.Error.Message = schemas.ErrProviderResponseUnmarshal
+		bfErr.Error.Error = structuredErr
+		return nil, nil, bfErr
 	}
 
 	if shouldCaptureRawRequest {
 		if rawRequestErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawRequestUnmarshal,
-					Error:   rawRequestErr,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = true
+			bfErr.Error.Message = schemas.ErrProviderRawRequestUnmarshal
+			bfErr.Error.Error = rawRequestErr
+			return nil, nil, bfErr
 		}
 		if sendBackRawResponse && rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = true
+			bfErr.Error.Message = schemas.ErrProviderRawResponseUnmarshal
+			bfErr.Error.Error = rawResponseErr
+			return nil, nil, bfErr
 		}
 		return rawRequest, rawResponse, nil
 	}
 
 	if sendBackRawResponse {
 		if rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = true
+			bfErr.Error.Message = schemas.ErrProviderRawResponseUnmarshal
+			bfErr.Error.Error = rawResponseErr
+			return nil, nil, bfErr
 		}
 		return rawRequest, rawResponse, nil
 	}
@@ -890,17 +860,14 @@ func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, json
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func NewUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Message: fmt.Sprintf("%s is not supported by %s provider", requestType, providerName),
-			Code:    schemas.Ptr("unsupported_operation"),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:    providerName,
-			RequestType: requestType,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.Error.Message = fmt.Sprintf("%s is not supported by %s provider", requestType, providerName)
+	bfErr.Error.Code = schemas.Ptr("unsupported_operation")
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.Provider = providerName
+	bfErr.ExtraFields.RequestType = requestType
+	return bfErr
 }
 
 // CheckOperationAllowed enforces per-op gating using schemas.Operation.
@@ -1110,49 +1077,39 @@ func ParseJSONL(data []byte, parseLine func(line []byte) error) JSONLParseResult
 // NewConfigurationError creates a standardized error for configuration errors.
 // This helper reduces code duplication across providers that have configuration errors.
 func NewConfigurationError(message string, providerType schemas.ModelProvider) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		Error: &schemas.ErrorField{
-			Message: message,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider: providerType,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.Error.Message = message
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.Provider = providerType
+	return bfErr
 }
 
 // NewBifrostOperationError creates a standardized error for bifrost operation errors.
 // This helper reduces code duplication across providers that have bifrost operation errors.
 func NewBifrostOperationError(message string, err error, providerType schemas.ModelProvider) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: true,
-		Error: &schemas.ErrorField{
-			Message: message,
-			Error:   err,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider: providerType,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = true
+	bfErr.Error.Message = message
+	bfErr.Error.Error = err
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.Provider = providerType
+	return bfErr
 }
 
 // NewProviderAPIError creates a standardized error for provider API errors.
 // This helper reduces code duplication across providers that have provider API errors.
 func NewProviderAPIError(message string, err error, statusCode int, providerType schemas.ModelProvider, errorType *string, eventID *string) *schemas.BifrostError {
-	return &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     &statusCode,
-		Type:           errorType,
-		EventID:        eventID,
-		Error: &schemas.ErrorField{
-			Message: message,
-			Error:   err,
-			Type:    errorType,
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider: providerType,
-		},
-	}
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.StatusCode = &statusCode
+	bfErr.Error.Message = message
+	bfErr.Error.Error = err
+	bfErr.Error.Type = errorType
+	bfErr.Error.EventID = eventID
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.Provider = providerType
+	return bfErr
 }
 
 // RequestMetadata contains metadata about a request for error reporting.
@@ -1186,7 +1143,7 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeCreated,
 		SequenceNumber: 0,
-		Response:       &schemas.BifrostResponsesResponse{},
+		Response:       schemas.AcquireBifrostResponsesResponse(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
@@ -1205,7 +1162,7 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 	chunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
 		SequenceNumber: 1,
-		Response:       &schemas.BifrostResponsesResponse{},
+		Response:       schemas.AcquireBifrostResponsesResponse(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
@@ -1267,10 +1224,11 @@ func ProcessAndSendResponse(
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
 		schemas.ReleaseBifrostStreamChunk(streamResponse)
-		return
 	}
 
-	// Check if this is the final chunk and complete deferred span with post-processed data
+	// Check if this is the final chunk and complete deferred span with post-processed data.
+	// This MUST run even when ctx.Done() fires above -- otherwise the postHookSpanFinalizer
+	// (which releases the PluginPipeline) is never called, leaking the pipeline.
 	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
 		if final, ok := isFinalChunk.(bool); ok && final {
 			completeDeferredSpan(ctx, processedResponse, processedError)
@@ -1307,10 +1265,15 @@ func ProcessAndSendBifrostError(
 				completeDeferredSpan(ctx, processedResponse, processedError)
 			}
 		}
+		// Release the original input if the hook replaced it, then release the (skip) processedError.
+		if processedError != bifrostErr {
+			schemas.ReleaseBifrostError(bifrostErr)
+		}
+		schemas.ReleaseBifrostError(processedError)
 		return
 	}
 
-	streamResponse := &schemas.BifrostStreamChunk{}
+	streamResponse := schemas.AcquireBifrostStreamChunk()
 	if processedResponse != nil {
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
@@ -1320,11 +1283,20 @@ func ProcessAndSendBifrostError(
 	}
 	if processedError != nil {
 		streamResponse.BifrostError = processedError
+		// The original input was replaced by the hook; release the orphaned object.
+		if processedError != bifrostErr {
+			schemas.ReleaseBifrostError(bifrostErr)
+		}
+	} else {
+		// Hook suppressed the error (returned nil error). Release the original.
+		schemas.ReleaseBifrostError(bifrostErr)
 	}
 
 	select {
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
+		// Context cancelled — release the chunk (cascades to BifrostError + ExtraFields)
+		schemas.ReleaseBifrostStreamChunk(streamResponse)
 	}
 
 	// Check if this is the final chunk and complete deferred span with post-processed data
@@ -1384,19 +1356,15 @@ func HandleStreamCancellation(
 		}
 	}
 	// Create cancellation error
-	cancelErr := &schemas.BifrostError{
-		StatusCode: schemas.Ptr(499), // Client Closed Request
-		Error: &schemas.ErrorField{
-			Message: "Request cancelled: client disconnected",
-			Type:    schemas.Ptr(schemas.RequestCancelled),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:       provider,
-			ModelRequested: model,
-			RequestType:    requestType,
-		},
-	}
-
+	cancelErr := schemas.AcquireBifrostError()
+	cancelErr.IsBifrostError = false
+	cancelErr.StatusCode = schemas.Ptr(499) // Client Closed Request
+	cancelErr.Error.Message = "Request cancelled: client disconnected"
+	cancelErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+	cancelErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	cancelErr.ExtraFields.Provider = provider
+	cancelErr.ExtraFields.ModelRequested = model
+	cancelErr.ExtraFields.RequestType = requestType
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger)
 }
@@ -1425,19 +1393,15 @@ func HandleStreamTimeout(
 		}
 	}
 	// Create timeout error
-	timeoutErr := &schemas.BifrostError{
-		StatusCode: schemas.Ptr(504), // Gateway Timeout
-		Error: &schemas.ErrorField{
-			Message: "Request timed out: deadline exceeded",
-			Type:    schemas.Ptr(schemas.RequestTimedOut),
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			Provider:       provider,
-			ModelRequested: model,
-			RequestType:    requestType,
-		},
-	}
-
+	timeoutErr := schemas.AcquireBifrostError()
+	timeoutErr.IsBifrostError = false
+	timeoutErr.StatusCode = schemas.Ptr(504) // Gateway Timeout
+	timeoutErr.Error.Message = "Request timed out: deadline exceeded"
+	timeoutErr.Error.Type = schemas.Ptr(schemas.RequestTimedOut)
+	timeoutErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	timeoutErr.ExtraFields.Provider = provider
+	timeoutErr.ExtraFields.ModelRequested = model
+	timeoutErr.ExtraFields.RequestType = requestType	
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, timeoutErr, responseChan, logger)
 }
@@ -1457,26 +1421,31 @@ func ProcessAndSendError(
 	logger schemas.Logger,
 ) {
 	// Send scanner error through channel
-	bifrostError :=
-		&schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("Error reading stream: %v", err),
-				Error:   err,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    requestType,
-				Provider:       providerName,
-				ModelRequested: model,
-			},
-		}
+	bifrostError := schemas.AcquireBifrostError()
+	bifrostError.IsBifrostError = true
+	bifrostError.Error.Message = fmt.Sprintf("Error reading stream: %v", err)
+	bifrostError.Error.Error = err
+	bifrostError.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bifrostError.ExtraFields.RequestType = requestType
+	bifrostError.ExtraFields.Provider = providerName
+	bifrostError.ExtraFields.ModelRequested = model	
 	processedResponse, processedError := postHookRunner(ctx, nil, bifrostError)
 
 	if HandleStreamControlSkip(processedError) {
+		if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+			if final, ok := isFinalChunk.(bool); ok && final {
+				completeDeferredSpan(ctx, processedResponse, processedError)
+			}
+		}
+		// Release the original input if the hook replaced it, then release the (skip) processedError.
+		if processedError != bifrostError {
+			schemas.ReleaseBifrostError(bifrostError)
+		}
+		schemas.ReleaseBifrostError(processedError)
 		return
 	}
 
-	streamResponse := &schemas.BifrostStreamChunk{}
+	streamResponse := schemas.AcquireBifrostStreamChunk()
 	if processedResponse != nil {
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
@@ -1486,11 +1455,26 @@ func ProcessAndSendError(
 	}
 	if processedError != nil {
 		streamResponse.BifrostError = processedError
+		// The original input was replaced by the hook; release the orphaned object.
+		if processedError != bifrostError {
+			schemas.ReleaseBifrostError(bifrostError)
+		}
+	} else {
+		// Hook suppressed the error (returned nil error). Release the original.
+		schemas.ReleaseBifrostError(bifrostError)
 	}
 
 	select {
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
+		// Context cancelled — release the chunk (cascades to BifrostError + ExtraFields)
+		schemas.ReleaseBifrostStreamChunk(streamResponse)
+	}
+
+	if isFinalChunk := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator); isFinalChunk != nil {
+		if final, ok := isFinalChunk.(bool); ok && final {
+			completeDeferredSpan(ctx, processedResponse, processedError)
+		}
 	}
 }
 
@@ -1755,16 +1739,13 @@ func extractSuccessfulListModelsResponses(
 		if lastError != nil {
 			return nil, keyStatuses, lastError
 		}
-		return nil, keyStatuses, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "all keys failed to list models",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    providerName,
-				RequestType: schemas.ListModelsRequest,
-			},
-		}
+		bfErr := schemas.AcquireBifrostError()
+		bfErr.IsBifrostError = false
+		bfErr.Error.Message = "all keys failed to list models"
+		bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bfErr.ExtraFields.Provider = providerName
+		bfErr.ExtraFields.RequestType = schemas.ListModelsRequest
+		return nil, keyStatuses, bfErr
 	}
 
 	return successfulResponses, keyStatuses, nil
@@ -1833,6 +1814,9 @@ func HandleMultipleListModelsRequests(
 	successfulResponses, keyStatuses, err := extractSuccessfulListModelsResponses(results, request.Provider)
 	if err != nil {
 		// Attach key statuses to error's ExtraFields
+		if err.ExtraFields == nil {
+			err.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
 		err.ExtraFields.KeyStatuses = keyStatuses
 		return nil, err
 	}
@@ -1959,6 +1943,20 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		return
 	}
 
+	// The postHookSpanFinalizer releases the PluginPipeline back to the pool.
+	// It MUST run even if tracing operations below fail or return early (missing
+	// traceID, nil tracer, nil handle, etc.). The defer guarantees the pipeline
+	// is released; the normal path overrides it with an enriched context.
+	finalizerCalled := false
+	defer func() {
+		if finalizerCalled {
+			return
+		}
+		if finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context)); ok && finalizer != nil {
+			finalizer(ctx)
+		}
+	}()
+
 	// Get the trace ID from context (this IS available in the provider's goroutine)
 	traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if !ok || traceID == "" {
@@ -1989,32 +1987,32 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 		}
 	}
 
-	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
-	// This builds a complete BifrostResponse from all the streaming chunks
-	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
-	if accumulatedResp != nil {
-		// Use accumulated response for attributes (includes full content, tool calls, etc.)
-		tracer.PopulateLLMResponseAttributes(handle, accumulatedResp, err)
+	// Get streaming metrics (TTFT, chunk count). Chunks are no longer stored in the
+	// TraceStore; full content accumulation is handled by the streaming.Accumulator for
+	// plugins. The final chunk carries usage, model, finish reason, and cost — sufficient
+	// for span attributes.
+	_, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
 
-		// Set Time to First Token (TTFT) attribute
-		if ttftMs > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
-		}
-
-		// Set total chunks attribute
-		if chunkCount > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
-		}
-	} else if result != nil {
-		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
+	// Use final chunk for response attributes (has usage, model, finish reason, cost)
+	if result != nil {
 		tracer.PopulateLLMResponseAttributes(handle, result, err)
 	}
 
-	// Finalize aggregated post-hook spans before ending the LLM span
-	// This creates one span per plugin with average execution time
-	// We need to set the llm.call span ID in context so post-hook spans become its children
+	// Set Time to First Token (TTFT) attribute
+	if ttftMs > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+	}
+
+	// Set total chunks attribute
+	if chunkCount > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
+	}
+
+	// Finalize aggregated post-hook spans before ending the LLM span.
+	// This creates one span per plugin with average execution time.
+	// We set the llm.call span ID in context so post-hook spans become its children.
 	if finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context)); ok && finalizer != nil {
-		// Get the deferred span ID (the llm.call span) to set as parent for post-hook spans
+		finalizerCalled = true
 		spanID := tracer.GetDeferredSpanID(traceID)
 		if spanID != "" {
 			finalizerCtx := context.WithValue(ctx, schemas.BifrostContextKeySpanID, spanID)

@@ -71,21 +71,20 @@ type AzureFileResponse struct {
 
 // ToBifrostFileUploadResponse converts Azure file response to Bifrost response.
 func (r *AzureFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawResponse bool, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
-	resp := &schemas.BifrostFileUploadResponse{
-		ID:             r.ID,
-		Object:         r.Object,
-		Bytes:          r.Bytes,
-		CreatedAt:      r.CreatedAt,
-		Filename:       r.Filename,
-		Purpose:        r.Purpose,
-		Status:         openai.ToBifrostFileStatus(r.Status),
-		StatusDetails:  r.StatusDetails,
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileUploadResponse()
+	resp.ID = r.ID
+	resp.Object = r.Object
+	resp.Bytes = r.Bytes
+	resp.CreatedAt = r.CreatedAt
+	resp.Filename = r.Filename
+	resp.Purpose = r.Purpose
+	resp.Status = openai.ToBifrostFileStatus(r.Status)
+	resp.StatusDetails = r.StatusDetails
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileUploadRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if sendBackRawResponse {

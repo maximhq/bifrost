@@ -53,9 +53,6 @@ func parseGeminiError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 		}
 		// Trim trailing newline
 		message = strings.TrimSuffix(message, "\n")
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
 		// Set Code from first error if available
 		if firstError != nil {
 			bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(firstError.Code))
@@ -74,9 +71,6 @@ func parseGeminiError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	var errorResp GeminiGenerationError
 	bifrostErr = providerUtils.HandleProviderAPIError(resp, &errorResp)
 	if errorResp.Error != nil {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
 		bifrostErr.Error.Code = schemas.Ptr(strconv.Itoa(errorResp.Error.Code))
 		bifrostErr.Error.Message = errorResp.Error.Message
 	}

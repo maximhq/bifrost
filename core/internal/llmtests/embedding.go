@@ -106,6 +106,9 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		if bifrostErr != nil {
 			t.Fatalf("❌ Embedding request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
+		if embeddingResponse != nil {
+			defer schemas.ReleaseBifrostEmbeddingResponse(embeddingResponse)
+		}
 
 		// Additional embedding-specific validation (complementary to the main validation)
 		validateEmbeddingSemantics(t, embeddingResponse, testTexts)

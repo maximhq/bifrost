@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+
+	"github.com/maximhq/bifrost/core/pool"
 )
 
 const (
@@ -715,6 +717,27 @@ type BifrostMCPResponse struct {
 	ExtraFields      BifrostMCPResponseExtraFields
 }
 
+// bifrostMCPResponsePool provides a pool for BifrostMCPResponse objects.
+var bifrostMCPResponsePool = pool.New[BifrostMCPResponse]("BifrostMCPResponse", func() *BifrostMCPResponse {
+	return &BifrostMCPResponse{}
+})
+
+// AcquireBifrostMCPResponse gets a BifrostMCPResponse from the pool and resets it.
+func AcquireBifrostMCPResponse() *BifrostMCPResponse {
+	return bifrostMCPResponsePool.Get()
+}
+
+// ReleaseBifrostMCPResponse returns a BifrostMCPResponse to the pool.
+func ReleaseBifrostMCPResponse(r *BifrostMCPResponse) {
+	if r == nil {
+		return
+	}
+	r.ChatMessage = nil
+	r.ResponsesMessage = nil
+	r.ExtraFields = BifrostMCPResponseExtraFields{}
+	bifrostMCPResponsePool.Put(r)
+}
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType             RequestType        `json:"request_type"`
@@ -729,6 +752,36 @@ type BifrostResponseExtraFields struct {
 	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
 	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+}
+
+// bifrostResponseExtraFieldsPool provides a pool for BifrostResponseExtraFields objects.
+var bifrostResponseExtraFieldsPool = pool.New[BifrostResponseExtraFields]("BifrostResponseExtraFields", func() *BifrostResponseExtraFields {
+	return &BifrostResponseExtraFields{}
+})
+
+// AcquireBifrostResponseExtraFields gets a BifrostResponseExtraFields from the pool and resets it.
+func AcquireBifrostResponseExtraFields() *BifrostResponseExtraFields {
+	return bifrostResponseExtraFieldsPool.Get()
+}
+
+// ReleaseBifrostResponseExtraFields returns a BifrostResponseExtraFields to the pool.
+func ReleaseBifrostResponseExtraFields(r *BifrostResponseExtraFields) {
+	if r == nil {
+		return
+	}
+	r.RequestType = ""
+	r.Provider = ""
+	r.ModelRequested = ""
+	r.ModelDeployment = ""
+	r.Latency = 0
+	r.ChunkIndex = 0
+	r.RawRequest = nil
+	r.RawResponse = nil
+	r.CacheDebug = nil
+	r.ParseErrors = nil
+	r.LiteLLMCompat = false
+	r.ProviderResponseHeaders = nil
+	bifrostResponseExtraFieldsPool.Put(r)
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -800,14 +853,14 @@ func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
 type BifrostError struct {
-	EventID        *string                 `json:"event_id,omitempty"`
-	Type           *string                 `json:"type,omitempty"`
-	IsBifrostError bool                    `json:"is_bifrost_error"`
-	StatusCode     *int                    `json:"status_code,omitempty"`
-	Error          *ErrorField             `json:"error"`
-	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
-	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+	EventID        *string                  `json:"event_id,omitempty"`
+	Type           *string                  `json:"type,omitempty"`
+	IsBifrostError bool                     `json:"is_bifrost_error"`
+	StatusCode     *int                     `json:"status_code,omitempty"`
+	Error          *ErrorField              `json:"error"`
+	AllowFallbacks *bool                    `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
+	StreamControl  *StreamControl           `json:"-"` // Optional: Controls stream behavior
+	ExtraFields    *BifrostErrorExtraFields `json:"extra_fields,omitempty"`
 }
 
 // StreamControl represents stream control options.
@@ -881,6 +934,29 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+var bifrostErrorFieldPool = pool.New("BifrostErrorField", func() *ErrorField {
+	return &ErrorField{}
+})
+
+// AcquireBifrostErrorField gets a ErrorField from the pool and resets it.
+func AcquireBifrostErrorField() *ErrorField {
+	return bifrostErrorFieldPool.Get()
+}
+
+// ReleaseBifrostErrorField returns a ErrorField to the pool.
+func ReleaseBifrostErrorField(e *ErrorField) {
+	if e == nil {
+		return
+	}
+	e.Type = nil
+	e.Code = nil
+	e.Message = ""
+	e.Error = nil
+	e.Param = nil
+	e.EventID = nil
+	bifrostErrorFieldPool.Put(e)
+}
+
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider,omitempty"`
@@ -892,40 +968,46 @@ type BifrostErrorExtraFields struct {
 	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
 }
 
+// AcquireBifrostErrorExtraFields gets a BifrostErrorExtraFields from the pool and resets it.
+var bifrostErrorExtraFieldsPool = pool.New("BifrostErrorExtraFields", func() *BifrostErrorExtraFields {
+	return &BifrostErrorExtraFields{}
+})
+
+// AcquireBifrostErrorExtraFields gets a BifrostErrorExtraFields from the pool and resets it.
+func AcquireBifrostErrorExtraFields() *BifrostErrorExtraFields {
+	return bifrostErrorExtraFieldsPool.Get()
+}
+
+// ReleaseBifrostErrorExtraFields returns a BifrostErrorExtraFields to the pool.
+func ReleaseBifrostErrorExtraFields(r *BifrostErrorExtraFields) {
+	if r == nil {
+		return
+	}
+	r.Provider = ""
+	r.ModelRequested = ""
+	r.RequestType = ""
+	r.RawRequest = nil
+	r.RawResponse = nil
+	r.LiteLLMCompat = false
+	r.KeyStatuses = nil
+	bifrostErrorExtraFieldsPool.Put(r)
+}
+
 // bifrostErrorPool provides a pool for BifrostError objects to reduce allocations
 // during streaming error detection. This is particularly useful in streaming handlers
 // where error checking happens on every chunk but errors are rare.
-var bifrostErrorPool = sync.Pool{
-	New: func() interface{} {
-		return &BifrostError{
-			Error: &ErrorField{},
-		}
-	},
-}
+var bifrostErrorPool = pool.New("BifrostError", func() *BifrostError {
+	return &BifrostError{}
+})
 
 // AcquireBifrostError gets a BifrostError from the pool and resets it.
 // Use this for streaming error detection to avoid allocations on every chunk.
 func AcquireBifrostError() *BifrostError {
-	err := bifrostErrorPool.Get().(*BifrostError)
-	// Reset all fields to zero values
-	err.EventID = nil
-	err.Type = nil
-	err.IsBifrostError = false
+	err := bifrostErrorPool.Get()
+	err.Error = AcquireBifrostErrorField()
 	err.StatusCode = nil
-	err.AllowFallbacks = nil
-	err.StreamControl = nil
-	err.ExtraFields = BifrostErrorExtraFields{}
-	// Reset ErrorField
-	if err.Error == nil {
-		err.Error = &ErrorField{}
-	} else {
-		err.Error.Type = nil
-		err.Error.Code = nil
-		err.Error.Message = ""
-		err.Error.Error = nil
-		err.Error.Param = nil
-		err.Error.EventID = nil
-	}
+	err.Type = nil
+	err.EventID = nil
 	return err
 }
 
@@ -934,8 +1016,74 @@ func AcquireBifrostError() *BifrostError {
 // as they may still be in use.
 func ReleaseBifrostError(err *BifrostError) {
 	if err != nil {
+		err.EventID = nil
+		err.Type = nil
+		err.IsBifrostError = false
+		err.StatusCode = nil
+		if err.Error != nil {
+			ReleaseBifrostErrorField(err.Error)
+			err.Error = nil
+		}
+		err.AllowFallbacks = nil
+		err.StreamControl = nil
+
+		if err.ExtraFields != nil {
+			ReleaseBifrostErrorExtraFields(err.ExtraFields)
+			err.ExtraFields = nil
+		}
 		bifrostErrorPool.Put(err)
 	}
+}
+
+// bifrostRequestPool provides a pool for BifrostRequest objects to reduce allocations.
+// BifrostRequest is a container struct with pointers to specific request types.
+var bifrostRequestPool = pool.New("BifrostRequest", func() *BifrostRequest {
+	return &BifrostRequest{}
+})
+
+// AcquireBifrostRequest gets a BifrostRequest from the pool and resets it.
+func AcquireBifrostRequest() *BifrostRequest {
+	return bifrostRequestPool.Get()
+}
+
+// ReleaseBifrostRequest returns a BifrostRequest to the pool.
+func ReleaseBifrostRequest(br *BifrostRequest) {
+	if br == nil {
+		return
+	}
+	// Nil all pointer fields to break references and allow GC of inner structs
+	br.RequestType = ""
+	br.ListModelsRequest = nil
+	br.TextCompletionRequest = nil
+	br.ChatRequest = nil
+	br.ResponsesRequest = nil
+	br.CountTokensRequest = nil
+	br.EmbeddingRequest = nil
+	br.SpeechRequest = nil
+	br.TranscriptionRequest = nil
+	br.ImageGenerationRequest = nil
+	br.ImageEditRequest = nil
+	br.ImageVariationRequest = nil
+	br.FileUploadRequest = nil
+	br.FileListRequest = nil
+	br.FileRetrieveRequest = nil
+	br.FileDeleteRequest = nil
+	br.FileContentRequest = nil
+	br.BatchCreateRequest = nil
+	br.BatchListRequest = nil
+	br.BatchRetrieveRequest = nil
+	br.BatchCancelRequest = nil
+	br.BatchResultsRequest = nil
+	br.ContainerCreateRequest = nil
+	br.ContainerListRequest = nil
+	br.ContainerRetrieveRequest = nil
+	br.ContainerDeleteRequest = nil
+	br.ContainerFileCreateRequest = nil
+	br.ContainerFileListRequest = nil
+	br.ContainerFileRetrieveRequest = nil
+	br.ContainerFileContentRequest = nil
+	br.ContainerFileDeleteRequest = nil
+	bifrostRequestPool.Put(br)
 }
 
 // bifrostResponsePool provides a pool for BifrostResponse wrapper objects to reduce
@@ -958,9 +1106,138 @@ func AcquireBifrostResponse() *BifrostResponse {
 // ReleaseBifrostResponse returns a BifrostResponse to the pool.
 // The caller must ensure no other goroutine holds a reference to this response.
 func ReleaseBifrostResponse(r *BifrostResponse) {
-	if r != nil {
-		bifrostResponsePool.Put(r)
+	if r == nil {
+		return
 	}
+	if r.ListModelsResponse != nil {
+		ReleaseBifrostListModelsResponse(r.ListModelsResponse)
+		r.ListModelsResponse = nil
+	}
+	if r.TextCompletionResponse != nil {
+		ReleaseBifrostTextCompletionResponse(r.TextCompletionResponse)
+		r.TextCompletionResponse = nil
+	}
+	if r.ChatResponse != nil {
+		ReleaseBifrostChatResponse(r.ChatResponse)
+		r.ChatResponse = nil
+	}
+	if r.ResponsesResponse != nil {
+		ReleaseBifrostResponsesResponse(r.ResponsesResponse)
+		r.ResponsesResponse = nil
+	}
+	if r.ResponsesStreamResponse != nil {
+		ReleaseBifrostResponsesStreamResponse(r.ResponsesStreamResponse)
+		r.ResponsesStreamResponse = nil
+	}
+	if r.CountTokensResponse != nil {
+		ReleaseBifrostCountTokensResponse(r.CountTokensResponse)
+		r.CountTokensResponse = nil
+	}
+	if r.EmbeddingResponse != nil {
+		ReleaseBifrostEmbeddingResponse(r.EmbeddingResponse)
+		r.EmbeddingResponse = nil
+	}
+	if r.SpeechResponse != nil {
+		ReleaseBifrostSpeechResponse(r.SpeechResponse)
+		r.SpeechResponse = nil
+	}
+	if r.SpeechStreamResponse != nil {
+		ReleaseBifrostSpeechStreamResponse(r.SpeechStreamResponse)
+		r.SpeechStreamResponse = nil
+	}
+	if r.TranscriptionResponse != nil {
+		ReleaseBifrostTranscriptionResponse(r.TranscriptionResponse)
+		r.TranscriptionResponse = nil
+	}
+	if r.TranscriptionStreamResponse != nil {
+		ReleaseBifrostTranscriptionStreamResponse(r.TranscriptionStreamResponse)
+		r.TranscriptionStreamResponse = nil
+	}
+	if r.ImageGenerationResponse != nil {
+		ReleaseBifrostImageGenerationResponse(r.ImageGenerationResponse)
+		r.ImageGenerationResponse = nil
+	}
+	if r.ImageGenerationStreamResponse != nil {
+		ReleaseBifrostImageGenerationStreamResponse(r.ImageGenerationStreamResponse)
+		r.ImageGenerationStreamResponse = nil
+	}	
+	if r.FileUploadResponse != nil {
+		ReleaseBifrostFileUploadResponse(r.FileUploadResponse)
+		r.FileUploadResponse = nil
+	}
+	if r.FileListResponse != nil {
+		ReleaseBifrostFileListResponse(r.FileListResponse)
+		r.FileListResponse = nil
+	}
+	if r.FileRetrieveResponse != nil {
+		ReleaseBifrostFileRetrieveResponse(r.FileRetrieveResponse)
+		r.FileRetrieveResponse = nil
+	}
+	if r.FileDeleteResponse != nil {
+		ReleaseBifrostFileDeleteResponse(r.FileDeleteResponse)
+		r.FileDeleteResponse = nil
+	}
+	if r.FileContentResponse != nil {
+		ReleaseBifrostFileContentResponse(r.FileContentResponse)
+		r.FileContentResponse = nil
+	}
+	if r.BatchCreateResponse != nil {
+		ReleaseBifrostBatchCreateResponse(r.BatchCreateResponse)
+		r.BatchCreateResponse = nil
+	}
+	if r.BatchListResponse != nil {
+		ReleaseBifrostBatchListResponse(r.BatchListResponse)
+		r.BatchListResponse = nil
+	}
+	if r.BatchRetrieveResponse != nil {
+		ReleaseBifrostBatchRetrieveResponse(r.BatchRetrieveResponse)
+		r.BatchRetrieveResponse = nil
+	}
+	if r.BatchCancelResponse != nil {
+		ReleaseBifrostBatchCancelResponse(r.BatchCancelResponse)
+		r.BatchCancelResponse = nil
+	}
+	if r.BatchResultsResponse != nil {
+		ReleaseBifrostBatchResultsResponse(r.BatchResultsResponse)
+		r.BatchResultsResponse = nil
+	}
+	if r.ContainerCreateResponse != nil {
+		ReleaseBifrostContainerCreateResponse(r.ContainerCreateResponse)
+		r.ContainerCreateResponse = nil
+	}
+	if r.ContainerListResponse != nil {
+		ReleaseBifrostContainerListResponse(r.ContainerListResponse)
+		r.ContainerListResponse = nil
+	}
+	if r.ContainerRetrieveResponse != nil {
+		ReleaseBifrostContainerRetrieveResponse(r.ContainerRetrieveResponse)
+		r.ContainerRetrieveResponse = nil
+	}
+	if r.ContainerDeleteResponse != nil {
+		ReleaseBifrostContainerDeleteResponse(r.ContainerDeleteResponse)
+		r.ContainerDeleteResponse = nil
+	}
+	if r.ContainerFileCreateResponse != nil {
+		ReleaseBifrostContainerFileCreateResponse(r.ContainerFileCreateResponse)
+		r.ContainerFileCreateResponse = nil
+	}
+	if r.ContainerFileListResponse != nil {
+		ReleaseBifrostContainerFileListResponse(r.ContainerFileListResponse)
+		r.ContainerFileListResponse = nil
+	}
+	if r.ContainerFileRetrieveResponse != nil {
+		ReleaseBifrostContainerFileRetrieveResponse(r.ContainerFileRetrieveResponse)
+		r.ContainerFileRetrieveResponse = nil
+	}
+	if r.ContainerFileContentResponse != nil {
+		ReleaseBifrostContainerFileContentResponse(r.ContainerFileContentResponse)
+		r.ContainerFileContentResponse = nil
+	}
+	if r.ContainerFileDeleteResponse != nil {
+		ReleaseBifrostContainerFileDeleteResponse(r.ContainerFileDeleteResponse)
+		r.ContainerFileDeleteResponse = nil
+	}	
+	bifrostResponsePool.Put(r)
 }
 
 // bifrostStreamChunkPool provides a pool for BifrostStreamChunk objects to reduce
@@ -988,6 +1265,10 @@ func AcquireBifrostStreamChunk() *BifrostStreamChunk {
 func ReleaseBifrostStreamChunk(c *BifrostStreamChunk) {
 	if c == nil {
 		return
+	}
+	// Release the BifrostError back to its pool if present
+	if c.BifrostError != nil {
+		ReleaseBifrostError(c.BifrostError)
 	}
 	c.BifrostChatResponse = nil
 	c.BifrostTextCompletionResponse = nil

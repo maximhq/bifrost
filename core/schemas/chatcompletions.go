@@ -64,19 +64,33 @@ func AcquireBifrostChatResponse() *BifrostChatResponse {
 }
 
 // ReleaseBifrostChatResponse returns a BifrostChatResponse to the pool.
-// Do NOT release responses that are still referenced by other goroutines.
+// The caller must ensure no other goroutine holds a reference to this response.
+// After calling Release, the response must not be used.
 func ReleaseBifrostChatResponse(r *BifrostChatResponse) {
-	if r != nil {
-		bifrostChatResponsePool.Put(r)
+	if r == nil {
+		return
 	}
+	r.ID = ""
+	r.Choices = nil
+	r.Created = 0
+	r.Model = ""
+	r.Object = ""
+	r.ServiceTier = nil
+	r.SystemFingerprint = ""
+	r.Usage = nil	
+	r.ExtraParams = nil
+	r.SearchResults = nil
+	r.Videos = nil
+	r.Citations = nil
+	bifrostChatResponsePool.Put(r)
 }
+
 
 // ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
 func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletionResponse {
 	if cr == nil {
 		return nil
 	}
-
 	if len(cr.Choices) == 0 {
 		return &BifrostTextCompletionResponse{
 			ID:                cr.ID,

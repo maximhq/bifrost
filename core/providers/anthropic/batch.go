@@ -131,20 +131,17 @@ func ToBifrostObjectType(anthropicType string) string {
 // ToBifrostBatchCreateResponse converts Anthropic batch response to Bifrost batch create response.
 func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
 	expiresAt := parseAnthropicTimestamp(r.ExpiresAt)
-	resp := &schemas.BifrostBatchCreateResponse{
-		ID:               r.ID,
-		Object:           ToBifrostObjectType(r.Type),
-		Status:           ToBifrostBatchStatus(r.ProcessingStatus),
-		ProcessingStatus: &r.ProcessingStatus,
-		ResultsURL:       r.ResultsURL,
-		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
-		ExpiresAt:        &expiresAt,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchCreateRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	resp := schemas.AcquireBifrostBatchCreateResponse()
+	resp.ID = r.ID
+	resp.Object = ToBifrostObjectType(r.Type)
+	resp.Status = ToBifrostBatchStatus(r.ProcessingStatus)
+	resp.ProcessingStatus = &r.ProcessingStatus
+	resp.ResultsURL = r.ResultsURL
+	resp.CreatedAt = parseAnthropicTimestamp(r.CreatedAt)
+	resp.ExpiresAt = &expiresAt
+	resp.ExtraFields.RequestType = schemas.BatchCreateRequest
+	resp.ExtraFields.Provider = providerName
+	resp.ExtraFields.Latency = latency.Milliseconds()
 
 	if r.RequestCounts != nil {
 		resp.RequestCounts = schemas.BatchRequestCounts{
@@ -171,19 +168,16 @@ func (r *AnthropicBatchResponse) ToBifrostBatchCreateResponse(providerName schem
 
 // ToBifrostBatchRetrieveResponse converts Anthropic batch response to Bifrost batch retrieve response.
 func (r *AnthropicBatchResponse) ToBifrostBatchRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
-	resp := &schemas.BifrostBatchRetrieveResponse{
-		ID:               r.ID,
-		Object:           ToBifrostObjectType(r.Type),
-		Status:           ToBifrostBatchStatus(r.ProcessingStatus),
-		ProcessingStatus: &r.ProcessingStatus,
-		ResultsURL:       r.ResultsURL,
-		CreatedAt:        parseAnthropicTimestamp(r.CreatedAt),
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	resp := schemas.AcquireBifrostBatchRetrieveResponse()
+	resp.ID = r.ID
+	resp.Object = ToBifrostObjectType(r.Type)
+	resp.Status = ToBifrostBatchStatus(r.ProcessingStatus)
+	resp.ProcessingStatus = &r.ProcessingStatus
+	resp.ResultsURL = r.ResultsURL
+	resp.CreatedAt = parseAnthropicTimestamp(r.CreatedAt)
+	resp.ExtraFields.RequestType = schemas.BatchRetrieveRequest
+	resp.ExtraFields.Provider = providerName
+	resp.ExtraFields.Latency = latency.Milliseconds()
 
 	if sendBackRawRequest {
 		resp.ExtraFields.RawRequest = rawRequest
@@ -240,11 +234,12 @@ func ParseAnthropicError(resp *fasthttp.Response, requestType schemas.RequestTyp
 			bifrostErr.Error.Message = errorResp.Error.Message
 		}
 	}
-	bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-		RequestType:    requestType,
-		Provider:       providerName,
-		ModelRequested: model,
+	if bifrostErr.ExtraFields == nil {
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 	}
+	bifrostErr.ExtraFields.RequestType = requestType
+	bifrostErr.ExtraFields.Provider = providerName
+	bifrostErr.ExtraFields.ModelRequested = model
 	return bifrostErr
 }
 

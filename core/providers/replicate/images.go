@@ -135,23 +135,19 @@ func ToBifrostImageGenerationResponse(
 	prediction *ReplicatePredictionResponse,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if prediction == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "prediction response is nil",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider: schemas.Replicate,
-			},
-		}
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = true
+		bifrostErr.Error.Message = "prediction response is nil"
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bifrostErr.ExtraFields.Provider = schemas.Replicate
+		return nil, bifrostErr
 	}
 
-	response := &schemas.BifrostImageGenerationResponse{
-		ID:      prediction.ID,
-		Created: ParseReplicateTimestamp(prediction.CreatedAt),
-		Model:   prediction.Model,
-		Data:    []schemas.ImageData{},
-	}
+	response := schemas.AcquireBifrostImageGenerationResponse()
+	response.ID = prediction.ID
+	response.Created = ParseReplicateTimestamp(prediction.CreatedAt)
+	response.Model = prediction.Model
+	response.Data = []schemas.ImageData{}
 
 	// Convert output to ImageData
 	// Replicate output can be either a string (single URL) or array of strings

@@ -20,20 +20,19 @@ func ToBifrostFileStatus(fileResp *ReplicateFileResponse) schemas.FileStatus {
 
 // ToBifrostFileUploadResponse converts Replicate file response to Bifrost file upload response.
 func (r *ReplicateFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
-	resp := &schemas.BifrostFileUploadResponse{
-		ID:             r.ID,
-		Object:         "file",
-		Bytes:          r.Size,
-		CreatedAt:      ParseReplicateTimestamp(r.CreatedAt),
-		Filename:       r.Name,
-		Purpose:        schemas.FilePurposeBatch, // Replicate uses files primarily for batch/general purposes
-		Status:         ToBifrostFileStatus(r),
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileUploadResponse()
+	resp.ID = r.ID
+	resp.Object = "file"
+	resp.Bytes = r.Size
+	resp.CreatedAt = ParseReplicateTimestamp(r.CreatedAt)
+	resp.Filename = r.Name
+	resp.Purpose = schemas.FilePurposeBatch // Replicate uses files primarily for batch/general purposes
+	resp.Status = ToBifrostFileStatus(r)
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileUploadRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	// Add ExpiresAt if present
@@ -57,20 +56,19 @@ func (r *ReplicateFileResponse) ToBifrostFileUploadResponse(providerName schemas
 
 // ToBifrostFileRetrieveResponse converts Replicate file response to Bifrost file retrieve response.
 func (r *ReplicateFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
-	resp := &schemas.BifrostFileRetrieveResponse{
-		ID:             r.ID,
-		Object:         "file",
-		Bytes:          r.Size,
-		CreatedAt:      ParseReplicateTimestamp(r.CreatedAt),
-		Filename:       r.Name,
-		Purpose:        schemas.FilePurposeBatch,
-		Status:         ToBifrostFileStatus(r),
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileRetrieveResponse()
+	resp.ID = r.ID
+	resp.Object = "file"
+	resp.Bytes = r.Size
+	resp.CreatedAt = ParseReplicateTimestamp(r.CreatedAt)
+	resp.Filename = r.Name
+	resp.Purpose = schemas.FilePurposeBatch
+	resp.Status = ToBifrostFileStatus(r)
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileRetrieveRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	// Add ExpiresAt if present

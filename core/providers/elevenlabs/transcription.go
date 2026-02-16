@@ -144,11 +144,10 @@ func ToBifrostTranscriptionResponse(chunks []ElevenlabsSpeechToTextChunkResponse
 
 	text := strings.Join(textParts, "\n")
 
-	response := &schemas.BifrostTranscriptionResponse{
-		Text:     text,
-		Words:    allWords,
-		LogProbs: allLogProbs,
-	}
+	response := schemas.AcquireBifrostTranscriptionResponse()
+	response.Text = text
+	response.Words = allWords
+	response.LogProbs = allLogProbs
 
 	if language != nil {
 		response.Language = language

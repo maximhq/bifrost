@@ -7,7 +7,7 @@ args_bin = []
 bin = "tmp/main"
 # Build with debug flags: -N disables optimizations, -l disables inlining
 # Note: We don't set GOWORK=off so it uses the workspace go.work file
-cmd = "go build -gcflags='all=-N -l' -o ./tmp/main ."
+cmd = "go build -tags pooldebug -gcflags='all=-N -l' -o ./tmp/main ."
 delay = 1000
 exclude_dir = [
     "assets",

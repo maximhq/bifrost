@@ -327,11 +327,10 @@ func convertImagenFormatToSize(sampleImageSize *string, aspectRatio *string) str
 }
 
 func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	bifrostResp := &schemas.BifrostImageGenerationResponse{
-		ID:    response.ResponseID,
-		Model: response.ModelVersion,
-		Data:  []schemas.ImageData{},
-	}
+	bifrostResp := schemas.AcquireBifrostImageGenerationResponse()
+	bifrostResp.ID = response.ResponseID
+	bifrostResp.Model = response.ModelVersion
+	bifrostResp.Data = []schemas.ImageData{}
 
 	// Process candidates to extract image data
 	if len(response.Candidates) > 0 {
@@ -679,9 +678,8 @@ func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schema
 		return nil
 	}
 
-	bifrostResp := &schemas.BifrostImageGenerationResponse{
-		Data: make([]schemas.ImageData, len(response.Predictions)),
-	}
+	bifrostResp := schemas.AcquireBifrostImageGenerationResponse()
+	bifrostResp.Data = make([]schemas.ImageData, len(response.Predictions))
 
 	// Convert each prediction to ImageData
 	for i, prediction := range response.Predictions {
