@@ -469,8 +469,9 @@ func HandleOpenAITextCompletionStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -938,8 +939,9 @@ func HandleOpenAIChatCompletionStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -1001,15 +1003,19 @@ func HandleOpenAIChatCompletionStreaming(
 				schemas.ReleaseBifrostError(bifrostErr)
 			}
 
-			// Parse into bifrost response
-			var response schemas.BifrostChatResponse
-			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
+			// Parse into bifrost response (pooled to avoid per-chunk heap allocation)
+			response := schemas.AcquireBifrostChatResponse()
+			if err := sonic.UnmarshalString(jsonData, response); err != nil {
 				logger.Warn("Failed to parse stream response: %v", err)
+				schemas.ReleaseBifrostChatResponse(response)
 				continue
 			}
 
 			if isResponsesToChatCompletionsFallback {
 				spreadResponses := response.ToBifrostResponsesStreamResponse(responsesStreamState)
+				// In the fallback path, response data is consumed by ToBifrostResponsesStreamResponse;
+				// the BifrostChatResponse itself is not sent on the channel, so release it.
+				schemas.ReleaseBifrostChatResponse(response)
 				for _, response := range spreadResponses {
 					if response.Type == schemas.ResponsesStreamResponseTypeError {
 						bifrostErr := &schemas.BifrostError{
@@ -1064,9 +1070,13 @@ func HandleOpenAIChatCompletionStreaming(
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 				}
 			} else {
+				// Track whether response ownership is transferred to the channel consumer.
+				// If not transferred, we must release it back to the pool.
+				responseTransferred := false
+
 				if postResponseConverter != nil {
-					if converted := postResponseConverter(&response); converted != nil {
-						response = *converted
+					if converted := postResponseConverter(response); converted != nil {
+						*response = *converted
 					} else {
 						logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
 					}
@@ -1105,6 +1115,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 				// Skip empty responses or responses without choices
 				if len(response.Choices) == 0 {
+					schemas.ReleaseBifrostChatResponse(response)
 					continue
 				}
 
@@ -1141,7 +1152,16 @@ func HandleOpenAIChatCompletionStreaming(
 						response.ExtraFields.RawResponse = jsonData
 					}
 
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, &response, nil, nil, nil, nil), responseChan)
+					// Response ownership transfers to the stream consumer via the channel.
+					// The consumer is responsible for calling ReleaseBifrostStreamChunk which
+					// cascades to ReleaseBifrostChatResponse. Do NOT release response here.
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+					responseTransferred = true
+				}
+
+				// Release response back to pool if it was not sent on the channel
+				if !responseTransferred {
+					schemas.ReleaseBifrostChatResponse(response)
 				}
 
 				// For providers that don't send [DONE] marker break on finish_reason
@@ -1443,8 +1463,9 @@ func HandleOpenAIResponsesStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -2710,8 +2731,9 @@ func HandleOpenAIImageGenerationStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
@@ -3310,8 +3332,9 @@ func HandleOpenAIImageEditStreamRequest(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		lastChunkTime := time.Now()
 		var collectedUsage *schemas.ImageUsage

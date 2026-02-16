@@ -895,6 +895,13 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
+	// For non-final streaming chunks, skip the goroutine entirely.
+	// postHookWorker only does work for non-streaming or final streaming chunks.
+	isStreaming := bifrost.IsStreamRequestType(requestType)
+	if isStreaming && !isFinalChunk {
+		return result, err, nil
+	}
+
 	// Always process usage tracking (with or without virtual key)
 	// If virtualKey is empty, it will be passed as empty string to postHookWorker
 	// The tracker will handle empty virtual keys gracefully by only updating provider-level and model-level usage

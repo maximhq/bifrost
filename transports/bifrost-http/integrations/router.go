@@ -1775,6 +1775,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					cancel() // Client disconnected (write error), cancel upstream stream
 					return
 				}
+				schemas.ReleaseBifrostStreamChunk(chunk)
 				return // End stream on error, Bifrost handles cleanup internally
 			} else {
 				// Allow plugins to modify/filter the chunk via StreamChunkInterceptor
@@ -1831,12 +1832,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if convertedResponse == nil && err == nil {
 					// Skip streaming chunk if no response is available and no error is returned
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					continue
 				}
 
 				if err != nil {
 					// Log conversion error but continue processing
 					log.Printf("Failed to convert streaming response: %v", err)
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					continue
 				}
 
@@ -1897,12 +1900,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							}
 						}
 					}
+					// Release the pooled chunk after bedrock encoding is complete
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					// Continue to next chunk (we handled flushing internally)
 					continue
 				} else if sseString, ok := convertedResponse.(string); ok {
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
 					// Example: "event: content_block_delta\ndata: {...}\n\n"
+					// Release the pooled chunk - the string is a separate copy, not referencing chunk data
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					if !strings.HasPrefix(sseString, "data: ") && !strings.HasPrefix(sseString, "event: ") {
 						sseString = fmt.Sprintf("data: %s\n\n", sseString)
 					}
@@ -1915,6 +1922,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
 					// Used by most providers (OpenAI chat/completions, Google, etc.)
 					responseJSON, err := sonic.Marshal(convertedResponse)
+
+					// Release the pooled chunk after marshaling - convertedResponse data has been
+					// serialized to responseJSON bytes, so the original struct is no longer needed.
+					// NOTE: Some converters (e.g. OpenAI) return the BifrostChatResponse pointer
+					// directly as convertedResponse, so release MUST happen after sonic.Marshal.
+					schemas.ReleaseBifrostStreamChunk(chunk)
+
 					if err != nil {
 						// Log JSON marshaling error but continue processing
 						log.Printf("Failed to marshal streaming response: %v", err)
