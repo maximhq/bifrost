@@ -549,24 +549,28 @@ func (provider *MistralProvider) processTranscriptionStreamEvent(
 		return
 	}
 
-	// First, check if this is an error response
-	var bifrostErr schemas.BifrostError
-	if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
-		if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: model,
-				RequestType:    schemas.TranscriptionStreamRequest,
+	// Quick check for error field (allocation-free using sonic.GetFromString)
+	if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
+		// Only unmarshal when we know there's an error
+		bifrostErr := schemas.AcquireBifrostError()
+		if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+			if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					Provider:       providerName,
+					ModelRequested: model,
+					RequestType:    schemas.TranscriptionStreamRequest,
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				return
 			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
-			return
 		}
+		schemas.ReleaseBifrostError(bifrostErr)
 	}
 
 	// Parse the event data
 	var eventData MistralTranscriptionStreamData
-	if err := sonic.Unmarshal([]byte(jsonData), &eventData); err != nil {
+	if err := sonic.UnmarshalString(jsonData, &eventData); err != nil {
 		provider.logger.Warn("Failed to parse stream event data: %v", err)
 		return
 	}

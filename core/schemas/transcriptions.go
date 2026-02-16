@@ -131,3 +131,4 @@ type BifrostTranscriptionStreamResponse struct {
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
 }
+
