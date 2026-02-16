@@ -318,3 +318,65 @@ variable "ingress_annotations" {
   type        = map(string)
   default     = {}
 }
+
+# --- PostgreSQL ---
+variable "create_postgresql" {
+  description = "Create a managed PostgreSQL instance for config_store and logs_store."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_engine_version" {
+  description = "PostgreSQL engine version (e.g. 16, 15, 14)."
+  type        = string
+  default     = "16"
+}
+
+variable "postgresql_instance_class" {
+  description = "Instance class. AWS: db.t3.micro, GCP: db-custom-2-7680, Azure: B_Standard_B1ms. If null, uses cloud-specific defaults."
+  type        = string
+  default     = null
+}
+
+variable "postgresql_storage_gb" {
+  description = "Allocated storage in GB."
+  type        = number
+  default     = 20
+}
+
+variable "postgresql_database_name" {
+  description = "Name of the initial database."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_username" {
+  description = "Master username for the PostgreSQL instance."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_password" {
+  description = "Master password. If null, a random password is generated."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "postgresql_backup_retention_days" {
+  description = "Backup retention period in days."
+  type        = number
+  default     = 7
+}
+
+variable "postgresql_multi_az" {
+  description = "Enable multi-AZ deployment for high availability."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_publicly_accessible" {
+  description = "Whether the database is publicly accessible. Should be false for production."
+  type        = bool
+  default     = false
+}

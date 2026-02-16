@@ -33,8 +33,45 @@ locals {
     } : k => v if v != null
   }
 
-  # Merge: base config + overrides (overrides win at top-level key)
-  config_json = jsonencode(merge(local.base_config, local.overrides))
+  # PostgreSQL auto-wiring: when create_postgresql = true and user hasn't
+  # manually specified config_store / logs_store, auto-configure them to use
+  # the provisioned PostgreSQL instance.
+  pg_host = var.create_postgresql ? coalesce(
+    try(module.aws[0].postgresql_endpoint, null),
+    try(module.gcp[0].postgresql_endpoint, null),
+    try(module.azure[0].postgresql_endpoint, null),
+    try(module.kubernetes[0].postgresql_endpoint, null),
+  ) : null
+
+  pg_password = var.create_postgresql ? coalesce(
+    try(module.aws[0].postgresql_password, null),
+    try(module.gcp[0].postgresql_password, null),
+    try(module.azure[0].postgresql_password, null),
+    try(module.kubernetes[0].postgresql_password, null),
+  ) : null
+
+  pg_store_config = var.create_postgresql ? {
+    enabled = true
+    type    = "postgres"
+    config = {
+      host           = local.pg_host
+      port           = "5432"
+      user           = var.postgresql_username
+      password       = local.pg_password
+      db_name        = var.postgresql_database_name
+      ssl_mode       = var.cloud_provider == "kubernetes" ? "disable" : "require"
+      max_idle_conns = 5
+      max_open_conns = 50
+    }
+  } : null
+
+  pg_overrides = var.create_postgresql ? merge(
+    var.config_store == null ? { config_store = local.pg_store_config } : {},
+    var.logs_store == null ? { logs_store = local.pg_store_config } : {},
+  ) : {}
+
+  # Merge: base config + user overrides + postgresql auto-config
+  config_json = jsonencode(merge(local.base_config, local.overrides, local.pg_overrides))
 
   image             = "${var.image_repository}:${var.image_tag}"
   container_port    = 8080
@@ -73,6 +110,18 @@ module "aws" {
   node_count                   = var.node_count
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
+
+  # PostgreSQL
+  create_postgresql                = var.create_postgresql
+  postgresql_engine_version        = var.postgresql_engine_version
+  postgresql_instance_class        = var.postgresql_instance_class
+  postgresql_storage_gb            = var.postgresql_storage_gb
+  postgresql_database_name         = var.postgresql_database_name
+  postgresql_username              = var.postgresql_username
+  postgresql_password              = var.postgresql_password
+  postgresql_backup_retention_days = var.postgresql_backup_retention_days
+  postgresql_multi_az              = var.postgresql_multi_az
+  postgresql_publicly_accessible   = var.postgresql_publicly_accessible
 }
 
 # --- GCP ---
@@ -107,6 +156,17 @@ module "gcp" {
   node_count                   = var.node_count
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
+
+  # PostgreSQL
+  create_postgresql                = var.create_postgresql
+  postgresql_engine_version        = var.postgresql_engine_version
+  postgresql_instance_class        = var.postgresql_instance_class
+  postgresql_storage_gb            = var.postgresql_storage_gb
+  postgresql_database_name         = var.postgresql_database_name
+  postgresql_username              = var.postgresql_username
+  postgresql_password              = var.postgresql_password
+  postgresql_backup_retention_days = var.postgresql_backup_retention_days
+  postgresql_multi_az              = var.postgresql_multi_az
 }
 
 # --- Azure ---
@@ -141,6 +201,17 @@ module "azure" {
   node_machine_type            = var.node_machine_type
   volume_size_gb               = var.volume_size_gb
   resource_group_name          = var.azure_resource_group_name
+
+  # PostgreSQL
+  create_postgresql                = var.create_postgresql
+  postgresql_engine_version        = var.postgresql_engine_version
+  postgresql_instance_class        = var.postgresql_instance_class
+  postgresql_storage_gb            = var.postgresql_storage_gb
+  postgresql_database_name         = var.postgresql_database_name
+  postgresql_username              = var.postgresql_username
+  postgresql_password              = var.postgresql_password
+  postgresql_backup_retention_days = var.postgresql_backup_retention_days
+  postgresql_multi_az              = var.postgresql_multi_az
 }
 
 # --- Generic Kubernetes ---
@@ -170,4 +241,12 @@ module "kubernetes" {
   storage_class_name           = var.storage_class_name
   ingress_class_name           = var.ingress_class_name
   ingress_annotations          = var.ingress_annotations
+
+  # PostgreSQL
+  create_postgresql         = var.create_postgresql
+  postgresql_engine_version = var.postgresql_engine_version
+  postgresql_storage_gb     = var.postgresql_storage_gb
+  postgresql_database_name  = var.postgresql_database_name
+  postgresql_username       = var.postgresql_username
+  postgresql_password       = var.postgresql_password
 }

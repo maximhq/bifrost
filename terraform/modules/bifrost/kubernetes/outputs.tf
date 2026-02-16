@@ -25,3 +25,21 @@ output "health_check_url" {
     : "http://${kubernetes_service_v1.bifrost.metadata[0].name}.${kubernetes_namespace_v1.bifrost.metadata[0].name}.svc.cluster.local/health"
   )
 }
+
+# --- PostgreSQL outputs ---
+
+output "postgresql_endpoint" {
+  description = "PostgreSQL service DNS name."
+  value       = var.create_postgresql ? "${kubernetes_service_v1.postgresql[0].metadata[0].name}.${kubernetes_namespace_v1.bifrost.metadata[0].name}.svc.cluster.local" : null
+}
+
+output "postgresql_port" {
+  description = "PostgreSQL port."
+  value       = var.create_postgresql ? "5432" : null
+}
+
+output "postgresql_password" {
+  description = "PostgreSQL password."
+  value       = local.pg_password
+  sensitive   = true
+}
