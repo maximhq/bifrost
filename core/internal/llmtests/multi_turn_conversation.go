@@ -73,6 +73,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		if bifrostErr != nil {
 			t.Fatalf("❌ MultiTurnConversation_Step1 request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
+		defer response1.Release()
 
 		t.Logf("✅ First turn acknowledged: %s", GetChatContent(response1))
 
@@ -141,6 +142,7 @@ func RunMultiTurnConversationTest(t *testing.T, client *bifrost.Bifrost, ctx con
 	if bifrostErr != nil {
 		t.Fatalf("❌ MultiTurnConversation_Step2 request failed after retries: %v", GetErrorMessage(bifrostErr))
 	}
+	defer response2.Release()
 
 	// Validation already happened inside WithChatTestRetry via expectations2
 	// If we reach here, the model successfully remembered "Alice"

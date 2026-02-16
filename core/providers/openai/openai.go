@@ -298,7 +298,7 @@ func HandleOpenAITextCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostTextCompletionResponse{}
+	response := schemas.AcquireBifrostTextCompletionResponse()
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
@@ -735,7 +735,7 @@ func HandleOpenAIChatCompletionRequest(
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
-	response := &schemas.BifrostChatResponse{}
+	response := schemas.AcquireBifrostChatResponse()
 	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Use enhanced response handler with pre-allocated response
@@ -1288,7 +1288,7 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostResponsesResponse{}
+	response := schemas.AcquireBifrostResponsesResponse()
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -1673,7 +1673,7 @@ func HandleOpenAIEmbeddingRequest(
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := schemas.AcquireBifrostEmbeddingResponse()
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)

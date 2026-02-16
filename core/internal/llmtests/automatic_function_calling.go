@@ -135,6 +135,14 @@ func RunAutomaticFunctionCallingTest(t *testing.T, client *bifrost.Bifrost, ctx 
 			}
 			t.Fatalf("❌ AutomaticFunctionCalling dual API test failed: %v", errors)
 		}
+		defer func() {
+			if result.ChatCompletionsResponse != nil {
+				result.ChatCompletionsResponse.Release()
+			}
+			if result.ResponsesAPIResponse != nil {
+				result.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Additional validation specific to automatic function calling using universal tool extraction
 		validateChatAutomaticToolCall := func(response *schemas.BifrostChatResponse, apiName string) {

@@ -7,6 +7,17 @@ export interface MemoryStats {
   heap_inuse: number
   heap_objects: number
   sys: number
+  // Detailed breakdown
+  heap_idle: number
+  heap_released: number
+  heap_sys: number
+  stack_inuse: number
+  stack_sys: number
+  mspan_inuse: number
+  mcache_inuse: number
+  buck_hash_sys: number
+  gc_sys: number
+  other_sys: number
 }
 
 // CPU statistics
@@ -25,13 +36,21 @@ export interface RuntimeStats {
   gomaxprocs: number
 }
 
-// Allocation info for top allocations
+// Single frame in a call stack
+export interface StackFrame {
+  function: string
+  file: string
+  line: number
+}
+
+// Allocation info for top allocations with full call stack
 export interface AllocationInfo {
   function: string
   file: string
   line: number
   bytes: number
   count: number
+  stack: StackFrame[]
 }
 
 // Single point in the metrics history

@@ -375,7 +375,7 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostTextCompletionResponse{}
+	response := schemas.AcquireBifrostTextCompletionResponse()
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
@@ -505,7 +505,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostChatResponse{}
+	response := schemas.AcquireBifrostChatResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -697,7 +697,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostResponsesResponse{}
+	response := schemas.AcquireBifrostResponsesResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -856,7 +856,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := schemas.AcquireBifrostEmbeddingResponse()
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))

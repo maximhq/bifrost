@@ -388,6 +388,7 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 
 				require.Nil(t, err, "Chat completion request should succeed: %v", err)
 				require.NotNil(t, response, "Response should not be nil")
+				defer response.Release()
 				require.NotNil(t, response.Usage, "Usage information should be present")
 
 				// Extract cached tokens

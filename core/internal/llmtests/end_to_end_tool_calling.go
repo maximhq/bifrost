@@ -93,6 +93,14 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			"End2EndToolCalling_Step1",
 			chatOperation,
 			responsesOperation)
+		defer func() {
+			if result1.ChatCompletionsResponse != nil {
+				result1.ChatCompletionsResponse.Release()
+			}
+			if result1.ResponsesAPIResponse != nil {
+				result1.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Validate both APIs succeeded
 		if !result1.BothSucceeded {
@@ -210,6 +218,14 @@ func RunEnd2EndToolCallingTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 			"End2EndToolCalling_Step2",
 			chatOperation2,
 			responsesOperation2)
+		defer func() {
+			if result2.ChatCompletionsResponse != nil {
+				result2.ChatCompletionsResponse.Release()
+			}
+			if result2.ResponsesAPIResponse != nil {
+				result2.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Validate both APIs succeeded
 		if !result2.BothSucceeded {

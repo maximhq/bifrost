@@ -818,6 +818,63 @@ func ReleaseBifrostError(err *BifrostError) {
 	}
 }
 
+// bifrostRequestPool provides a pool for BifrostRequest objects to reduce allocations.
+// BifrostRequest is a container struct with pointers to specific request types.
+var bifrostRequestPool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostRequest{}
+	},
+}
+
+// AcquireBifrostRequest gets a BifrostRequest from the pool and resets it.
+func AcquireBifrostRequest() *BifrostRequest {
+	r := bifrostRequestPool.Get().(*BifrostRequest)
+	*r = BifrostRequest{}
+	return r
+}
+
+// Release returns a BifrostRequest to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this request.
+// Do NOT use the request after calling Release().
+func (br *BifrostRequest) Release() {
+	if br == nil {
+		return
+	}
+	// Nil all pointer fields to break references and allow GC of inner structs
+	br.RequestType = ""
+	br.ListModelsRequest = nil
+	br.TextCompletionRequest = nil
+	br.ChatRequest = nil
+	br.ResponsesRequest = nil
+	br.CountTokensRequest = nil
+	br.EmbeddingRequest = nil
+	br.SpeechRequest = nil
+	br.TranscriptionRequest = nil
+	br.ImageGenerationRequest = nil
+	br.ImageEditRequest = nil
+	br.ImageVariationRequest = nil
+	br.FileUploadRequest = nil
+	br.FileListRequest = nil
+	br.FileRetrieveRequest = nil
+	br.FileDeleteRequest = nil
+	br.FileContentRequest = nil
+	br.BatchCreateRequest = nil
+	br.BatchListRequest = nil
+	br.BatchRetrieveRequest = nil
+	br.BatchCancelRequest = nil
+	br.BatchResultsRequest = nil
+	br.ContainerCreateRequest = nil
+	br.ContainerListRequest = nil
+	br.ContainerRetrieveRequest = nil
+	br.ContainerDeleteRequest = nil
+	br.ContainerFileCreateRequest = nil
+	br.ContainerFileListRequest = nil
+	br.ContainerFileRetrieveRequest = nil
+	br.ContainerFileContentRequest = nil
+	br.ContainerFileDeleteRequest = nil
+	bifrostRequestPool.Put(br)
+}
+
 // bifrostResponsePool provides a pool for BifrostResponse wrapper objects to reduce
 // per-chunk allocations during streaming. The BifrostResponse is a temporary container
 // that wraps inner response pointers; it is no longer needed after the BifrostStreamChunk
@@ -837,10 +894,54 @@ func AcquireBifrostResponse() *BifrostResponse {
 
 // ReleaseBifrostResponse returns a BifrostResponse to the pool.
 // The caller must ensure no other goroutine holds a reference to this response.
+// Deprecated: Use r.Release() instead for consistency.
 func ReleaseBifrostResponse(r *BifrostResponse) {
 	if r != nil {
-		bifrostResponsePool.Put(r)
+		r.Release()
 	}
+}
+
+// Release returns a BifrostResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling Release().
+func (r *BifrostResponse) Release() {
+	if r == nil {
+		return
+	}
+	// Nil all pointer fields to break references and allow GC of inner structs
+	r.ListModelsResponse = nil
+	r.TextCompletionResponse = nil
+	r.ChatResponse = nil
+	r.ResponsesResponse = nil
+	r.ResponsesStreamResponse = nil
+	r.CountTokensResponse = nil
+	r.EmbeddingResponse = nil
+	r.SpeechResponse = nil
+	r.SpeechStreamResponse = nil
+	r.TranscriptionResponse = nil
+	r.TranscriptionStreamResponse = nil
+	r.ImageGenerationResponse = nil
+	r.ImageGenerationStreamResponse = nil
+	r.FileUploadResponse = nil
+	r.FileListResponse = nil
+	r.FileRetrieveResponse = nil
+	r.FileDeleteResponse = nil
+	r.FileContentResponse = nil
+	r.BatchCreateResponse = nil
+	r.BatchListResponse = nil
+	r.BatchRetrieveResponse = nil
+	r.BatchCancelResponse = nil
+	r.BatchResultsResponse = nil
+	r.ContainerCreateResponse = nil
+	r.ContainerListResponse = nil
+	r.ContainerRetrieveResponse = nil
+	r.ContainerDeleteResponse = nil
+	r.ContainerFileCreateResponse = nil
+	r.ContainerFileListResponse = nil
+	r.ContainerFileRetrieveResponse = nil
+	r.ContainerFileContentResponse = nil
+	r.ContainerFileDeleteResponse = nil
+	bifrostResponsePool.Put(r)
 }
 
 // bifrostStreamChunkPool provides a pool for BifrostStreamChunk objects to reduce

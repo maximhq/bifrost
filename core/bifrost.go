@@ -70,7 +70,6 @@ type Bifrost struct {
 	errorChannelPool    sync.Pool                           // Pool for error channels, initial pool size is set in Init
 	responseStreamPool  sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
 	pluginPipelinePool  sync.Pool                           // Pool for PluginPipeline objects
-	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
 	mcpRequestPool      sync.Pool                           // Pool for BifrostMCPRequest objects
 	oauth2Provider      schemas.OAuth2Provider              // OAuth provider instance
 	logger              schemas.Logger                      // logger instance, default logger is used if not provided
@@ -231,11 +230,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			}
 		},
 	}
-	bifrost.bifrostRequestPool = sync.Pool{
-		New: func() interface{} {
-			return &schemas.BifrostRequest{}
-		},
-	}
 	bifrost.mcpRequestPool = sync.Pool{
 		New: func() interface{} {
 			return &schemas.BifrostMCPRequest{}
@@ -252,7 +246,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 			preHookErrors:  make([]error, 0),
 			postHookErrors: make([]error, 0),
 		})
-		bifrost.bifrostRequestPool.Put(&schemas.BifrostRequest{})
 		bifrost.mcpRequestPool.Put(&schemas.BifrostMCPRequest{})
 	}
 
@@ -370,7 +363,7 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ListModelsRequest
 	bifrostReq.ListModelsRequest = req
 
@@ -570,7 +563,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 		}
 	}
 	// Preparing request
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.TextCompletionRequest
 	bifrostReq.TextCompletionRequest = req
 
@@ -608,7 +601,7 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.TextCompletionStreamRequest
 	bifrostReq.TextCompletionRequest = req
 	return bifrost.handleStreamRequest(ctx, bifrostReq)
@@ -640,7 +633,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ChatCompletionRequest
 	bifrostReq.ChatRequest = req
 
@@ -705,7 +698,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ChatCompletionStreamRequest
 	bifrostReq.ChatRequest = req
 
@@ -738,7 +731,7 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ResponsesRequest
 	bifrostReq.ResponsesRequest = req
 
@@ -802,7 +795,7 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ResponsesStreamRequest
 	bifrostReq.ResponsesRequest = req
 
@@ -836,7 +829,7 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.CountTokensRequest
 	bifrostReq.CountTokensRequest = req
 
@@ -875,7 +868,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.EmbeddingRequest
 	bifrostReq.EmbeddingRequest = req
 
@@ -914,7 +907,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.SpeechRequest
 	bifrostReq.SpeechRequest = req
 
@@ -953,7 +946,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx *schemas.BifrostContext, req *sc
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.SpeechStreamRequest
 	bifrostReq.SpeechRequest = req
 
@@ -987,7 +980,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.TranscriptionRequest
 	bifrostReq.TranscriptionRequest = req
 
@@ -1026,7 +1019,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.TranscriptionStreamRequest
 	bifrostReq.TranscriptionRequest = req
 
@@ -1061,7 +1054,7 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ImageGenerationRequest
 	bifrostReq.ImageGenerationRequest = req
 
@@ -1114,7 +1107,7 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ImageGenerationStreamRequest
 	bifrostReq.ImageGenerationRequest = req
 
@@ -1164,7 +1157,7 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ImageEditRequest
 	bifrostReq.ImageEditRequest = req
 
@@ -1233,7 +1226,7 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ImageEditStreamRequest
 	bifrostReq.ImageEditRequest = req
 
@@ -1267,7 +1260,7 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ImageVariationRequest
 	bifrostReq.ImageVariationRequest = req
 
@@ -1333,7 +1326,7 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 		}
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchCreateRequest
 	bifrostReq.BatchCreateRequest = req
 
@@ -1366,7 +1359,7 @@ func (bifrost *Bifrost) BatchListRequest(ctx *schemas.BifrostContext, req *schem
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchListRequest
 	bifrostReq.BatchListRequest = req
 
@@ -1407,7 +1400,7 @@ func (bifrost *Bifrost) BatchRetrieveRequest(ctx *schemas.BifrostContext, req *s
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchRetrieveRequest
 	bifrostReq.BatchRetrieveRequest = req
 
@@ -1448,7 +1441,7 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchCancelRequest
 	bifrostReq.BatchCancelRequest = req
 
@@ -1499,7 +1492,7 @@ func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *sc
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchResultsRequest
 	bifrostReq.BatchResultsRequest = req
 
@@ -1550,7 +1543,7 @@ func (bifrost *Bifrost) FileUploadRequest(ctx *schemas.BifrostContext, req *sche
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.FileUploadRequest
 	bifrostReq.FileUploadRequest = req
 
@@ -1589,7 +1582,7 @@ func (bifrost *Bifrost) FileListRequest(ctx *schemas.BifrostContext, req *schema
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.FileListRequest
 	bifrostReq.FileListRequest = req
 
@@ -1630,7 +1623,7 @@ func (bifrost *Bifrost) FileRetrieveRequest(ctx *schemas.BifrostContext, req *sc
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.FileRetrieveRequest
 	bifrostReq.FileRetrieveRequest = req
 
@@ -1671,7 +1664,7 @@ func (bifrost *Bifrost) FileDeleteRequest(ctx *schemas.BifrostContext, req *sche
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.FileDeleteRequest
 	bifrostReq.FileDeleteRequest = req
 
@@ -1712,7 +1705,7 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.FileContentRequest
 	bifrostReq.FileContentRequest = req
 
@@ -1867,7 +1860,7 @@ func (bifrost *Bifrost) ContainerCreateRequest(ctx *schemas.BifrostContext, req 
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerCreateRequest
 	bifrostReq.ContainerCreateRequest = req
 
@@ -1900,7 +1893,7 @@ func (bifrost *Bifrost) ContainerListRequest(ctx *schemas.BifrostContext, req *s
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerListRequest
 	bifrostReq.ContainerListRequest = req
 
@@ -1941,7 +1934,7 @@ func (bifrost *Bifrost) ContainerRetrieveRequest(ctx *schemas.BifrostContext, re
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerRetrieveRequest
 	bifrostReq.ContainerRetrieveRequest = req
 
@@ -1982,7 +1975,7 @@ func (bifrost *Bifrost) ContainerDeleteRequest(ctx *schemas.BifrostContext, req 
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerDeleteRequest
 	bifrostReq.ContainerDeleteRequest = req
 
@@ -2031,7 +2024,7 @@ func (bifrost *Bifrost) ContainerFileCreateRequest(ctx *schemas.BifrostContext, 
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileCreateRequest
 	bifrostReq.ContainerFileCreateRequest = req
 
@@ -2072,7 +2065,7 @@ func (bifrost *Bifrost) ContainerFileListRequest(ctx *schemas.BifrostContext, re
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileListRequest
 	bifrostReq.ContainerFileListRequest = req
 
@@ -2121,7 +2114,7 @@ func (bifrost *Bifrost) ContainerFileRetrieveRequest(ctx *schemas.BifrostContext
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileRetrieveRequest
 	bifrostReq.ContainerFileRetrieveRequest = req
 
@@ -2170,7 +2163,7 @@ func (bifrost *Bifrost) ContainerFileContentRequest(ctx *schemas.BifrostContext,
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileContentRequest
 	bifrostReq.ContainerFileContentRequest = req
 
@@ -2219,7 +2212,7 @@ func (bifrost *Bifrost) ContainerFileDeleteRequest(ctx *schemas.BifrostContext, 
 		ctx = bifrost.ctx
 	}
 
-	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq := schemas.AcquireBifrostRequest()
 	bifrostReq.RequestType = schemas.ContainerFileDeleteRequest
 	bifrostReq.ContainerFileDeleteRequest = req
 
@@ -3333,7 +3326,7 @@ func (bifrost *Bifrost) shouldContinueWithFallbacks(fallback schemas.Fallback, f
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all non-streaming public API methods.
 func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	defer bifrost.releaseBifrostRequest(req)
+	defer req.Release()
 	provider, model, fallbacks := req.GetRequestFields()
 	if err := validateRequest(req); err != nil {
 		err.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -3453,7 +3446,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 // If the primary provider fails, it will try each fallback provider in order until one succeeds.
 // It is the wrapper for all streaming public API methods.
 func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	defer bifrost.releaseBifrostRequest(req)
+	defer req.Release()
 
 	provider, model, fallbacks := req.GetRequestFields()
 
@@ -5133,53 +5126,6 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 	msg.ResponseStream = nil
 	msg.Err = nil
 	bifrost.channelMessagePool.Put(msg)
-}
-
-// resetBifrostRequest resets a BifrostRequest instance for reuse
-func resetBifrostRequest(req *schemas.BifrostRequest) {
-	req.RequestType = ""
-	req.ListModelsRequest = nil
-	req.TextCompletionRequest = nil
-	req.ChatRequest = nil
-	req.ResponsesRequest = nil
-	req.CountTokensRequest = nil
-	req.EmbeddingRequest = nil
-	req.SpeechRequest = nil
-	req.TranscriptionRequest = nil
-	req.ImageGenerationRequest = nil
-	req.ImageEditRequest = nil
-	req.ImageVariationRequest = nil
-	req.FileUploadRequest = nil
-	req.FileListRequest = nil
-	req.FileRetrieveRequest = nil
-	req.FileDeleteRequest = nil
-	req.FileContentRequest = nil
-	req.BatchCreateRequest = nil
-	req.BatchListRequest = nil
-	req.BatchRetrieveRequest = nil
-	req.BatchCancelRequest = nil
-	req.BatchResultsRequest = nil
-	req.ContainerCreateRequest = nil
-	req.ContainerListRequest = nil
-	req.ContainerRetrieveRequest = nil
-	req.ContainerDeleteRequest = nil
-	req.ContainerFileCreateRequest = nil
-	req.ContainerFileListRequest = nil
-	req.ContainerFileRetrieveRequest = nil
-	req.ContainerFileContentRequest = nil
-	req.ContainerFileDeleteRequest = nil
-}
-
-// getBifrostRequest gets a BifrostRequest from the pool
-func (bifrost *Bifrost) getBifrostRequest() *schemas.BifrostRequest {
-	req := bifrost.bifrostRequestPool.Get().(*schemas.BifrostRequest)
-	return req
-}
-
-// releaseBifrostRequest returns a BifrostRequest to the pool
-func (bifrost *Bifrost) releaseBifrostRequest(req *schemas.BifrostRequest) {
-	resetBifrostRequest(req)
-	bifrost.bifrostRequestPool.Put(req)
 }
 
 // resetMCPRequest resets a BifrostMCPRequest instance for reuse

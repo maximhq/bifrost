@@ -103,6 +103,7 @@ func RunChatAudioTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 		if chatResponse == nil {
 			t.Fatal("❌ Chat response should not be nil")
 		}
+		defer chatResponse.Release()
 
 		if len(chatResponse.Choices) == 0 {
 			t.Fatal("❌ Chat response should have at least one choice")

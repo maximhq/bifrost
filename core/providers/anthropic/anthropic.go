@@ -686,27 +686,26 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
-						response := &schemas.BifrostChatResponse{
-							ID:     messageID,
-							Object: "chat.completion.chunk",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: &content,
-										},
-									},
+					response := schemas.AcquireBifrostChatResponse()
+					response.ID = messageID
+					response.Object = "chat.completion.chunk"
+					response.Choices = []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									Content: &content,
 								},
 							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       providerName,
-								ModelRequested: modelName,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
+						},
+					}
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionStreamRequest,
+						Provider:       providerName,
+						ModelRequested: modelName,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					}
 						lastChunkTime = time.Now()
 						chunkIndex++
 
@@ -1140,7 +1139,7 @@ func HandleAnthropicResponsesStream(
 
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
-							response.Response = &schemas.BifrostResponsesResponse{}
+							response.Response = schemas.AcquireBifrostResponsesResponse()
 						}
 						response.Response.Usage = usage
 						// Set raw request if enabled

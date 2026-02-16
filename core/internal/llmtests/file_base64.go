@@ -150,6 +150,7 @@ func RunFileBase64ChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx
 		if chatError != nil {
 			t.Fatalf("❌ FileBase64 Chat Completions test failed: %v", GetErrorMessage(chatError))
 		}
+		defer response.Release()
 
 		// Additional validation for PDF document processing
 		content := GetChatContent(response)
@@ -231,6 +232,7 @@ func RunFileBase64ResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 		if responsesError != nil {
 			t.Fatalf("❌ FileBase64 Responses test failed: %v", GetErrorMessage(responsesError))
 		}
+		defer response.Release()
 
 		// Additional validation for PDF document processing
 		content := GetResponsesContent(response)
