@@ -125,6 +125,7 @@ func RunMultipleImagesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		if bifrostError != nil {
 			t.Fatalf("❌ Multiple images request failed after retries: %v", GetErrorMessage(bifrostError))
 		}
+		defer response.Release()
 
 		content := GetChatContent(response)
 

@@ -453,20 +453,20 @@ func HandleGeminiChatCompletionStream(
 			geminiResponse, err := processGeminiStreamChunk(eventData)
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
-					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType:    schemas.ChatCompletionStreamRequest,
-							Provider:       providerName,
-							ModelRequested: model,
-						},
+					bifrostErr := schemas.AcquireBifrostError()
+					bifrostErr.IsBifrostError = false
+					if bifrostErr.Error == nil {
+						bifrostErr.Error = schemas.AcquireBifrostErrorField()
 					}
+					bifrostErr.Error.Message = err.Error()
+					bifrostErr.Error.Error = err
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+					}
+					bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = model
+					// Handle API error
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 					return
@@ -486,11 +486,12 @@ func HandleGeminiChatCompletionStream(
 			// Convert to Bifrost stream response
 			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream()
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					Provider:       providerName,
-					ModelRequested: model,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = model
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 				return
@@ -803,20 +804,20 @@ func HandleGeminiResponsesStream(
 			geminiResponse, err := processGeminiStreamChunk(eventData)
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
-					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType:    schemas.ResponsesStreamRequest,
-							Provider:       providerName,
-							ModelRequested: model,
-						},
+					bifrostErr := schemas.AcquireBifrostError()
+					bifrostErr.IsBifrostError = false
+					if bifrostErr.Error == nil {
+						bifrostErr.Error = schemas.AcquireBifrostErrorField()
 					}
+					bifrostErr.Error.Message = err.Error()
+					bifrostErr.Error.Error = err
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+					}
+					bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = model
+					// Handle API error
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 					return
@@ -833,11 +834,12 @@ func HandleGeminiResponsesStream(
 			// Convert to Bifrost responses stream response
 			responses, bifrostErr := geminiResponse.ToBifrostResponsesStream(sequenceNumber, streamState)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       providerName,
-					ModelRequested: model,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = model
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 				return
@@ -1234,20 +1236,20 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			geminiResponse, err := processGeminiStreamChunk(jsonData)
 			if err != nil {
 				if strings.Contains(err.Error(), "gemini api error") {
-					// Handle API error
-					bifrostErr := &schemas.BifrostError{
-						Type:           schemas.Ptr("gemini_api_error"),
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: err.Error(),
-							Error:   err,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							RequestType:    schemas.SpeechStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-						},
+					bifrostErr := schemas.AcquireBifrostError()
+					bifrostErr.IsBifrostError = false
+					if bifrostErr.Error == nil {
+						bifrostErr.Error = schemas.AcquireBifrostErrorField()
 					}
+					bifrostErr.Error.Message = err.Error()
+					bifrostErr.Error.Error = err
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+					}
+					bifrostErr.ExtraFields.RequestType = schemas.SpeechStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
+					// Handle API error
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 					return
@@ -1530,19 +1532,20 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 				// Only extract error details when we know there's an error
 				errorStr, _ := errorNode.Raw()
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr("gemini_api_error"),
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: fmt.Sprintf("Gemini API error: %s", errorStr),
-						Error:   fmt.Errorf("stream error: %s", errorStr),
-					},
-					ExtraFields: schemas.BifrostErrorExtraFields{
-						RequestType:    schemas.TranscriptionStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-					},
+				bifrostErr := schemas.AcquireBifrostError()
+				bifrostErr.IsBifrostError = false
+				if bifrostErr.Error == nil {
+					bifrostErr.Error = schemas.AcquireBifrostErrorField()
 				}
+				bifrostErr.Error.Message = fmt.Sprintf("Gemini API error: %s", errorStr)
+				bifrostErr.Error.Error = fmt.Errorf("stream error: %s", errorStr)
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+				}
+				bifrostErr.ExtraFields.RequestType = schemas.TranscriptionStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = request.Model
+				// Handle API error
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 				return
@@ -1683,11 +1686,12 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
 	if bifrostErr != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       provider.GetProviderKey(),
-			ModelRequested: request.Model,
-			RequestType:    schemas.ImageGenerationRequest,
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.ModelRequested = request.Model
+		bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationRequest
 		return nil, bifrostErr
 	}
 	if response == nil {
@@ -1903,11 +1907,12 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
 	if bifrostErr != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			RequestType:    schemas.ImageEditRequest,
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 		}
+		bifrostErr.ExtraFields.Provider = providerName
+		bifrostErr.ExtraFields.ModelRequested = request.Model
+		bifrostErr.ExtraFields.RequestType = schemas.ImageEditRequest
 		return nil, bifrostErr
 	}
 	if response == nil {

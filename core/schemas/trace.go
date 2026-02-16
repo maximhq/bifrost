@@ -37,8 +37,11 @@ func (t *Trace) GetSpan(spanID string) *Span {
 	return nil
 }
 
-// Reset clears the trace for reuse from pool
+// Reset clears the trace for reuse from pool.
+// Must hold the mutex to synchronize with concurrent AddSpan/GetSpan calls.
 func (t *Trace) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.TraceID = ""
 	t.ParentID = ""
 	t.RootSpan = nil
@@ -93,8 +96,13 @@ func (s *Span) End(status SpanStatus, statusMsg string) {
 	s.StatusMsg = statusMsg
 }
 
-// Reset clears the span for reuse from pool
+// Reset clears the span for reuse from pool.
+// Must hold the mutex to synchronize with concurrent SetAttribute/AddEvent/End calls.
+// that may still be running when the span is released back to the pool (e.g., during
+// TTL cleanup racing with a deferred middleware call).
 func (s *Span) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.SpanID = ""
 	s.ParentID = ""
 	s.TraceID = ""

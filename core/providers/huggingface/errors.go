@@ -19,10 +19,6 @@ func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.Req
 		bifrostErr.Type = &typeCopy
 	}
 
-	if bifrostErr.Error == nil {
-		bifrostErr.Error = &schemas.ErrorField{}
-	}
-
 	// Handle FastAPI validation errors
 	if len(errorResp.Detail) > 0 {
 		var errorMessages []string
@@ -54,11 +50,12 @@ func parseHuggingFaceImageError(resp *fasthttp.Response, meta *providerUtils.Req
 	}
 
 	if meta != nil {
-		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-			Provider:       meta.Provider,
-			ModelRequested: meta.Model,
-			RequestType:    meta.RequestType,
-		}
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}		
+		bifrostErr.ExtraFields.Provider = meta.Provider
+		bifrostErr.ExtraFields.ModelRequested = meta.Model
+		bifrostErr.ExtraFields.RequestType = meta.RequestType
 	}
 
 	return bifrostErr

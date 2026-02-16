@@ -240,6 +240,12 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Construct ProviderConfig from individual fields
+	if payload.NetworkConfig != nil {
+		payload.NetworkConfig.CheckAndSetDefaults()
+	}
+	if payload.ConcurrencyAndBufferSize != nil {
+		payload.ConcurrencyAndBufferSize.CheckAndSetDefaults()
+	}
 	config := configstore.ProviderConfig{
 		Keys:                     payload.Keys,
 		NetworkConfig:            payload.NetworkConfig,
@@ -415,6 +421,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	nc := payload.NetworkConfig
+	nc.CheckAndSetDefaults()
 
 	// Validate retry backoff values
 	if err := validateRetryBackoff(&nc); err != nil {
@@ -422,6 +429,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	payload.ConcurrencyAndBufferSize.CheckAndSetDefaults()
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	config.NetworkConfig = &nc
 	config.ProxyConfig = payload.ProxyConfig

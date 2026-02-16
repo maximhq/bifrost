@@ -23,11 +23,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	if err != nil {
 		bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
 		if meta != nil {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       meta.Provider,
-				ModelRequested: meta.Model,
-				RequestType:    meta.RequestType,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = meta.Provider
+			bifrostErr.ExtraFields.ModelRequested = meta.Model
+			bifrostErr.ExtraFields.RequestType = meta.RequestType
 		}
 		return bifrostErr
 	}
@@ -43,11 +44,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 			},
 		}
 		if meta != nil {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       meta.Provider,
-				ModelRequested: meta.Model,
-				RequestType:    meta.RequestType,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = meta.Provider
+			bifrostErr.ExtraFields.ModelRequested = meta.Model
+			bifrostErr.ExtraFields.RequestType = meta.RequestType
 		}
 		return bifrostErr
 	}
@@ -63,11 +65,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 			},
 		}
 		if meta != nil {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       meta.Provider,
-				ModelRequested: meta.Model,
-				RequestType:    meta.RequestType,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = meta.Provider
+			bifrostErr.ExtraFields.ModelRequested = meta.Model
+			bifrostErr.ExtraFields.RequestType = meta.RequestType
 		}
 		return bifrostErr
 	}
@@ -75,11 +78,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 	createError := func(message string) *schemas.BifrostError {
 		bifrostErr := providerUtils.NewProviderAPIError(message, nil, resp.StatusCode(), providerName, nil, nil)
 		if meta != nil {
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       meta.Provider,
-				ModelRequested: meta.Model,
-				RequestType:    meta.RequestType,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = meta.Provider
+			bifrostErr.ExtraFields.ModelRequested = meta.Model
+			bifrostErr.ExtraFields.RequestType = meta.RequestType
 		}
 		return bifrostErr
 	}
@@ -95,11 +99,12 @@ func parseVertexError(resp *fasthttp.Response, meta *providerUtils.RequestMetada
 				if err := sonic.Unmarshal(decodedBody, &validationErr); err != nil {
 					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 					if meta != nil {
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       meta.Provider,
-							ModelRequested: meta.Model,
-							RequestType:    meta.RequestType,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = meta.Provider
+						bifrostErr.ExtraFields.ModelRequested = meta.Model
+						bifrostErr.ExtraFields.RequestType = meta.RequestType
 					}
 					return bifrostErr
 				}

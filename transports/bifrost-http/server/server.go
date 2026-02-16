@@ -222,13 +222,15 @@ func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) erro
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
 func (s *BifrostHTTPServer) ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
-	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bifrostCtx := schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
+	defer bifrostCtx.Release()
 	return s.Client.ExecuteChatMCPTool(bifrostCtx, toolCall)
 }
 
 // ExecuteResponsesMCPTool executes an MCP tool call and returns the result as a responses message.
 func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError) {
-	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bifrostCtx := schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
+	defer bifrostCtx.Release()
 	return s.Client.ExecuteResponsesMCPTool(bifrostCtx, toolCall)
 }
 
@@ -486,9 +488,9 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		return nil, fmt.Errorf("bifrost client not found")
 	}
 
-	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-	defer bfCtx.Cancel()
+	bfCtx := schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
+	bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+	defer bfCtx.Release()
 
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 		Provider: provider,
@@ -719,13 +721,15 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
 			})
 			if listModelsErr != nil {
 				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+				schemas.ReleaseBifrostError(listModelsErr)
 			}
 			allowedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
@@ -736,7 +740,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-			bfCtx.Cancel()
+			bfCtx.Release()
 		}
 	}
 	return nil
@@ -1147,7 +1151,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.AcquireBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -1161,6 +1166,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 					s.updateKeyStatus(ctx, listModelsErr.ExtraFields.KeyStatuses)
 				}
 				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+				schemas.ReleaseBifrostError(listModelsErr)
 			}
 			allowedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
@@ -1171,7 +1177,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-			bfCtx.Cancel()
+			bfCtx.Release()
 		}
 	}
 

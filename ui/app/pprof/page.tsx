@@ -1,7 +1,7 @@
 "use client";
 
-import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from "@/lib/store";
-import type { AllocationInfo, GoroutineGroup } from "@/lib/store/apis/devApi";
+import { useGetDevGoroutinesQuery, useGetDevPoolStatsQuery, useGetDevPprofQuery } from "@/lib/store";
+import type { AllocationInfo, GoroutineGroup, PoolStats } from "@/lib/store/apis/devApi";
 import {
 	Activity,
 	AlertTriangle,
@@ -12,11 +12,12 @@ import {
 	Cpu,
 	EyeOff,
 	HardDrive,
+	Layers,
 	RefreshCw,
 	RotateCcw,
 	TrendingUp,
 } from "lucide-react";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 // ============================================================================
@@ -133,7 +134,7 @@ function StatCard({
 	);
 }
 
-// Allocation Table Component
+// Allocation Table Component with expandable stack traces
 function AllocationTable({
 	allocations,
 	sortField,
@@ -145,7 +146,20 @@ function AllocationTable({
 	sortDirection: SortDirection;
 	onSort: (field: AllocationSortField) => void;
 }) {
-	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown;
+	const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
+	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown
+
+	const toggleRow = useCallback((index: number) => {
+		setExpandedRows(prev => {
+			const next = new Set(prev)
+			if (next.has(index)) {
+				next.delete(index)
+			} else {
+				next.add(index)
+			}
+			return next
+		})
+	}, [])
 
 	const SortHeader = ({ field, children }: { field: AllocationSortField; children: React.ReactNode }) => (
 		<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
@@ -154,13 +168,21 @@ function AllocationTable({
 				{sortField === field && <SortIcon className="h-3 w-3" />}
 			</button>
 		</th>
-	);
+	)
+
+	const shortFileName = (fullPath: string) => {
+		const parts = fullPath.split('/')
+		const idx = parts.findIndex(p => p === 'bifrost')
+		if (idx >= 0) return parts.slice(idx).join('/')
+		return parts.slice(-3).join('/')
+	}
 
 	return (
 		<div className="overflow-x-auto">
 			<table className="w-full">
 				<thead>
 					<tr className="border-b border-zinc-800">
+						<th className="w-8 px-2 py-3" />
 						<SortHeader field="function">Function</SortHeader>
 						<SortHeader field="file">File:Line</SortHeader>
 						<SortHeader field="bytes">Bytes</SortHeader>
@@ -168,35 +190,81 @@ function AllocationTable({
 					</tr>
 				</thead>
 				<tbody>
-					{allocations.map((alloc, i) => (
-						<tr key={`${alloc.function}-${alloc.line}-${i}`} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-							<td className="px-4 py-3">
-								<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
-							</td>
-							<td className="px-4 py-3">
-								<code className="text-sm text-zinc-400">
-									{alloc.file}:{alloc.line}
-								</code>
-							</td>
-							<td className="px-4 py-3">
-								<span className="font-mono text-sm text-rose-400">{formatBytes(alloc.bytes)}</span>
-							</td>
-							<td className="px-4 py-3">
-								<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
-							</td>
-						</tr>
-					))}
+					{allocations.map((alloc, i) => {
+						const isExpanded = expandedRows.has(i)
+						const hasStack = alloc.stack && alloc.stack.length > 1
+						return (
+							<Fragment key={`${alloc.function}-${alloc.line}-${i}`}>
+								<tr
+									className={`border-b border-zinc-800/50 hover:bg-zinc-800/30 ${hasStack ? 'cursor-pointer' : ''}`}
+									onClick={() => hasStack && toggleRow(i)}
+									role={hasStack ? "button" : undefined}
+									tabIndex={hasStack ? 0 : undefined}
+									aria-expanded={hasStack ? isExpanded : undefined}
+									onKeyDown={(e) => {
+										if (!hasStack) return
+										if (e.key === "Enter" || e.key === " ") {
+											e.preventDefault()
+											toggleRow(i)
+										}
+									}}
+								>
+									<td className="px-2 py-3 text-center">
+										{hasStack && (
+											isExpanded
+												? <ChevronDown className="inline h-4 w-4 text-zinc-500" />
+												: <ChevronRight className="inline h-4 w-4 text-zinc-500" />
+										)}
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm break-all text-zinc-200">{alloc.function}</code>
+									</td>
+									<td className="px-4 py-3">
+										<code className="text-sm text-zinc-400">
+											{alloc.file}:{alloc.line}
+										</code>
+									</td>
+									<td className="px-4 py-3">
+										<span className="font-mono text-sm text-rose-400">{formatBytes(alloc.bytes)}</span>
+									</td>
+									<td className="px-4 py-3">
+										<span className="font-mono text-sm text-zinc-300">{alloc.count.toLocaleString()}</span>
+									</td>
+								</tr>
+								{isExpanded && hasStack && (
+									<tr className="border-b border-zinc-800/50 bg-zinc-900/50">
+										<td colSpan={5} className="px-6 py-3">
+											<div className="rounded border border-zinc-800 bg-zinc-950/50 p-3">
+												<div className="mb-2 text-xs font-medium text-zinc-500">Call Stack (innermost first)</div>
+												<div className="space-y-0.5">
+													{alloc.stack.map((frame, fi) => (
+														<div key={fi} className="flex items-start gap-2 font-mono text-xs">
+															<span className="mt-0.5 shrink-0 text-zinc-600">{fi === 0 ? '→' : ' '}</span>
+															<span className="text-zinc-300">{frame.function}</span>
+															<span className="shrink-0 text-zinc-600">
+																{shortFileName(frame.file)}:{frame.line}
+															</span>
+														</div>
+													))}
+												</div>
+											</div>
+										</td>
+									</tr>
+								)}
+							</Fragment>
+						)
+					})}
 					{allocations.length === 0 && (
 						<tr>
-							<td colSpan={4} className="px-4 py-8 text-center text-zinc-500">
-								No allocations data available
+							<td colSpan={5} className="px-4 py-8 text-center text-zinc-500">
+								No in-use memory data available
 							</td>
 						</tr>
 					)}
 				</tbody>
 			</table>
 		</div>
-	);
+	)
 }
 
 // Goroutine Group Component
@@ -305,6 +373,10 @@ export default function PprofPage() {
 	});
 
 	const { data: goroutineData } = useGetDevGoroutinesQuery(undefined, {
+		pollingInterval: 10000,
+	});
+
+	const { data: poolData } = useGetDevPoolStatsQuery(undefined, {
 		pollingInterval: 10000,
 	});
 
@@ -483,6 +555,59 @@ export default function PprofPage() {
 						/>
 					</div>
 
+					{/* Memory Breakdown */}
+					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+						<div className="mb-4 flex items-center gap-2">
+							<HardDrive className="h-4 w-4 text-purple-400" />
+							<span className="font-medium text-zinc-300">Memory Breakdown</span>
+							<span className="text-sm text-zinc-500">where {formatBytes(data.memory.sys)} system memory is used</span>
+						</div>
+						{(() => {
+							const m = data.memory
+							const goRuntime = m.mspan_inuse + m.mcache_inuse + m.buck_hash_sys + m.gc_sys + m.other_sys
+							const heapFrag = m.heap_idle - m.heap_released
+							const cgoEstimate = m.sys > (m.heap_sys + m.stack_sys + goRuntime)
+								? m.sys - m.heap_sys - m.stack_sys - goRuntime
+								: 0
+							const segments = [
+								{ label: 'Heap (live objects)', value: m.alloc, color: 'bg-cyan-500' },
+								{ label: 'Heap (idle, reclaimable)', value: heapFrag, color: 'bg-cyan-800' },
+								{ label: 'Heap (returned to OS)', value: m.heap_released, color: 'bg-zinc-700' },
+								{ label: 'Goroutine stacks', value: m.stack_inuse, color: 'bg-emerald-500' },
+								{ label: 'GC metadata', value: m.gc_sys, color: 'bg-amber-500' },
+								{ label: 'Runtime (mspan+mcache+other)', value: m.mspan_inuse + m.mcache_inuse + m.other_sys, color: 'bg-orange-500' },
+								{ label: 'Profiling overhead', value: m.buck_hash_sys, color: 'bg-rose-500' },
+								{ label: 'CGo / external (estimated)', value: cgoEstimate, color: 'bg-red-600' },
+							].filter(s => s.value > 0)
+							const total = segments.reduce((sum, s) => sum + s.value, 0)
+							return (
+								<div>
+									{/* Stacked bar */}
+									<div className="mb-4 flex h-6 overflow-hidden rounded-full">
+										{segments.map((seg, i) => (
+											<div
+												key={i}
+												className={`${seg.color} transition-all`}
+												style={{ width: `${(seg.value / total) * 100}%` }}
+												title={`${seg.label}: ${formatBytes(seg.value)}`}
+											/>
+										))}
+									</div>
+									{/* Legend */}
+									<div className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm md:grid-cols-4">
+										{segments.map((seg, i) => (
+											<div key={i} className="flex items-center gap-2">
+												<span className={`h-2.5 w-2.5 shrink-0 rounded-sm ${seg.color}`} />
+												<span className="text-zinc-400">{seg.label}</span>
+												<span className="ml-auto font-mono text-zinc-200">{formatBytes(seg.value)}</span>
+											</div>
+										))}
+									</div>
+								</div>
+							)
+						})()}
+					</div>
+
 					{/* Charts */}
 					<div className="mb-8 grid gap-6 lg:grid-cols-2">
 						{/* CPU Chart */}
@@ -633,8 +758,8 @@ export default function PprofPage() {
 					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">
 						<div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
 							<HardDrive className="h-4 w-4 text-rose-400" />
-							<span className="font-medium text-zinc-300">Memory Allocations</span>
-							<span className="text-sm text-zinc-500">({sortedAllocations.length} allocations)</span>
+							<span className="font-medium text-zinc-300">Memory In-Use</span>
+							<span className="text-sm text-zinc-500">({sortedAllocations.length} allocation sites)</span>
 						</div>
 						<AllocationTable
 							allocations={sortedAllocations}
@@ -643,6 +768,102 @@ export default function PprofPage() {
 							onSort={handleAllocationSort}
 						/>
 					</div>
+
+					{/* Object Pool Stats */}
+					{poolData && (
+						<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">
+							<div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
+								<Layers className="h-4 w-4 text-violet-400" />
+								<span className="font-medium text-zinc-300">Object Pools</span>
+								<span className={`rounded px-2 py-0.5 text-xs ${poolData.build === "debug" ? "bg-violet-500/10 text-violet-400" : "bg-zinc-700 text-zinc-400"}`}>
+									{poolData.build}
+								</span>
+								<span className="text-sm text-zinc-500">({poolData.pools.length} pools)</span>
+							</div>
+							{poolData.build === "production" ? (
+								<div className="px-4 py-8 text-center text-zinc-500">
+									Pool tracking is disabled in production builds. Rebuild with <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-violet-400">-tags pooldebug</code> to enable.
+								</div>
+							) : poolData.pools.length === 0 ? (
+								<div className="px-4 py-8 text-center text-zinc-500">
+									No pools registered yet. Pools are created on first use.
+								</div>
+							) : (
+								<div className="overflow-x-auto">
+									<table className="w-full">
+										<thead>
+											<tr className="border-b border-zinc-800">
+												<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">Pool</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Acquires</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Releases</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Creates (Misses)</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Reused</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Active</th>
+												<th scope="col" className="px-4 py-3 text-right text-sm font-medium text-zinc-400">Hit Rate</th>
+											</tr>
+										</thead>
+										<tbody>
+											{poolData.pools.map((p) => {
+												const reused = p.acquires - p.creates;
+												const hitPct = p.hit_rate * 100;
+												const hitColor = hitPct >= 90 ? "text-emerald-400" : hitPct >= 70 ? "text-amber-400" : "text-red-400";
+												return (
+													<tr key={p.name} className="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+														<td className="px-4 py-3">
+															<code className="text-sm text-zinc-200">{p.name}</code>
+														</td>
+														<td className="px-4 py-3 text-right font-mono text-sm text-zinc-300">{p.acquires.toLocaleString()}</td>
+														<td className="px-4 py-3 text-right font-mono text-sm text-zinc-300">{p.releases.toLocaleString()}</td>
+														<td className="px-4 py-3 text-right font-mono text-sm text-rose-400">{p.creates.toLocaleString()}</td>
+														<td className="px-4 py-3 text-right font-mono text-sm text-emerald-400">{reused.toLocaleString()}</td>
+														<td className="px-4 py-3 text-right">
+															<span className={`font-mono text-sm ${p.active > 0 ? "text-amber-400" : "text-zinc-500"}`}>
+																{p.active.toLocaleString()}
+															</span>
+														</td>
+														<td className="px-4 py-3 text-right">
+															<span className={`font-mono text-sm font-semibold ${hitColor}`}>
+																{hitPct.toFixed(1)}%
+															</span>
+														</td>
+													</tr>
+												);
+											})}
+										</tbody>
+										<tfoot>
+											<tr className="border-t border-zinc-700">
+												<td className="px-4 py-3 text-sm font-medium text-zinc-400">Totals</td>
+												<td className="px-4 py-3 text-right font-mono text-sm font-medium text-zinc-300">
+													{poolData.pools.reduce((s, p) => s + p.acquires, 0).toLocaleString()}
+												</td>
+												<td className="px-4 py-3 text-right font-mono text-sm font-medium text-zinc-300">
+													{poolData.pools.reduce((s, p) => s + p.releases, 0).toLocaleString()}
+												</td>
+												<td className="px-4 py-3 text-right font-mono text-sm font-medium text-rose-400">
+													{poolData.pools.reduce((s, p) => s + p.creates, 0).toLocaleString()}
+												</td>
+												<td className="px-4 py-3 text-right font-mono text-sm font-medium text-emerald-400">
+													{poolData.pools.reduce((s, p) => s + p.acquires - p.creates, 0).toLocaleString()}
+												</td>
+												<td className="px-4 py-3 text-right font-mono text-sm font-medium text-zinc-300">
+													{poolData.pools.reduce((s, p) => s + p.active, 0).toLocaleString()}
+												</td>
+												<td className="px-4 py-3 text-right">
+													{(() => {
+														const totalAcquires = poolData.pools.reduce((s, p) => s + p.acquires, 0);
+														const totalCreates = poolData.pools.reduce((s, p) => s + p.creates, 0);
+														const avgHit = totalAcquires > 0 ? ((1 - totalCreates / totalAcquires) * 100) : 0;
+														const color = avgHit >= 90 ? "text-emerald-400" : avgHit >= 70 ? "text-amber-400" : "text-red-400";
+														return <span className={`font-mono text-sm font-semibold ${color}`}>{avgHit.toFixed(1)}%</span>;
+													})()}
+												</td>
+											</tr>
+										</tfoot>
+									</table>
+								</div>
+							)}
+						</div>
+					)}
 
 					{/* Goroutine Health */}
 					<div className="mb-8 rounded-lg border border-zinc-800 bg-zinc-900">

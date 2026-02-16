@@ -135,15 +135,12 @@ func ToBifrostImageGenerationResponse(
 	prediction *ReplicatePredictionResponse,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if prediction == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: "prediction response is nil",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider: schemas.Replicate,
-			},
-		}
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = true
+		bifrostErr.Error.Message = "prediction response is nil"
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		bifrostErr.ExtraFields.Provider = schemas.Replicate
+		return nil, bifrostErr
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{

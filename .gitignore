@@ -52,6 +52,7 @@ test-reports
 settings.local.json
 .codex/
 .cursor/
+agent-memory/
 
 # Python specific
 **/__pycache__/**

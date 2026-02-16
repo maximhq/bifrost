@@ -96,6 +96,7 @@ func RunResponsesReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		if responsesError != nil {
 			t.Fatalf("❌ Reasoning test failed after retries: %v", GetErrorMessage(responsesError))
 		}
+		defer response.Release()
 
 		// Log the response content
 		responsesContent := GetResponsesContent(response)
@@ -290,6 +291,7 @@ func RunChatCompletionReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx c
 		if chatError != nil {
 			t.Fatalf("❌ Reasoning test failed after retries: %v", GetErrorMessage(chatError))
 		}
+		defer response.Release()
 
 		// Log the response content
 		chatContent := GetChatContent(response)
@@ -493,6 +495,7 @@ func RunMultiTurnReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		if chatError != nil {
 			t.Fatalf("Step 1 failed: %v", GetErrorMessage(chatError))
 		}
+		defer firstResponse.Release()
 
 		firstContent := GetChatContent(firstResponse)
 		if firstContent == "" {
@@ -562,6 +565,7 @@ func RunMultiTurnReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx contex
 		if chatError2 != nil {
 			t.Fatalf("Step 2 (multi-turn with reasoning passthrough) failed: %v", GetErrorMessage(chatError2))
 		}
+		defer secondResponse.Release()
 
 		secondContent := GetChatContent(secondResponse)
 		if secondContent == "" {

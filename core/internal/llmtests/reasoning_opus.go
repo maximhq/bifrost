@@ -146,6 +146,7 @@ func RunOpus45ReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if responsesError != nil {
 				t.Fatalf("❌ Opus 4.5 Responses API reasoning test failed after retries: %v", GetErrorMessage(responsesError))
 			}
+			defer response.Release()
 
 			// Validate response has content
 			content := GetResponsesContent(response)
@@ -232,6 +233,7 @@ func RunOpus45ReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if chatError != nil {
 				t.Fatalf("❌ Opus 4.5 Chat Completions API reasoning test failed after retries: %v", GetErrorMessage(chatError))
 			}
+			defer response.Release()
 
 			// Validate response has content
 			content := GetChatContent(response)
@@ -356,6 +358,7 @@ func RunOpus46ReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				if responsesError != nil {
 					t.Fatalf("❌ Opus 4.6 Responses API (effort=%s) reasoning test failed after retries: %v", effort, GetErrorMessage(responsesError))
 				}
+				defer response.Release()
 
 				// Validate response has content
 				content := GetResponsesContent(response)
@@ -443,6 +446,7 @@ func RunOpus46ReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			if chatError != nil {
 				t.Fatalf("❌ Opus 4.6 Chat Completions API reasoning test failed after retries: %v", GetErrorMessage(chatError))
 			}
+			defer response.Release()
 
 			// Validate response has content
 			content := GetChatContent(response)
@@ -545,6 +549,7 @@ func RunOpus46MultiTurnReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		if chatError != nil {
 			t.Fatalf("Step 1 failed: %v", GetErrorMessage(chatError))
 		}
+		defer firstResponse.Release()
 
 		firstContent := GetChatContent(firstResponse)
 		if firstContent == "" {
@@ -615,6 +620,7 @@ func RunOpus46MultiTurnReasoningTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		if chatError2 != nil {
 			t.Fatalf("Step 2 (multi-turn with reasoning passthrough) failed: %v", GetErrorMessage(chatError2))
 		}
+		defer secondResponse.Release()
 
 		secondContent := GetChatContent(secondResponse)
 		if secondContent == "" {

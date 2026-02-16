@@ -378,14 +378,14 @@ func (plugin *Plugin) buildStreamingResponseFromResult(ctx *schemas.BifrostConte
 			extraFields.Provider = provider
 
 			// Send chunk to stream
-			streamChan <- &schemas.BifrostStreamChunk{
-				BifrostTextCompletionResponse:        cachedResponse.TextCompletionResponse,
-				BifrostChatResponse:                  cachedResponse.ChatResponse,
-				BifrostResponsesStreamResponse:       cachedResponse.ResponsesStreamResponse,
-				BifrostSpeechStreamResponse:          cachedResponse.SpeechStreamResponse,
-				BifrostTranscriptionStreamResponse:   cachedResponse.TranscriptionStreamResponse,
-				BifrostImageGenerationStreamResponse: cachedResponse.ImageGenerationStreamResponse,
-			}
+			chunk := schemas.AcquireBifrostStreamChunk()
+			chunk.BifrostTextCompletionResponse = cachedResponse.TextCompletionResponse
+			chunk.BifrostChatResponse = cachedResponse.ChatResponse
+			chunk.BifrostResponsesStreamResponse = cachedResponse.ResponsesStreamResponse
+			chunk.BifrostSpeechStreamResponse = cachedResponse.SpeechStreamResponse
+			chunk.BifrostTranscriptionStreamResponse = cachedResponse.TranscriptionStreamResponse
+			chunk.BifrostImageGenerationStreamResponse = cachedResponse.ImageGenerationStreamResponse
+			streamChan <- chunk
 		}
 	}()
 

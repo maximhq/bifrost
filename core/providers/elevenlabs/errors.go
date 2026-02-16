@@ -56,15 +56,13 @@ func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMe
 			}
 
 			if message != "" {
-				result := &schemas.BifrostError{
-					IsBifrostError: false,
-					StatusCode:     schemas.Ptr(resp.StatusCode()),
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(errorType),
-						Message: message,
-					},
-				}
+				result := schemas.AcquireBifrostError()
+				result.IsBifrostError = false
+				result.StatusCode = schemas.Ptr(resp.StatusCode())
+				result.Error.Type = schemas.Ptr(errorType)
+				result.Error.Message = message
 				if meta != nil {
+					result.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 					result.ExtraFields.Provider = meta.Provider
 					result.ExtraFields.ModelRequested = meta.Model
 					result.ExtraFields.RequestType = meta.RequestType
@@ -84,9 +82,6 @@ func parseElevenlabsError(resp *fasthttp.Response, meta *providerUtils.RequestMe
 		}
 
 		if message != "" {
-			if bifrostErr.Error == nil {
-				bifrostErr.Error = &schemas.ErrorField{}
-			}
 			bifrostErr.Error.Type = schemas.Ptr(errorType)
 			bifrostErr.Error.Message = message
 		}
