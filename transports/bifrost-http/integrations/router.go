@@ -689,6 +689,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		}
 
 		response, err = config.ListModelsResponseConverter(bifrostCtx, listModelsResponse)
+		for key, value := range listModelsResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.TextCompletionRequest != nil:
 		textCompletionResponse, bifrostErr := g.client.TextCompletionRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 		if bifrostErr != nil {
@@ -712,6 +715,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TextResponseConverter(bifrostCtx, textCompletionResponse)
+		for key, value := range textCompletionResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.ChatRequest != nil:
 		chatResponse, bifrostErr := g.client.ChatCompletionRequest(bifrostCtx, bifrostReq.ChatRequest)
 		if bifrostErr != nil {
@@ -735,6 +741,10 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ChatResponseConverter(bifrostCtx, chatResponse)
+		// Forward provider response headers
+		for key, value := range chatResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.ResponsesRequest != nil:
 		responsesResponse, bifrostErr := g.client.ResponsesRequest(bifrostCtx, bifrostReq.ResponsesRequest)
 		if bifrostErr != nil {
@@ -758,6 +768,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ResponsesResponseConverter(bifrostCtx, responsesResponse)
+		for key, value := range responsesResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.EmbeddingRequest != nil:
 		embeddingResponse, bifrostErr := g.client.EmbeddingRequest(bifrostCtx, bifrostReq.EmbeddingRequest)
 		if bifrostErr != nil {
@@ -781,6 +794,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
+		for key, value := range embeddingResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.SpeechRequest != nil:
 		speechResponse, bifrostErr := g.client.SpeechRequest(bifrostCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
@@ -798,6 +814,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		if speechResponse == nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
 			return
+		}
+
+		// Forward provider response headers
+		for key, value := range speechResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
 		}
 
 		if config.SpeechResponseConverter != nil {
@@ -838,6 +859,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.TranscriptionResponseConverter(bifrostCtx, transcriptionResponse)
+		for key, value := range transcriptionResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.ImageGenerationRequest != nil:
 		imageGenerationResponse, bifrostErr := g.client.ImageGenerationRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
 		if bifrostErr != nil {
@@ -866,6 +890,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageGenerationResponse)
+		for key, value := range imageGenerationResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.ImageEditRequest != nil:
 		imageEditResponse, bifrostErr := g.client.ImageEditRequest(bifrostCtx, bifrostReq.ImageEditRequest)
 		if bifrostErr != nil {
@@ -894,6 +921,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageEditResponse)
+		for key, value := range imageEditResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.ImageVariationRequest != nil:
 		imageVariationResponse, bifrostErr := g.client.ImageVariationRequest(bifrostCtx, bifrostReq.ImageVariationRequest)
 		if bifrostErr != nil {
@@ -922,6 +952,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageVariationResponse)
+		for key, value := range imageVariationResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
@@ -949,6 +982,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 		response, err = config.CountTokensResponseConverter(bifrostCtx, countTokensResponse)
+		for key, value := range countTokensResponse.ExtraFields.ProviderResponseHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
 	default:
 		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid request type"))
 		return
@@ -1553,6 +1589,13 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		cancel()
 		g.sendStreamError(ctx, bifrostCtx, config, bifrostErr)
 		return
+	}
+
+	// Forward provider response headers stored in context by streaming handlers
+	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+		for key, value := range headers {
+			ctx.Response.Header.Set(key, value)
+		}
 	}
 
 	// Check if streaming is configured for this route
