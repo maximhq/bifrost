@@ -111,6 +111,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -254,10 +255,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	// Create response based on whether timestamps were requested
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.SpeechRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
+			RequestType:             schemas.SpeechRequest,
+			Provider:                providerName,
+			ModelRequested:          request.Model,
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 
@@ -374,6 +376,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			RequestType: schemas.SpeechStreamRequest,
 		}), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -569,10 +574,11 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	response := ToBifrostTranscriptionResponse(chunks)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType:    schemas.TranscriptionRequest,
-		Provider:       providerName,
-		ModelRequested: request.Model,
-		Latency:        latency.Milliseconds(),
+		RequestType:             schemas.TranscriptionRequest,
+		Provider:                providerName,
+		ModelRequested:          request.Model,
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
