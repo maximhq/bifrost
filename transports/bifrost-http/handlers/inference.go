@@ -25,6 +25,13 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// forwardProviderHeaders forwards provider response headers to the HTTP response.
+func forwardProviderHeaders(ctx *fasthttp.RequestCtx, headers map[string]string) {
+	for key, value := range headers {
+		ctx.Response.Header.Set(key, value)
+	}
+}
+
 // CompletionHandler manages HTTP requests for completion operations
 type CompletionHandler struct {
 	client       *bifrost.Bifrost
@@ -781,6 +788,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -849,6 +857,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -947,7 +956,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
-
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -1037,6 +1046,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -1098,6 +1108,7 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -1251,6 +1262,8 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
+
 	// Send successful response
 	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
 	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
@@ -1364,6 +1377,7 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
 }
@@ -1430,6 +1444,7 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, response.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, response)
 }
@@ -1511,6 +1526,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		cancel()
 		SendBifrostError(ctx, bifrostErr)
 		return
+	}
+
+	// Forward provider response headers stored in context by streaming handlers
+	if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+		forwardProviderHeaders(ctx, headers)
 	}
 
 	// Signal to tracing middleware that trace completion should be deferred
@@ -1787,6 +1807,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -1992,6 +2013,7 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2122,6 +2144,7 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2510,6 +2533,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2563,6 +2587,7 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2602,6 +2627,7 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2641,6 +2667,7 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2680,6 +2707,7 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2762,6 +2790,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2821,6 +2850,7 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2860,6 +2890,7 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2899,6 +2930,7 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -2995,6 +3027,7 @@ func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3047,6 +3080,7 @@ func (h *CompletionHandler) containerList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3087,6 +3121,7 @@ func (h *CompletionHandler) containerRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3127,6 +3162,7 @@ func (h *CompletionHandler) containerDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3217,6 +3253,7 @@ func (h *CompletionHandler) containerFileCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3270,6 +3307,7 @@ func (h *CompletionHandler) containerFileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3318,6 +3356,7 @@ func (h *CompletionHandler) containerFileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }
 
@@ -3416,5 +3455,6 @@ func (h *CompletionHandler) containerFileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	SendJSON(ctx, resp)
 }

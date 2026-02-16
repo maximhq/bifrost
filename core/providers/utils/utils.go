@@ -344,6 +344,65 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 	return filtered
 }
 
+// providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
+// These are transport-level headers that don't apply when re-serving the response.
+var providerResponseFilterHeaders = map[string]bool{
+	"content-length":                    true,
+	"content-encoding":                  true,
+	"transfer-encoding":                 true,
+	"connection":                        true,
+	"keep-alive":                        true,
+	"proxy-connection":                  true,
+	"proxy-authenticate":                true,
+	"proxy-authorization":               true,
+	"te":                                true,
+	"trailer":                           true,
+	"upgrade":                           true,
+	"host":                              true,
+	"date":                              true,
+	"server":                            true,
+	"alt-svc":                           true,
+	"strict-transport-security":         true,
+	"content-type":                      true,
+	"access-control-allow-origin":       true,
+	"access-control-allow-methods":      true,
+	"access-control-allow-headers":      true,
+	"access-control-expose-headers":     true,
+	"access-control-allow-credentials":  true,
+	"access-control-max-age":            true,
+}
+
+// ExtractProviderResponseHeaders extracts and filters response headers from a
+// fasthttp response. Transport-level headers are excluded.
+func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	headers := make(map[string]string)
+	resp.Header.VisitAll(func(key, value []byte) {
+		if !providerResponseFilterHeaders[strings.ToLower(string(key))] {
+			headers[string(key)] = string(value)
+		}
+	})
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+// ExtractProviderResponseHeadersFromHTTP extracts and filters response headers
+// from a standard net/http response. Transport-level headers are excluded.
+// Used by providers like Bedrock that use net/http instead of fasthttp.
+func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	headers := make(map[string]string)
+	for k, values := range resp.Header {
+		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
+			headers[k] = values[0]
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
 // SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
