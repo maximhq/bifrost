@@ -102,6 +102,14 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			"CompleteEnd2End_Step1",
 			chatOperation1,
 			responsesOperation1)
+		defer func() {
+			if result1.ChatCompletionsResponse != nil {
+				result1.ChatCompletionsResponse.Release()
+			}
+			if result1.ResponsesAPIResponse != nil {
+				result1.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Validate both APIs succeeded
 		if !result1.BothSucceeded {
@@ -233,6 +241,14 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			"CompleteEnd2End_Step2",
 			chatOperation2,
 			responsesOperation2)
+		defer func() {
+			if result2.ChatCompletionsResponse != nil {
+				result2.ChatCompletionsResponse.Release()
+			}
+			if result2.ResponsesAPIResponse != nil {
+				result2.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Validate both APIs succeeded
 		if !result2.BothSucceeded {
@@ -371,6 +387,14 @@ func RunCompleteEnd2EndTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 			"CompleteEnd2End_Step3",
 			chatOperation3,
 			responsesOperation3)
+		defer func() {
+			if result3.ChatCompletionsResponse != nil {
+				result3.ChatCompletionsResponse.Release()
+			}
+			if result3.ResponsesAPIResponse != nil {
+				result3.ResponsesAPIResponse.Release()
+			}
+		}()
 
 		// Validate both APIs succeeded
 		if !result3.BothSucceeded {

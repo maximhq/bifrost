@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"regexp"
 	"runtime"
@@ -24,8 +25,8 @@ const (
 	metricsCollectionInterval = 10 * time.Second
 	// Number of data points to keep (5 minutes / 10 seconds = 30 points)
 	historySize = 30
-	// Top allocations to return
-	topAllocationsCount = 5
+	// Top allocations to return (increased for better coverage with lower MemProfileRate)
+	topAllocationsCount = 20
 )
 
 // MemoryStats represents memory statistics at a point in time
@@ -35,6 +36,17 @@ type MemoryStats struct {
 	HeapInuse   uint64 `json:"heap_inuse"`
 	HeapObjects uint64 `json:"heap_objects"`
 	Sys         uint64 `json:"sys"`
+	// Detailed breakdown for memory diagnostics
+	HeapIdle     uint64 `json:"heap_idle"`     // Heap spans with no objects (available for reuse)
+	HeapReleased uint64 `json:"heap_released"` // Heap memory returned to OS
+	HeapSys      uint64 `json:"heap_sys"`      // Heap memory obtained from OS
+	StackInuse   uint64 `json:"stack_inuse"`   // Goroutine stack memory
+	StackSys     uint64 `json:"stack_sys"`     // Stack memory obtained from OS
+	MSpanInuse   uint64 `json:"mspan_inuse"`   // MSpan structure memory
+	MCacheInuse  uint64 `json:"mcache_inuse"`  // MCache structure memory
+	BuckHashSys  uint64 `json:"buck_hash_sys"` // Profiling bucket hash table
+	GCSys        uint64 `json:"gc_sys"`        // GC metadata memory
+	OtherSys     uint64 `json:"other_sys"`     // Other runtime allocations
 }
 
 // CPUStats represents CPU statistics
@@ -53,13 +65,21 @@ type RuntimeStats struct {
 	GOMAXPROCS   int    `json:"gomaxprocs"`
 }
 
-// AllocationInfo represents a single allocation site
-type AllocationInfo struct {
+// StackFrame represents a single frame in a call stack
+type StackFrame struct {
 	Function string `json:"function"`
 	File     string `json:"file"`
 	Line     int    `json:"line"`
-	Bytes    int64  `json:"bytes"`
-	Count    int64  `json:"count"`
+}
+
+// AllocationInfo represents a single allocation site with full call stack
+type AllocationInfo struct {
+	Function string       `json:"function"`
+	File     string       `json:"file"`
+	Line     int          `json:"line"`
+	Bytes    int64        `json:"bytes"`
+	Count    int64        `json:"count"`
+	Stack    []StackFrame `json:"stack"`
 }
 
 // GoroutineGroup represents a group of goroutines with the same stack trace
@@ -152,8 +172,12 @@ func getOrCreateCollector() *MetricsCollector {
 	return globalCollector
 }
 
-// NewDevPprofHandler creates a new dev pprof handler
+// NewDevPprofHandler creates a new dev pprof handler.
+// Sets a lower MemProfileRate for better heap profiling coverage
+// (1 sample per 64KB instead of default 1 per 512KB — 8x more coverage
+// without the huge overhead of 4KB sampling which caused 4GB+ peak memory).
 func NewDevPprofHandler() *DevPprofHandler {
+	runtime.MemProfileRate = 65536
 	return &DevPprofHandler{
 		collector: getOrCreateCollector(),
 	}
@@ -300,50 +324,91 @@ func getTopAllocations() []AllocationInfo {
 		return []AllocationInfo{}
 	}
 
-	// Find the indices for alloc_objects and alloc_space sample types
-	var allocObjectsIdx, allocSpaceIdx int
+	// Find the indices for inuse_objects and inuse_space sample types.
+	// Using inuse (current live) instead of alloc (cumulative) to show
+	// what is actually consuming memory right now.
+	var inuseObjectsIdx, inuseSpaceIdx int
 	for i, st := range p.SampleType {
 		switch st.Type {
-		case "alloc_objects":
-			allocObjectsIdx = i
-		case "alloc_space":
-			allocSpaceIdx = i
+		case "inuse_objects":
+			inuseObjectsIdx = i
+		case "inuse_space":
+			inuseSpaceIdx = i
 		}
 	}
 
-	// Aggregate allocations by function (top of stack = allocation site)
+	// Build allocation entries with full stack traces.
+	// Each unique stack trace is a separate entry so callers are visible.
 	allocMap := make(map[string]*AllocationInfo)
 
 	for _, sample := range p.Sample {
 		if len(sample.Location) == 0 {
 			continue
 		}
-		loc := sample.Location[0] // Top of stack = allocation site
-		if len(loc.Line) == 0 {
-			continue
-		}
-		line := loc.Line[0]
-		fn := line.Function
-		if fn == nil {
+
+		inuseBytes := sample.Value[inuseSpaceIdx]
+		inuseObjects := sample.Value[inuseObjectsIdx]
+		if inuseBytes == 0 && inuseObjects == 0 {
 			continue
 		}
 
-		// Skip allocations from the profiler itself
-		if isProfilerFunction(fn.Name, fn.Filename) {
+		// Build the full stack trace (innermost first)
+		var stack []StackFrame
+		var topFn StackFrame
+		hasTop := false
+		isProfiler := false
+		for _, loc := range sample.Location {
+			for _, line := range loc.Line {
+				fn := line.Function
+				if fn == nil {
+					continue
+				}
+				if isProfilerFunction(fn.Name, fn.Filename) {
+					isProfiler = true
+					break
+				}
+				frame := StackFrame{
+					Function: fn.Name,
+					File:     fn.Filename,
+					Line:     int(line.Line),
+				}
+				stack = append(stack, frame)
+				if !hasTop {
+					topFn = frame
+					hasTop = true
+				}
+			}
+			if isProfiler {
+				break
+			}
+		}
+		if isProfiler || !hasTop || len(stack) == 0 {
 			continue
 		}
 
-		key := fn.Name
+		// Build a key from the full stack to group identical call paths
+		var keyBuilder strings.Builder
+		for _, frame := range stack {
+			keyBuilder.WriteString(frame.File)
+			keyBuilder.WriteByte(':')
+			keyBuilder.WriteString(frame.Function)
+			keyBuilder.WriteByte(':')
+			keyBuilder.WriteString(fmt.Sprintf("%d", frame.Line))
+			keyBuilder.WriteByte(';')
+		}
+		key := keyBuilder.String()
+
 		if existing, ok := allocMap[key]; ok {
-			existing.Bytes += sample.Value[allocSpaceIdx]
-			existing.Count += sample.Value[allocObjectsIdx]
+			existing.Bytes += inuseBytes
+			existing.Count += inuseObjects
 		} else {
 			allocMap[key] = &AllocationInfo{
-				Function: fn.Name,
-				File:     fn.Filename,
-				Line:     int(line.Line),
-				Bytes:    sample.Value[allocSpaceIdx],
-				Count:    sample.Value[allocObjectsIdx],
+				Function: topFn.Function,
+				File:     topFn.File,
+				Line:     topFn.Line,
+				Bytes:    inuseBytes,
+				Count:    inuseObjects,
+				Stack:    stack,
 			}
 		}
 	}
@@ -384,11 +449,21 @@ func (h *DevPprofHandler) getPprof(ctx *fasthttp.RequestCtx) {
 	data := PprofData{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Memory: MemoryStats{
-			Alloc:       memStats.Alloc,
-			TotalAlloc:  memStats.TotalAlloc,
-			HeapInuse:   memStats.HeapInuse,
-			HeapObjects: memStats.HeapObjects,
-			Sys:         memStats.Sys,
+			Alloc:        memStats.Alloc,
+			TotalAlloc:   memStats.TotalAlloc,
+			HeapInuse:    memStats.HeapInuse,
+			HeapObjects:  memStats.HeapObjects,
+			Sys:          memStats.Sys,
+			HeapIdle:     memStats.HeapIdle,
+			HeapReleased: memStats.HeapReleased,
+			HeapSys:      memStats.HeapSys,
+			StackInuse:   memStats.StackInuse,
+			StackSys:     memStats.StackSys,
+			MSpanInuse:   memStats.MSpanInuse,
+			MCacheInuse:  memStats.MCacheInuse,
+			BuckHashSys:  memStats.BuckHashSys,
+			GCSys:        memStats.GCSys,
+			OtherSys:     memStats.OtherSys,
 		},
 		CPU: h.collector.getCPUStats(),
 		Runtime: RuntimeStats{

@@ -1171,7 +1171,7 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 	firstChunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeCreated,
 		SequenceNumber: 0,
-		Response:       &schemas.BifrostResponsesResponse{},
+		Response:       schemas.AcquireBifrostResponsesResponse(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,
@@ -1190,7 +1190,7 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 	chunk := &schemas.BifrostResponsesStreamResponse{
 		Type:           schemas.ResponsesStreamResponseTypeInProgress,
 		SequenceNumber: 1,
-		Response:       &schemas.BifrostResponsesResponse{},
+		Response:       schemas.AcquireBifrostResponsesResponse(),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    schemas.ResponsesStreamRequest,
 			Provider:       provider,

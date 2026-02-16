@@ -497,7 +497,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	bifrostResponse := &schemas.BifrostChatResponse{}
+	bifrostResponse := schemas.AcquireBifrostChatResponse()
 
 	var rawResponse interface{}
 	var rawRequest interface{}

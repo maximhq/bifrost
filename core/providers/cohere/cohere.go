@@ -805,7 +805,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
-							response.Response = &schemas.BifrostResponsesResponse{}
+							response.Response = schemas.AcquireBifrostResponsesResponse()
 						}
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {

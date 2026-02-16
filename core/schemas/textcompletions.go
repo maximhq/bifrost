@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"sync"
 )
 
 // BifrostTextCompletionRequest is the request struct for text completion requests
@@ -72,6 +73,37 @@ type BifrostTextCompletionResponse struct {
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostTextCompletionResponsePool provides a pool for BifrostTextCompletionResponse objects.
+var bifrostTextCompletionResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostTextCompletionResponse{}
+	},
+}
+
+// AcquireBifrostTextCompletionResponse gets a BifrostTextCompletionResponse from the pool and resets it.
+func AcquireBifrostTextCompletionResponse() *BifrostTextCompletionResponse {
+	r := bifrostTextCompletionResponsePool.Get().(*BifrostTextCompletionResponse)
+	*r = BifrostTextCompletionResponse{}
+	return r
+}
+
+// Release returns a BifrostTextCompletionResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling Release().
+func (r *BifrostTextCompletionResponse) Release() {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Choices = nil
+	r.Model = ""
+	r.Object = ""
+	r.SystemFingerprint = ""
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostTextCompletionResponsePool.Put(r)
 }
 
 type TextCompletionInput struct {

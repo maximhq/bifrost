@@ -787,6 +787,8 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
+	// Release response back to pool for reuse
+	resp.Release()
 }
 
 // chatCompletion handles POST /v1/chat/completions - Process chat completion requests
@@ -879,6 +881,8 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
+	// Release response back to pool for reuse
+	resp.Release()
 }
 
 // responses handles POST /v1/responses - Process responses requests
@@ -962,6 +966,8 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
+	// Release response back to pool for reuse
+	resp.Release()
 }
 
 // embeddings handles POST /v1/embeddings - Process embeddings requests
@@ -1029,6 +1035,8 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	forwardProviderHeaders(ctx, resp.ExtraFields.ProviderResponseHeaders)
 	// Send successful response
 	SendJSON(ctx, resp)
+	// Release response back to pool for reuse
+	resp.Release()
 }
 
 // speech handles POST /v1/audio/speech - Process speech completion requests

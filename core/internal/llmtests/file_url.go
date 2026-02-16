@@ -138,6 +138,9 @@ func RunFileURLChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 			return client.ChatCompletionRequest(bfCtx, chatReq)
 		})
 
+		if response != nil {
+			defer response.Release()
+		}
 		if chatError != nil {
 			t.Fatalf("❌ FileURL Chat Completions test failed: %v", GetErrorMessage(chatError))
 		}
@@ -213,6 +216,9 @@ func RunFileURLResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 			return client.ResponsesRequest(bfCtx, responsesReq)
 		})
 
+		if response != nil {
+			defer response.Release()
+		}
 		if responsesError != nil {
 			t.Fatalf("❌ FileURL Responses test failed: %v", GetErrorMessage(responsesError))
 		}
