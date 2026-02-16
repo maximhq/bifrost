@@ -1137,18 +1137,23 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					var response schemas.BifrostSpeechStreamResponse
 					if err := sonic.Unmarshal(audioData, &response); err != nil {
 						// If JSON parsing fails, check if this might be an error response
-						var bifrostErr schemas.BifrostError
-						if errParseErr := sonic.Unmarshal(audioData, &bifrostErr); errParseErr == nil {
-							if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-								bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-									Provider:       provider.GetProviderKey(),
-									ModelRequested: request.Model,
-									RequestType:    schemas.SpeechStreamRequest,
+						// Quick check for error field (allocation-free using sonic.Get)
+						if errorNode, _ := sonic.Get(audioData, "error"); errorNode.Exists() {
+							// Only unmarshal when we know there's an error
+							bifrostErr := schemas.AcquireBifrostError()
+							if errParseErr := sonic.Unmarshal(audioData, bifrostErr); errParseErr == nil {
+								if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+									bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+										Provider:       provider.GetProviderKey(),
+										ModelRequested: request.Model,
+										RequestType:    schemas.SpeechStreamRequest,
+									}
+									ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+									providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+									return
 								}
-								ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-								providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
-								return
 							}
+							schemas.ReleaseBifrostError(bifrostErr)
 						}
 						// If it's not valid JSON, log and skip
 						provider.logger.Warn("failed to parse speech stream response: %v", err)
