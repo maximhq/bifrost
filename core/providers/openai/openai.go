@@ -230,6 +230,7 @@ func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -245,6 +246,7 @@ func HandleOpenAITextCompletionRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	customResponseHandler responseHandler[schemas.BifrostTextCompletionResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
 ) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
@@ -299,7 +301,14 @@ func HandleOpenAITextCompletionRequest(
 
 	response := &schemas.BifrostTextCompletionResponse{}
 
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	var rawRequest, rawResponse interface{}
+
+	if customResponseHandler != nil {
+		rawRequest, rawResponse, bifrostErr = customResponseHandler(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	} else {
+		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	}
+
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -346,6 +355,7 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -364,6 +374,7 @@ func HandleOpenAITextCompletionStreaming(
 	providerName schemas.ModelProvider,
 	customErrorConverter ErrorConverter,
 	postHookRunner schemas.PostHookRunner,
+	customResponseHandler responseHandler[schemas.BifrostTextCompletionResponse],
 	postResponseConverter func(*schemas.BifrostTextCompletionResponse) *schemas.BifrostTextCompletionResponse,
 	logger schemas.Logger,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
@@ -507,26 +518,45 @@ func HandleOpenAITextCompletionStreaming(
 				continue
 			}
 
-			// First, check if this is an error response
-			var bifrostErr schemas.BifrostError
-			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
-				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			var response schemas.BifrostTextCompletionResponse
+			if customResponseHandler != nil {
+				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
+				if handlerErr != nil {
+					handlerErr.ExtraFields = schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.TextCompletionStreamRequest,
 					}
+					if sendBackRawRequest {
+						handlerErr.ExtraFields.RawRequest = rawRequest
+					}
+					if sendBackRawResponse {
+						handlerErr.ExtraFields.RawResponse = rawResponse
+					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, handlerErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 					return
 				}
-			}
+			} else { // First, check if this is an error response
+				var bifrostErr schemas.BifrostError
+				if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+							Provider:       providerName,
+							ModelRequested: request.Model,
+							RequestType:    schemas.TextCompletionStreamRequest,
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+						return
+					}
+				}
 
-			// Parse into bifrost response
-			var response schemas.BifrostTextCompletionResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn("Failed to parse stream response: %v", err)
-				continue
+				// Parse into bifrost response
+				if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+					logger.Warn("Failed to parse stream response: %v", err)
+					continue
+				}
 			}
 
 			// choices be array if nil
@@ -663,6 +693,7 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -678,6 +709,7 @@ func HandleOpenAIChatCompletionRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
+	customResponseHandler responseHandler[schemas.BifrostChatResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
@@ -733,8 +765,14 @@ func HandleOpenAIChatCompletionRequest(
 
 	response := &schemas.BifrostChatResponse{}
 
-	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	var rawRequest, rawResponse interface{}
+
+	if customResponseHandler != nil {
+		rawRequest, rawResponse, bifrostErr = customResponseHandler(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	} else {
+		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	}
+
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -785,6 +823,7 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -803,6 +842,7 @@ func HandleOpenAIChatCompletionStreaming(
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
 	customRequestConverter func(*schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error),
+	customResponseHandler responseHandler[schemas.BifrostChatResponse],
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIChatRequest) *OpenAIChatRequest,
 	postResponseConverter func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse,
@@ -992,9 +1032,29 @@ func HandleOpenAIChatCompletionStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostChatResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn("Failed to parse stream response: %v", err)
-				continue
+			if customResponseHandler != nil {
+				rawRequest, rawResponse, handlerErr := customResponseHandler([]byte(jsonData), &response, nil, sendBackRawRequest, sendBackRawResponse)
+				if handlerErr != nil {
+					handlerErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    streamRequestType,
+					}
+					if sendBackRawRequest {
+						handlerErr.ExtraFields.RawRequest = rawRequest
+					}
+					if sendBackRawResponse {
+						handlerErr.ExtraFields.RawResponse = rawResponse
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, handlerErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+					return
+				}
+			} else {
+				if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+					logger.Warn("Failed to parse stream response: %v", err)
+					continue
+				}
 			}
 
 			// choices be array if nil
@@ -1193,6 +1253,7 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -1208,6 +1269,7 @@ func HandleOpenAIResponsesRequest(
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
+	customResponseHandler responseHandler[schemas.BifrostResponsesResponse],
 	customErrorConverter ErrorConverter,
 	logger schemas.Logger,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
@@ -1264,8 +1326,14 @@ func HandleOpenAIResponsesRequest(
 
 	response := &schemas.BifrostResponsesResponse{}
 
-	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	var rawRequest, rawResponse interface{}
+
+	if customResponseHandler != nil {
+		rawRequest, rawResponse, bifrostErr = customResponseHandler(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	} else {
+		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	}
+
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -1313,6 +1381,7 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -1330,6 +1399,7 @@ func HandleOpenAIResponsesStreaming(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
+	customResponseHandler responseHandler[schemas.BifrostResponsesStreamResponse],
 	customErrorConverter ErrorConverter,
 	postRequestConverter func(*OpenAIResponsesRequest) *OpenAIResponsesRequest,
 	postResponseConverter func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse,
@@ -1476,9 +1546,29 @@ func HandleOpenAIResponsesStreaming(
 
 			// Parse into bifrost response
 			var response schemas.BifrostResponsesStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn("Failed to parse stream response: %v", err)
-				continue
+			if customResponseHandler != nil {
+				rawRequest, rawResponse, bifrostErr := customResponseHandler([]byte(jsonData), &response, nil, false, false)
+				if bifrostErr != nil {
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ResponsesStreamRequest,
+					}
+					if sendBackRawRequest {
+						bifrostErr.ExtraFields.RawRequest = rawRequest
+					}
+					if sendBackRawResponse {
+						bifrostErr.ExtraFields.RawResponse = rawResponse
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+					return
+				}
+			} else {
+				if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+					logger.Warn("Failed to parse stream response: %v", err)
+					continue
+				}
 			}
 
 			if postResponseConverter != nil {
@@ -1576,6 +1666,7 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 }
@@ -1592,6 +1683,7 @@ func HandleOpenAIEmbeddingRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	customResponseHandler responseHandler[schemas.BifrostEmbeddingResponse],
 	logger schemas.Logger,
 ) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Create request
@@ -1644,8 +1736,14 @@ func HandleOpenAIEmbeddingRequest(
 
 	response := &schemas.BifrostEmbeddingResponse{}
 
-	// Use enhanced response handler with pre-allocated response
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	var rawRequest, rawResponse interface{}
+
+	if customResponseHandler != nil {
+		rawRequest, rawResponse, bifrostErr = customResponseHandler(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	} else {
+		rawRequest, rawResponse, bifrostErr = providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	}
+
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
@@ -1686,6 +1784,7 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 }
@@ -1702,6 +1801,7 @@ func HandleOpenAISpeechRequest(
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
+	customResponseHandler responseHandler[schemas.BifrostSpeechResponse],
 	logger schemas.Logger,
 ) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	// Create request
@@ -2045,6 +2145,7 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 }
@@ -2058,6 +2159,7 @@ func HandleOpenAITranscriptionRequest(
 	extraHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
+	customResponseHandler responseHandler[schemas.BifrostTranscriptionResponse],
 	logger schemas.Logger,
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Create request
@@ -2084,7 +2186,7 @@ func HandleOpenAITranscriptionRequest(
 	// Create multipart form
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := parseTranscriptionFormDataBodyFromRequest(writer, reqBody, providerName); err != nil {
+	if err := ParseTranscriptionFormDataBodyFromRequest(writer, reqBody, providerName); err != nil {
 		return nil, err
 	}
 
@@ -2123,29 +2225,36 @@ func HandleOpenAITranscriptionRequest(
 
 	// Parse OpenAI's transcription response directly into BifrostTranscribe
 	response := &schemas.BifrostTranscriptionResponse{}
+	var rawResponse interface{}
+	if customResponseHandler != nil {
+		_, rawResponse, bifrostErr = customResponseHandler(copiedResponseBody, response, nil, false, sendBackRawResponse)
+	} else {
+		if err := sonic.Unmarshal(copiedResponseBody, response); err != nil {
+			// Check if it's an HTML response
+			if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
+				return nil, &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: schemas.ErrProviderResponseHTML,
+						Error:   errors.New(string(copiedResponseBody)),
+					},
+				}
+			}
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+		}
 
-	if err := sonic.Unmarshal(copiedResponseBody, response); err != nil {
-		// Check if it's an HTML response
-		if providerUtils.IsHTMLResponse(resp, copiedResponseBody) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseHTML,
-					Error:   errors.New(string(copiedResponseBody)),
-				},
+		//TODO: add HandleProviderResponse here
+
+		// Parse raw response for RawResponse field
+		if sendBackRawResponse {
+			if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
 			}
 		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
-	//TODO: add HandleProviderResponse here
-
-	// Parse raw response for RawResponse field
-	var rawResponse interface{}
-	if sendBackRawResponse {
-		if err := sonic.Unmarshal(copiedResponseBody, &rawResponse); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRawResponseUnmarshal, err, providerName)
-		}
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
@@ -2185,6 +2294,7 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		postHookRunner,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -2201,6 +2311,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
 	postHookRunner schemas.PostHookRunner,
+	customResponseHandler responseHandler[schemas.BifrostTranscriptionStreamResponse],
 	postRequestConverter func(*OpenAITranscriptionRequest) *OpenAITranscriptionRequest,
 	postResponseConverter func(*schemas.BifrostTranscriptionStreamResponse) *schemas.BifrostTranscriptionStreamResponse,
 	logger schemas.Logger,
@@ -2219,7 +2330,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	if bifrostErr := parseTranscriptionFormDataBodyFromRequest(writer, reqBody, providerName); bifrostErr != nil {
+	if bifrostErr := ParseTranscriptionFormDataBodyFromRequest(writer, reqBody, providerName); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -2336,25 +2447,45 @@ func HandleOpenAITranscriptionStreamRequest(
 				continue
 			}
 
-			// First, check if this is an error response
-			var bifrostErr schemas.BifrostError
-			if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
-				if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+			var response schemas.BifrostTranscriptionStreamResponse
+			var bifrostErr *schemas.BifrostError
+
+			if customResponseHandler != nil {
+				_, _, bifrostErr = customResponseHandler([]byte(jsonData), &response, nil, false, false)
+				if bifrostErr != nil {
 					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
 						ModelRequested: request.Model,
 						RequestType:    schemas.TranscriptionStreamRequest,
 					}
+					if sendBackRawResponse {
+						bifrostErr.ExtraFields.RawResponse = jsonData
+					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), []byte(jsonData), false, sendBackRawResponse), responseChan, logger)
 					return
 				}
-			}
+			} else {
+				// First, check if this is an error response
+				var bifrostErr schemas.BifrostError
+				if err := sonic.Unmarshal([]byte(jsonData), &bifrostErr); err == nil {
+					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+							Provider:       providerName,
+							ModelRequested: request.Model,
+							RequestType:    schemas.TranscriptionStreamRequest,
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, logger)
+						return
+					}
+				}
 
-			var response schemas.BifrostTranscriptionStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
-				logger.Warn("Failed to parse stream response: %v", err)
-				continue
+				if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+					logger.Warn("Failed to parse stream response: %v", err)
+					continue
+				}
+
 			}
 
 			if postResponseConverter != nil {
