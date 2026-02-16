@@ -183,19 +183,15 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		return usage.Cost.TotalCost
 	}
 
-	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	// Get pricing for the model
 	pricing, exists := mc.getPricing(model, provider, requestType)
 	if !exists {
 		if deployment != "" {
-			mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, trying with deployment %s", model, provider, normalizeRequestType(requestType), deployment)
 			pricing, exists = mc.getPricing(deployment, provider, requestType)
 			if !exists {
-				mc.logger.Debug("pricing not found for deployment %s and provider %s of request type %s, skipping cost calculation", deployment, provider, normalizeRequestType(requestType))
 				return 0.0
 			}
 		} else {
-			mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, skipping cost calculation", model, provider, normalizeRequestType(requestType))
 			return 0.0
 		}
 	}

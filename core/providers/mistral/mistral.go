@@ -458,9 +458,9 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		// Increase buffer size to handle large chunks
-		buf := make([]byte, 0, 64*1024) // 64KB initial buffer
-		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 		chunkIndex := -1
 
 		startTime := time.Now()

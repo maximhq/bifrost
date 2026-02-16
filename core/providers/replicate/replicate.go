@@ -564,29 +564,30 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.TextCompletionStreamRequest, provider.logger)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.TextCompletionStreamRequest, provider.logger)
-			}
-			close(responseChan)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.TextCompletionStreamRequest, provider.logger)
+		} else if ctx.Err() == context.DeadlineExceeded {
+			providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.TextCompletionStreamRequest, provider.logger)
+		}
+		close(responseChan)
+	}()
+	defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
-		defer stopCancellation()
+	// Setup cancellation handler
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+	defer stopCancellation()
 
-		startTime := time.Now()
-		lastChunkTime := startTime
-		chunkIndex := 0
+	startTime := time.Now()
+	lastChunkTime := startTime
+	chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+	// Setup scanner to read SSE stream
+	scanner := bufio.NewScanner(bodyStream)
+	bufPtr := providerUtils.AcquireScannerBuf()
+	scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+	defer providerUtils.ReleaseScannerBuf(bufPtr)
 
-		var currentEvent ReplicateSSEEvent
-		messageID := prediction.ID
+	var currentEvent ReplicateSSEEvent
+	messageID := prediction.ID
 
 		for scanner.Scan() {
 			// Check for context cancellation
@@ -943,29 +944,30 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
-			}
-			close(responseChan)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
+		} else if ctx.Err() == context.DeadlineExceeded {
+			providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.GetProviderKey(), request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
+		}
+		close(responseChan)
+	}()
+	defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
-		defer stopCancellation()
+	// Setup cancellation handler
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+	defer stopCancellation()
 
-		startTime := time.Now()
-		lastChunkTime := startTime
-		chunkIndex := 0
+	startTime := time.Now()
+	lastChunkTime := startTime
+	chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+	// Setup scanner to read SSE stream
+	scanner := bufio.NewScanner(bodyStream)
+	bufPtr := providerUtils.AcquireScannerBuf()
+	scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+	defer providerUtils.ReleaseScannerBuf(bufPtr)
 
-		var currentEvent ReplicateSSEEvent
-		messageID := prediction.ID
+	var currentEvent ReplicateSSEEvent
+	messageID := prediction.ID
 
 		for scanner.Scan() {
 			// Check for context cancellation
@@ -1991,26 +1993,27 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, provider.logger)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, provider.logger)
-			}
-			close(responseChan)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, provider.logger)
+		} else if ctx.Err() == context.DeadlineExceeded {
+			providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, provider.logger)
+		}
+		close(responseChan)
+	}()
+	defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
-		defer stopCancellation()
+	// Setup cancellation handler
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+	defer stopCancellation()
 
-		startTime := time.Now()
-		lastChunkTime := startTime
-		chunkIndex := 0
+	startTime := time.Now()
+	lastChunkTime := startTime
+	chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+	// Setup scanner to read SSE stream
+	scanner := bufio.NewScanner(bodyStream)
+	bufPtr := providerUtils.AcquireScannerBuf()
+	scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+	defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk
@@ -2428,26 +2431,27 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
-			}
-			close(responseChan)
-		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+			providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
+		} else if ctx.Err() == context.DeadlineExceeded {
+			providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
+		}
+		close(responseChan)
+	}()
+	defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
-		defer stopCancellation()
+	// Setup cancellation handler
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+	defer stopCancellation()
 
-		startTime := time.Now()
-		lastChunkTime := startTime
-		chunkIndex := 0
+	startTime := time.Now()
+	lastChunkTime := startTime
+	chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+	// Setup scanner to read SSE stream
+	scanner := bufio.NewScanner(bodyStream)
+	bufPtr := providerUtils.AcquireScannerBuf()
+	scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+	defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk

@@ -47,6 +47,41 @@ func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
 var logger atomic.Pointer[schemas.Logger]
 
+// scannerBufPool pools scanner buffers used for SSE stream parsing across all providers.
+// SSE lines are typically 100-500 bytes; 4KB covers 99.9% of cases.
+// The scanner auto-grows if a line is larger; oversized buffers are not returned to the pool.
+var scannerBufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 0, 4*1024)
+		return &buf
+	},
+}
+
+// maxPoolBufSize is the maximum buffer capacity we'll return to the pool.
+// Buffers that grew beyond this (due to unusually large SSE lines) are left for GC.
+const maxPoolBufSize = 64 * 1024
+
+// AcquireScannerBuf gets a scanner buffer from the pool.
+// Usage:
+//
+//	bufPtr := providerUtils.AcquireScannerBuf()
+//	scanner.Buffer((*bufPtr)[:0], maxSize)
+//	defer providerUtils.ReleaseScannerBuf(bufPtr)
+func AcquireScannerBuf() *[]byte {
+	return scannerBufPool.Get().(*[]byte)
+}
+
+// ReleaseScannerBuf returns a scanner buffer to the pool.
+// Buffers that grew beyond maxPoolBufSize are not returned to avoid pool bloat.
+func ReleaseScannerBuf(bufPtr *[]byte) {
+	if bufPtr == nil {
+		return
+	}
+	if cap(*bufPtr) <= maxPoolBufSize {
+		scannerBufPool.Put(bufPtr)
+	}
+}
+
 // noopLogger is a no-op implementation of schemas.Logger.
 type noopLogger struct{}
 
@@ -1160,10 +1195,8 @@ func SendCreatedEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunner 
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
-	bifrostResponse := &schemas.BifrostResponse{
-		ResponsesStreamResponse: firstChunk,
-	}
+	bifrostResponse := schemas.AcquireBifrostResponse()
+	bifrostResponse.ResponsesStreamResponse = firstChunk
 	ProcessAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
@@ -1181,10 +1214,8 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 			Latency:        time.Since(startTime).Milliseconds(),
 		},
 	}
-	//TODO add bifrost response pooling here
-	bifrostResponse := &schemas.BifrostResponse{
-		ResponsesStreamResponse: chunk,
-	}
+	bifrostResponse := schemas.AcquireBifrostResponse()
+	bifrostResponse.ResponsesStreamResponse = chunk
 	ProcessAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
@@ -1219,7 +1250,7 @@ func ProcessAndSendResponse(
 		return
 	}
 
-	streamResponse := &schemas.BifrostStreamChunk{}
+	streamResponse := schemas.AcquireBifrostStreamChunk()
 	if processedResponse != nil {
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
@@ -1235,6 +1266,7 @@ func ProcessAndSendResponse(
 	select {
 	case responseChan <- streamResponse:
 	case <-ctx.Done():
+		schemas.ReleaseBifrostStreamChunk(streamResponse)
 		return
 	}
 
@@ -1244,6 +1276,13 @@ func ProcessAndSendResponse(
 			completeDeferredSpan(ctx, processedResponse, processedError)
 		}
 	}
+
+	// NOTE: Do NOT release BifrostResponse here. The PostLLMHook goroutine
+	// captures this response and reads from it asynchronously (e.g. ChatResponse.Usage).
+	// Releasing it back to the pool while the goroutine is still running causes a
+	// data race: AcquireBifrostResponse resets *r = BifrostResponse{} which nils
+	// ChatResponse, leading to nil-pointer panics in the logging goroutine.
+	// The BifrostResponse wrapper is tiny (~few pointers); GC handles it cheaply.
 }
 
 // ProcessAndSendBifrostError handles post-hook processing and sends the bifrost error to the channel.
@@ -1593,8 +1632,7 @@ func GetBifrostResponseForStreamResponse(
 	transcriptionStreamResponse *schemas.BifrostTranscriptionStreamResponse,
 	imageGenerationStreamResponse *schemas.BifrostImageGenerationStreamResponse,
 ) *schemas.BifrostResponse {
-	//TODO add bifrost response pooling here
-	bifrostResponse := &schemas.BifrostResponse{}
+	bifrostResponse := schemas.AcquireBifrostResponse()
 
 	switch {
 	case textCompletionResponse != nil:
@@ -1616,6 +1654,7 @@ func GetBifrostResponseForStreamResponse(
 		bifrostResponse.ImageGenerationStreamResponse = imageGenerationStreamResponse
 		return bifrostResponse
 	}
+	schemas.ReleaseBifrostResponse(bifrostResponse)
 	return nil
 }
 

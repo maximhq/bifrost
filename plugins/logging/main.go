@@ -132,9 +132,10 @@ type LoggerPlugin struct {
 	logCallback           LogCallback
 	mcpToolLogCallback    MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests       atomic.Int64
-	cleanupTicker         *time.Ticker // Ticker for cleaning up old processing logs
-	logMsgPool            sync.Pool    // Pool for reusing LogMessage structs
-	updateDataPool        sync.Pool    // Pool for reusing UpdateLogData structs
+	cleanupTicker         *time.Ticker  // Ticker for cleaning up old processing logs
+	logMsgPool            sync.Pool     // Pool for reusing LogMessage structs
+	updateDataPool        sync.Pool     // Pool for reusing UpdateLogData structs
+	dbWriteSem            chan struct{} // Semaphore to limit concurrent DB write goroutines
 }
 
 // Init creates new logger plugin with given log store
@@ -161,6 +162,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		loggingHeaders:        config.LoggingHeaders,
 		done:                  make(chan struct{}),
 		logger:                logger,
+		dbWriteSem:            make(chan struct{}, 64), // Cap concurrent DB write goroutines to prevent SQLite contention explosion
 		logMsgPool: sync.Pool{
 			New: func() interface{} {
 				return &LogMessage{}
@@ -415,6 +417,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	logMsg.RoutingEnginesUsed = routingEngines
 
 	go func(msg *LogMessage) {
+		// Acquire DB write semaphore to prevent goroutine explosion under high load
+		select {
+		case p.dbWriteSem <- struct{}{}:
+			// acquired
+		default:
+			// Semaphore full - drop this log write to prevent goroutine pile-up
+			p.putLogMessage(msg)
+			return
+		}
+		defer func() { <-p.dbWriteSem }()
 		defer p.putLogMessage(msg) // Return to pool when done
 		if err := p.insertInitialLogEntry(
 			p.ctx,
@@ -511,10 +523,30 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 
+	// For non-final streaming chunks, process the accumulator synchronously
+	// and skip the goroutine entirely. The accumulator work (ProcessStreamingChunk)
+	// is fast (mutex + append). Only final chunks, errors, and non-streaming
+	// responses need a goroutine for DB writes.
+	if bifrost.IsStreamRequestType(requestType) && !isFinalChunk && result != nil && bifrostErr == nil {
+		if tracer != nil && traceID != "" {
+			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
+		}
+		return result, bifrostErr, nil
+	}
+
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
 	go func() {
+		// Acquire DB write semaphore to prevent goroutine explosion under high load
+		select {
+		case p.dbWriteSem <- struct{}{}:
+			// acquired
+		default:
+			// Semaphore full - drop this log write to prevent goroutine pile-up
+			return
+		}
+		defer func() { <-p.dbWriteSem }()
 		// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 		logMsg := p.getLogMessage()
 		logMsg.RequestID = requestID
@@ -589,7 +621,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			return
 		}
 		if bifrost.IsStreamRequestType(requestType) {
-			p.logger.Debug("[logging] processing streaming response")
 
 			// Process streaming response via tracer's central accumulator
 			var streamResponse *streaming.ProcessedStreamResponse
@@ -598,12 +629,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if accResult != nil {
 					streamResponse = convertToProcessedStreamResponse(accResult, requestType)
 				}
-			} else {
-				p.logger.Debug("tracer or traceID not available in streaming path for request %s, skipping stream processing", logMsg.RequestID)
 			}
 
 			if streamResponse == nil {
-				p.logger.Debug("failed to process streaming response: tracer or traceID not available")
+				// tracer or traceID not available, or accumulator returned nil
 			} else if isFinalChunk {
 				// Prepare final log data
 				logMsg.Operation = LogOperationStreamUpdate
@@ -641,7 +670,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 				// Note: Stream accumulator cleanup is handled by the tracer
 				if tracer != nil && traceID != "" {
-					p.logger.Debug("cleaning up stream accumulator for trace ID: %s in logging plugin posthook", traceID)
 					tracer.CleanupStreamAccumulator(traceID)
 				}
 			}

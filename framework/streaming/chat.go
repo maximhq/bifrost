@@ -4,11 +4,29 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// chatStreamDeltaPool pools ChatStreamResponseChoiceDelta structs used in deepCopyChatStreamDelta.
+// Each streaming chunk allocates a delta copy for the accumulator; pooling avoids per-chunk heap allocation.
+var chatStreamDeltaPool = sync.Pool{
+	New: func() interface{} {
+		return &schemas.ChatStreamResponseChoiceDelta{}
+	},
+}
+
+// releaseChatStreamDelta returns a ChatStreamResponseChoiceDelta to the pool.
+func releaseChatStreamDelta(d *schemas.ChatStreamResponseChoiceDelta) {
+	if d == nil {
+		return
+	}
+	*d = schemas.ChatStreamResponseChoiceDelta{}
+	chatStreamDeltaPool.Put(d)
+}
 
 // deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
 // to prevent shared data mutation between different chunks
@@ -17,7 +35,8 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		return nil
 	}
 
-	copy := &schemas.ChatStreamResponseChoiceDelta{}
+	copy := chatStreamDeltaPool.Get().(*schemas.ChatStreamResponseChoiceDelta)
+	*copy = schemas.ChatStreamResponseChoiceDelta{}
 
 	if original.Role != nil {
 		copyRole := *original.Role

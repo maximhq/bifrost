@@ -425,25 +425,22 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
-	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
-	go func() {
-		// For streaming requests, handle per-token metrics for intermediate chunks
-		if bifrost.IsStreamRequestType(requestType) {
-			// For intermediate chunks, record per-token metrics and exit.
-			// The final chunk will fall through to record full request metrics.
-			if !hasFinalChunkIndicator || !isFinalChunk {
-				// Record metrics for the first token
-				if result != nil {
-					extraFields := result.GetExtraFields()
-					if extraFields.ChunkIndex == 0 {
-						p.StreamFirstTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
-					} else {
-						p.StreamInterTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
-					}
-				}
-				return // Exit goroutine for intermediate chunks
+	// For non-final streaming chunks, record per-token metrics synchronously and return.
+	// This avoids spawning a goroutine for each intermediate chunk.
+	if bifrost.IsStreamRequestType(requestType) && (!hasFinalChunkIndicator || !isFinalChunk) {
+		if result != nil {
+			extraFields := result.GetExtraFields()
+			if extraFields.ChunkIndex == 0 {
+				p.StreamFirstTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
+			} else {
+				p.StreamInterTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
 			}
 		}
+		return result, bifrostErr, nil
+	}
+
+	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
+	go func() {
 
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {

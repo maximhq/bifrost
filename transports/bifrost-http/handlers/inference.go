@@ -1610,6 +1610,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 			// Convert response to JSON
 			chunkJSON, err := sonic.Marshal(chunk)
+
+			// Release the pooled stream chunk (and its inner BifrostChatResponse) back to the pool.
+			// The data has been serialized to chunkJSON; the original struct is no longer needed.
+			schemas.ReleaseBifrostStreamChunk(chunk)
+
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
 				continue

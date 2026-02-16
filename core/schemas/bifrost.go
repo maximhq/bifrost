@@ -937,3 +937,64 @@ func ReleaseBifrostError(err *BifrostError) {
 		bifrostErrorPool.Put(err)
 	}
 }
+
+// bifrostResponsePool provides a pool for BifrostResponse wrapper objects to reduce
+// per-chunk allocations during streaming. The BifrostResponse is a temporary container
+// that wraps inner response pointers; it is no longer needed after the BifrostStreamChunk
+// copies those pointers and is sent on the channel.
+var bifrostResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostResponse{}
+	},
+}
+
+// AcquireBifrostResponse gets a BifrostResponse from the pool and resets it.
+func AcquireBifrostResponse() *BifrostResponse {
+	r := bifrostResponsePool.Get().(*BifrostResponse)
+	*r = BifrostResponse{}
+	return r
+}
+
+// ReleaseBifrostResponse returns a BifrostResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostResponse(r *BifrostResponse) {
+	if r != nil {
+		bifrostResponsePool.Put(r)
+	}
+}
+
+// bifrostStreamChunkPool provides a pool for BifrostStreamChunk objects to reduce
+// per-chunk allocations during streaming. Each chunk sent on the streaming channel
+// allocates a BifrostStreamChunk; pooling avoids this heap allocation.
+var bifrostStreamChunkPool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostStreamChunk{}
+	},
+}
+
+// AcquireBifrostStreamChunk gets a BifrostStreamChunk from the pool and resets it.
+func AcquireBifrostStreamChunk() *BifrostStreamChunk {
+	c := bifrostStreamChunkPool.Get().(*BifrostStreamChunk)
+	*c = BifrostStreamChunk{}
+	return c
+}
+
+// ReleaseBifrostStreamChunk returns a BifrostStreamChunk to its pool.
+// NOTE: The inner BifrostChatResponse is NOT released here because post-hook
+// goroutines (e.g. PostLLMHook) may still hold a reference to it via the
+// original BifrostResponse. Releasing it while a goroutine reads it causes
+// a data race (nil-pointer panic on ChatResponse.Usage). The ChatResponse
+// is reclaimed by GC once all references are dropped.
+func ReleaseBifrostStreamChunk(c *BifrostStreamChunk) {
+	if c == nil {
+		return
+	}
+	c.BifrostChatResponse = nil
+	c.BifrostTextCompletionResponse = nil
+	c.BifrostResponsesStreamResponse = nil
+	c.BifrostSpeechStreamResponse = nil
+	c.BifrostTranscriptionStreamResponse = nil
+	c.BifrostImageGenerationStreamResponse = nil
+	c.BifrostError = nil
+	bifrostStreamChunkPool.Put(c)
+}
