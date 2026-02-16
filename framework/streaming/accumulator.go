@@ -48,6 +48,8 @@ func (a *Accumulator) getChatStreamChunk() *ChatStreamChunk {
 // putChatStreamChunk returns a chat stream chunk to the pool
 func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.Timestamp = time.Time{}
+	// Return the pooled delta struct before clearing the pointer
+	releaseChatStreamDelta(chunk.Delta)
 	chunk.Delta = nil
 	chunk.Cost = nil
 	chunk.SemanticCacheDebug = nil
