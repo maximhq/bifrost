@@ -552,7 +552,55 @@ false
 {{- end }}
 {{- /* MCP */ -}}
 {{- if .Values.bifrost.mcp.enabled }}
-{{- $mcpConfig := dict "client_configs" .Values.bifrost.mcp.clientConfigs }}
+{{- $clientConfigs := list }}
+{{- range $idx, $client := .Values.bifrost.mcp.clientConfigs }}
+{{- $cc := dict "name" $client.name }}
+{{- /* Map connectionType: websocket -> sse, others pass through */ -}}
+{{- if eq $client.connectionType "websocket" }}
+{{- $_ := set $cc "connection_type" "sse" }}
+{{- else }}
+{{- $_ := set $cc "connection_type" $client.connectionType }}
+{{- end }}
+{{- /* Map httpConfig.url / websocketConfig.url -> connection_string */ -}}
+{{- if and (eq $client.connectionType "http") $client.httpConfig }}
+{{- $_ := set $cc "connection_string" $client.httpConfig.url }}
+{{- end }}
+{{- if and (eq $client.connectionType "websocket") $client.websocketConfig }}
+{{- $_ := set $cc "connection_string" $client.websocketConfig.url }}
+{{- end }}
+{{- /* Map stdioConfig -> stdio_config */ -}}
+{{- if $client.stdioConfig }}
+{{- $stdio := dict "command" $client.stdioConfig.command }}
+{{- if $client.stdioConfig.args }}
+{{- $_ := set $stdio "args" $client.stdioConfig.args }}
+{{- end }}
+{{- if $client.stdioConfig.envs }}
+{{- $_ := set $stdio "envs" $client.stdioConfig.envs }}
+{{- end }}
+{{- $_ := set $cc "stdio_config" $stdio }}
+{{- end }}
+{{- /* Pass through fields that are already snake_case or flat */ -}}
+{{- if $client.headers }}
+{{- $_ := set $cc "headers" $client.headers }}
+{{- end }}
+{{- if $client.tools_to_execute }}
+{{- $_ := set $cc "tools_to_execute" $client.tools_to_execute }}
+{{- end }}
+{{- if $client.tools_to_auto_execute }}
+{{- $_ := set $cc "tools_to_auto_execute" $client.tools_to_auto_execute }}
+{{- end }}
+{{- if $client.auth_type }}
+{{- $_ := set $cc "auth_type" $client.auth_type }}
+{{- end }}
+{{- if $client.oauth_config_id }}
+{{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
+{{- end }}
+{{- if hasKey $client "is_ping_available" }}
+{{- $_ := set $cc "is_ping_available" $client.is_ping_available }}
+{{- end }}
+{{- $clientConfigs = append $clientConfigs $cc }}
+{{- end }}
+{{- $mcpConfig := dict "client_configs" $clientConfigs }}
 {{- if .Values.bifrost.mcp.toolManagerConfig }}
 {{- $tmConfig := dict }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
