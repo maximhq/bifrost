@@ -173,6 +173,7 @@ func listModelsByKey(
 	response.ExtraFields.Provider = providerName
 	response.ExtraFields.RequestType = schemas.ListModelsRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
@@ -308,6 +309,7 @@ func HandleOpenAITextCompletionRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.TextCompletionRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
@@ -444,6 +446,9 @@ func HandleOpenAITextCompletionStreaming(
 		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.TextCompletionStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -730,8 +735,8 @@ func HandleOpenAIChatCompletionRequest(
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
-
 	response := &schemas.BifrostChatResponse{}
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
@@ -903,6 +908,9 @@ func HandleOpenAIChatCompletionStreaming(
 		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1274,6 +1282,7 @@ func HandleOpenAIResponsesRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
@@ -1413,6 +1422,9 @@ func HandleOpenAIResponsesStreaming(
 		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ResponsesStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1654,6 +1666,7 @@ func HandleOpenAIEmbeddingRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.EmbeddingRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -1755,10 +1768,11 @@ func HandleOpenAISpeechRequest(
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		Audio: body,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.SpeechRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
+			RequestType:              schemas.SpeechRequest,
+			Provider:                 providerName,
+			ModelRequested:           request.Model,
+			Latency:                  latency.Milliseconds(),
+			ProviderResponseHeaders:  providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 
@@ -1897,6 +1911,9 @@ func HandleOpenAISpeechStreamRequest(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -2149,10 +2166,11 @@ func HandleOpenAITranscriptionRequest(
 	}
 
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType:    schemas.TranscriptionRequest,
-		Provider:       providerName,
-		ModelRequested: request.Model,
-		Latency:        latency.Milliseconds(),
+		RequestType:             schemas.TranscriptionRequest,
+		Provider:                providerName,
+		ModelRequested:          request.Model,
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if sendBackRawResponse {
@@ -2279,6 +2297,9 @@ func HandleOpenAITranscriptionStreamRequest(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -2504,6 +2525,7 @@ func HandleOpenAIImageGenerationRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ImageGenerationRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -2659,6 +2681,9 @@ func HandleOpenAIImageGenerationStreaming(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageGenerationStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -3019,6 +3044,7 @@ func HandleOpenAICountTokensRequest(
 	response.ExtraFields.RequestType = schemas.CountTokensRequest
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequest
@@ -3118,6 +3144,7 @@ func HandleOpenAIImageEditRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ImageEditRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if sendBackRawRequest {
@@ -3249,6 +3276,9 @@ func HandleOpenAIImageEditStreamRequest(
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageEditStreamRequest, providerName, request.Model), body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -3599,6 +3629,7 @@ func HandleOpenAIImageVariationRequest(
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.RequestType = schemas.ImageVariationRequest
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw response if enabled
 	if sendBackRawResponse {
@@ -3702,7 +3733,9 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 		return nil, bifrostErr
 	}
 
-	return openAIResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+	fileResponse := openAIResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse)
+	fileResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+	return fileResponse, nil
 }
 
 // FileList lists files using serial pagination across keys.
@@ -3823,9 +3856,10 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 		Data:    files,
 		HasMore: hasMore,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			RequestType:             schemas.FileListRequest,
+			Provider:                providerName,
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 	if nextCursor != "" {
