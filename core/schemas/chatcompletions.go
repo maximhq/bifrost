@@ -29,16 +29,16 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams       map[string]interface{}     `json:"-"`
+	ID                      string                     `json:"id"`
+	Choices                 []BifrostResponseChoice    `json:"choices"`
+	Created                 int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model                   string                     `json:"model"`
+	Object                  string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier             *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint       string                     `json:"system_fingerprint"`
+	Usage                   *BifrostLLMUsage           `json:"usage"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams             map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
