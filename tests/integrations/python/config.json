@@ -134,7 +134,10 @@
                     "value": "env.AZURE_API_KEY",
                     "azure_key_config": {
                         "endpoint": "env.AZURE_ENDPOINT",
-                        "api_version": "env.AZURE_API_VERSION"
+                        "api_version": "env.AZURE_API_VERSION",
+                        "deployments": {
+                            "gpt-4o": "gpt-4o"  
+                        }
                     },
                     "weight": 1
                 }

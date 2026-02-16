@@ -16,6 +16,7 @@ bifrost:
     langchain: "langchain"
     pydanticai: "pydanticai"
     bedrock: "bedrock"
+    azure: "openai"  # Azure uses OpenAI routes with /openai/deployments/{id} paths
 
   # Full URLs constructed as: {base_url.rstrip('/')}/{endpoints[integration]}
   # Examples:
@@ -63,6 +64,18 @@ providers:
       - "gpt-4o"
       - "gpt-3.5-turbo"
     
+  azure:
+    chat: "gpt-4o"
+    vision: "gpt-4o"
+    tools: "gpt-4o-mini"
+    streaming: "gpt-4o-mini"
+    speech: "tts-1"
+    transcription: "whisper-1"
+    embeddings: "text-embedding-3-small"
+    image_generation: "dall-e-3"
+    thinking: "o1"
+    count_tokens: "gpt-4o-mini"
+
   xai:
     chat: "grok-4-0709"
     vision: "grok-2-vision-1212"
@@ -190,6 +203,7 @@ provider_api_keys:
   xai: "XAI_API_KEY"
   huggingface: "HUGGING_FACE_API_KEY"
   nebius: "NEBIUS_API_KEY"
+  azure: "AZURE_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -235,6 +249,50 @@ provider_scenarios:
     file_retrieve: true
     file_delete: true
     file_content: true
+    count_tokens: true
+
+  azure:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    web_search: false
+    image_url: true
+    image_base64: true
+    file_input: false
+    multiple_images: true
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    image_generation: true
+    image_edit: false
+    thinking: true
+    prompt_caching: false
+    citations: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: false
+    pydantic_structured_output: false
+    pydanticai_streaming: false
+    batch_file_upload: false
+    batch_create: false
+    batch_list: false
+    batch_retrieve: false
+    batch_cancel: false
+    batch_inline: false
+    batch_s3: false
+    file_upload: false
+    file_list: false
+    file_retrieve: false
+    file_delete: false
+    file_content: false
     count_tokens: true
 
   xai:
@@ -804,6 +862,9 @@ integration_settings:
     s3_bucket: "${AWS_S3_BUCKET:-}"
     batch_role_arn: "${AWS_ARN:-}"
     output_s3_prefix: "${AWS_OUTPUT_S3_PREFIX:-bifrost-batch-output/}"
+
+  azure:
+    api_version: "${AZURE_API_VERSION:-2024-10-21}"
 
 # Environment-specific overrides
 environments:

@@ -1049,7 +1049,7 @@ def assert_error_propagation(error_response: Any, integration: str):
     assert error_response is not None, "Should have received an error response"
 
     # Integration-specific error format validation
-    if integration.lower() == "openai":
+    if integration.lower() in ("openai", "azure"):
         # OpenAI format: should have top-level 'type', 'event_id' and 'error' field with nested structure
         if hasattr(error_response, "response"):
             error_data = error_response.response.json()
@@ -1837,6 +1837,7 @@ def get_api_key(integration: str) -> str:
         "xai": "XAI_API_KEY",
         "nebius": "NEBIUS_API_KEY",
         "huggingface": "HUGGING_FACE_API_KEY",
+        "azure": "AZURE_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())
