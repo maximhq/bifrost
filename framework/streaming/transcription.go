@@ -3,6 +3,7 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -98,20 +99,24 @@ func (a *Accumulator) processAccumulatedTranscriptionStreamingChunks(requestID s
 			data.CacheDebug = lastChunk.SemanticCacheDebug
 		}
 	}
-	// Accumulate raw response
+	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.TranscriptionStreamChunks) > 0 {
 		// Sort chunks by chunk index
 		sort.Slice(accumulator.TranscriptionStreamChunks, func(i, j int) bool {
 			return accumulator.TranscriptionStreamChunks[i].ChunkIndex < accumulator.TranscriptionStreamChunks[j].ChunkIndex
 		})
+		var rawBuilder strings.Builder
 		for _, chunk := range accumulator.TranscriptionStreamChunks {
 			if chunk.RawResponse != nil {
-				if data.RawResponse == nil {
-					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
-				} else {
-					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				if rawBuilder.Len() > 0 {
+					rawBuilder.WriteString("\n\n")
 				}
+				rawBuilder.WriteString(*chunk.RawResponse)
 			}
+		}
+		if rawBuilder.Len() > 0 {
+			s := rawBuilder.String()
+			data.RawResponse = &s
 		}
 	}
 	return data, nil
@@ -196,16 +201,13 @@ func (a *Accumulator) processTranscriptionStreamingResponse(ctx *schemas.Bifrost
 			RawRequest: &rawRequest,
 		}, nil
 	}
-	data, processErr := a.processAccumulatedTranscriptionStreamingChunks(requestID, bifrostErr, isFinalChunk)
-	if processErr != nil {
-		a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
-		return nil, processErr
-	}
+	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
+	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
 		RequestID:  requestID,
 		StreamType: StreamTypeTranscription,
 		Provider:   provider,
 		Model:      model,
-		Data:       data,
+		Data:       nil,
 	}, nil
 }

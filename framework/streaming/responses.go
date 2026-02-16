@@ -3,6 +3,7 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -828,20 +829,24 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		data.FinishReason = lastChunk.FinishReason
 	}
 
-	// Accumulate raw response
+	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ResponsesStreamChunks) > 0 {
 		// Sort chunks by chunk index
 		sort.Slice(accumulator.ResponsesStreamChunks, func(i, j int) bool {
 			return accumulator.ResponsesStreamChunks[i].ChunkIndex < accumulator.ResponsesStreamChunks[j].ChunkIndex
 		})
+		var rawBuilder strings.Builder
 		for _, chunk := range accumulator.ResponsesStreamChunks {
 			if chunk.RawResponse != nil {
-				if data.RawResponse == nil {
-					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
-				} else {
-					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				if rawBuilder.Len() > 0 {
+					rawBuilder.WriteString("\n\n")
 				}
+				rawBuilder.WriteString(*chunk.RawResponse)
 			}
+		}
+		if rawBuilder.Len() > 0 {
+			s := rawBuilder.String()
+			data.RawResponse = &s
 		}
 	}
 

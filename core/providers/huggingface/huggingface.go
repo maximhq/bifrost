@@ -1212,33 +1212,38 @@ func HandleHuggingFaceImageGenerationStreaming(
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := &schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: errorResp.Message,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       providerName,
+								ModelRequested: request.Model,
+								RequestType:    schemas.ImageGenerationStreamRequest,
+							},
+						}
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
@@ -1613,33 +1618,38 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := &schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: errorResp.Message,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       providerName,
+								ModelRequested: request.Model,
+								RequestType:    schemas.ImageEditStreamRequest,
+							},
+						}
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
