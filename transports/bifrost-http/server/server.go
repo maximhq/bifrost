@@ -1161,7 +1161,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				if len(listModelsErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
 					s.updateKeyStatus(ctx, listModelsErr.ExtraFields.KeyStatuses)
 				}
-				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, listModelsErr)
+				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 			}
 			allowedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {

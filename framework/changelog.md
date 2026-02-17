@@ -1,1 +1,2 @@
 - feat: rename routing_engine_used column to routing_engines_used for multi-engine tracking (parsed as comma-separated string)
+- feat: add routing engine decision logs to logs table

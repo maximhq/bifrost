@@ -1,2 +1,3 @@
 - refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
 - feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
+- feat: add routing engine decision logs to context

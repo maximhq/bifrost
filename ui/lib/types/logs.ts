@@ -358,6 +358,7 @@ export interface LogEntry {
 	virtual_key_id?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
+	routing_engine_logs?: string; // Human-readable routing decision logs
 	selected_key?: DBKey;
 	virtual_key?: VirtualKey;
 	routing_rule?: RoutingRule;

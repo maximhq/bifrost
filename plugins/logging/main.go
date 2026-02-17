@@ -69,17 +69,18 @@ type LogMessage struct {
 	FallbackIndex      int                                // Fallback index
 	SelectedKeyID      string                             // Selected key ID
 	SelectedKeyName    string                             // Selected key name
-	VirtualKeyID        string                             // Virtual key ID
-	VirtualKeyName      string                             // Virtual key name
-	RoutingEnginesUsed  []string                           // List of routing engines used
-	RoutingRuleID       string                             // Routing rule ID
-	RoutingRuleName     string                             // Routing rule name
+	VirtualKeyID       string                             // Virtual key ID
+	VirtualKeyName     string                             // Virtual key name
+	RoutingEnginesUsed []string                           // List of routing engines used
+	RoutingRuleID      string                             // Routing rule ID
+	RoutingRuleName    string                             // Routing rule name
 	Timestamp          time.Time                          // Of the preHook/postHook call
 	Latency            int64                              // For latency updates
 	InitialData        *InitialLogData                    // For create operations
 	SemanticCacheDebug *schemas.BifrostCacheDebug         // For semantic cache operations
 	UpdateData         *UpdateLogData                     // For update operations
 	StreamResponse     *streaming.ProcessedStreamResponse // For streaming delta updates
+	RoutingEngineLogs  string                             // Formatted routing engine decision logs
 }
 
 // InitialLogData contains data for initial log entry creation
@@ -427,6 +428,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 
+	// Extract routing engine logs from context before entering goroutine
+	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
+
 	go func() {
 		// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
 		logMsg := p.getLogMessage()
@@ -438,6 +442,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		logMsg.VirtualKeyName = virtualKeyName
 		logMsg.RoutingRuleName = routingRuleName
 		logMsg.NumberOfRetries = numberOfRetries
+		logMsg.RoutingEngineLogs = routingEngineLogs
 		defer p.putLogMessage(logMsg) // Return to pool when done
 
 		if result != nil {
@@ -479,6 +484,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
+					logMsg.RoutingEngineLogs,
 					logMsg.UpdateData,
 				)
 			})
@@ -531,6 +537,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 						logMsg.RoutingRuleName,
 						logMsg.NumberOfRetries,
 						logMsg.SemanticCacheDebug,
+						logMsg.RoutingEngineLogs,
 						logMsg.StreamResponse,
 						true,
 					)
@@ -684,6 +691,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					logMsg.RoutingRuleName,
 					logMsg.NumberOfRetries,
 					logMsg.SemanticCacheDebug,
+					logMsg.RoutingEngineLogs,
 					logMsg.UpdateData,
 				)
 			})

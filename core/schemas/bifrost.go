@@ -189,6 +189,7 @@ const (
 	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
+	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
 )
 
 // RoutingEngine constants
@@ -197,6 +198,14 @@ const (
 	RoutingEngineRoutingRule   = "routing-rule"
 	RoutingEngineLoadbalancing = "loadbalancing"
 )
+
+// RoutingEngineLogEntry represents a log entry from a routing engine
+// format: [timestamp] [engine] - message
+type RoutingEngineLogEntry struct {
+	Engine    string // e.g., "governance", "routing-rule", "openrouter"
+	Message   string // Human-readable decision/action message
+	Timestamp int64  // Unix milliseconds
+}
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
 // make sure to mark BifrostContextKeyStreamEndIndicator as true at the end of the stream.
