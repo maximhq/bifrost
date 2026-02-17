@@ -176,8 +176,8 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 				</div>
 
 				{selectedIds.size > 0 && (
-					<div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-md px-4 py-3">
-						<span className="text-sm font-medium text-blue-900 dark:text-blue-100">
+					<div className="flex items-center justify-between bg-secondary border border-border rounded-md px-4 py-3">
+						<span className="text-sm font-medium">
 							{selectedIds.size} key{selectedIds.size !== 1 ? 's' : ''} selected
 						</span>
 						<AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
@@ -259,7 +259,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 											data-testid={`vk-row-${vk.name}`}
 											className={cn(
 												"hover:bg-muted/50 transition-colors",
-												isSelected && "bg-blue-50 dark:bg-blue-950"
+												isSelected && "bg-secondary"
 											)}
 										>
 											<TableCell 
