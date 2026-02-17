@@ -4,9 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.5
+**Latest Version:** 2.0.6
 
 ## Changelog
+
+### v2.0.6
+
+- Fixes MCP client config template to convert camelCase Helm values to snake_case config format
 
 ### v2.0.5
 
