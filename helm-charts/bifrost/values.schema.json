@@ -264,7 +264,8 @@
                   },
                   {
                     "type": "string",
-                    "format": "uri"
+                    "format": "uri",
+                    "not": { "const": "*" }
                   }
                 ]
               }
@@ -692,7 +693,8 @@
                       "metrics_enabled": {
                         "const": true
                       }
-                    }
+                    },
+                    "required": ["metrics_enabled"]
                   },
                   "then": {
                     "required": ["metrics_endpoint"]
