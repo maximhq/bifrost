@@ -560,7 +560,7 @@
                     "description": "Database host"
                   },
                   "port": {
-                    "type": "string",
+                    "type": "integer",
                     "description": "Database port"
                   },
                   "user": {
@@ -924,7 +924,7 @@
                       "oneOf": [
                         {
                           "type": "string",
-                          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$"
                         },
                         {
                           "type": "integer",
@@ -1930,7 +1930,7 @@
         },
         "timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for Weaviate operations (e.g., '5s')"
         },
         "class_name": {
@@ -1990,32 +1990,32 @@
         },
         "conn_max_lifetime": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Connection maximum lifetime (e.g., '30m')"
         },
         "conn_max_idle_time": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Connection maximum idle time (e.g., '5m')"
         },
         "dial_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket connection (e.g., '5s')"
         },
         "read_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket reads (e.g., '3s')"
         },
         "write_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for socket writes (e.g., '3s')"
         },
         "context_timeout": {
           "type": "string",
-          "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
+          "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
           "description": "Timeout for Redis operations (e.g., '10s')"
         }
       },
