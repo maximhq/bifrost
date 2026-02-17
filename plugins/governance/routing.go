@@ -78,6 +78,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// Determine scope chain based on organizational hierarchy
 	scopeChain := buildScopeChain(routingCtx.VirtualKey)
 	re.logger.Debug("[RoutingEngine] Scope chain: %v", scopeChainToStrings(scopeChain))
+	ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	// Evaluate rules in scope precedence order (first-match-wins)
 	for _, scope := range scopeChain {
@@ -87,6 +88,16 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		rules := re.store.GetScopedRoutingRules(scope.ScopeName, scopeID)
 		re.logger.Debug("[RoutingEngine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scopeID, len(rules))
 
+		if len(rules) == 0 {
+			continue
+		}
+
+		ruleNames := make([]string, 0, len(rules))
+		for _, r := range rules {
+			ruleNames = append(ruleNames, r.Name)
+		}
+		ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
+
 		// Evaluate each rule
 		for _, rule := range rules {
 			re.logger.Debug("[RoutingEngine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
@@ -95,6 +106,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			program, err := re.store.GetRoutingProgram(rule)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
+				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 				continue
 			}
 
@@ -102,10 +114,15 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			matched, err := evaluateCELExpression(program, variables)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
+				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
 				continue
 			}
 
 			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
+
+			if !matched {
+				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
+			}
 
 			// If rule matched, return routing decision
 			if matched {
@@ -132,6 +149,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
 
 				re.logger.Debug("[RoutingEngine] Rule matched! Decision: provider=%s, model=%s, fallbacks=%v", provider, model, rule.ParsedFallbacks)
+				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
 				return decision, nil
 			}
 

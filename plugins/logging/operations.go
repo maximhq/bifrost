@@ -61,6 +61,7 @@ func (p *LoggerPlugin) updateLogEntry(
 	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
+	routingEngineLogs string,
 	data *UpdateLogData,
 ) error {
 	updates := make(map[string]interface{})
@@ -84,6 +85,9 @@ func (p *LoggerPlugin) updateLogEntry(
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
+	}
+	if routingEngineLogs != "" {
+		updates["routing_engine_logs"] = routingEngineLogs
 	}
 	// Handle JSON fields by setting them on a temporary entry and serializing
 	tempEntry := &logstore.Log{}
@@ -222,6 +226,7 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	routingRuleName string,
 	numberOfRetries int,
 	cacheDebug *schemas.BifrostCacheDebug,
+	routingEngineLogs string,
 	streamResponse *streaming.ProcessedStreamResponse,
 	isFinalChunk bool,
 ) error {
@@ -243,6 +248,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	}
 	if numberOfRetries != 0 {
 		updates["number_of_retries"] = numberOfRetries
+	}
+	if routingEngineLogs != "" {
+		updates["routing_engine_logs"] = routingEngineLogs
 	}
 	// Handle error case first
 	if streamResponse.Data.ErrorDetails != nil {

@@ -5,3 +5,4 @@
 - feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
 - feat: plugin now filters `/v1/models` responses based on virtual key configurations
 - chore: upgrade core to 1.4.1 and framework to 1.2.19
+- feat: add routing engine decision logs to context

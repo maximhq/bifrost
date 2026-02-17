@@ -395,3 +395,21 @@ func convertToProcessedStreamResponse(result *schemas.StreamAccumulatorResult, r
 
 	return resp
 }
+
+// formatRoutingEngineLogs formats routing engine logs into a human-readable string.
+// Format: [timestamp] [engine] - message
+// Parameters:
+//   - logs: Slice of routing engine log entries
+//
+// Returns:
+//   - string: Formatted log string (empty string if no logs)
+func formatRoutingEngineLogs(logs []schemas.RoutingEngineLogEntry) string {
+	if len(logs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, log := range logs {
+		sb.WriteString(fmt.Sprintf("[%d] [%s] - %s\n", log.Timestamp, log.Engine, log.Message))
+	}
+	return sb.String()
+}

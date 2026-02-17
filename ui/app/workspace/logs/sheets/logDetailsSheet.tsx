@@ -138,7 +138,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				</SheetHeader>
 				<div className="-mt-6 space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
-						<BlockHeader title="Timings" icon={<Timer className="h-5 w-5 text-gray-600" />} />
+						<BlockHeader title="Timings" />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 							<LogEntryDetailsView
 								className="w-full"
@@ -161,7 +161,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					</div>
 					<DottedSeparator />
 					<div className="space-y-4">
-						<BlockHeader title="Request Details" icon={<FileText className="h-5 w-5 text-gray-600" />} />
+						<BlockHeader title="Request Details" />
 						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
 							<LogEntryDetailsView
 								className="w-full"
@@ -232,7 +232,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
-								<BlockHeader title="Tokens" icon={<DollarSign className="h-5 w-5 text-gray-600" />} />
+								<BlockHeader title="Tokens" />
 								<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
@@ -299,7 +299,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<>
 										<DottedSeparator />
 										<div className="space-y-4">
-											<BlockHeader title="Reasoning Parameters" icon={<FileText className="h-5 w-5 text-gray-600" />} />
+											<BlockHeader title="Reasoning Parameters" />
 											<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 												{reasoning.effort && (
 													<LogEntryDetailsView
@@ -346,7 +346,6 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<div className="space-y-4">
 										<BlockHeader
 											title={`Caching Details (${log.cache_debug.cache_hit ? "Hit" : "Miss"})`}
-											icon={<DollarSign className="h-5 w-5 text-gray-600" />}
 										/>
 										<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
 											{log.cache_debug.cache_hit ? (
@@ -425,6 +424,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</>
 					)}
 				</div>
+				{log.routing_engine_logs && (
+					<CollapsibleBox title="Routing Decision Logs" onCopy={() => log.routing_engine_logs || ""}>
+						<div className="custom-scrollbar max-h-[400px] overflow-y-auto px-6 py-2 font-mono text-xs break-words whitespace-pre-wrap">
+							{log.routing_engine_logs}
+						</div>
+					</CollapsibleBox>
+				)}
 				{toolsParameter && (
 					<CollapsibleBox title={`Tools (${log.params?.tools?.length || 0})`} onCopy={() => toolsParameter}>
 						<CodeEditor

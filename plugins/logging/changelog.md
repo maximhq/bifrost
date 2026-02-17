@@ -1,1 +1,2 @@
 - feat: support multiple routing engines in log entries with array-based tracking
+- feat: add routing engine decision logs to log entries
