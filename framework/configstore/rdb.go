@@ -1177,6 +1177,8 @@ func (s *RDBConfigStore) GetModelPrices(ctx context.Context) ([]tables.TableMode
 }
 
 // UpsertModelPrices creates or updates a model pricing record in the database.
+// Uses a find-then-create-or-update pattern so it works regardless of dialect
+// (SQLite vs PostgreSQL) and constraint naming.
 func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error {
 	var txDB *gorm.DB
 	if len(tx) > 0 {
@@ -1184,13 +1186,24 @@ func (s *RDBConfigStore) UpsertModelPrices(ctx context.Context, pricing *tables.
 	} else {
 		txDB = s.db
 	}
-	// Upsert pricing (create or update if exists based on unique index: model, provider, mode)
-	if err := txDB.WithContext(ctx).Clauses(
-		clause.OnConflict{
-			Columns:   []clause.Column{{Name: "model"}, {Name: "provider"}, {Name: "mode"}},
-			UpdateAll: true,
-		},
-	).Create(pricing).Error; err != nil {
+	db := txDB.WithContext(ctx)
+
+	var existing tables.TableModelPricing
+	err := db.Where("model = ? AND provider = ? AND mode = ?", pricing.Model, pricing.Provider, pricing.Mode).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// No existing row: create
+			if err := db.Create(pricing).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			return nil
+		}
+		return s.parseGormError(err)
+	}
+
+	// Existing row: update by setting ID and saving (full replace)
+	pricing.ID = existing.ID
+	if err := db.Save(pricing).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
