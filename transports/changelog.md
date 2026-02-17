@@ -1,7 +1,14 @@
 - feat: added multi level routing support for routing rules + vk based provider routing
-- refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
 - feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
 - feat: add key-level model discovery status tracking to improve visibility into API key health and model availability.
 - feat: add routing engine decision logs
-- fix: add skip plugin pipeline flag to context for list models requests to avoid internal list models logs
+- feat: view/hide toggle for password on login field [@Aaryan Meena](https://github.com/aaryan359)
 - fix: add custom model support to routing rules UI
+- fix: add passthrough for count tokens for anthropic integration
+- fix: add object field to responses response
+- fix: reduce provider API connection max idle time to 30 seconds to avoid ttl mismatch
+- fix: add message sanitization for huggingface provider to remove unsupported fields from chat messages
+- fix: use status instead of error field for tool result errors for anthropic provider [@Edward Upton](https://github.com/Edward-Upton)
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+- refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation

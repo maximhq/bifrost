@@ -6,3 +6,5 @@
 - feat: plugin now filters `/v1/models` responses based on virtual key configurations
 - chore: upgrade core to 1.4.1 and framework to 1.2.19
 - feat: add routing engine decision logs to context
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
