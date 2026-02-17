@@ -3595,7 +3595,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
-			resp, bifrostErr := pipeline.RunPostHooks(ctx, shortCircuit.Response, nil, preCount)
+			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -3603,7 +3603,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			resp, bifrostErr := pipeline.RunPostHooks(ctx, nil, shortCircuit.Error, preCount)
+			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -3710,7 +3710,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	pluginCount := len(*bifrost.llmPlugins.Load())
 	select {
 	case result = <-msg.Response:
-		resp, bifrostErr := pipeline.RunPostHooks(msg.Context, result, nil, pluginCount)
+		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
 		if bifrostErr != nil {
 			bifrost.releaseChannelMessage(msg)
 			return nil, bifrostErr
@@ -3726,7 +3726,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, nil
 	case bifrostErrVal := <-msg.Err:
 		bifrostErrPtr := &bifrostErrVal
-		resp, bifrostErrPtr = pipeline.RunPostHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
+		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		bifrost.releaseChannelMessage(msg)
 		// Drop raw request/response on error path too
 		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
@@ -3772,7 +3772,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, newBifrostErrorFromMsg("tracer not found in context")
 	}
 
-	// Store tracer in context BEFORE calling RunPreHooks, so plugins and streaming goroutines
+	// Store tracer in context BEFORE calling RunLLMPreHooks, so plugins and streaming goroutines
 	// have access to it for completing deferred spans when the stream ends.
 	// The streaming goroutine captures the context when it starts, so these values
 	// must be set before requestHandler() is called.
@@ -3785,7 +3785,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	if shortCircuit != nil {
 		// Handle short-circuit with response (success case)
 		if shortCircuit.Response != nil {
-			resp, bifrostErr := pipeline.RunPostHooks(ctx, shortCircuit.Response, nil, preCount)
+			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -3797,7 +3797,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 
 			// Create a post hook runner cause pipeline object is put back in the pool on defer
 			pipelinePostHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				return pipeline.RunPostHooks(ctx, result, err, preCount)
+				return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
 			}
 
 			go func() {
@@ -3855,7 +3855,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		}
 		// Handle short-circuit with error
 		if shortCircuit.Error != nil {
-			resp, bifrostErr := pipeline.RunPostHooks(ctx, nil, shortCircuit.Error, preCount)
+			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			if bifrostErr != nil {
 				return nil, bifrostErr
 			}
@@ -3970,7 +3970,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		// Marking final chunk
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		// On error we will complete post-hooks
-		recoveredResp, recoveredErr := pipeline.RunPostHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
+		recoveredResp, recoveredErr := pipeline.RunPostLLMHooks(ctx, nil, &bifrostErrVal, len(*bifrost.llmPlugins.Load()))
 		bifrost.releaseChannelMessage(msg)
 		if recoveredErr != nil {
 			return nil, recoveredErr
@@ -4085,7 +4085,7 @@ func executeRequestWithRetries[T any](
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
 
 		// Record stream start time for TTFT calculation (only for streaming requests)
-		// This is also used by RunPostHooks to detect streaming mode
+		// This is also used by RunPostLLMHooks to detect streaming mode
 		if IsStreamRequestType(requestType) {
 			streamStartTime := time.Now()
 			ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, streamStartTime)
@@ -4281,7 +4281,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if IsStreamRequestType(req.RequestType) {
 			pipeline = bifrost.getPluginPipeline()
 			postHookRunner = func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
-				resp, bifrostErr := pipeline.RunPostHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+				resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
 				if bifrostErr != nil {
 					return nil, bifrostErr
 				}
@@ -4753,8 +4753,12 @@ func (bifrost *Bifrost) executeMCPToolWithHooks(ctx *schemas.BifrostContext, req
 
 // PLUGIN MANAGEMENT
 
-// RunPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
+// RunLLMPreHooks executes PreHooks in order, tracks how many ran, and returns the final request, any short-circuit decision, and the count.
 func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, int) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return req, nil, 0
+	}
 	var shortCircuit *schemas.LLMPluginShortCircuit
 	var err error
 	ctx.BlockRestrictedWrites()
@@ -4794,12 +4798,16 @@ func (p *PluginPipeline) RunLLMPreHooks(ctx *schemas.BifrostContext, req *schema
 	return req, nil, p.executedPreHooks
 }
 
-// RunPostHooks executes PostHooks in reverse order for the plugins whose PreLLMHook ran.
+// RunPostLLMHooks executes PostHooks in reverse order for the plugins whose PreLLMHook ran.
 // Accepts the response and error, and allows plugins to transform either (e.g., recover from error, or invalidate a response).
 // Returns the final response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
 // For streaming requests, it accumulates timing per plugin instead of creating individual spans per chunk.
-func (p *PluginPipeline) RunPostHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+func (p *PluginPipeline) RunPostLLMHooks(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return resp, bifrostErr
+	}
 	// Defensive: ensure count is within valid bounds
 	if runFrom < 0 {
 		runFrom = 0
@@ -4870,6 +4878,10 @@ func (p *PluginPipeline) RunPostHooks(ctx *schemas.BifrostContext, resp *schemas
 // Returns the modified request, any short-circuit decision, and the count of hooks that ran.
 // If a plugin short-circuits, only PostHooks for plugins up to and including that plugin will run.
 func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return req, nil, 0
+	}
 	var shortCircuit *schemas.MCPPluginShortCircuit
 	var err error
 	ctx.BlockRestrictedWrites()
@@ -4914,6 +4926,10 @@ func (p *PluginPipeline) RunMCPPreHooks(ctx *schemas.BifrostContext, req *schema
 // Returns the final MCP response and error after all hooks. If both are set, error takes precedence unless error is nil.
 // runFrom is the count of plugins whose PreHooks ran; PostHooks will run in reverse from index (runFrom - 1) down to 0
 func (p *PluginPipeline) RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	// If the skip plugin pipeline flag is set, skip the plugin pipeline
+	if skipPluginPipeline, ok := ctx.Value(schemas.BifrostContextKeySkipPluginPipeline).(bool); ok && skipPluginPipeline {
+		return mcpResp, bifrostErr
+	}
 	// Defensive: ensure count is within valid bounds
 	if runFrom < 0 {
 		runFrom = 0

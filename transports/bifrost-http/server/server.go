@@ -487,7 +487,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	}
 
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-	bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	defer bfCtx.Cancel()
 
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -721,7 +721,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
 			})
@@ -1149,7 +1149,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
 			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-			bfCtx.SetValue(schemas.BifrostContextKeySkipListModelsGovernanceFiltering, true)
+			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,

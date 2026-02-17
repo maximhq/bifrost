@@ -3,3 +3,5 @@
 - feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
 - feat: add key-level model discovery status tracking to improve visibility into API key health and model availability.
 - feat: add routing engine decision logs
+- fix: add skip plugin pipeline flag to context for list models requests to avoid internal list models logs
+- fix: add custom model support to routing rules UI

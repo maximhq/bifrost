@@ -818,21 +818,6 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 	}
 }
 
-// shouldSkipGovernanceForListModels checks if governance should be skipped for list models requests
-// Returns true if the skip flag is set in context for list models filtering
-func (p *GovernancePlugin) shouldSkipGovernanceForListModels(ctx *schemas.BifrostContext, requestType schemas.RequestType) bool {
-	if requestType != schemas.ListModelsRequest {
-		return false
-	}
-
-	if val := ctx.Value(schemas.BifrostContextKeySkipListModelsGovernanceFiltering); val != nil {
-		if skip, ok := val.(bool); ok {
-			return skip
-		}
-	}
-	return false
-}
-
 // PreLLMHook intercepts requests before they are processed (governance decision point)
 // Parameters:
 //   - ctx: The Bifrost context
@@ -843,11 +828,6 @@ func (p *GovernancePlugin) shouldSkipGovernanceForListModels(ctx *schemas.Bifros
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	// Skip governance for list models if flag is set (e.g., during bootstrap/reload)
-	if p.shouldSkipGovernanceForListModels(ctx, req.RequestType) {
-		p.logger.Debug("[Governance] Skipping governance for internal list models operation")
-		return req, nil, nil
-	}
 	// If its skip key selection - in that case we need to skip virtual key selection too
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
 		return req, nil, nil
@@ -891,12 +871,6 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract request type, provider, and model
 	requestType, provider, model := bifrost.GetResponseFields(result, err)
-
-	// Skip governance for list models if flag is set (e.g., during bootstrap/reload)
-	if p.shouldSkipGovernanceForListModels(ctx, requestType) {
-		p.logger.Debug("[Governance] Skipping post-hook for internal list models operation")
-		return result, err, nil
-	}
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
