@@ -112,12 +112,9 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
 		RunStreamErrorStatusCodeTest,
-<<<<<<< HEAD
 		RunPassthroughAPITest,
-=======
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
->>>>>>> 85296f866 (responses on websockets and realtime api support)
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)

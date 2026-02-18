@@ -251,8 +251,14 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 			}
 		}
 
-		// Convert finish reason to Bifrost format
+		// Convert finish reason to Bifrost format.
+		// Gemini uses "STOP" for both normal text completions and tool call responses —
+		// it has no dedicated finish reason for tool calls. Override to "tool_calls" when
+		// tool calls are present so downstream consumers see a uniform signal.
 		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+		if len(toolCalls) > 0 && finishReason == "stop" {
+			finishReason = "tool_calls"
+		}
 
 		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
 			Index:        0,
@@ -274,6 +280,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 // GeminiStreamState tracks tool-call index across streaming chunks.
 type GeminiStreamState struct {
 	nextToolCallIndex int
+	hadToolCalls      bool // true if any tool calls were seen in this stream
 }
 
 // NewGeminiStreamState returns initialised stream state for one streaming response.
@@ -451,6 +458,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 		// Set tool calls if present
 		if len(toolCalls) > 0 {
 			delta.ToolCalls = toolCalls
+			state.hadToolCalls = true
 		}
 	}
 
@@ -464,6 +472,11 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *Ge
 	var finishReason *string
 	if isLastChunk && candidate.FinishReason != "" {
 		reason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
+		// Gemini uses "STOP" for both text completions and tool call responses.
+		// Override to "tool_calls" when tool calls were seen in this stream for uniformity.
+		if (len(delta.ToolCalls) > 0 || state.hadToolCalls) && reason == "stop" {
+			reason = "tool_calls"
+		}
 		finishReason = &reason
 	}
 

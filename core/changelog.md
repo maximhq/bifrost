@@ -1,11 +1,3 @@
-- fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
-- fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
-- fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout
-- fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — now correctly passes auto, any, and specific tool constraints to the model
-- feat: add BifrostContextKeyAPIKeyID for explicit key selection by ID, with priority over key name selection
-- feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
-- feat: add Filename field to TranscriptionInput schema to carry original filename through the request pipeline
-- fix: add AudioFilenameFromBytes utility to detect audio format from file headers with mp3 fallback
-- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
-- fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
-- fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
+- fix: mcp tools now correctly pass headers to the MCP server
+- fix: ensure tool calls are always detected in mcp agent mode
+- fix: gemini models now correctly return finish_reason "tool_calls" when tool calls are present

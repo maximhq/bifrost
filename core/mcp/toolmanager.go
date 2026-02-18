@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -531,6 +532,11 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 	sanitizedToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
 	originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
 
+	headers := make(http.Header)
+	for key, value := range client.ExecutionConfig.Headers {
+		headers.Add(key, value.GetValue())
+	}
+
 	// Call the tool via MCP client -> MCP server
 	callRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
@@ -540,6 +546,7 @@ func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall
 			Name:      originalMCPToolName,
 			Arguments: arguments,
 		},
+		Header: headers,
 	}
 
 	// Create timeout context for tool execution
