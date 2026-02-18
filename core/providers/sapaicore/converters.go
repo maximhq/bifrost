@@ -1,12 +1,17 @@
 package sapaicore
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
 // Response pools for Bedrock and Vertex response objects
@@ -490,4 +495,553 @@ func mapVertexFinishReason(reason string) string {
 	default:
 		return "stop"
 	}
+}
+
+// convertResponsesToBedrock converts a Bifrost Responses request to Bedrock format
+func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *BedrockRequest {
+	bedrockReq := &BedrockRequest{
+		AnthropicVersion: "bedrock-2023-05-31",
+		MaxTokens:        4096, // Default
+	}
+
+	// Get model config for max tokens
+	config := GetModelConfig(request.Model)
+	bedrockReq.MaxTokens = config.MaxTokens
+
+	// Convert messages from Input field
+	var systemMessage string
+	for _, msg := range request.Input {
+		// Handle system messages
+		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					systemMessage = *msg.Content.ContentStr
+				} else if msg.Content.ContentBlocks != nil {
+					// Extract text from content blocks
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil {
+							systemMessage += *block.Text
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Skip messages without role
+		if msg.Role == nil {
+			continue
+		}
+
+		bedrockMsg := BedrockMessage{
+			Role: string(*msg.Role),
+		}
+
+		// Convert content
+		if msg.Content != nil {
+			if msg.Content.ContentStr != nil {
+				bedrockMsg.Content = []BedrockContentBlock{
+					{Type: "text", Text: *msg.Content.ContentStr},
+				}
+			} else if msg.Content.ContentBlocks != nil {
+				for _, block := range msg.Content.ContentBlocks {
+					switch block.Type {
+					case schemas.ResponsesInputMessageContentBlockTypeText,
+						schemas.ResponsesOutputMessageContentTypeText:
+						if block.Text != nil {
+							bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
+								Type: "text",
+								Text: *block.Text,
+							})
+						}
+					case schemas.ResponsesInputMessageContentBlockTypeImage:
+						if block.ImageURL != nil {
+							bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
+								Type: "image",
+								Source: &BedrockImageSource{
+									Type:      "base64",
+									MediaType: extractMediaType(*block.ImageURL),
+									Data:      extractBase64Data(*block.ImageURL),
+								},
+							})
+						}
+					}
+				}
+			}
+		}
+
+		bedrockReq.Messages = append(bedrockReq.Messages, bedrockMsg)
+	}
+
+	bedrockReq.System = systemMessage
+
+	// Copy generation parameters from Params
+	if request.Params != nil {
+		if request.Params.Temperature != nil {
+			bedrockReq.Temperature = request.Params.Temperature
+		}
+		if request.Params.TopP != nil {
+			bedrockReq.TopP = request.Params.TopP
+		}
+		if request.Params.MaxOutputTokens != nil {
+			bedrockReq.MaxTokens = *request.Params.MaxOutputTokens
+		}
+	}
+
+	return bedrockReq
+}
+
+// extractBase64Data extracts the base64 data from a data URL or returns the URL as-is if it's already base64
+func extractBase64Data(url string) string {
+	if strings.HasPrefix(url, "data:") {
+		// Extract base64 data from data URL: data:image/png;base64,...
+		if idx := strings.Index(url, ","); idx > 0 {
+			return url[idx+1:]
+		}
+	}
+	// Return as-is (assume it's already base64 encoded)
+	return url
+}
+
+// parseBedrockToResponsesResponse parses a Bedrock response into Bifrost Responses format.
+// Uses object pooling for efficient memory reuse.
+func parseBedrockToResponsesResponse(body []byte, model string) (*schemas.BifrostResponsesResponse, error) {
+	bedrockResp := acquireBedrockResponse()
+	defer releaseBedrockResponse(bedrockResp)
+
+	if err := sonic.Unmarshal(body, bedrockResp); err != nil {
+		return nil, err
+	}
+
+	// Build output messages from Bedrock response
+	var outputMessages []schemas.ResponsesMessage
+
+	// Extract text content and build output message
+	var textContent string
+	for _, block := range bedrockResp.Content {
+		if block.Type == "text" {
+			textContent += block.Text
+		}
+	}
+
+	if textContent != "" {
+		outputType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		contentBlockType := schemas.ResponsesOutputMessageContentTypeText
+
+		outputMessages = append(outputMessages, schemas.ResponsesMessage{
+			Type:   &outputType,
+			Role:   &role,
+			Status: schemas.Ptr("completed"),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: contentBlockType,
+						Text: &textContent,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						},
+					},
+				},
+			},
+		})
+	}
+
+	// Map stop reason
+	stopReason := mapBedrockStopReasonToResponses(bedrockResp.StopReason)
+
+	response := &schemas.BifrostResponsesResponse{
+		ID:         &bedrockResp.ID,
+		Object:     "response",
+		CreatedAt:  int(time.Now().Unix()),
+		Model:      model,
+		Output:     outputMessages,
+		Status:     schemas.Ptr("completed"),
+		StopReason: &stopReason,
+	}
+
+	if bedrockResp.Usage != nil {
+		response.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  bedrockResp.Usage.InputTokens,
+			OutputTokens: bedrockResp.Usage.OutputTokens,
+			TotalTokens:  bedrockResp.Usage.InputTokens + bedrockResp.Usage.OutputTokens,
+		}
+	}
+
+	return response, nil
+}
+
+// mapBedrockStopReasonToResponses maps Bedrock stop reasons to Responses API format
+func mapBedrockStopReasonToResponses(reason string) string {
+	switch reason {
+	case "end_turn":
+		return "end_turn"
+	case "max_tokens":
+		return "max_output_tokens"
+	case "stop_sequence":
+		return "stop_sequence"
+	case "tool_use":
+		return "tool_calls"
+	default:
+		return reason
+	}
+}
+
+// BedrockResponsesStreamState tracks state during streaming conversion for responses API
+type BedrockResponsesStreamState struct {
+	MessageID            *string
+	Model                *string
+	CreatedAt            int
+	SequenceNumber       int
+	HasEmittedCreated    bool
+	HasEmittedInProgress bool
+	TextItemAdded        bool
+	ContentPartAdded     bool
+	AccumulatedText      string
+	ItemID               string
+}
+
+// newBedrockResponsesStreamState creates a new stream state for Bedrock responses streaming
+func newBedrockResponsesStreamState() *BedrockResponsesStreamState {
+	return &BedrockResponsesStreamState{
+		CreatedAt:      int(time.Now().Unix()),
+		SequenceNumber: 0,
+	}
+}
+
+// processBedrockResponsesEventStream processes Bedrock event stream and sends chunks to the channel
+// for Responses API format
+func processBedrockResponsesEventStream(
+	ctx *schemas.BifrostContext,
+	bodyStream io.Reader,
+	responseChan chan *schemas.BifrostStreamChunk,
+	postHookRunner schemas.PostHookRunner,
+	providerName schemas.ModelProvider,
+	model string,
+	logger schemas.Logger,
+) {
+	scanner := bufio.NewScanner(bodyStream)
+	buf := make([]byte, 0, 1024*1024)
+	scanner.Buffer(buf, 10*1024*1024)
+
+	state := newBedrockResponsesStreamState()
+	state.Model = &model
+	state.MessageID = schemas.Ptr(fmt.Sprintf("resp_%d", time.Now().UnixNano()))
+	state.ItemID = fmt.Sprintf("msg_%s_item_0", *state.MessageID)
+
+	usage := &schemas.ResponsesResponseUsage{}
+	var stopReason *string
+	startTime := time.Now()
+	chunkIndex := 0
+
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return
+		}
+
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, ":") {
+			continue
+		}
+
+		// Parse Bedrock event stream format
+		if strings.HasPrefix(line, "data: ") {
+			jsonData := strings.TrimPrefix(line, "data: ")
+
+			var bedrockEvent BedrockStreamEvent
+			if err := sonic.Unmarshal([]byte(jsonData), &bedrockEvent); err != nil {
+				logger.Warn("Failed to parse Bedrock stream event: %v", err)
+				continue
+			}
+
+			// Convert to Bifrost Responses stream responses
+			responses := convertBedrockEventToResponses(bedrockEvent, state, providerName, model)
+
+			// Update usage
+			if bedrockEvent.Usage != nil {
+				usage.InputTokens = bedrockEvent.Usage.InputTokens
+				usage.OutputTokens = bedrockEvent.Usage.OutputTokens
+				usage.TotalTokens = bedrockEvent.Usage.InputTokens + bedrockEvent.Usage.OutputTokens
+			}
+
+			// Update stop reason
+			if bedrockEvent.StopReason != nil {
+				stopReason = bedrockEvent.StopReason
+			}
+
+			// Send each response
+			for _, response := range responses {
+				if response != nil {
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ResponsesStreamRequest,
+						Provider:       providerName,
+						ModelRequested: model,
+						ChunkIndex:     chunkIndex,
+					}
+					chunkIndex++
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
+				}
+			}
+		}
+	}
+
+	// Emit final events: content_part.done, output_item.done, response.completed
+	finalResponses := emitFinalResponseEvents(state, stopReason, usage, providerName, model, startTime)
+	for _, response := range finalResponses {
+		if response != nil {
+			response.ExtraFields = schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesStreamRequest,
+				Provider:       providerName,
+				ModelRequested: model,
+				ChunkIndex:     chunkIndex,
+				Latency:        time.Since(startTime).Milliseconds(),
+			}
+			chunkIndex++
+			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			}
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
+		}
+	}
+}
+
+// convertBedrockEventToResponses converts a Bedrock stream event to Bifrost Responses stream responses
+func convertBedrockEventToResponses(
+	event BedrockStreamEvent,
+	state *BedrockResponsesStreamState,
+	providerName schemas.ModelProvider,
+	model string,
+) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Emit lifecycle events if not already done
+	if !state.HasEmittedCreated {
+		// Emit response.created
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCreated,
+			SequenceNumber: state.SequenceNumber,
+			Response: &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				Object:    "response",
+				CreatedAt: state.CreatedAt,
+				Model:     model,
+				Status:    schemas.Ptr("in_progress"),
+			},
+		})
+		state.SequenceNumber++
+		state.HasEmittedCreated = true
+
+		// Emit response.in_progress
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeInProgress,
+			SequenceNumber: state.SequenceNumber,
+			Response: &schemas.BifrostResponsesResponse{
+				ID:        state.MessageID,
+				Object:    "response",
+				CreatedAt: state.CreatedAt,
+				Model:     model,
+				Status:    schemas.Ptr("in_progress"),
+			},
+		})
+		state.SequenceNumber++
+		state.HasEmittedInProgress = true
+	}
+
+	// Handle text delta
+	if event.Delta != nil && event.Delta.Text != nil {
+		text := *event.Delta.Text
+		state.AccumulatedText += text
+
+		// Add output item if not already added
+		if !state.TextItemAdded {
+			messageType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
+
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				Item: &schemas.ResponsesMessage{
+					ID:   &state.ItemID,
+					Type: &messageType,
+					Role: &role,
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+					},
+				},
+			})
+			state.SequenceNumber++
+			state.TextItemAdded = true
+		}
+
+		// Add content part if not already added
+		if !state.ContentPartAdded {
+			emptyText := ""
+			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    schemas.Ptr(0),
+				ContentIndex:   schemas.Ptr(0),
+				ItemID:         &state.ItemID,
+				Part: &schemas.ResponsesMessageContentBlock{
+					Type: schemas.ResponsesOutputMessageContentTypeText,
+					Text: &emptyText,
+					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+					},
+				},
+			})
+			state.SequenceNumber++
+			state.ContentPartAdded = true
+		}
+
+		// Emit text delta
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			ContentIndex:   schemas.Ptr(0),
+			ItemID:         &state.ItemID,
+			Delta:          &text,
+		})
+		state.SequenceNumber++
+	}
+
+	return responses
+}
+
+// emitFinalResponseEvents emits the final events to complete the stream
+func emitFinalResponseEvents(
+	state *BedrockResponsesStreamState,
+	stopReason *string,
+	usage *schemas.ResponsesResponseUsage,
+	providerName schemas.ModelProvider,
+	model string,
+	startTime time.Time,
+) []*schemas.BifrostResponsesStreamResponse {
+	var responses []*schemas.BifrostResponsesStreamResponse
+
+	// Map stop reason
+	var mappedStopReason string
+	if stopReason != nil {
+		mappedStopReason = mapBedrockStopReasonToResponses(*stopReason)
+	} else {
+		mappedStopReason = "end_turn"
+	}
+
+	// Emit output_text.done with full accumulated text
+	if state.TextItemAdded {
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			ContentIndex:   schemas.Ptr(0),
+			ItemID:         &state.ItemID,
+			Text:           &state.AccumulatedText,
+		})
+		state.SequenceNumber++
+	}
+
+	// Emit content_part.done
+	if state.ContentPartAdded {
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			ContentIndex:   schemas.Ptr(0),
+			ItemID:         &state.ItemID,
+			Part: &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &state.AccumulatedText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			},
+		})
+		state.SequenceNumber++
+	}
+
+	// Emit output_item.done
+	if state.TextItemAdded {
+		messageType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		contentBlockType := schemas.ResponsesOutputMessageContentTypeText
+
+		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			Item: &schemas.ResponsesMessage{
+				ID:     &state.ItemID,
+				Type:   &messageType,
+				Role:   &role,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: contentBlockType,
+							Text: &state.AccumulatedText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			},
+		})
+		state.SequenceNumber++
+	}
+
+	// Emit response.completed
+	completedAt := int(time.Now().Unix())
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleAssistant
+	contentBlockType := schemas.ResponsesOutputMessageContentTypeText
+
+	var outputMessages []schemas.ResponsesMessage
+	if state.TextItemAdded {
+		outputMessages = []schemas.ResponsesMessage{
+			{
+				ID:     &state.ItemID,
+				Type:   &messageType,
+				Role:   &role,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: contentBlockType,
+							Text: &state.AccumulatedText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		SequenceNumber: state.SequenceNumber,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:          state.MessageID,
+			Object:      "response",
+			CreatedAt:   state.CreatedAt,
+			CompletedAt: &completedAt,
+			Model:       model,
+			Status:      schemas.Ptr("completed"),
+			StopReason:  &mappedStopReason,
+			Output:      outputMessages,
+			Usage:       usage,
+		},
+	})
+	state.SequenceNumber++
+
+	return responses
 }
