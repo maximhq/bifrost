@@ -404,6 +404,11 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -430,6 +435,11 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

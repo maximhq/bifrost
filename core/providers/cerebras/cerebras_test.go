@@ -24,7 +24,7 @@ func TestCerebras(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Cerebras,
-		ChatModel: "llama-3.3-70b",
+		ChatModel: "llama3.1-8b",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Cerebras, Model: "llama3.1-8b"},
 			{Provider: schemas.Cerebras, Model: "gpt-oss-120b"},
