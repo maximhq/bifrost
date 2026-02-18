@@ -138,7 +138,7 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 		if topN > len(bifrostReq.Documents) {
 			topN = len(bifrostReq.Documents)
 		}
-		bedrockReq.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults = &topN
+		bedrockReq.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults = schemas.Ptr(topN)
 	}
 
 	additionalFields := make(map[string]interface{})

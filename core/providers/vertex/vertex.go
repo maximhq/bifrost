@@ -118,7 +118,7 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 // GetProviderKey returns the provider identifier for Vertex.
 func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Vertex
+	return providerUtils.GetProviderName(schemas.Vertex, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.

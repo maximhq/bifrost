@@ -21,9 +21,9 @@ func TestToBedrockRerankRequest(t *testing.T) {
 			{Text: "Berlin is the capital of Germany."},
 		},
 		Params: &schemas.RerankParameters{
-			TopN:            &topN,
-			MaxTokensPerDoc: &maxTokensPerDoc,
-			Priority:        &priority,
+			TopN:            schemas.Ptr(topN),
+			MaxTokensPerDoc: schemas.Ptr(maxTokensPerDoc),
+			Priority:        schemas.Ptr(priority),
 			ExtraParams: map[string]interface{}{
 				"truncate": "END",
 			},

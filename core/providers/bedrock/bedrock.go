@@ -1702,8 +1702,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		for i := range bifrostResponse.Results {
 			resultIndex := bifrostResponse.Results[i].Index
 			if resultIndex >= 0 && resultIndex < len(request.Documents) {
-				doc := request.Documents[resultIndex]
-				bifrostResponse.Results[i].Document = &doc
+				bifrostResponse.Results[i].Document = schemas.Ptr(request.Documents[resultIndex])
 			}
 		}
 	}

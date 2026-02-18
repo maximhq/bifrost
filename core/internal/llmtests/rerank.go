@@ -11,6 +11,47 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// BasicRerankExpectations validates common rerank invariants for provider tests.
+func BasicRerankExpectations(t *testing.T, rerankResponse *schemas.BifrostRerankResponse, documents []schemas.RerankDocument) {
+	t.Helper()
+
+	if len(rerankResponse.Results) == 0 {
+		t.Fatal("❌ Rerank results are empty")
+	}
+	if len(rerankResponse.Results) > len(documents) {
+		t.Fatalf("❌ Rerank returned too many results: got %d, max %d", len(rerankResponse.Results), len(documents))
+	}
+
+	seenIndices := make(map[int]struct{}, len(rerankResponse.Results))
+	for i, result := range rerankResponse.Results {
+		if result.Index < 0 || result.Index >= len(documents) {
+			t.Fatalf("❌ Result %d has invalid index %d (expected 0-%d)", i, result.Index, len(documents)-1)
+		}
+		if _, exists := seenIndices[result.Index]; exists {
+			t.Fatalf("❌ Result %d has duplicate index %d", i, result.Index)
+		}
+		seenIndices[result.Index] = struct{}{}
+
+		if math.IsNaN(result.RelevanceScore) || math.IsInf(result.RelevanceScore, 0) {
+			t.Fatalf("❌ Result %d has non-finite relevance score %f", i, result.RelevanceScore)
+		}
+
+		if result.Document == nil {
+			t.Fatalf("❌ Result %d has nil document (return_documents was true)", i)
+		}
+		if result.Document.Text != documents[result.Index].Text {
+			t.Fatalf("❌ Result %d has document text mismatch for index %d", i, result.Index)
+		}
+	}
+
+	for i := 1; i < len(rerankResponse.Results); i++ {
+		if rerankResponse.Results[i].RelevanceScore > rerankResponse.Results[i-1].RelevanceScore {
+			t.Fatalf("❌ Results not sorted by descending score at index %d: %f > %f",
+				i, rerankResponse.Results[i].RelevanceScore, rerankResponse.Results[i-1].RelevanceScore)
+		}
+	}
+}
+
 // RunRerankTest executes the rerank test scenario
 func RunRerankTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.Rerank {
@@ -36,14 +77,13 @@ func RunRerankTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, t
 			{Text: "France is a country in Western Europe."},
 		}
 
-		returnDocs := true
 		request := &schemas.BifrostRerankRequest{
 			Provider:  testConfig.Provider,
 			Model:     testConfig.RerankModel,
 			Query:     query,
 			Documents: documents,
 			Params: &schemas.RerankParameters{
-				ReturnDocuments: &returnDocs,
+				ReturnDocuments: schemas.Ptr(true),
 			},
 			Fallbacks: testConfig.RerankFallbacks,
 		}
@@ -59,47 +99,7 @@ func RunRerankTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, t
 			t.Fatal("❌ Rerank response is nil")
 		}
 
-		// Validate results exist
-		if len(rerankResponse.Results) == 0 {
-			t.Fatal("❌ Rerank results are empty")
-		}
-		if len(rerankResponse.Results) > len(documents) {
-			t.Fatalf("❌ Rerank returned too many results: got %d, max %d", len(rerankResponse.Results), len(documents))
-		}
-
-		// Validate result structure
-		seenIndices := make(map[int]struct{}, len(rerankResponse.Results))
-		for i, result := range rerankResponse.Results {
-			// Validate index is within bounds
-			if result.Index < 0 || result.Index >= len(documents) {
-				t.Fatalf("❌ Result %d has invalid index %d (expected 0-%d)", i, result.Index, len(documents)-1)
-			}
-			if _, exists := seenIndices[result.Index]; exists {
-				t.Fatalf("❌ Result %d has duplicate index %d", i, result.Index)
-			}
-			seenIndices[result.Index] = struct{}{}
-
-			// Validate relevance score is finite.
-			if math.IsNaN(result.RelevanceScore) || math.IsInf(result.RelevanceScore, 0) {
-				t.Fatalf("❌ Result %d has non-finite relevance score %f", i, result.RelevanceScore)
-			}
-
-			// Validate document is returned when requested
-			if result.Document == nil {
-				t.Fatalf("❌ Result %d has nil document (return_documents was true)", i)
-			}
-			if result.Document.Text != documents[result.Index].Text {
-				t.Fatalf("❌ Result %d has document text mismatch for index %d", i, result.Index)
-			}
-		}
-
-		// Validate scores are in non-increasing order
-		for i := 1; i < len(rerankResponse.Results); i++ {
-			if rerankResponse.Results[i].RelevanceScore > rerankResponse.Results[i-1].RelevanceScore {
-				t.Fatalf("❌ Results not sorted by descending score at index %d: %f > %f",
-					i, rerankResponse.Results[i].RelevanceScore, rerankResponse.Results[i-1].RelevanceScore)
-			}
-		}
+		BasicRerankExpectations(t, rerankResponse, documents)
 
 		// Validate that the most relevant document mentions Paris/France
 		if len(rerankResponse.Results) > 0 {

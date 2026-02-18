@@ -3,9 +3,9 @@ package cohere
 import (
 	"sort"
 
-	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"gopkg.in/yaml.v3"
 )
 
 // CohereRerankRequest represents a Cohere rerank API request
@@ -211,7 +211,7 @@ func formatCohereRerankDocument(doc schemas.RerankDocument) string {
 		documentPayload["metadata"] = doc.Meta
 	}
 
-	encoded, err := sonic.Marshal(documentPayload)
+	encoded, err := yaml.Marshal(documentPayload)
 	if err != nil {
 		return doc.Text
 	}

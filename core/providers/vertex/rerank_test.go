@@ -30,7 +30,6 @@ func TestBuildVertexRankingConfig(t *testing.T) {
 func TestToVertexRankRequest(t *testing.T) {
 	t.Parallel()
 
-	topN := 10
 	req, err := ToVertexRankRequest(
 		&schemas.BifrostRerankRequest{
 			Query: "capital of france",
@@ -39,7 +38,7 @@ func TestToVertexRankRequest(t *testing.T) {
 				{Text: "Berlin is the capital of Germany."},
 			},
 			Params: &schemas.RerankParameters{
-				TopN: &topN,
+				TopN: schemas.Ptr(10),
 			},
 		},
 		"semantic-ranker-default@latest",
