@@ -143,6 +143,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Nebius,
 		schemas.XAI,
 		schemas.Replicate,
+		schemas.SAPAICore,
 		ProviderOpenAICustom,
 	}, nil
 }
@@ -409,6 +410,20 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				Models:         []string{},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
+			},
+		}, nil
+	case schemas.SAPAICore:
+		return []schemas.Key{
+			{
+				Models: []string{},
+				Weight: 1.0,
+				SAPAICoreKeyConfig: &schemas.SAPAICoreKeyConfig{
+					ClientID:      *schemas.NewEnvVar("env.SAP_AI_CORE_CLIENT_ID"),
+					ClientSecret:  *schemas.NewEnvVar("env.SAP_AI_CORE_CLIENT_SECRET"),
+					AuthURL:       *schemas.NewEnvVar("env.SAP_AI_CORE_AUTH_URL"),
+					BaseURL:       *schemas.NewEnvVar("env.SAP_AI_CORE_BASE_URL"),
+					ResourceGroup: *schemas.NewEnvVar("env.SAP_AI_CORE_RESOURCE_GROUP"),
+				},
 			},
 		}, nil
 	default:
@@ -702,6 +717,19 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 				MaxRetries:                     10,
 				RetryBackoffInitial:            1 * time.Second,
 				RetryBackoffMax:                12 * time.Second,
+			},
+			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
+				Concurrency: Concurrency,
+				BufferSize:  10,
+			},
+		}, nil
+	case schemas.SAPAICore:
+		return &schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				DefaultRequestTimeoutInSeconds: 180,
+				MaxRetries:                     10,
+				RetryBackoffInitial:            1 * time.Second,
+				RetryBackoffMax:                15 * time.Second,
 			},
 			ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{
 				Concurrency: Concurrency,

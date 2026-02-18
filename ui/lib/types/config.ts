@@ -100,6 +100,26 @@ export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
 	deployments: {},
 } as const satisfies Required<ReplicateKeyConfig>;
 
+// SAPAICoreKeyConfig matching Go's schemas.SAPAICoreKeyConfig
+export interface SAPAICoreKeyConfig {
+	client_id: EnvVar;
+	client_secret: EnvVar;
+	auth_url: EnvVar;
+	base_url: EnvVar;
+	resource_group: EnvVar;
+	deployments?: Record<string, string> | string; // Allow string during editing
+}
+
+// Default SAPAICoreKeyConfig
+export const DefaultSAPAICoreKeyConfig: SAPAICoreKeyConfig = {
+	client_id: { value: "", env_var: "", from_env: false },
+	client_secret: { value: "", env_var: "", from_env: false },
+	auth_url: { value: "", env_var: "", from_env: false },
+	base_url: { value: "", env_var: "", from_env: false },
+	resource_group: { value: "", env_var: "", from_env: false },
+	deployments: {},
+} as const satisfies Required<SAPAICoreKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -113,6 +133,7 @@ export interface ModelProviderKey {
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
+	sapaicore_key_config?: SAPAICoreKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

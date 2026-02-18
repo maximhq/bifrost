@@ -348,6 +348,19 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
 		}
+
+		// Redact SAP AI Core key config if present
+		if key.SAPAICoreKeyConfig != nil {
+			sapConfig := &schemas.SAPAICoreKeyConfig{
+				Deployments: key.SAPAICoreKeyConfig.Deployments,
+			}
+			sapConfig.ClientID = *key.SAPAICoreKeyConfig.ClientID.Redacted()
+			sapConfig.ClientSecret = *key.SAPAICoreKeyConfig.ClientSecret.Redacted()
+			sapConfig.AuthURL = *key.SAPAICoreKeyConfig.AuthURL.Redacted()
+			sapConfig.BaseURL = *key.SAPAICoreKeyConfig.BaseURL.Redacted()
+			sapConfig.ResourceGroup = *key.SAPAICoreKeyConfig.ResourceGroup.Redacted()
+			redactedConfig.Keys[i].SAPAICoreKeyConfig = sapConfig
+		}
 	}
 	return &redactedConfig
 }

@@ -261,7 +261,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	logger.Info("Provider %s added successfully", payload.Provider)
-	
+
 	// Attempt model discovery
 	err := h.attemptModelDiscovery(ctx, payload.Provider, payload.CustomProviderConfig)
 
@@ -901,6 +901,30 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 						updateKey.BedrockKeyConfig.ARN.Equals(oldRedactedKey.BedrockKeyConfig.ARN) {
 						mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
 					}
+				}
+			}
+
+			// Handle SAP AI Core config redacted values
+			if updateKey.SAPAICoreKeyConfig != nil && oldRedactedKey.SAPAICoreKeyConfig != nil && oldRawKey.SAPAICoreKeyConfig != nil {
+				if updateKey.SAPAICoreKeyConfig.ClientID.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ClientID.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ClientID) {
+					mergedKey.SAPAICoreKeyConfig.ClientID = oldRawKey.SAPAICoreKeyConfig.ClientID
+				}
+				if updateKey.SAPAICoreKeyConfig.ClientSecret.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ClientSecret.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ClientSecret) {
+					mergedKey.SAPAICoreKeyConfig.ClientSecret = oldRawKey.SAPAICoreKeyConfig.ClientSecret
+				}
+				if updateKey.SAPAICoreKeyConfig.AuthURL.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.AuthURL.Equals(&oldRedactedKey.SAPAICoreKeyConfig.AuthURL) {
+					mergedKey.SAPAICoreKeyConfig.AuthURL = oldRawKey.SAPAICoreKeyConfig.AuthURL
+				}
+				if updateKey.SAPAICoreKeyConfig.BaseURL.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.BaseURL.Equals(&oldRedactedKey.SAPAICoreKeyConfig.BaseURL) {
+					mergedKey.SAPAICoreKeyConfig.BaseURL = oldRawKey.SAPAICoreKeyConfig.BaseURL
+				}
+				if updateKey.SAPAICoreKeyConfig.ResourceGroup.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ResourceGroup.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ResourceGroup) {
+					mergedKey.SAPAICoreKeyConfig.ResourceGroup = oldRawKey.SAPAICoreKeyConfig.ResourceGroup
 				}
 			}
 

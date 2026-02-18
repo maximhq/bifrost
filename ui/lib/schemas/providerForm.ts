@@ -1,6 +1,13 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { isValidDeployments, isValidVertexAuthCredentials } from "@/lib/utils/validation";
+import { isValidDeployments, isValidVertexAuthCredentials, isValidEnvVar } from "@/lib/utils/validation";
 import { z } from "zod";
+
+// EnvVar schema for provider config fields that support env.VAR_NAME format
+const EnvVarSchema = z.object({
+	value: z.string().optional(),
+	env_var: z.string().optional(),
+	from_env: z.boolean().optional(),
+});
 
 // Base schemas for reusable types
 const ProxyTypeSchema = z.enum(["none", "http", "socks5", "environment"]);
@@ -153,6 +160,18 @@ const ReplicateKeyConfigSchema = z.object({
 		.refine((value) => !value || isValidDeployments(value), { message: "Valid Deployments (JSON object) are required for Replicate keys" }),
 });
 
+const SAPAICoreKeyConfigSchema = z.object({
+	client_id: EnvVarSchema.refine((value) => isValidEnvVar(value), { message: "Client ID is required for SAP AI Core keys" }),
+	client_secret: EnvVarSchema.refine((value) => isValidEnvVar(value), { message: "Client Secret is required for SAP AI Core keys" }),
+	auth_url: EnvVarSchema.refine((value) => isValidEnvVar(value), { message: "Auth URL is required for SAP AI Core keys" }),
+	base_url: EnvVarSchema.refine((value) => isValidEnvVar(value), { message: "Base URL is required for SAP AI Core keys" }),
+	resource_group: EnvVarSchema.refine((value) => isValidEnvVar(value), { message: "Resource Group is required for SAP AI Core keys" }),
+	deployments: z
+		.union([z.record(z.string(), z.string()), z.string()])
+		.optional()
+		.refine((value) => !value || isValidDeployments(value), { message: "Valid Deployments (JSON object) are required for SAP AI Core keys" }),
+});
+
 const KeySchema = z.object({
 	id: z.string(),
 	name: z.string().min(1, "Name is required for the key"),
@@ -163,6 +182,7 @@ const KeySchema = z.object({
 	vertex_key_config: VertexKeyConfigSchema.optional(),
 	bedrock_key_config: BedrockKeyConfigSchema.optional(),
 	replicate_key_config: ReplicateKeyConfigSchema.optional(),
+	sapaicore_key_config: SAPAICoreKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
 });
 
@@ -255,8 +275,10 @@ export const ProviderFormSchema = z
 
 			// Validate individual key values based on provider type
 			const effectiveProviderType = data.baseProviderType || data.selectedProvider;
+			// Providers that don't use the standard API key field
+			const noApiKeyProviders = ["vertex", "bedrock", "sapaicore"];
 			data.keys.forEach((key, index) => {
-				if (effectiveProviderType !== "vertex" && effectiveProviderType !== "bedrock" && !key.value.trim()) {
+				if (!noApiKeyProviders.includes(effectiveProviderType) && !key.value.trim()) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,
 						message: "API key value cannot be empty",
