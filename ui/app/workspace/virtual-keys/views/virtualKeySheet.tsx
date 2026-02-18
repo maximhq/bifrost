@@ -53,7 +53,17 @@ interface VirtualKeySheetProps {
 const providerConfigSchema = z.object({
 	id: z.number().optional(),
 	provider: z.string().min(1, "Provider is required"),
-	weight: z.union([z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1"), z.string()]),
+	weight: z.preprocess(
+		(v) => {
+			if (v === "" || v === undefined || v === null) return undefined;
+			if (typeof v === "string") {
+				const n = Number.parseFloat(v);
+				return Number.isNaN(n) ? undefined : n;
+			}
+			return v;
+		},
+		z.number().min(0, "Weight must be at least 0").max(1, "Weight must be at most 1").optional(),
+	),
 	allowed_models: z.array(z.string()).optional(),
 	key_ids: z.array(z.string()).optional(), // Keys associated with this provider config
 	// Provider-level budget
@@ -163,20 +173,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			providerConfigs:
 				virtualKey?.provider_configs?.map((config) => ({
 					...config,
+					weight: config.weight ?? "",
 					key_ids: config.keys?.map((key) => key.key_id) || [],
 					budget: config.budget
 						? {
-								max_limit: String(config.budget.max_limit),
-								reset_duration: config.budget.reset_duration,
-							}
+							max_limit: String(config.budget.max_limit),
+							reset_duration: config.budget.reset_duration,
+						}
 						: undefined,
 					rate_limit: config.rate_limit
 						? {
-								token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
-								token_reset_duration: config.rate_limit.token_reset_duration,
-								request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
-								request_reset_duration: config.rate_limit.request_reset_duration,
-							}
+							token_max_limit: config.rate_limit.token_max_limit ? String(config.rate_limit.token_max_limit) : undefined,
+							token_reset_duration: config.rate_limit.token_reset_duration,
+							request_max_limit: config.rate_limit.request_max_limit ? String(config.rate_limit.request_max_limit) : undefined,
+							request_reset_duration: config.rate_limit.request_reset_duration,
+						}
 						: undefined,
 				})) || [],
 			mcpConfigs:
@@ -254,7 +265,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 		const newConfig = {
 			provider: provider,
-			weight: 0.5, // Default weight, user can adjust
+			weight: "" as string | number, // Default empty string = excluded from weighted routing until user sets a weight
 			allowed_models: [],
 			key_ids: [],
 		};
@@ -308,23 +319,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	const normalizeProviderConfigs = (configs: any[]): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight: typeof config.weight === "string" ? parseFloat(config.weight) || 0 : config.weight,
+			weight: config.weight === "" || config.weight === undefined || config.weight === null
+				? null
+				: typeof config.weight === "string" ? (Number.isNaN(parseFloat(config.weight)) ? null : parseFloat(config.weight)) : config.weight,
 			budget: config.budget?.max_limit
 				? {
-						max_limit: parseFloat(config.budget.max_limit) || 0,
-						reset_duration: config.budget.reset_duration || "1M",
-					}
+					max_limit: parseFloat(config.budget.max_limit) || 0,
+					reset_duration: config.budget.reset_duration || "1M",
+				}
 				: undefined,
 			rate_limit:
 				config.rate_limit?.token_max_limit || config.rate_limit?.request_max_limit
 					? {
-							token_max_limit: config.rate_limit.token_max_limit ? parseInt(config.rate_limit.token_max_limit) || undefined : undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration || "1h",
-							request_max_limit: config.rate_limit.request_max_limit
-								? parseInt(config.rate_limit.request_max_limit) || undefined
-								: undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration || "1h",
-						}
+						token_max_limit: config.rate_limit.token_max_limit ? parseInt(config.rate_limit.token_max_limit) || undefined : undefined,
+						token_reset_duration: config.rate_limit.token_reset_duration || "1h",
+						request_max_limit: config.rate_limit.request_max_limit
+							? parseInt(config.rate_limit.request_max_limit) || undefined
+							: undefined,
+						request_reset_duration: config.rate_limit.request_reset_duration || "1h",
+					}
 					: undefined,
 		}));
 	};
@@ -495,8 +508,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											</TooltipTrigger>
 											<TooltipContent>
 												<p>
-													Configure which providers this virtual key can use and their specific settings. Leave empty to allow all
-													providers.
+													Configure which providers this virtual key can use and their specific settings. Leave empty to block all
+													providers. Add providers to allow them.
 												</p>
 											</TooltipContent>
 										</Tooltip>
@@ -581,7 +594,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		: ProviderLabels[config.provider as ProviderName]}
 																</div>
 																<div className="hover:bg-accent/50 cursor-pointer rounded-sm p-2">
-																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" />
+																	<Trash2 onClick={() => handleRemoveProvider(index)} className="h-4 w-4 opacity-75" data-testid={`vk-delete-provider-${index}`} />
 																</div>
 															</div>
 														</AccordionTrigger>
@@ -590,9 +603,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																<div className="w-1/4 space-y-2">
 																	<Label className="text-sm font-medium">Weight</Label>
 																	<Input
-																		placeholder="0.5"
+																		placeholder="Exclude from routing"
 																		className="h-10 w-full"
-																		value={config.weight}
+																		data-testid={`vk-weight-input-${index}`}
+																		value={config.weight ?? ""}
 																		onChange={(e) => {
 																			const inputValue = e.target.value;
 																			// Allow empty string, numbers, and partial decimal inputs like "0."
@@ -621,6 +635,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		Allowed Models <span className="text-muted-foreground ml-auto text-xs italic">type to search</span>
 																	</Label>
 																	<ModelMultiselect
+																		data-testid={`vk-models-multiselect-${index}`}
 																		provider={config.provider}
 																		keys={(() => {
 																			const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
@@ -832,8 +847,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												</TooltipTrigger>
 												<TooltipContent>
 													<p>
-														Configure which MCP clients this virtual key can use and their allowed tools. Leave empty to allow all MCP
-														clients and tools.
+														Configure which MCP clients this virtual key can use and their allowed tools. Leave empty to block all MCP
+														tools. Add MCP clients to allow them.
 													</p>
 												</TooltipContent>
 											</Tooltip>
@@ -921,20 +936,39 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																<TableCell className="w-[150px]">{config.mcp_client_name}</TableCell>
 																<TableCell>
 																	<MultiSelect
-																		options={[...availableTools, ...enabledToolsByConfig]
-																			.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
-																			.map((tool) => ({
-																				label: tool.name,
-																				value: tool.name,
-																				description: tool.description,
-																			}))}
+																		options={[
+																			{
+																				label: "Allow All Tools",
+																				value: "*",
+																				description: "Allow all current and future tools (including dynamically fetched ones)",
+																			},
+																			...[...availableTools, ...enabledToolsByConfig]
+																				.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
+																				.map((tool) => ({
+																					label: tool.name,
+																					value: tool.name,
+																					description: tool.description,
+																				})),
+																		]}
 																		defaultValue={selectedTools}
-																		onValueChange={(tools: string[]) => handleUpdateMCPConfig(index, "tools_to_execute", tools)}
+																		onValueChange={(tools: string[]) => {
+																			const hadStar = selectedTools.includes("*");
+																			const hasStar = tools.includes("*");
+																			if (!hadStar && hasStar) {
+																				// Just selected "Allow All Tools" — set to ["*"] only
+																				handleUpdateMCPConfig(index, "tools_to_execute", ["*"]);
+																			} else if (hadStar && hasStar && tools.length > 1) {
+																				// Had "*", still has "*", but user also selected a specific tool — drop "*"
+																				handleUpdateMCPConfig(index, "tools_to_execute", tools.filter((t) => t !== "*"));
+																			} else {
+																				handleUpdateMCPConfig(index, "tools_to_execute", tools);
+																			}
+																		}}
 																		placeholder={
 																			selectedTools.length === 0
 																				? "No tools selected"
 																				: selectedTools.includes("*")
-																					? "All tools selected"
+																					? "All tools allowed"
 																					: "Select tools..."
 																		}
 																		variant="inverted"
@@ -945,7 +979,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	/>
 																</TableCell>
 																<TableCell>
-																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)}>
+																	<Button type="button" variant="ghost" size="sm" onClick={() => handleRemoveMCPClient(index)} data-testid={`vk-delete-mcp-${index}`}>
 																		<Trash2 className="h-4 w-4" />
 																	</Button>
 																</TableCell>
@@ -1079,7 +1113,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<SelectValue />
 																</SelectTrigger>
 															</FormControl>
-															<SelectContent>
+															<SelectContent >
 																<SelectItem value="none">No Assignment</SelectItem>
 																{teams?.length > 0 && <SelectItem value="team">Assign to Team</SelectItem>}
 																{customers?.length > 0 && <SelectItem value="customer">Assign to Customer</SelectItem>}

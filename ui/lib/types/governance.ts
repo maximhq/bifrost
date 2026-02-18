@@ -87,7 +87,7 @@ export interface VirtualKey {
 export interface VirtualKeyProviderConfig {
 	id?: number;
 	provider: string;
-	weight: number;
+	weight: number | null;
 	allowed_models: string[];
 	budget?: Budget;
 	rate_limit?: RateLimit;

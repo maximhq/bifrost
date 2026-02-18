@@ -15,8 +15,8 @@ Make sure you have at least one MCP client set up. Read more about it [here](../
 The filtering logic is determined by the Virtual Key's configuration:
 
 1.  **No MCP Configuration on Virtual Key (Default)**
-    - If a Virtual Key has no specific MCP configurations, all tools from all enabled MCP clients are available by default.
-    - In this state, a user can still manually filter tools for a single request by passing the `x-bf-mcp-include-tools` header.
+    - If a Virtual Key has no specific MCP configurations, **no MCP tools are available** (deny-by-default).
+    - You must explicitly add MCP client configurations to allow tools.
 
 2.  **With MCP Configuration on Virtual Key**
     - When you configure MCP clients on a Virtual Key, its settings take full precedence.

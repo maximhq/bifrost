@@ -66,16 +66,16 @@ type CreateVirtualKeyRequest struct {
 	Description     string `json:"description,omitempty"`
 	ProviderConfigs []struct {
 		Provider      string                  `json:"provider" validate:"required"`
-		Weight        float64                 `json:"weight,omitempty"`
+		Weight        *float64                `json:"weight,omitempty"`
 		AllowedModels []string                `json:"allowed_models,omitempty"` // Empty means all models allowed
 		Budget        *CreateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
 		KeyIDs        []string                `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
-	} `json:"provider_configs,omitempty"` // Empty means all providers allowed
+	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs []struct {
 		MCPClientName  string   `json:"mcp_client_name" validate:"required"`
 		ToolsToExecute []string `json:"tools_to_execute,omitempty"`
-	} `json:"mcp_configs,omitempty"` // Empty means all MCP clients allowed
+	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
 	TeamID     *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
 	CustomerID *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
 	Budget     *CreateBudgetRequest    `json:"budget,omitempty"`
@@ -90,7 +90,7 @@ type UpdateVirtualKeyRequest struct {
 	ProviderConfigs []struct {
 		ID            *uint                   `json:"id,omitempty"` // null for new entries
 		Provider      string                  `json:"provider" validate:"required"`
-		Weight        float64                 `json:"weight,omitempty"`
+		Weight        *float64                `json:"weight,omitempty"`
 		AllowedModels []string                `json:"allowed_models,omitempty"` // Empty means all models allowed
 		Budget        *UpdateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
@@ -415,7 +415,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 					VirtualKeyID:  vk.ID,
 					Provider:      pc.Provider,
-					Weight:        &pc.Weight,
+					Weight:        pc.Weight,
 					AllowedModels: pc.AllowedModels,
 					Keys:          keys,
 				}
@@ -738,7 +738,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					providerConfig := &configstoreTables.TableVirtualKeyProviderConfig{
 						VirtualKeyID:  vk.ID,
 						Provider:      pc.Provider,
-						Weight:        &pc.Weight,
+						Weight:        pc.Weight,
 						AllowedModels: pc.AllowedModels,
 						Keys:          keys,
 					}
@@ -789,7 +789,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					requestConfigsMap[*pc.ID] = true
 					existing.Provider = pc.Provider
-					existing.Weight = &pc.Weight
+					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
 
 					// Get keys for this provider config if specified
