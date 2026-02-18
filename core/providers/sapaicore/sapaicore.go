@@ -742,22 +742,224 @@ func (provider *SAPAICoreProvider) Embedding(ctx *schemas.BifrostContext, key sc
 	)
 }
 
-// Responses is not supported by SAP AI Core provider
+// Responses performs a Responses API request to SAP AI Core.
+// It routes the request to the appropriate backend (currently only Bedrock) based on the model.
 func (provider *SAPAICoreProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"Responses is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+	config, err := getKeyConfig(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get auth token
+	token, tokenErr := provider.getAuthToken(ctx, config)
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+
+	// Resolve deployment
+	deploymentID, backend, deployErr := provider.resolveDeployment(request.Model, config)
+	if deployErr != nil {
+		return nil, deployErr
+	}
+
+	// Route based on backend - currently only Bedrock supports Responses API
+	switch backend {
+	case BackendBedrock:
+		return provider.handleBedrockResponses(ctx, token, config, deploymentID, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(
+			"Responses API is only supported for Anthropic models via Bedrock backend",
+			fmt.Errorf("unsupported backend for Responses API: %s", backend),
+			schemas.SAPAICore,
+		)
+	}
 }
 
-// ResponsesStream is not supported by SAP AI Core provider
+// handleBedrockResponses handles Responses API requests for Bedrock backends (Anthropic)
+func (provider *SAPAICoreProvider) handleBedrockResponses(
+	ctx *schemas.BifrostContext,
+	token string,
+	config *schemas.SAPAICoreKeyConfig,
+	deploymentID string,
+	request *schemas.BifrostResponsesRequest,
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	// Build Bedrock-style URL
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke")
+
+	// Convert request to Bedrock format
+	bedrockRequest := convertResponsesToBedrock(request)
+
+	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	if marshalErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to marshal Bedrock request",
+			marshalErr,
+			providerName,
+		)
+	}
+
+	// Make request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("AI-Resource-Group", config.ResourceGroup.GetValue())
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetBody(jsonData)
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, ParseSAPAICoreError(resp, schemas.ResponsesRequest, providerName, request.Model)
+	}
+
+	// Parse Bedrock response
+	responseBody := append([]byte(nil), resp.Body()...)
+	response, parseErr := parseBedrockToResponsesResponse(responseBody, request.Model)
+	if parseErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to parse Bedrock response",
+			parseErr,
+			providerName,
+		)
+	}
+
+	response.ExtraFields.Provider = providerName
+	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.RequestType = schemas.ResponsesRequest
+	response.ExtraFields.Latency = latency.Milliseconds()
+
+	return response, nil
+}
+
+// ResponsesStream performs a streaming Responses API request to SAP AI Core.
+// It routes the request to the appropriate backend (currently only Bedrock) based on the model.
 func (provider *SAPAICoreProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ResponsesStream is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+	config, err := getKeyConfig(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get auth token
+	token, tokenErr := provider.getAuthToken(ctx, config)
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+
+	// Resolve deployment
+	deploymentID, backend, deployErr := provider.resolveDeployment(request.Model, config)
+	if deployErr != nil {
+		return nil, deployErr
+	}
+
+	// Route based on backend - currently only Bedrock supports Responses streaming
+	switch backend {
+	case BackendBedrock:
+		return provider.handleBedrockResponsesStream(ctx, postHookRunner, token, config, deploymentID, request)
+	default:
+		return nil, providerUtils.NewBifrostOperationError(
+			"ResponsesStream API is only supported for Anthropic models via Bedrock backend",
+			fmt.Errorf("unsupported backend for ResponsesStream API: %s", backend),
+			schemas.SAPAICore,
+		)
+	}
+}
+
+// handleBedrockResponsesStream handles streaming Responses API requests for Bedrock backends (Anthropic)
+func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	token string,
+	config *schemas.SAPAICoreKeyConfig,
+	deploymentID string,
+	request *schemas.BifrostResponsesRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+
+	// Build Bedrock streaming URL
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke-with-response-stream")
+
+	// Convert request to Bedrock format
+	bedrockRequest := convertResponsesToBedrock(request)
+
+	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	if marshalErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to marshal Bedrock streaming request",
+			marshalErr,
+			providerName,
+		)
+	}
+
+	// Create HTTP request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("AI-Resource-Group", config.ResourceGroup.GetValue())
+	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetBody(jsonData)
+
+	// Make the request
+	if err := provider.client.Do(req, resp); err != nil {
+		providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		return nil, ParseSAPAICoreError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
+	}
+
+	// Create response channel
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+
+	// Start streaming in a goroutine
+	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, provider.logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, provider.logger)
+			}
+			close(responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Setup cancellation handler to close body stream on ctx cancellation
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		// Process Bedrock event stream for Responses API
+		processBedrockResponsesEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
+	}()
+
+	return responseChan, nil
 }
 
 // CountTokens is not supported by SAP AI Core provider
