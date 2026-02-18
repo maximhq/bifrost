@@ -1,0 +1,399 @@
+---
+title: "SAP AI Core"
+description: "SAP AI Core API conversion guide - OAuth2 authentication, multi-backend routing, deployment management"
+icon: "cloud"
+---
+
+## Overview
+
+SAP AI Core is an enterprise AI gateway that provides OAuth2-authenticated access to multiple AI backends through SAP's Business Technology Platform (BTP). Bifrost supports SAP AI Core as a meta-provider, automatically routing requests to the appropriate backend based on model names:
+
+- **OpenAI models** - GPT-4, GPT-4o, o1, o3 series via OpenAI-compatible API
+- **Anthropic models** - Claude 3/4 series via AWS Bedrock protocol
+- **Amazon models** - Nova series via AWS Bedrock protocol
+- **Google models** - Gemini series via Vertex AI protocol
+
+Key features include:
+- **OAuth2 authentication** - Client credentials flow with automatic token caching and refresh
+- **Multi-backend routing** - Automatic backend detection based on model name prefixes
+- **Deployment resolution** - Static configuration or dynamic auto-discovery via API
+- **Unified interface** - Single OpenAI-compatible API for all backends
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Notes |
+|-----------|---------------|-----------|-------|
+| Chat Completions | ✅ | ✅ | All backends supported |
+| Embeddings | ✅ | - | OpenAI-compatible endpoint |
+| List Models | ✅ | - | Returns available deployments |
+| Text Completions | ❌ | ❌ | Use Chat Completions instead |
+| Responses API | ❌ | ❌ | Not supported |
+| Speech (TTS) | ❌ | ❌ | Not supported |
+| Transcriptions (STT) | ❌ | ❌ | Not supported |
+| Images | ❌ | ❌ | Not supported |
+| Files | ❌ | ❌ | Not supported |
+| Batch | ❌ | ❌ | Not supported |
+
+<Note>
+**Backend-specific features**: Tool calling and vision capabilities depend on the underlying backend model. Claude and GPT models support tool calling; Gemini and Claude models support vision.
+</Note>
+
+---
+
+# 1. Authentication
+
+SAP AI Core uses OAuth2 client credentials flow for authentication. Bifrost automatically handles token acquisition, caching, and refresh.
+
+## Key Configuration
+
+The key configuration requires five fields for SAP AI Core:
+
+```json
+{
+  "sapaicore_key_config": {
+    "client_id": "sb-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx!bxxxxx|aicore!bxxxx",
+    "client_secret": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+    "token_url": "https://your-subdomain.authentication.region.hana.ondemand.com/oauth/token",
+    "base_url": "https://api.ai.your-region.aws.ml.hana.ondemand.com/v2",
+    "resource_group": "default"
+  }
+}
+```
+
+**Configuration Details**:
+- `client_id` - SAP AI Core service key client ID (required)
+- `client_secret` - SAP AI Core service key client secret (required)
+- `token_url` - OAuth2 token endpoint URL from service key (required)
+- `base_url` - SAP AI Core API base URL from service key (required)
+- `resource_group` - AI Core resource group, typically `"default"` (required)
+
+### Obtaining Credentials
+
+1. Navigate to your SAP BTP subaccount
+2. Go to **Instances and Subscriptions** > **SAP AI Core**
+3. Create a service key or use an existing one
+4. Extract the required fields from the service key JSON:
+
+```json
+{
+  "clientid": "→ client_id",
+  "clientsecret": "→ client_secret",
+  "url": "→ token_url (append /oauth/token)",
+  "serviceurls": {
+    "AI_API_URL": "→ base_url"
+  }
+}
+```
+
+### Token Caching
+
+Bifrost automatically:
+- Caches OAuth2 tokens per client ID and token URL combination
+- Refreshes tokens 30 seconds before expiration
+- Handles concurrent requests with thread-safe token management
+
+---
+
+# 2. Chat Completions
+
+## Request Parameters
+
+### Core Parameter Mapping
+
+| Parameter | SAP AI Core Handling | Notes |
+|-----------|---------------------|-------|
+| `model` | Routes to appropriate backend | See [Backend Routing](#backend-routing) |
+| `messages` | Converted per backend | OpenAI format for OpenAI, Bedrock format for Anthropic/Amazon, Vertex format for Gemini |
+| `max_completion_tokens` | Passed through or converted | Backend-specific handling |
+| `temperature`, `top_p` | Direct pass-through | Same across all backends |
+| `tools` | Converted per backend | Supported for Claude, GPT, Gemini |
+| `stream` | Supported | SSE streaming for all backends |
+
+### Backend Routing
+
+SAP AI Core automatically routes requests based on model name prefixes:
+
+| Model Prefix | Backend | Protocol |
+|--------------|---------|----------|
+| `anthropic--` | Bedrock | AWS Bedrock Converse API |
+| `amazon--` | Bedrock | AWS Bedrock Converse API |
+| `gemini-` | Vertex | Vertex AI generateContent API |
+| `gpt-`, `o1`, `o3`, `o4` | OpenAI | OpenAI Chat Completions API |
+| Other | OpenAI | Default fallback |
+
+### Example Requests
+
+<Tabs>
+<Tab title="Gateway (OpenAI model)">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/gpt-4o",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_completion_tokens": 1000
+  }'
+```
+
+</Tab>
+<Tab title="Gateway (Claude model)">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/anthropic--claude-3.5-sonnet",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_completion_tokens": 4096
+  }'
+```
+
+</Tab>
+<Tab title="Gateway (Gemini model)">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/gemini-1.5-pro",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_completion_tokens": 8192
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    Provider: schemas.SAPAICore,
+    Model:    "anthropic--claude-3.5-sonnet",
+    Input: []schemas.ChatMessage{
+        {Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{
+            ContentStr: schemas.Ptr("Hello!"),
+        }},
+    },
+    Params: &schemas.ChatParameters{
+        MaxCompletionTokens: schemas.Ptr(4096),
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+## Streaming
+
+Streaming is supported for all backends. The streaming format is normalized to OpenAI-compatible Server-Sent Events regardless of the underlying backend:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/anthropic--claude-3.5-sonnet",
+    "messages": [{"role": "user", "content": "Write a haiku"}],
+    "stream": true
+  }'
+```
+
+---
+
+# 3. Deployment Resolution
+
+SAP AI Core requires deployment IDs to route requests. Bifrost supports two methods for resolving model names to deployment IDs.
+
+## Static Deployments (Recommended for Production)
+
+Configure deployment mappings in your key configuration:
+
+```json
+{
+  "sapaicore_key_config": {
+    "client_id": "...",
+    "client_secret": "...",
+    "token_url": "...",
+    "base_url": "...",
+    "resource_group": "default",
+    "deployments": {
+      "gpt-4o": "d123456789",
+      "anthropic--claude-3.5-sonnet": "d987654321",
+      "gemini-1.5-pro": "d456789123"
+    }
+  }
+}
+```
+
+**Benefits**:
+- No additional API calls
+- Faster request processing
+- Predictable deployment routing
+
+## Dynamic Auto-Resolution
+
+If no static deployment is configured, Bifrost automatically:
+1. Queries SAP AI Core's `/deployments` API
+2. Finds a running deployment matching the requested model
+3. Caches the result for 1 hour (configurable)
+
+<Note>
+**Performance consideration**: Dynamic resolution adds latency for the first request to each model. Use static deployments in production for optimal performance.
+</Note>
+
+---
+
+# 4. Embeddings
+
+SAP AI Core supports embeddings through OpenAI-compatible deployments.
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/text-embedding-ada-002",
+    "input": "The quick brown fox jumps over the lazy dog"
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+    Provider: schemas.SAPAICore,
+    Model:    "text-embedding-ada-002",
+    Input:    "The quick brown fox jumps over the lazy dog",
+})
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 5. List Models
+
+Retrieve available models (deployments) from SAP AI Core:
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl http://localhost:8080/v1/models?provider=sapaicore \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY"
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{
+    Provider: schemas.SAPAICore,
+})
+
+for _, model := range resp.Data {
+    fmt.Printf("Model: %s (Deployment: %s)\n", model.ID, model.DeploymentID)
+}
+```
+
+</Tab>
+</Tabs>
+
+The response includes all running deployments with their model names, deployment IDs, and capabilities.
+
+---
+
+# 6. Supported Models
+
+The following models are known to be available through SAP AI Core (availability may vary by region and subscription):
+
+## Anthropic Models (via Bedrock)
+
+| Model | Max Output Tokens | Context Window |
+|-------|-------------------|----------------|
+| `anthropic--claude-4.5-sonnet` | 64,000 | 200,000 |
+| `anthropic--claude-4-sonnet` | 64,000 | 200,000 |
+| `anthropic--claude-4-opus` | 64,000 | 200,000 |
+| `anthropic--claude-3.7-sonnet` | 64,000 | 200,000 |
+| `anthropic--claude-3.5-sonnet` | 8,192 | 200,000 |
+| `anthropic--claude-3-sonnet` | 4,096 | 200,000 |
+| `anthropic--claude-3-haiku` | 4,096 | 200,000 |
+| `anthropic--claude-3-opus` | 4,096 | 200,000 |
+
+## Amazon Models (via Bedrock)
+
+| Model | Max Output Tokens | Context Window |
+|-------|-------------------|----------------|
+| `amazon--nova-pro` | 5,120 | 300,000 |
+| `amazon--nova-lite` | 5,120 | 300,000 |
+| `amazon--nova-micro` | 5,120 | 128,000 |
+
+## Google Models (via Vertex)
+
+| Model | Max Output Tokens | Context Window |
+|-------|-------------------|----------------|
+| `gemini-2.5-pro` | 65,536 | 1,048,576 |
+| `gemini-2.5-flash` | 65,536 | 1,048,576 |
+| `gemini-2.0-flash` | 8,192 | 1,048,576 |
+| `gemini-1.5-pro` | 8,192 | 2,097,152 |
+| `gemini-1.5-flash` | 8,192 | 1,048,576 |
+
+## OpenAI Models
+
+| Model | Max Output Tokens | Context Window |
+|-------|-------------------|----------------|
+| `gpt-4o` | 16,384 | 128,000 |
+| `gpt-4o-mini` | 16,384 | 128,000 |
+| `gpt-4` | 4,096 | 200,000 |
+| `gpt-4.1` | 32,768 | 1,047,576 |
+| `gpt-4.1-mini` | 32,768 | 1,047,576 |
+| `gpt-4.1-nano` | 32,768 | 1,047,576 |
+| `gpt-5` | 128,000 | 272,000 |
+| `gpt-5-mini` | 128,000 | 272,000 |
+| `gpt-5-nano` | 128,000 | 272,000 |
+
+## Reasoning Models
+
+| Model | Max Output Tokens | Context Window |
+|-------|-------------------|----------------|
+| `o1` | 100,000 | 200,000 |
+| `o3` | 100,000 | 200,000 |
+| `o3-mini` | 100,000 | 200,000 |
+| `o4-mini` | 100,000 | 200,000 |
+
+<Note>
+Model availability depends on your SAP AI Core subscription and region. Check your SAP BTP cockpit for available models and create deployments as needed.
+</Note>
+
+---
+
+# 7. Error Handling
+
+SAP AI Core errors are normalized to Bifrost's standard error format. Common error scenarios:
+
+| Error | Cause | Resolution |
+|-------|-------|------------|
+| `401 Unauthorized` | Invalid or expired OAuth2 credentials | Verify client_id and client_secret |
+| `403 Forbidden` | Missing resource group access | Check resource_group configuration |
+| `404 Not Found` | Deployment not found for model | Create deployment or check model name |
+| `429 Rate Limited` | API rate limit exceeded | Implement backoff or request quota increase |
+| `503 Service Unavailable` | SAP AI Core service issue | Retry with exponential backoff |
+
+---
+
+# 8. Best Practices
+
+1. **Use static deployments** in production for predictable performance
+2. **Cache OAuth2 tokens** - Bifrost handles this automatically
+3. **Monitor deployment status** - Ensure deployments are in `RUNNING` state
+4. **Use appropriate models** - Match model capabilities to your use case
+5. **Handle rate limits** - Implement retry logic with exponential backoff
+6. **Secure credentials** - Use environment variables or secret management for credentials

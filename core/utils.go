@@ -91,13 +91,27 @@ func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schema
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex and Bedrock have their credentials in additional key configs..
+// Some providers like Vertex, Bedrock, SAP AI Core have their credentials in additional key configs.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.SAPAICore
+}
+
+// hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
+// This allows Azure keys to have an empty API key value when using Entra ID authentication.
+func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
+	if providerType != schemas.Azure || key.AzureKeyConfig == nil {
+		return false
+	}
+	return key.AzureKeyConfig.ClientID != nil &&
+		key.AzureKeyConfig.ClientSecret != nil &&
+		key.AzureKeyConfig.TenantID != nil &&
+		key.AzureKeyConfig.ClientID.GetValue() != "" &&
+		key.AzureKeyConfig.ClientSecret.GetValue() != "" &&
+		key.AzureKeyConfig.TenantID.GetValue() != ""
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
-	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
+	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex && providerKey != schemas.SAPAICore
 }
 
 // calculateBackoff implements exponential backoff with jitter for retry attempts.
