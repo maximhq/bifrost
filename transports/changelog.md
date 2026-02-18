@@ -12,3 +12,5 @@
 - chore: upgrade core to 1.4.3 and framework to 1.2.21
 - chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
 - refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
+- fix: add skip plugin pipeline flag to context for list models requests to avoid internal list models logs
+- fix: duplicate 'not found' error on custom provider deletion

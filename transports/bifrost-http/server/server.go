@@ -526,16 +526,15 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 
 // RemoveProvider removes a provider from the in-memory store
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
-	err := s.Config.RemoveProvider(ctx, provider)
-	// For not found, we continue to remove the provider from the client
-	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		logger.Error("failed to remove provider from config: %v", err)
+	err := s.Client.RemoveProvider(provider)
+	if err != nil {
+		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
-	err = s.Client.RemoveProvider(provider)
-	if err != nil {
-		logger.Error("failed to remove provider: %v", err)
-		return err
+	err = s.Config.RemoveProvider(ctx, provider)
+	if err != nil && !errors.Is(err, lib.ErrNotFound) {
+		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
+		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
 	}
 	governancePlugin, err := s.getGovernancePlugin()
 	if err != nil {
