@@ -5,6 +5,20 @@ set -e
 # Usage: ./test-docker-image.sh <platform>
 # Example: ./test-docker-image.sh linux/amd64
 
+
+# Get the absolute path of the script directory
+if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
+  SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+else
+  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+fi
+
+# Repository root (3 levels up from .github/workflows/scripts)
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
+
+# Setup Go workspace for CI (go.work is gitignored, must be regenerated)
+source "$SCRIPT_DIR/setup-go-workspace.sh"
+
 PLATFORM=${1:-linux/amd64}
 ARCH=$(echo "$PLATFORM" | cut -d'/' -f2)
 IMAGE_TAG="bifrost-test:ci-${GITHUB_SHA:-local}-${ARCH}"
@@ -13,11 +27,11 @@ TEST_PORT=18080
 
 echo "=== Testing Docker image for ${PLATFORM} ==="
 
-# Build the image
-echo "Building Docker image..."
+# Build the image using local module sources (pre-release CI builds)
+echo "Building Docker image (local modules)..."
 docker build \
   --platform "${PLATFORM}" \
-  -f transports/Dockerfile \
+  -f transports/Dockerfile.local \
   -t "${IMAGE_TAG}" \
   .
 

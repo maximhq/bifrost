@@ -5,6 +5,10 @@ set -euo pipefail
 # Usage: source setup-go-workspace.sh
 
 echo "🔧 Setting up Go workspace..."
+if [ -f "go.work" ]; then
+  echo "✅ Go workspace already exists, skipping init"
+  return 0 2>/dev/null || exit 0
+fi
 go work init
 go work use ./core
 go work use ./framework
