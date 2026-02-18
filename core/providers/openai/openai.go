@@ -529,6 +529,11 @@ func HandleOpenAITextCompletionStreaming(
 				continue
 			}
 
+			// choices be array if nil
+			if response.Choices == nil {
+				response.Choices = []schemas.BifrostResponseChoice{}
+			}
+
 			if postResponseConverter != nil {
 				if converted := postResponseConverter(&response); converted != nil {
 					response = *converted
@@ -990,6 +995,11 @@ func HandleOpenAIChatCompletionStreaming(
 			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
 				logger.Warn("Failed to parse stream response: %v", err)
 				continue
+			}
+
+			// choices be array if nil
+			if response.Choices == nil {
+				response.Choices = []schemas.BifrostResponseChoice{}
 			}
 
 			if isResponsesToChatCompletionsFallback {
