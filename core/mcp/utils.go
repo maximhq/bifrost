@@ -65,7 +65,7 @@ func (m *MCPManager) GetToolPerClient(ctx context.Context) map[string][]schemas.
 	var includeClients []string
 
 	// Extract client filtering from request context
-	if existingIncludeClients, ok := ctx.Value(MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
+	if existingIncludeClients, ok := ctx.Value(schemas.MCPContextKeyIncludeClients).([]string); ok && existingIncludeClients != nil {
 		includeClients = existingIncludeClients
 	}
 
@@ -439,7 +439,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 // Context filtering can only NARROW the tools available, NOT expand beyond client configuration.
 // This is checked AFTER client-level filtering (shouldSkipToolForConfig).
 func shouldSkipToolForRequest(ctx context.Context, clientName, toolName string) bool {
-	includeTools := ctx.Value(MCPContextKeyIncludeTools)
+	includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
 
 	if includeTools != nil {
 		// Try []string first (preferred type)

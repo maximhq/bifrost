@@ -256,6 +256,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRateLimitToTeamsAndCustomers(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddAsyncJobResultTTLColumn(ctx, db); err != nil {
 		return err
 	}
@@ -3595,6 +3598,125 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running rate limit migration for teams and customers: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationBackfillEmptyVirtualKeyConfigs backfills existing virtual keys that have
+// empty ProviderConfigs or MCPConfigs with all available providers/MCP clients.
+// This preserves the previous "empty means all" behavior for existing VKs after
+// the semantic change to "empty means none" (deny-by-default).
+func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_empty_virtual_key_configs",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Step 1: Backfill ProviderConfigs for VKs that have none
+			// Find all virtual keys
+			var allVKs []tables.TableVirtualKey
+			if err := tx.Find(&allVKs).Error; err != nil {
+				return fmt.Errorf("failed to query virtual keys: %w", err)
+			}
+
+			// Get all available providers
+			var allProviders []tables.TableProvider
+			if err := tx.Find(&allProviders).Error; err != nil {
+				return fmt.Errorf("failed to query providers: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, vk := range allVKs {
+				// Check if this VK has any provider configs
+				var providerConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&providerConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count provider configs for VK %s: %w", vk.ID, err)
+				}
+
+				if providerConfigCount == 0 && len(allProviders) > 0 {
+					// VK has no provider configs - backfill with all available providers
+					for _, provider := range allProviders {
+						providerConfig := tables.TableVirtualKeyProviderConfig{
+							VirtualKeyID:  vk.ID,
+							Provider:      provider.Name,
+							Weight:        bifrost.Ptr(1.0),
+							AllowedModels: []string{},
+						}
+						if err := tx.Create(&providerConfig).Error; err != nil {
+							return fmt.Errorf("failed to create provider config for VK %s, provider %s: %w", vk.ID, provider.Name, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d provider configs", vk.Name, len(allProviders))
+				}
+			}
+
+			// Step 2: Backfill MCPConfigs for VKs that have none
+			// Get all available MCP clients
+			var allMCPClients []tables.TableMCPClient
+			if err := tx.Find(&allMCPClients).Error; err != nil {
+				return fmt.Errorf("failed to query MCP clients: %w", err)
+			}
+
+			for _, vk := range allVKs {
+				// Check if this VK has any MCP configs
+				var mcpConfigCount int64
+				if err := tx.Model(&tables.TableVirtualKeyMCPConfig{}).Where("virtual_key_id = ?", vk.ID).Count(&mcpConfigCount).Error; err != nil {
+					return fmt.Errorf("failed to count MCP configs for VK %s: %w", vk.ID, err)
+				}
+
+				if mcpConfigCount == 0 && len(allMCPClients) > 0 {
+					// VK has no MCP configs - backfill with all available MCP clients with wildcard
+					for _, mcpClient := range allMCPClients {
+						mcpConfig := tables.TableVirtualKeyMCPConfig{
+							VirtualKeyID:   vk.ID,
+							MCPClientID:    mcpClient.ID,
+							ToolsToExecute: []string{"*"},
+						}
+						if err := tx.Create(&mcpConfig).Error; err != nil {
+							return fmt.Errorf("failed to create MCP config for VK %s, client %d: %w", vk.ID, mcpClient.ID, err)
+						}
+					}
+					modifiedVKIDs[vk.ID] = struct{}{}
+					log.Printf("[Migration] Backfilled VK '%s' with %d MCP client configs", vk.Name, len(allMCPClients))
+				}
+			}
+
+			// Step 3: Recompute and persist config_hash for every VK that was modified.
+			// Without this, subsequent config-sync diff logic would see a stale hash and
+			// attempt to re-reconcile the VK (potentially undoing the backfill).
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// No rollback needed - the backfilled configs are valid data
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill empty virtual key configs migration: %s", err.Error())
 	}
 	return nil
 }
