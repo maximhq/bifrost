@@ -359,33 +359,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Params = req.VideoGenerationRequest.Params
 			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
 		case schemas.VideoRemixRequest:
-			initialData.Params = map[string]interface{}{
-				"video_id": req.VideoRemixRequest.ID,
+			initialData.Params = &schemas.VideoLogParams{
+				VideoID: req.VideoRemixRequest.ID,
 			}
 			initialData.VideoGenerationInput = req.VideoRemixRequest.Input
-		case schemas.VideoRetrieveRequest:
-			initialData.Params = map[string]interface{}{
-				"video_id": req.VideoRetrieveRequest.ID,
-			}
-		case schemas.VideoDownloadRequest:
-			initialData.Params = map[string]interface{}{
-				"video_id": req.VideoDownloadRequest.ID,
-			}
-		case schemas.VideoListRequest:
-			params := map[string]interface{}{}
-			if req.VideoListRequest.After != nil {
-				params["after"] = *req.VideoListRequest.After
-			}
-			if req.VideoListRequest.Limit != nil {
-				params["limit"] = *req.VideoListRequest.Limit
-			}
-			if req.VideoListRequest.Order != nil {
-				params["order"] = *req.VideoListRequest.Order
-			}
-			initialData.Params = params
-		case schemas.VideoDeleteRequest:
-			initialData.Params = map[string]interface{}{
-				"video_id": req.VideoDeleteRequest.ID,
+		case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest:
+			initialData.Params = &schemas.VideoLogParams{
+				VideoID: req.VideoRetrieveRequest.ID,
 			}
 		}
 	}

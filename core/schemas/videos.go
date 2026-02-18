@@ -75,6 +75,9 @@ func (b *BifrostVideoGenerationRequest) GetRawRequestBody() []byte {
 }
 
 func (b *BifrostVideoGenerationRequest) GetExtraParams() map[string]interface{} {
+	if b == nil || b.Params == nil {
+		return nil
+	}
 	return b.Params.ExtraParams
 }
 
@@ -127,6 +130,13 @@ type BifrostVideoRemixRequest struct {
 
 func (b *BifrostVideoRemixRequest) GetRawRequestBody() []byte {
 	return b.RawRequestBody
+}
+
+func (b *BifrostVideoRemixRequest) GetExtraParams() map[string]interface{} {
+	if b == nil {
+		return nil
+	}
+	return b.ExtraParams
 }
 
 // --- Video List ---
@@ -187,4 +197,8 @@ type BifrostVideoDownloadResponse struct {
 	ContentType string `json:"content_type,omitempty"` // MIME type (e.g., "video/mp4", "image/png" for thumbnails)
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+type VideoLogParams struct {
+	VideoID string `json:"video_id"`
 }

@@ -58,7 +58,7 @@ providers:
     file_delete: "gpt-4o-mini"
     file_content: "gpt-4o-mini"
     count_tokens: "gpt-4o-mini"
-    video: "sora-2-pro"
+    video: "sora-2"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
@@ -270,7 +270,7 @@ provider_scenarios:
     file_delete: true
     file_content: true
     count_tokens: true
-    video_generation: true
+    video_generation: false # disabled for now because of long running operations
 
   azure:
     simple_chat: true
@@ -402,7 +402,7 @@ provider_scenarios:
     imagen: true  # Imagen via :predict endpoint
     imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
-    video_generation: true
+    video_generation: false # disabled for now because of long running operations
     prompt_caching: false
     citations: false
     list_models: true
@@ -450,7 +450,7 @@ provider_scenarios:
     thinking: true
     prompt_caching: false
     list_models: true
-    video_generation: true
+    video_generation: false # disabled for now because of long running operations
     responses: true
     responses_image: true
     text_completion: false
@@ -561,10 +561,10 @@ provider_scenarios:
     image_generation: true
   
   replicate:
-    video_generation: true
+    video_generation: false # disabled for now because of long running operations
   
   runway:
-    video_generation: true
+    video_generation: false # disabled for now because of long running operations
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types

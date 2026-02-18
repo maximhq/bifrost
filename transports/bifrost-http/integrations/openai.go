@@ -916,7 +916,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos",
 		"/videos",
-		"/openai/deployments/{deployment-id}/videos",
+		"/openai/videos",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -943,7 +943,12 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: AzureEndpointPreHook(handlerStore),
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				if isAzureSDKRequest(ctx) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
+				}
+				return nil
+			},
 		})
 	}
 
@@ -951,7 +956,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos/{video_id}",
 		"/videos/{video_id}",
-		"/openai/deployments/{deployment-id}/videos/{video_id}",
+		"/openai/videos/{video_id}",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -985,7 +990,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos/{video_id}/content",
 		"/videos/{video_id}/content",
-		"/openai/deployments/{deployment-id}/videos/{video_id}/content",
+		"/openai/videos/{video_id}/content",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -1019,7 +1024,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos/{video_id}",
 		"/videos/{video_id}",
-		"/openai/deployments/{deployment-id}/videos/{video_id}",
+		"/openai/videos/{video_id}",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -1053,7 +1058,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos/{video_id}/remix",
 		"/videos/{video_id}/remix",
-		"/openai/deployments/{deployment-id}/videos/{video_id}/remix",
+		"/openai/videos/{video_id}/remix",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -1087,7 +1092,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	for _, path := range []string{
 		"/v1/videos",
 		"/videos",
-		"/openai/deployments/{deployment-id}/videos",
+		"/openai/videos",
 	} {
 		routes = append(routes, RouteConfig{
 			Type:   RouteConfigTypeOpenAI,
@@ -1113,7 +1118,6 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
-			PreCallback: AzureEndpointPreHook(handlerStore),
 		})
 	}
 
@@ -1799,15 +1803,7 @@ func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 
 // extractVideoIDFromPath extracts video_id from path parameters in provider:id format.
 func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
-	azureHook := AzureEndpointPreHook(handlerStore)
-
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		if azureHook != nil {
-			if err := azureHook(ctx, bifrostCtx, req); err != nil {
-				return err
-			}
-		}
-
 		videoID := ctx.UserValue("video_id")
 		if videoID == nil {
 			return errors.New("video_id is required")

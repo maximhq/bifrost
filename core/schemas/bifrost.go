@@ -212,6 +212,7 @@ const (
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
+	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 )
 
 // RoutingEngine constants
@@ -432,6 +433,16 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ImageEditRequest.Provider = provider
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.Provider = provider
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Provider = provider
+	case br.VideoRetrieveRequest != nil:
+		br.VideoRetrieveRequest.Provider = provider
+	case br.VideoDownloadRequest != nil:
+		br.VideoDownloadRequest.Provider = provider
+	case br.VideoListRequest != nil:
+		br.VideoListRequest.Provider = provider
+	case br.VideoDeleteRequest != nil:
+		br.VideoDeleteRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
 	}
@@ -461,6 +472,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageEditRequest.Model = model
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.Model = model
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Model = model
 	}
 }
 

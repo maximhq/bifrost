@@ -16,7 +16,7 @@ import (
 const defaultVideoContentType = "video/mp4"
 
 // sizeToAspectRatio converts OpenAI-style size strings to Gemini aspect ratios.
-// Gemini supports 16:9 and 9:16. Returns empty string if no mapping exists.
+// Gemini supports 16:9 and 9:16. Returns default value if no mapping exists.
 func sizeToAspectRatio(size string) string {
 	switch size {
 	case "1280x720", "1792x1024":
@@ -147,6 +147,9 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 
 		if bifrostReq.Params.ExtraParams != nil {
 			req.ExtraParams = bifrostReq.Params.ExtraParams
+			if aspectRatio, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["aspectRatio"]); ok {
+				params.AspectRatio = aspectRatio
+			}
 			if resolution, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["resolution"]); ok {
 				params.Resolution = resolution
 			}
@@ -174,7 +177,7 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 			if resizeMode, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["resizeMode"]); ok {
 				params.ResizeMode = resizeMode
 			}
-			if referenceImages, ok := bifrostReq.Params.ExtraParams["reference_images"]; ok {
+			if referenceImages, ok := bifrostReq.Params.ExtraParams["referenceImages"]; ok {
 				if referenceImages, ok := referenceImages.([]VideoReferenceImage); ok && referenceImages != nil {
 					params.ReferenceImages = referenceImages
 				} else if data, err := sonic.Marshal(referenceImages); err == nil {
@@ -410,7 +413,7 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 	// Handle reference images
 	if len(instance.ReferenceImages) > 0 {
 		ensureParams()
-		bifrostReq.Params.ExtraParams["reference_images"] = instance.ReferenceImages
+		bifrostReq.Params.ExtraParams["referenceImages"] = instance.ReferenceImages
 	}
 
 	// Handle video URI
@@ -459,16 +462,16 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 			params.ExtraParams["numberOfVideos"] = *request.Parameters.NumberOfVideos
 		}
 		if request.Parameters.StorageURI != nil {
-			params.ExtraParams["storageURI"] = request.Parameters.StorageURI
+			params.ExtraParams["storageURI"] = *request.Parameters.StorageURI
 		}
 		if request.Parameters.CompressionQuality != nil {
-			params.ExtraParams["compressionQuality"] = request.Parameters.CompressionQuality
+			params.ExtraParams["compressionQuality"] = *request.Parameters.CompressionQuality
 		}
 		if request.Parameters.EnhancePrompt != nil {
-			params.ExtraParams["enhancePrompt"] = request.Parameters.EnhancePrompt
+			params.ExtraParams["enhancePrompt"] = *request.Parameters.EnhancePrompt
 		}
 		if request.Parameters.ResizeMode != nil {
-			params.ExtraParams["resizeMode"] = request.Parameters.ResizeMode
+			params.ExtraParams["resizeMode"] = *request.Parameters.ResizeMode
 		}
 	}
 

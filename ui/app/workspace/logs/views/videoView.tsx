@@ -6,7 +6,11 @@ import { Badge } from "@/components/ui/badge";
 import {
 	BifrostVideoDownloadOutput,
 	BifrostVideoGenerationOutput,
+	BifrostVideoListOutput,
 } from "@/lib/types/logs";
+
+import { CodeEditor } from "./codeEditor";
+import CollapsibleBox from "./collapsibleBox";
 
 interface VideoGenerationInput {
 	prompt: string;
@@ -17,6 +21,7 @@ type VideoOutput = BifrostVideoGenerationOutput | BifrostVideoDownloadOutput;
 interface VideoViewProps {
 	videoInput?: VideoGenerationInput;
 	videoOutput?: VideoOutput;
+	videoListOutput?: BifrostVideoListOutput;
 	requestType?: string;
 }
 
@@ -26,10 +31,11 @@ function getMethodTypeLabel(requestType?: string): string {
 	if (normalized.includes("video_download")) return "Video Download";
 	if (normalized.includes("video_retrieve")) return "Video Retrieve";
 	if (normalized.includes("video_generation")) return "Video Generation";
+	if (normalized.includes("video_list")) return "Video List";
 	return "Video";
 }
 
-export default function VideoView({ videoInput, videoOutput, requestType }: VideoViewProps) {
+export default function VideoView({ videoInput, videoOutput, videoListOutput, requestType }: VideoViewProps) {
 	const methodTypeLabel = getMethodTypeLabel(requestType);
 	const isDownload = requestType?.toLowerCase().includes("video_download");
 	const downloadOutput =
@@ -146,6 +152,24 @@ export default function VideoView({ videoInput, videoOutput, requestType }: Vide
 						) : null}
 					</div>
 				</div>
+			)}
+
+			{videoListOutput && (
+				<CollapsibleBox
+					title={`Video List Output (${videoListOutput.data?.length ?? 0})`}
+					onCopy={() => JSON.stringify(videoListOutput, null, 2)}
+					>
+					<CodeEditor
+						className="z-0 w-full"
+						shouldAdjustInitialHeight={true}
+						maxHeight={450}
+						wrap={true}
+						code={JSON.stringify(videoListOutput.data, null, 2)}
+						lang="json"
+						readonly={true}
+						options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+					/>
+				</CollapsibleBox>
 			)}
 		</div>
 	);

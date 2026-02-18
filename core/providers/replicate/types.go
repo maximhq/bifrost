@@ -70,7 +70,6 @@ type ReplicatePredictionRequestInput struct {
 
 	// video generation parameters
 	Duration       *int                   `json:"duration,omitempty"`
-	LastFrame      *string                `json:"last_frame,omitempty"`
 	InputReference *string                `json:"input_reference,omitempty"`
 	ExtraParams    map[string]interface{} `json:"-"` // Additional model-specific parameters
 }

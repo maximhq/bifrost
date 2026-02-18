@@ -1496,11 +1496,6 @@ func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key 
 		return nil, bifrostErr
 	}
 
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set", provider.GetProviderKey())
@@ -1509,11 +1504,13 @@ func (provider *AzureProvider) VideoGeneration(ctx *schemas.BifrostContext, key 
 	// Build Azure URL for OpenAI-compatible video generation endpoint
 	url := fmt.Sprintf("%s/openai/v1/videos", endpoint)
 
+	requestCopy := *request
+	requestCopy.Model = deployment
 	response, bifrostErr := openai.HandleOpenAIVideoGenerationRequest(
 		ctx,
 		provider.client,
 		url,
-		request,
+		&requestCopy,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -1538,92 +1535,35 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	}
 
 	providerName := provider.GetProviderKey()
-
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
-
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
 
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set", providerName)
 	}
 
-	// Create request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	// Set headers
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-
-	// Build Azure URL - use deployment if available, otherwise use base path
-	url := fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID)
-
-	req.SetRequestURI(url)
-	req.Header.SetMethod(http.MethodGet)
-	req.Header.SetContentType("application/json")
-
-	// Get authentication headers
 	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	for k, v := range authHeaders {
-		req.Header.Set(k, v)
-	}
 
-	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
-		return nil, openai.ParseOpenAIError(resp, schemas.VideoRetrieveRequest, providerName, "")
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
-	}
-
-	// Parse OpenAI's video response (Azure uses same schema)
-	response := &schemas.BifrostVideoGenerationResponse{}
-	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if response.ID != "" {
-		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
-	}
-	if response.RemixedFromVideoID != nil && *response.RemixedFromVideoID != "" {
-		remixID := providerUtils.AddVideoIDProviderSuffix(*response.RemixedFromVideoID, providerName)
-		response.RemixedFromVideoID = &remixID
-	}
-
-	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType: schemas.VideoRetrieveRequest,
-		Provider:    providerName,
-		Latency:     latency.Milliseconds(),
-	}
-
-	if sendBackRawResponse {
-		response.ExtraFields.RawResponse = rawResponse
-	}
-
-	return response, nil
+	return openai.HandleOpenAIVideoRetrieveRequest(
+		ctx,
+		provider.client,
+		fmt.Sprintf("%s/openai/v1/videos/%s", endpoint, videoID),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		authHeaders,
+		providerName,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.VideoDownload,
+		provider.logger,
+	)
 }
 
 // VideoDownload downloads video content from Azure's OpenAI-compatible API.
@@ -1638,11 +1578,6 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
-
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
 
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
@@ -1725,11 +1660,6 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
-	}
-
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()
 	if endpoint == "" {
 		return nil, providerUtils.NewConfigurationError("endpoint not set", providerName)
@@ -1761,11 +1691,6 @@ func (provider *AzureProvider) VideoDelete(ctx *schemas.BifrostContext, key sche
 func (provider *AzureProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	if err := provider.validateKeyConfig(key); err != nil {
 		return nil, err
-	}
-
-	apiVersion := key.AzureKeyConfig.APIVersion
-	if apiVersion == nil || apiVersion.GetValue() == "" {
-		apiVersion = schemas.NewEnvVar(AzureAPIVersionDefault)
 	}
 
 	endpoint := key.AzureKeyConfig.Endpoint.GetValue()

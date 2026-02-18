@@ -59,9 +59,9 @@ func TestGemini(t *testing.T) {
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
 			ImageEdit:             true,
-			VideoGeneration:       true,
-			VideoRetrieve:         true,
-			VideoDownload:         true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoDownload:         false,
 			FileBase64:            true,
 			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,

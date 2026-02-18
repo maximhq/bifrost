@@ -1457,6 +1457,18 @@ func (bifrost *Bifrost) VideoRetrieveRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
+	if response == nil || response.VideoGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoRetrieveRequest,
+				Provider:    req.Provider,
+			},
+		}
+	}
 	return response.VideoGenerationResponse, nil
 }
 
@@ -1549,6 +1561,10 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 			Error: &schemas.ErrorField{
 				Message: "prompt is required for video remix request",
 			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoRemixRequest,
+				Provider:    req.Provider,
+			},
 		}
 	}
 
@@ -1559,6 +1575,18 @@ func (bifrost *Bifrost) VideoRemixRequest(ctx *schemas.BifrostContext, req *sche
 	response, err := bifrost.handleRequest(ctx, bifrostReq)
 	if err != nil {
 		return nil, err
+	}
+	if response == nil || response.VideoGenerationResponse == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "received nil response from provider",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoRemixRequest,
+				Provider:    req.Provider,
+			},
+		}
 	}
 	return response.VideoGenerationResponse, nil
 }
@@ -5594,6 +5622,11 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ImageEditRequest = nil
 	req.ImageVariationRequest = nil
 	req.VideoGenerationRequest = nil
+	req.VideoRetrieveRequest = nil
+	req.VideoDownloadRequest = nil
+	req.VideoListRequest = nil
+	req.VideoRemixRequest = nil
+	req.VideoDeleteRequest = nil
 	req.FileUploadRequest = nil
 	req.FileListRequest = nil
 	req.FileRetrieveRequest = nil

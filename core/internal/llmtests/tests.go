@@ -69,6 +69,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunImageVariationStreamTest,
 		RunVideoGenerationTest,
 		RunVideoRetrieveTest,
+		RunVideoRemixTest,
 		RunVideoDownloadTest,
 		RunVideoListTest,
 		RunVideoDeleteTest,
@@ -157,11 +158,13 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ImageVariationStream", testConfig.Scenarios.ImageVariationStream && testConfig.ImageVariationModel != ""},
 		{"VideoGeneration", testConfig.Scenarios.VideoGeneration && testConfig.VideoGenerationModel != ""},
 		{"VideoRetrieve", testConfig.Scenarios.VideoRetrieve && testConfig.VideoGenerationModel != ""},
+		{"VideoRemix", testConfig.Scenarios.VideoRemix && testConfig.VideoGenerationModel != ""},
 		{"VideoDownload", testConfig.Scenarios.VideoDownload && testConfig.VideoGenerationModel != ""},
 		{"VideoList", testConfig.Scenarios.VideoList},
 		{"VideoDelete", testConfig.Scenarios.VideoDelete},
 		{"VideoUnsupported", !testConfig.Scenarios.VideoGeneration &&
 			!testConfig.Scenarios.VideoRetrieve &&
+			!testConfig.Scenarios.VideoRemix &&
 			!testConfig.Scenarios.VideoDownload &&
 			!testConfig.Scenarios.VideoList &&
 			!testConfig.Scenarios.VideoDelete},

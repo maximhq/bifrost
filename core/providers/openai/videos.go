@@ -2,12 +2,11 @@ package openai
 
 import (
 	"encoding/base64"
-	"errors"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 
+	"github.com/maximhq/bifrost/core/providers/utils"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -15,7 +14,7 @@ import (
 // ToOpenAIVideoGenerationRequest converts a Bifrost Video Request to OpenAI format
 func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*OpenAIVideoGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
-		return nil, fmt.Errorf("bifrost request or input is nil")
+		return nil, fmt.Errorf("bifrost request, input, or prompt is nil/empty")
 	}
 
 	req := &OpenAIVideoGenerationRequest{
@@ -36,6 +35,8 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 				return nil, fmt.Errorf("failed to decode base64 input reference: %w", err)
 			}
 			req.InputReference = bytes
+		} else {
+			return nil, fmt.Errorf("input_reference must be a base64 data URL (e.g. data:image/png;base64,...)")
 		}
 	}
 
@@ -64,16 +65,16 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 	return req, nil
 }
 
-func ToOpenAIVideoRemixRequest(bifrostReq *schemas.BifrostVideoRemixRequest) *OpenAIVideoRemixRequest {
+func ToOpenAIVideoRemixRequest(bifrostReq *schemas.BifrostVideoRemixRequest) (*OpenAIVideoRemixRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
-		return nil
+		return nil, fmt.Errorf("bifrost request, input, or prompt is nil/empty")
 	}
 
 	req := &OpenAIVideoRemixRequest{
 		Prompt: bifrostReq.Input.Prompt,
 	}
 
-	return req
+	return req, nil
 }
 
 func ToBifrostVideoRemixRequest(openaiReq *OpenAIVideoRemixRequest) *schemas.BifrostVideoRemixRequest {
@@ -100,7 +101,16 @@ func (request *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	defaultProvider := schemas.OpenAI
+
+	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
+	if ctx != nil {
+		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
+			defaultProvider = schemas.Azure
+		}
+	}
+
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
 
 	input := &schemas.VideoGenerationInput{
 		Prompt: request.Prompt,
@@ -116,65 +126,6 @@ func (request *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 		Params:    &request.VideoGenerationParameters,
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
-}
-
-func ToOpenaiVideoDownloadResponse(bifrostResp *schemas.BifrostVideoGenerationResponse) ([]byte, error) {
-	if bifrostResp == nil {
-		return nil, errors.New("video generation response is nil or no videos found")
-	}
-
-	if bifrostResp.Status != schemas.VideoStatusCompleted {
-		return nil, ErrVideoNotReady
-	}
-
-	if len(bifrostResp.Videos) == 0 {
-		return nil, errors.New("no videos found in response")
-	}
-
-	video := bifrostResp.Videos[0]
-
-	// Case 1: Provider gave us base64 content directly
-	if video.Base64Data != nil && *video.Base64Data != "" {
-		data, err := base64.StdEncoding.DecodeString(*video.Base64Data)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode base64 video: %w", err)
-		}
-		return data, nil
-	}
-
-	// Case 2: Provider gave us a URL — proxy-fetch the content
-	if video.URL != nil && *video.URL != "" {
-		content, bifrostErr := fetchVideoContent(video.URL)
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		return content, nil
-	}
-
-	return nil, nil
-}
-
-func fetchVideoContent(videoURL *string) ([]byte, error) {
-	if videoURL == nil || *videoURL == "" {
-		return nil, errors.New("video URL is empty")
-	}
-
-	resp, err := http.Get(*videoURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download video: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to download video: HTTP %d", resp.StatusCode)
-	}
-
-	content, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read video content: %w", err)
-	}
-
-	return content, nil
 }
 
 // parseVideoGenerationFormDataBodyFromRequest parses the video generation request and writes it to the multipart form.

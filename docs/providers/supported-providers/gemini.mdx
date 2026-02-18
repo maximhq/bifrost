@@ -24,6 +24,7 @@ Google Gemini's API has different structure from OpenAI. Bifrost performs extens
 | Transcriptions (STT) | ✅ | ✅ | `/v1beta/models/{model}:generateContent` |
 | Image Generation | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
 | Image Edit | ✅ | - | `/v1beta/models/{model}:generateContent` or `/v1beta/models/{model}:predict` (Imagen) |
+| Video Generation | ✅ | - | `/v1beta/models/{model}:predictLongRunning` |
 | Image Variation | ❌ | - | Not supported |
 | Embeddings | ✅ | - | `/v1beta/models/{model}:embedContent` |
 | Files | ✅ | - | `/upload/storage/v1beta/files` |
@@ -741,6 +742,59 @@ Image variation is not supported by Gemini.
 - Context length = `inputTokenLimit + outputTokenLimit`
 
 **Pagination**: Token-based with `nextPageToken`
+
+---
+
+# 11. Video Generation
+
+### Generate (`POST /v1/videos`)
+
+Requests use **JSON body (`application/json`)**.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Veo model (e.g., `veo-3.1-generate-preview`) |
+| `prompt` | string | ✅ | Text description of the video |
+| `input_reference` | string | ❌ | Input image for image-to-video |
+| `seconds` | string | ❌ | Duration → `durationSeconds` |
+| `size` | string | ❌ | Resolution → aspect ratio (`1280x720` → `16:9`, `720x1280` → `9:16`) |
+| `negative_prompt` | string | ❌ | What to avoid in the video |
+| `seed` | int | ❌ | Seed for reproducibility |
+| `audio` | bool | ❌ | Enable audio generation → `generateAudio` |
+| `video_uri` | string | ❌ | GCS video URI for video extension |
+
+**Extra Params** (any unrecognized JSON field is forwarded as `extra_params`)
+
+| Key | Notes |
+|-----|-------|
+| `aspectRatio` | Override the aspect ratio directly (e.g., `"16:9"`, `"9:16"`). Takes precedence over `size` |
+| `resolution` | Native Gemini resolution string |
+| `sampleCount` | Number of samples to generate |
+| `personGeneration` | Person generation policy |
+| `numberOfVideos` | Number of videos to generate |
+| `storageURI` | GCS bucket for output storage |
+| `compressionQuality` | Output compression quality |
+| `enhancePrompt` | Auto-enhance the prompt |
+| `resizeMode` | How to handle size mismatches |
+| `reference_images` | Style/asset reference image objects |
+| `lastFrame` | Last frame image object for interpolation |
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `videos[]`
+
+If Gemini filters content for safety, `status` is `failed` and `content_filter` describes the reason.
+
+**Job Statuses**: `in_progress` → `completed` / `failed`
+
+### Retrieve / Download
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Polls the long-running operation |
+| Download | `GET /v1/videos/{id}/content` | Downloads from GCS URI or decodes base64 video |
+
+Video Delete, List, and Remix are not supported.
 
 ---
 

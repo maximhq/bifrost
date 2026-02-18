@@ -67,11 +67,12 @@ func TestAzure(t *testing.T) {
 			ImageEdit:             false, // Model not deployed on Azure endpoint
 			ImageEditStream:       false, // Model not deployed on Azure endpoint
 			ImageVariation:        false, // Not supported by Azure
-			VideoGeneration:       true,
-			VideoDownload:         true,
-			VideoRetrieve:         true,
-			VideoList:             true,
-			VideoDelete:           true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoDownload:         false,
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoList:             false,
+			VideoDelete:           false,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}

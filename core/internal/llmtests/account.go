@@ -52,6 +52,7 @@ type TestScenarios struct {
 	ImageVariationStream   bool // Streaming image variation functionality (if supported)
 	VideoGeneration        bool // Video generation functionality
 	VideoRetrieve          bool // Video retrieve functionality
+	VideoRemix             bool // Video remix functionality (OpenAI only)
 	VideoDownload          bool // Video download functionality
 	VideoList              bool // Video list functionality
 	VideoDelete            bool // Video delete functionality

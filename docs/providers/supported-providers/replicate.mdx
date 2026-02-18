@@ -24,6 +24,7 @@ Replicate is architecturally different from other providers in Bifrost. It uses 
 | Text Completions | ✅ | ✅ | `/v1/predictions` |
 | Image Generation | ✅ | ✅ | `/v1/predictions` |
 | Image Edit | ✅ | ✅ | `/v1/predictions` |
+| Video Generation | ✅ | - | `/v1/predictions` |
 | Image Variation | ❌ | ❌ | - |
 | Files | ✅ | - | `/v1/files` |
 | List Models | ✅ | - | `/v1/deployments` |
@@ -721,6 +722,43 @@ Each Replicate model has unique parameters. To find available parameters:
 </Accordion>
 
 
+
+---
+
+## Video Generation
+
+### Generate (`POST /v1/videos`)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Replicate model (owner/model or version ID) |
+| `prompt` | string | ✅ | Text description of the video |
+| `input_reference` | string | ❌ | Reference image (base64 data URL or URL) → mapped to `image` field; OpenAI-hosted models use `input_reference` |
+| `seconds` | string | ❌ | Duration → `duration` |
+| `seed` | int | ❌ | Seed for reproducibility |
+| `negative_prompt` | string | ❌ | What to avoid |
+
+**Extra Params**: Pass model-specific fields directly in the JSON body (unrecognized fields become `extra_params` and are flattened into the prediction input). `webhook` and `webhook_events_filter` are extracted automatically.
+
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) — `id`, `status`, `model`, `videos[]`
+
+**Job Statuses**: `queued` (starting) → `in_progress` (processing) → `completed` / `failed`
+
+### Retrieve / Download
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Maps to `/v1/predictions/{id}` |
+| Download | `GET /v1/videos/{id}/content` | Downloads from the prediction output URL |
+
+<Note>
+Video Delete, List, and Remix are not supported by Replicate.
+</Note>
+
+---
 
 ## Reference Links
 

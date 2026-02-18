@@ -63,9 +63,12 @@ func TestReplicate(t *testing.T) {
 			FileRetrieve:          true,
 			FileDelete:            true,
 			FileContent:           false,
-			VideoGeneration:       true,
-			VideoRetrieve:         true,
-			VideoDownload:         true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoDownload:         false,
+			VideoList:             false,
+			VideoDelete:           false,
 		},
 	}
 

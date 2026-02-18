@@ -25,9 +25,10 @@ func TestRunway(t *testing.T) {
 		Provider:             schemas.Runway,
 		VideoGenerationModel: "gen4.5",
 		Scenarios: llmtests.TestScenarios{
-			VideoGeneration: true,
-			VideoRetrieve:   true,
-			VideoDownload:   true,
+			VideoGeneration: false, // disabled for now because of long running operations
+			VideoRetrieve:   false,
+			VideoRemix:      false,
+			VideoDownload:   false,
 			VideoList:       false,
 			VideoDelete:     false,
 		},

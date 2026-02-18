@@ -12,6 +12,7 @@ import (
 
 const (
 	videoTestPrompt         = "A cinematic aerial shot of mountains at sunrise with soft clouds"
+	videoRemixPrompt        = "Add dramatic evening lighting with golden hour colors"
 	videoRetrievePollDelay  = 5 * time.Second
 	videoCompletionTimeout  = 6 * time.Minute
 	videoRetrieveMaxRetries = 6
@@ -91,6 +92,73 @@ func RunVideoRetrieveTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		}
 
 		t.Logf("✅ Video retrieve successful: id=%s status=%s", retrieved.ID, retrieved.Status)
+	})
+}
+
+func RunVideoRemixTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.VideoRemix {
+		t.Logf("Video remix not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.VideoGenerationModel == "" {
+		t.Logf("Video remix skipped: video model not configured for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("VideoRemix", func(t *testing.T) {
+		ShouldRunParallel(t, testConfig, "VideoRemix")
+
+		created, err := createVideoJob(client, ctx, testConfig)
+		if err != nil {
+			t.Fatalf("❌ Video generation (for remix test) failed: %s", GetErrorMessage(err))
+		}
+		if created == nil || created.ID == "" {
+			t.Fatal("❌ Video generation (for remix test) returned invalid response")
+		}
+
+		completed, pollErr := waitForVideoCompletion(client, ctx, testConfig, created.ID, false)
+		if pollErr != nil {
+			t.Fatalf("❌ Video completion polling (for remix test) failed: %s", GetErrorMessage(pollErr))
+		}
+		if completed == nil {
+			t.Fatal("❌ Video completion polling (for remix test) returned nil response")
+		}
+		if completed.Status != schemas.VideoStatusCompleted {
+			t.Fatalf("❌ Video did not complete before remix: status=%s, error=%s", completed.Status, completed.Error.Message)
+		}
+
+		remixReq := &schemas.BifrostVideoRemixRequest{
+			Provider: testConfig.Provider,
+			ID:       created.ID,
+			Input: &schemas.VideoGenerationInput{
+				Prompt: videoRemixPrompt,
+			},
+		}
+		bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+		remixResp, remixErr := client.VideoRemixRequest(bfCtx, remixReq)
+		if remixErr != nil {
+			t.Fatalf("❌ Video remix failed: %s", GetErrorMessage(remixErr))
+		}
+		if remixResp == nil {
+			t.Fatal("❌ Video remix returned nil response")
+		}
+		if remixResp.ID == "" {
+			t.Fatal("❌ Video remix returned empty ID")
+		}
+		if !isValidVideoStatus(remixResp.Status) {
+			t.Fatalf("❌ Video remix returned invalid status: %s", remixResp.Status)
+		}
+		if remixResp.RemixedFromVideoID == nil || *remixResp.RemixedFromVideoID == "" {
+			t.Fatal("❌ Video remix returned empty remixed_from_video_id")
+		}
+		if remixResp.ExtraFields.Provider == "" {
+			t.Fatal("❌ Video remix extra_fields.provider is empty")
+		}
+		if remixResp.ExtraFields.RequestType != schemas.VideoRemixRequest {
+			t.Fatalf("❌ Video remix extra_fields.request_type is %s, expected video_remix", remixResp.ExtraFields.RequestType)
+		}
+
+		t.Logf("✅ Video remix successful: id=%s status=%s remixed_from=%s", remixResp.ID, remixResp.Status, *remixResp.RemixedFromVideoID)
 	})
 }
 
@@ -240,7 +308,7 @@ func RunVideoDeleteTest(t *testing.T, client *bifrost.Bifrost, ctx context.Conte
 }
 
 func RunVideoUnsupportedTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
-	if testConfig.Scenarios.VideoList || testConfig.Scenarios.VideoDelete {
+	if testConfig.Scenarios.VideoList || testConfig.Scenarios.VideoDelete || testConfig.Scenarios.VideoRemix {
 		return
 	}
 
@@ -262,6 +330,15 @@ func RunVideoUnsupportedTest(t *testing.T, client *bifrost.Bifrost, ctx context.
 		})
 		if !isUnsupportedOperationError(deleteErr) {
 			t.Fatalf("❌ Expected unsupported_operation for VideoDelete, got: %s", GetErrorMessage(deleteErr))
+		}
+
+		_, remixErr := client.VideoRemixRequest(bfCtx, &schemas.BifrostVideoRemixRequest{
+			Provider: testConfig.Provider,
+			ID:       "video_test_id",
+			Input:    &schemas.VideoGenerationInput{Prompt: "test remix prompt"},
+		})
+		if !isUnsupportedOperationError(remixErr) {
+			t.Fatalf("❌ Expected unsupported_operation for VideoRemix, got: %s", GetErrorMessage(remixErr))
 		}
 
 		t.Logf("✅ Video unsupported behavior verified for provider %s", testConfig.Provider)

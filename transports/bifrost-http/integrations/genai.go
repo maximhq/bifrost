@@ -810,24 +810,30 @@ func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *s
 	}
 
 	// check provider from operation id suffix, id:provider, could be any provider
-	provider := strings.Split(operationIDStr, ":")[1]
-	if provider == "" {
-		return errors.New("provider is required")
+	parts := strings.Split(operationIDStr, ":")
+	if len(parts) < 2 || parts[len(parts)-1] == "" {
+		return errors.New("provider is required in operation_id format 'id:provider'")
 	}
+	provider := parts[len(parts)-1]
 
 	modelStr, ok := model.(string)
 	if !ok || modelStr == "" {
 		modelStr = provider
 	}
 
-	// if its gemini or vertex, set r.ID in format models/model/operations/operation_id:provider
+	// if its gemini, set r.ID in format models/model/operations/operation_id:provider
 	// else set r.ID in format operation_id:provider
 
 	switch r := req.(type) {
 	case *schemas.BifrostVideoRetrieveRequest:
 		r.Provider = schemas.ModelProvider(provider)
+
+		if r.Provider == schemas.OpenAI || r.Provider == schemas.Azure {
+			// set a context flag to have video download request after video retrieve request when incoming request is coming from genai integration
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
+		}
 		// Gemini provider expects an operation resource path (without /v1beta prefix).
-		if provider == "gemini" {
+		if provider == string(schemas.Gemini) {
 			r.ID = "models/" + modelStr + "/operations/" + operationIDStr
 		} else {
 			r.ID = operationIDStr
