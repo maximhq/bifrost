@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -196,7 +197,7 @@ func TestEvaluateRoutingRules_NilContext(t *testing.T) {
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
 
-	_, err = engine.EvaluateRoutingRules(&schemas.BifrostContext{}, nil)
+	_, err = engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "context cannot be nil")
 }
@@ -216,7 +217,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 		QueryParams: map[string]string{},
 	}
 
-	decision, err := engine.EvaluateRoutingRules(&schemas.BifrostContext{}, ctx)
+	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(context.Background(), time.Now()), ctx)
 	assert.NoError(t, err)
 	assert.Nil(t, decision)
 }
@@ -225,7 +226,7 @@ func TestEvaluateRoutingRules_NoRulesMatch(t *testing.T) {
 func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -268,7 +269,7 @@ func TestEvaluateRoutingRules_GlobalRuleMatches(t *testing.T) {
 func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -330,7 +331,7 @@ func TestEvaluateRoutingRules_ScopePrecedence(t *testing.T) {
 func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -381,7 +382,7 @@ func TestEvaluateRoutingRules_PriorityOrdering(t *testing.T) {
 func TestResolveRoutingWithFallback_RuleMatches(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	rule := &configstoreTables.TableRoutingRule{
 		ID:            "1",
@@ -428,7 +429,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
 
-	decision, err := resolveRoutingWithFallback(&schemas.BifrostContext{}, ctx, engine)
+	decision, err := resolveRoutingWithFallback(schemas.NewBifrostContext(context.Background(), time.Now()), ctx, engine)
 	require.NoError(t, err)
 	require.NotNil(t, decision)
 
@@ -442,7 +443,7 @@ func TestResolveRoutingWithFallback_NoMatch(t *testing.T) {
 func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -492,7 +493,7 @@ func TestEvaluateRoutingRules_DisabledRulesIgnored(t *testing.T) {
 func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -535,7 +536,7 @@ func TestEvaluateRoutingRules_ComplexExpression(t *testing.T) {
 func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
@@ -570,7 +571,7 @@ func TestEvaluateRoutingRules_NilVirtualKey(t *testing.T) {
 func TestEvaluateRoutingRules_MissingHeaderGracefully(t *testing.T) {
 	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil)
 	require.NoError(t, err)
-	bgCtx := &schemas.BifrostContext{}
+	bgCtx := schemas.NewBifrostContext(context.Background(), time.Now())
 
 	engine, err := NewRoutingEngine(store, NewMockLogger())
 	require.NoError(t, err)
