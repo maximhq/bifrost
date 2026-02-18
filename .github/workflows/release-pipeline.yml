@@ -524,6 +524,11 @@ jobs:
           AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+          SAP_AI_CORE_CLIENT_ID: ${{ secrets.SAP_AI_CORE_CLIENT_ID }}
+          SAP_AI_CORE_CLIENT_SECRET: ${{ secrets.SAP_AI_CORE_CLIENT_SECRET }}
+          SAP_AI_CORE_AUTH_URL: ${{ secrets.SAP_AI_CORE_AUTH_URL }}
+          SAP_AI_CORE_BASE_URL: ${{ secrets.SAP_AI_CORE_BASE_URL }}
+          SAP_AI_CORE_RESOURCE_GROUP: ${{ secrets.SAP_AI_CORE_RESOURCE_GROUP }}
         run: ./.github/workflows/scripts/release-core.sh "${{ needs.detect-changes.outputs.core-version }}"
 
   framework-release:
@@ -615,6 +620,11 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+          SAP_AI_CORE_CLIENT_ID: ${{ secrets.SAP_AI_CORE_CLIENT_ID }}
+          SAP_AI_CORE_CLIENT_SECRET: ${{ secrets.SAP_AI_CORE_CLIENT_SECRET }}
+          SAP_AI_CORE_AUTH_URL: ${{ secrets.SAP_AI_CORE_AUTH_URL }}
+          SAP_AI_CORE_BASE_URL: ${{ secrets.SAP_AI_CORE_BASE_URL }}
+          SAP_AI_CORE_RESOURCE_GROUP: ${{ secrets.SAP_AI_CORE_RESOURCE_GROUP }}
         run: ./.github/workflows/scripts/release-framework.sh "${{ needs.detect-changes.outputs.framework-version }}"
 
   plugins-release:
@@ -716,6 +726,11 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+          SAP_AI_CORE_CLIENT_ID: ${{ secrets.SAP_AI_CORE_CLIENT_ID }}
+          SAP_AI_CORE_CLIENT_SECRET: ${{ secrets.SAP_AI_CORE_CLIENT_SECRET }}
+          SAP_AI_CORE_AUTH_URL: ${{ secrets.SAP_AI_CORE_AUTH_URL }}
+          SAP_AI_CORE_BASE_URL: ${{ secrets.SAP_AI_CORE_BASE_URL }}
+          SAP_AI_CORE_RESOURCE_GROUP: ${{ secrets.SAP_AI_CORE_RESOURCE_GROUP }}
         run: ./.github/workflows/scripts/release-all-plugins.sh '${{ needs.detect-changes.outputs.changed-plugins }}'
 
   bifrost-http-release:
@@ -818,6 +833,11 @@ jobs:
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER: ${{ secrets.REPLICATE_OWNER }}
+          SAP_AI_CORE_CLIENT_ID: ${{ secrets.SAP_AI_CORE_CLIENT_ID }}
+          SAP_AI_CORE_CLIENT_SECRET: ${{ secrets.SAP_AI_CORE_CLIENT_SECRET }}
+          SAP_AI_CORE_AUTH_URL: ${{ secrets.SAP_AI_CORE_AUTH_URL }}
+          SAP_AI_CORE_BASE_URL: ${{ secrets.SAP_AI_CORE_BASE_URL }}
+          SAP_AI_CORE_RESOURCE_GROUP: ${{ secrets.SAP_AI_CORE_RESOURCE_GROUP }}
         run: ./.github/workflows/scripts/release-bifrost-http.sh "${{ needs.detect-changes.outputs.transport-version }}"
 
   # Docker build amd64

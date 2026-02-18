@@ -184,6 +184,9 @@
         },
         "huggingface": {
           "$ref": "#/$defs/provider"
+        },
+        "sapaicore": {
+          "$ref": "#/$defs/provider_with_sapaicore_config"
         }
       },
       "additionalProperties": true
@@ -972,7 +975,8 @@
                         "perplexity",
                         "replicate",
                         "sgl",
-                        "huggingface"
+                        "huggingface",
+                        "sapaicore"
                       ]
                     },
                     "keys": {
@@ -1418,6 +1422,46 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "sapaicore_key_config": {
+                "type": "object",
+                "properties": {
+                  "client_id": {
+                    "type": "string",
+                    "description": "SAP AI Core OAuth2 client ID (can use env. prefix)"
+                  },
+                  "client_secret": {
+                    "type": "string",
+                    "description": "SAP AI Core OAuth2 client secret (can use env. prefix)"
+                  },
+                  "auth_url": {
+                    "type": "string",
+                    "description": "SAP AI Core OAuth2 token URL (can use env. prefix)"
+                  },
+                  "base_url": {
+                    "type": "string",
+                    "description": "SAP AI Core API base URL (can use env. prefix)"
+                  },
+                  "resource_group": {
+                    "type": "string",
+                    "description": "SAP AI Core resource group"
+                  },
+                  "deployments": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Model to deployment ID mappings"
+                  }
+                },
+                "required": [
+                  "client_id",
+                  "client_secret",
+                  "auth_url",
+                  "base_url",
+                  "resource_group"
+                ],
+                "additionalProperties": false
               }
             },
             "oneOf": [
@@ -1438,6 +1482,11 @@
                       "required": [
                         "bedrock_key_config"
                       ]
+                    },
+                    {
+                      "required": [
+                        "sapaicore_key_config"
+                      ]
                     }
                   ]
                 }
@@ -1456,6 +1505,11 @@
                     {
                       "required": [
                         "bedrock_key_config"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "sapaicore_key_config"
                       ]
                     }
                   ]
@@ -1476,6 +1530,11 @@
                       "required": [
                         "bedrock_key_config"
                       ]
+                    },
+                    {
+                      "required": [
+                        "sapaicore_key_config"
+                      ]
                     }
                   ]
                 }
@@ -1494,6 +1553,35 @@
                     {
                       "required": [
                         "vertex_key_config"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "sapaicore_key_config"
+                      ]
+                    }
+                  ]
+                }
+              },
+              {
+                "required": [
+                  "sapaicore_key_config"
+                ],
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "azure_key_config"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "vertex_key_config"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "bedrock_key_config"
                       ]
                     }
                   ]
@@ -1806,6 +1894,61 @@
         }
       ]
     },
+    "sapaicore_key": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/base_key"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sapaicore_key_config": {
+              "type": "object",
+              "properties": {
+                "client_id": {
+                  "type": "string",
+                  "description": "SAP AI Core OAuth2 client ID (can use env. prefix)"
+                },
+                "client_secret": {
+                  "type": "string",
+                  "description": "SAP AI Core OAuth2 client secret (can use env. prefix)"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "description": "SAP AI Core OAuth2 token URL (can use env. prefix)"
+                },
+                "base_url": {
+                  "type": "string",
+                  "description": "SAP AI Core API base URL (can use env. prefix)"
+                },
+                "resource_group": {
+                  "type": "string",
+                  "description": "SAP AI Core resource group"
+                },
+                "deployments": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Model to deployment ID mappings"
+                }
+              },
+              "required": [
+                "client_id",
+                "client_secret",
+                "auth_url",
+                "base_url",
+                "resource_group"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "sapaicore_key_config"
+          ]
+        }
+      ]
+    },
     "provider": {
       "type": "object",
       "properties": {
@@ -1903,6 +2046,36 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/vertex_key"
+          },
+          "minItems": 1,
+          "description": "API keys for this provider"
+        },
+        "network_config": {
+          "$ref": "#/$defs/network_config"
+        },
+        "concurrency_and_buffer_size": {
+          "$ref": "#/$defs/concurrency_config"
+        },
+        "proxy_config": {
+          "$ref": "#/$defs/proxy_config"
+        },
+        "send_back_raw_response": {
+          "type": "boolean",
+          "description": "Include raw response in BifrostResponse (default: false)"
+        }
+      },
+      "required": [
+        "keys"
+      ],
+      "additionalProperties": false
+    },
+    "provider_with_sapaicore_config": {
+      "type": "object",
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sapaicore_key"
           },
           "minItems": 1,
           "description": "API keys for this provider"
