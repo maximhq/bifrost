@@ -15,7 +15,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
+import { getErrorMessage, useDeleteVirtualKeyMutation, useBulkDeleteVirtualKeysMutation } from "@/lib/store"
 import { Customer, Team, VirtualKey } from "@/lib/types/governance"
 import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/utils/governance"
@@ -56,6 +56,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
   const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
 
   const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
+  const [bulkDeleteVirtualKeys] = useBulkDeleteVirtualKeysMutation()
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -88,9 +89,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 		setIsBulkDeleting(true);
 		try {
 			const keysToDelete = Array.from(selectedIds);
-			for (const vkId of keysToDelete) {
-				await deleteVirtualKey(vkId).unwrap();
-			}
+			await bulkDeleteVirtualKeys(keysToDelete).unwrap();
 			toast.success(`${keysToDelete.length} virtual key(s) deleted successfully`);
 			setSelectedIds(new Set());
 			setShowBulkDeleteDialog(false);
