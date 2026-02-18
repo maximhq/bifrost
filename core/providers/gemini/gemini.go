@@ -1083,6 +1083,11 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	return response, nil
 }
 
+// Rerank is not supported by the Gemini provider.
+func (provider *GeminiProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
 // SpeechStream performs a streaming speech synthesis request to the Gemini API.
 func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if speech stream is allowed for this provider

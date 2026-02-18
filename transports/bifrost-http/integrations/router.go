@@ -152,6 +152,10 @@ type ResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.
 // It takes a BifrostEmbeddingResponse and returns the format expected by the specific integration.
 type EmbeddingResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error)
 
+// RerankResponseConverter is a function that converts BifrostRerankResponse to integration-specific format.
+// It takes a BifrostRerankResponse and returns the format expected by the specific integration.
+type RerankResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error)
+
 // SpeechResponseConverter is a function that converts BifrostSpeechResponse to integration-specific format.
 // It takes a BifrostSpeechResponse and returns the format expected by the specific integration.
 type SpeechResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error)
@@ -361,6 +365,7 @@ type RouteConfig struct {
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
 	ResponsesResponseConverter             ResponsesResponseConverter             // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
 	EmbeddingResponseConverter             EmbeddingResponseConverter             // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
+	RerankResponseConverter                RerankResponseConverter                // Function to convert BifrostRerankResponse to integration format
 	SpeechResponseConverter                SpeechResponseConverter                // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter         TranscriptionResponseConverter         // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
 	ImageGenerationResponseConverter       ImageGenerationResponseConverter       // Function to convert BifrostImageGenerationResponse to integration format (SHOULD NOT BE NIL)
@@ -781,6 +786,30 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
+	case bifrostReq.RerankRequest != nil:
+		rerankResponse, bifrostErr := g.client.RerankRequest(bifrostCtx, bifrostReq.RerankRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, rerankResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if rerankResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.RerankResponseConverter != nil {
+			response, err = config.RerankResponseConverter(bifrostCtx, rerankResponse)
+		} else {
+			response = rerankResponse
+		}
 	case bifrostReq.SpeechRequest != nil:
 		speechResponse, bifrostErr := g.client.SpeechRequest(bifrostCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {

@@ -101,6 +101,7 @@ func TestBedrock(t *testing.T) {
 	// Get Bedrock-specific configuration from environment
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
 	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
+	rerankModelARN := strings.TrimSpace(os.Getenv("AWS_BEDROCK_RERANK_MODEL_ARN"))
 
 	// Build extra params for batch and file operations
 	var batchExtraParams map[string]interface{}
@@ -127,6 +128,7 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
 		EmbeddingModel:      "cohere.embed-v4:0",
+		RerankModel:         rerankModelARN,
 		ReasoningModel:      "claude-4.5-sonnet",
 		PromptCachingModel:  "claude-4.5-sonnet",
 		ImageEditModel:      "amazon.nova-canvas-v1:0",
@@ -150,6 +152,7 @@ func TestBedrock(t *testing.T) {
 			FileURL:               false, // S3 urls supported for nova models
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Rerank:                rerankModelARN != "",
 			ListModels:            true,
 			Reasoning:             true,
 			PromptCaching:         true,
@@ -2709,24 +2712,24 @@ func TestToolCallDeduplication(t *testing.T) {
 // for the Bedrock Converse API.
 func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
 	tests := []struct {
-		name                   string
-		model                  string
-		effort                 *string
-		maxTokens              *int
-		expectedFieldName      string
-		expectedType           string
-		expectBudgetTokens     bool
-		expectNoOutputConfig   bool
+		name                     string
+		model                    string
+		effort                   *string
+		maxTokens                *int
+		expectedFieldName        string
+		expectedType             string
+		expectBudgetTokens       bool
+		expectNoOutputConfig     bool
 		expectOutputConfigEffort string // expected effort value in output_config (empty string means no output_config expected)
 	}{
 		{
-			name:                   "Opus4.6_AdaptiveThinking_UsesThinkingField",
-			model:                  "anthropic.claude-opus-4-6-v1",
-			effort:                 schemas.Ptr("high"),
-			expectedFieldName:      "thinking",
-			expectedType:           "adaptive",
-			expectBudgetTokens:     false,
-			expectNoOutputConfig:   false,
+			name:                     "Opus4.6_AdaptiveThinking_UsesThinkingField",
+			model:                    "anthropic.claude-opus-4-6-v1",
+			effort:                   schemas.Ptr("high"),
+			expectedFieldName:        "thinking",
+			expectedType:             "adaptive",
+			expectBudgetTokens:       false,
+			expectNoOutputConfig:     false,
 			expectOutputConfigEffort: "high",
 		},
 		{
@@ -3189,9 +3192,9 @@ func TestBedrockStopReasonMapping(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name             string
+		name              string
 		bedrockStopReason string
-		expectedBifrost  string
+		expectedBifrost   string
 	}{
 		{"EndTurn", "end_turn", "stop"},
 		{"MaxTokens", "max_tokens", "length"},

@@ -887,6 +887,85 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 	return response.EmbeddingResponse, nil
 }
 
+// RerankRequest sends a rerank request to the specified provider.
+func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "rerank request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.RerankRequest,
+			},
+		}
+	}
+	if strings.TrimSpace(req.Query) == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "query not provided for rerank request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.RerankRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	if len(req.Documents) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "documents not provided for rerank request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.RerankRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+	for i, doc := range req.Documents {
+		if strings.TrimSpace(doc.Text) == "" {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("document text is empty at index %d", i),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.RerankRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
+				},
+			}
+		}
+	}
+	if req.Params != nil && req.Params.TopN != nil && *req.Params.TopN < 1 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "top_n must be at least 1",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.RerankRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
+		}
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.RerankRequest
+	bifrostReq.RerankRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.RerankResponse, nil
+}
+
 // SpeechRequest sends a speech request to the specified provider.
 func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -3288,6 +3367,12 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		fallbackReq.EmbeddingRequest = &tmp
 	}
+	if req.RerankRequest != nil {
+		tmp := *req.RerankRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		fallbackReq.RerankRequest = &tmp
+	}
 
 	if req.SpeechRequest != nil {
 		tmp := *req.SpeechRequest
@@ -4408,6 +4493,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.EmbeddingResponse = embeddingResponse
+	case schemas.RerankRequest:
+		rerankResponse, bifrostError := provider.Rerank(req.Context, key, req.BifrostRequest.RerankRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.RerankResponse = rerankResponse
 	case schemas.SpeechRequest:
 		speechResponse, bifrostError := provider.Speech(req.Context, key, req.BifrostRequest.SpeechRequest)
 		if bifrostError != nil {
@@ -5160,6 +5251,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ResponsesRequest = nil
 	req.CountTokensRequest = nil
 	req.EmbeddingRequest = nil
+	req.RerankRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil
 	req.ImageGenerationRequest = nil

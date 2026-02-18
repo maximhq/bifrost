@@ -49,6 +49,27 @@ func releaseCohereEmbeddingResponse(resp *CohereEmbeddingResponse) {
 	}
 }
 
+// cohereRerankResponsePool provides a pool for Cohere rerank response objects.
+var cohereRerankResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &CohereRerankResponse{}
+	},
+}
+
+// acquireCohereRerankResponse gets a Cohere rerank response from the pool and resets it.
+func acquireCohereRerankResponse() *CohereRerankResponse {
+	resp := cohereRerankResponsePool.Get().(*CohereRerankResponse)
+	*resp = CohereRerankResponse{} // Reset the struct
+	return resp
+}
+
+// releaseCohereRerankResponse returns a Cohere rerank response to the pool.
+func releaseCohereRerankResponse(resp *CohereRerankResponse) {
+	if resp != nil {
+		cohereRerankResponsePool.Put(resp)
+	}
+}
+
 // acquireCohereResponse gets a Cohere v2 response from the pool and resets it.
 func acquireCohereResponse() *CohereChatResponse {
 	resp := cohereResponsePool.Get().(*CohereChatResponse)
@@ -94,6 +115,7 @@ func NewCohereProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
 		cohereResponsePool.Put(&CohereChatResponse{})
 		cohereEmbeddingResponsePool.Put(&CohereEmbeddingResponse{})
+		cohereRerankResponsePool.Put(&CohereRerankResponse{})
 	}
 
 	// Set default BaseURL if not provided
@@ -869,6 +891,73 @@ func (provider *CohereProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	// Set raw request if enabled
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+
+	// Set raw response if enabled
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
+}
+
+// Rerank performs a rerank request using the Cohere /v2/rerank API.
+func (provider *CohereProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	// Check if rerank is allowed
+	if err := providerUtils.CheckOperationAllowed(schemas.Cohere, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+		return nil, err
+	}
+
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToCohereRerankRequest(request), nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v2/rerank", schemas.RerankRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+		Provider:    provider.GetProviderKey(),
+		Model:       request.Model,
+		RequestType: schemas.RerankRequest,
+	})
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Create response object from pool
+	response := acquireCohereRerankResponse()
+	defer releaseCohereRerankResponse(response)
+
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	bifrostResponse := response.ToBifrostRerankResponse()
+	bifrostResponse.Model = request.Model
+	if request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments {
+		for i := range bifrostResponse.Results {
+			resultIndex := bifrostResponse.Results[i].Index
+			if resultIndex >= 0 && resultIndex < len(request.Documents) {
+				doc := request.Documents[resultIndex]
+				bifrostResponse.Results[i].Document = &doc
+			}
+		}
+	}
+
+	// Set ExtraFields
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.RerankRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled

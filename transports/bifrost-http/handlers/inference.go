@@ -127,6 +127,17 @@ var embeddingParamsKnownFields = map[string]bool{
 	"dimensions":      true,
 }
 
+var rerankParamsKnownFields = map[string]bool{
+	"model":              true,
+	"query":              true,
+	"documents":          true,
+	"fallbacks":          true,
+	"top_n":              true,
+	"max_tokens_per_doc": true,
+	"priority":           true,
+	"return_documents":   true,
+}
+
 var speechParamsKnownFields = map[string]bool{
 	"model":           true,
 	"input":           true,
@@ -376,6 +387,14 @@ type EmbeddingRequest struct {
 	*schemas.EmbeddingParameters
 }
 
+// RerankRequest is a bifrost rerank request
+type RerankRequest struct {
+	Query     string                   `json:"query"`
+	Documents []schemas.RerankDocument `json:"documents"`
+	BifrostParams
+	*schemas.RerankParameters
+}
+
 type SpeechRequest struct {
 	*schemas.SpeechInput
 	BifrostParams
@@ -528,6 +547,7 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/chat/completions":     schemas.ChatCompletionRequest,
 	"/v1/responses":            schemas.ResponsesRequest,
 	"/v1/embeddings":           schemas.EmbeddingRequest,
+	"/v1/rerank":               schemas.RerankRequest,
 	"/v1/audio/speech":         schemas.SpeechRequest,
 	"/v1/audio/transcriptions": schemas.TranscriptionRequest,
 	"/v1/images/generations":   schemas.ImageGenerationRequest,
@@ -571,6 +591,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
 	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
+	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
@@ -1011,6 +1032,88 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.EmbeddingRequest(bifrostCtx, bifrostEmbeddingReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp)
+}
+
+// rerank handles POST /v1/rerank - Process rerank requests
+func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
+	var req RerankRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Parse model
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	// Parse fallbacks
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if strings.TrimSpace(req.Query) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "query is required for rerank")
+		return
+	}
+
+	if len(req.Documents) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "documents are required for rerank")
+		return
+	}
+	for i, doc := range req.Documents {
+		if strings.TrimSpace(doc.Text) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("document text is required for rerank at index %d", i))
+			return
+		}
+	}
+
+	// Extract extra params
+	if req.RerankParameters == nil {
+		req.RerankParameters = &schemas.RerankParameters{}
+	}
+	if req.RerankParameters.TopN != nil && *req.RerankParameters.TopN < 1 {
+		SendError(ctx, fasthttp.StatusBadRequest, "top_n must be at least 1")
+		return
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), rerankParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.RerankParameters.ExtraParams = extraParams
+	}
+
+	// Create BifrostRerankRequest
+	bifrostRerankReq := &schemas.BifrostRerankRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Query:     req.Query,
+		Documents: req.Documents,
+		Params:    req.RerankParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.RerankRequest(bifrostCtx, bifrostRerankReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

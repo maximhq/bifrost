@@ -215,6 +215,126 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	return body, latency, nil
 }
 
+// completeAgentRuntimeRequest sends a request to Bedrock Agent Runtime API and handles the response.
+// This is used for operations (like rerank) that are served by bedrock-agent-runtime.
+func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key) ([]byte, time.Duration, *schemas.BifrostError) {
+	config := key.BedrockKeyConfig
+
+	region := DefaultBedrockRegion
+	if config.Region != nil && config.Region.GetValue() != "" {
+		region = config.Region.GetValue()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("https://bedrock-agent-runtime.%s.amazonaws.com%s", region, path), bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, 0, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "error creating request",
+				Error:   err,
+			},
+		}
+	}
+
+	providerUtils.SetExtraHeadersHTTP(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key.Value.GetValue()))
+	} else {
+		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock-agent-runtime", provider.GetProviderKey()); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	startTime := time.Now()
+	resp, err := provider.client.Do(req)
+	latency := time.Since(startTime)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, latency, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
+		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
+		var opErr *net.OpError
+		var dnsErr *net.DNSError
+		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+			return nil, latency, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   err,
+				},
+			}
+		}
+		return nil, latency, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderDoRequest,
+				Error:   err,
+			},
+		}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, latency, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: "error reading request",
+				Error:   err,
+			},
+		}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		var errorResp BedrockError
+
+		var rawErrorResponse interface{}
+		if err := sonic.Unmarshal(body, &rawErrorResponse); err != nil {
+			rawErrorResponse = string(body)
+		}
+
+		if err := sonic.Unmarshal(body, &errorResp); err != nil {
+			return nil, latency, &schemas.BifrostError{
+				IsBifrostError: true,
+				StatusCode:     &resp.StatusCode,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderResponseUnmarshal,
+					Error:   err,
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RawResponse: rawErrorResponse,
+				},
+			}
+		}
+
+		return nil, latency, &schemas.BifrostError{
+			StatusCode: &resp.StatusCode,
+			Error: &schemas.ErrorField{
+				Message: errorResp.Message,
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RawResponse: rawErrorResponse,
+			},
+		}
+	}
+
+	return body, latency, nil
+}
+
 // makeStreamingRequest creates a streaming request to Bedrock's API.
 // It formats the request, sends it to Bedrock, and returns the response.
 // Returns the response body and an error if the request fails.
@@ -1534,6 +1654,74 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 // Speech is not supported by the Bedrock provider.
 func (provider *BedrockProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, schemas.Bedrock)
+}
+
+// Rerank performs a rerank request using the Bedrock Agent Runtime /rerank API.
+func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if key.BedrockKeyConfig == nil {
+		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
+	}
+
+	modelARN, deployment, err := resolveBedrockRerankModelARN(request.Model, key)
+	if err != nil {
+		return nil, providerUtils.NewConfigurationError(err.Error(), providerName)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToBedrockRerankRequest(request, modelARN)
+		},
+		providerName,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	rawResponseBody, latency, bifrostErr := provider.completeAgentRuntimeRequest(ctx, jsonData, "/rerank", key)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	response := &BedrockRerankResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(rawResponseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	bifrostResponse := response.ToBifrostRerankResponse()
+	bifrostResponse.Model = request.Model
+
+	if request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments {
+		for i := range bifrostResponse.Results {
+			resultIndex := bifrostResponse.Results[i].Index
+			if resultIndex >= 0 && resultIndex < len(request.Documents) {
+				doc := request.Documents[resultIndex]
+				bifrostResponse.Results[i].Document = &doc
+			}
+		}
+	}
+
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ModelDeployment = deployment
+	bifrostResponse.ExtraFields.RequestType = schemas.RerankRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
 }
 
 // SpeechStream is not supported by the Bedrock provider.

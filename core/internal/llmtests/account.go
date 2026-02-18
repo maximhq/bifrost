@@ -75,6 +75,7 @@ type TestScenarios struct {
 	ContainerFileContent   bool // Container File API content functionality
 	ContainerFileDelete    bool // Container File API delete functionality
 	PassThroughExtraParams bool // Pass through extra params functionality
+	Rerank                 bool // Rerank functionality
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -86,6 +87,7 @@ type ComprehensiveTestConfig struct {
 	VisionModel              string
 	ReasoningModel           string
 	EmbeddingModel           string
+	RerankModel              string
 	TranscriptionModel       string
 	SpeechSynthesisModel     string
 	ChatAudioModel           string
@@ -95,6 +97,7 @@ type ComprehensiveTestConfig struct {
 	TranscriptionFallbacks   []schemas.Fallback     // for transcription tests
 	SpeechSynthesisFallbacks []schemas.Fallback     // for speech synthesis tests
 	EmbeddingFallbacks       []schemas.Fallback     // for embedding tests
+	RerankFallbacks          []schemas.Fallback     // for rerank tests
 	SkipReason               string                 // Reason to skip certain tests
 	ImageGenerationModel     string                 // Model for image generation
 	ImageGenerationFallbacks []schemas.Fallback     // Fallbacks for image generation

@@ -1690,6 +1690,11 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
+// Rerank is not supported by the OpenAI provider.
+func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
 // HandleOpenAISpeechRequest handles speech requests for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same speech request format.
 func HandleOpenAISpeechRequest(

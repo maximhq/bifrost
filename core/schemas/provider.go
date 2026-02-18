@@ -192,6 +192,7 @@ type AllowedRequests struct {
 	ResponsesStream       bool `json:"responses_stream"`
 	CountTokens           bool `json:"count_tokens"`
 	Embedding             bool `json:"embedding"`
+	Rerank                bool `json:"rerank"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
 	Transcription         bool `json:"transcription"`
@@ -247,6 +248,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.CountTokens
 	case EmbeddingRequest:
 		return ar.Embedding
+	case RerankRequest:
+		return ar.Rerank
 	case SpeechRequest:
 		return ar.Speech
 	case SpeechStreamRequest:
@@ -395,6 +398,8 @@ type Provider interface {
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
+	// Rerank performs a rerank request to reorder documents by relevance to a query
+	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
 	// Speech performs a text to speech request
 	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
