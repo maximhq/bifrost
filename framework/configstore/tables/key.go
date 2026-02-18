@@ -59,6 +59,13 @@ type TableKey struct {
 	// VLLM config fields (embedded)
 	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
+	// SAP AI Core config fields (embedded)
+	SAPAICoreClientID        *schemas.EnvVar `gorm:"column:sapaicore_client_id;type:text" json:"sapaicore_client_id,omitempty"`
+	SAPAICoreClientSecret    *schemas.EnvVar `gorm:"column:sapaicore_client_secret;type:text" json:"sapaicore_client_secret,omitempty"`
+	SAPAICoreAuthURL         *schemas.EnvVar `gorm:"column:sapaicore_auth_url;type:text" json:"sapaicore_auth_url,omitempty"`
+	SAPAICoreBaseURL         *schemas.EnvVar `gorm:"column:sapaicore_base_url;type:text" json:"sapaicore_base_url,omitempty"`
+	SAPAICoreResourceGroup   *schemas.EnvVar `gorm:"column:sapaicore_resource_group;type:varchar(255)" json:"sapaicore_resource_group,omitempty"`
+	SAPAICoreDeploymentsJSON *string         `gorm:"column:sapaicore_deployments_json;type:text" json:"-"` // JSON serialized map[string]string
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
@@ -75,6 +82,7 @@ type TableKey struct {
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
 	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
 	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
+	SAPAICoreKeyConfig *schemas.SAPAICoreKeyConfig `gorm:"-" json:"sapaicore_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -368,6 +376,50 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 			return fmt.Errorf("failed to encrypt vllm url: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
+	// BeforeSave is called before saving the key to the database
+	if k.SAPAICoreKeyConfig != nil {
+		if k.SAPAICoreKeyConfig.ClientID.GetValue() != "" {
+			k.SAPAICoreClientID = &k.SAPAICoreKeyConfig.ClientID
+		} else {
+			k.SAPAICoreClientID = nil
+		}
+		if k.SAPAICoreKeyConfig.ClientSecret.GetValue() != "" {
+			k.SAPAICoreClientSecret = &k.SAPAICoreKeyConfig.ClientSecret
+		} else {
+			k.SAPAICoreClientSecret = nil
+		}
+		if k.SAPAICoreKeyConfig.AuthURL.GetValue() != "" {
+			k.SAPAICoreAuthURL = &k.SAPAICoreKeyConfig.AuthURL
+		} else {
+			k.SAPAICoreAuthURL = nil
+		}
+		if k.SAPAICoreKeyConfig.BaseURL.GetValue() != "" {
+			k.SAPAICoreBaseURL = &k.SAPAICoreKeyConfig.BaseURL
+		} else {
+			k.SAPAICoreBaseURL = nil
+		}
+		if k.SAPAICoreKeyConfig.ResourceGroup.GetValue() != "" {
+			k.SAPAICoreResourceGroup = &k.SAPAICoreKeyConfig.ResourceGroup
+		} else {
+			k.SAPAICoreResourceGroup = nil
+		}
+		if k.SAPAICoreKeyConfig.Deployments != nil {
+			data, err := sonic.Marshal(k.SAPAICoreKeyConfig.Deployments)
+			if err != nil {
+				return err
+			}
+			s := string(data)
+			k.SAPAICoreDeploymentsJSON = &s
+		} else {
+			k.SAPAICoreDeploymentsJSON = nil
+		}
+	} else {
+		k.SAPAICoreClientID = nil
+		k.SAPAICoreClientSecret = nil
+		k.SAPAICoreAuthURL = nil
+		k.SAPAICoreBaseURL = nil
+		k.SAPAICoreResourceGroup = nil
+		k.SAPAICoreDeploymentsJSON = nil
 	}
 	return nil
 }
@@ -574,6 +626,34 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VLLMKeyConfig = vllmConfig
 	} else {
 		k.VLLMKeyConfig = nil
+	// Reconstruct SAP AI Core config if fields are present
+	if k.SAPAICoreClientID != nil || k.SAPAICoreClientSecret != nil || k.SAPAICoreAuthURL != nil || k.SAPAICoreBaseURL != nil || k.SAPAICoreResourceGroup != nil || (k.SAPAICoreDeploymentsJSON != nil && *k.SAPAICoreDeploymentsJSON != "") {
+		sapConfig := &schemas.SAPAICoreKeyConfig{}
+
+		if k.SAPAICoreClientID != nil {
+			sapConfig.ClientID = *k.SAPAICoreClientID
+		}
+		if k.SAPAICoreClientSecret != nil {
+			sapConfig.ClientSecret = *k.SAPAICoreClientSecret
+		}
+		if k.SAPAICoreAuthURL != nil {
+			sapConfig.AuthURL = *k.SAPAICoreAuthURL
+		}
+		if k.SAPAICoreBaseURL != nil {
+			sapConfig.BaseURL = *k.SAPAICoreBaseURL
+		}
+		if k.SAPAICoreResourceGroup != nil {
+			sapConfig.ResourceGroup = *k.SAPAICoreResourceGroup
+		}
+		if k.SAPAICoreDeploymentsJSON != nil && *k.SAPAICoreDeploymentsJSON != "" {
+			var deployments map[string]string
+			if err := json.Unmarshal([]byte(*k.SAPAICoreDeploymentsJSON), &deployments); err != nil {
+				return err
+			}
+			sapConfig.Deployments = deployments
+		}
+
+		k.SAPAICoreKeyConfig = sapConfig
 	}
 	return nil
 }

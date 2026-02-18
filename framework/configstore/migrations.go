@@ -290,6 +290,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationWidenEncryptedVarcharColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddSAPAICoreColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4022,6 +4025,89 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running widen encrypted varchar columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddSAPAICoreColumns adds the SAP AI Core config columns to the config_keys table
+func migrationAddSAPAICoreColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_sapaicore_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add SAPAICoreClientID column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreClientID") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreClientID"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreClientID column: %w", err)
+				}
+			}
+
+			// Add SAPAICoreClientSecret column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreClientSecret") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreClientSecret"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreClientSecret column: %w", err)
+				}
+			}
+
+			// Add SAPAICoreAuthURL column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreAuthURL") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreAuthURL"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreAuthURL column: %w", err)
+				}
+			}
+
+			// Add SAPAICoreBaseURL column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreBaseURL") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreBaseURL"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreBaseURL column: %w", err)
+				}
+			}
+
+			// Add SAPAICoreResourceGroup column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreResourceGroup") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreResourceGroup"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreResourceGroup column: %w", err)
+				}
+			}
+
+			// Add SAPAICoreDeploymentsJSON column
+			if !migrator.HasColumn(&tables.TableKey{}, "SAPAICoreDeploymentsJSON") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "SAPAICoreDeploymentsJSON"); err != nil {
+					return fmt.Errorf("failed to add SAPAICoreDeploymentsJSON column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Use Go struct field names for rollback
+			fields := []string{
+				"SAPAICoreClientID",
+				"SAPAICoreClientSecret",
+				"SAPAICoreAuthURL",
+				"SAPAICoreBaseURL",
+				"SAPAICoreResourceGroup",
+				"SAPAICoreDeploymentsJSON",
+			}
+
+			for _, field := range fields {
+				if migrator.HasColumn(&tables.TableKey{}, field) {
+					if err := migrator.DropColumn(&tables.TableKey{}, field); err != nil {
+						return fmt.Errorf("failed to drop %s column: %w", field, err)
+					}
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running SAP AI Core columns migration: %s", err.Error())
 	}
 	return nil
 }
