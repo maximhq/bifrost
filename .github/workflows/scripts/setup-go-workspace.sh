@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+
+
+# If go.work exists, skip
+if [ -f "go.work" ]; then
+  echo "🔍 Go workspace already exists, skipping initialization"
+  return
+fi
+
+
 # Setup Go workspace for CI
 # Usage: source setup-go-workspace.sh
-
 echo "🔧 Setting up Go workspace..."
 go work init
 go work use ./core

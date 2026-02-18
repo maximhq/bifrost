@@ -18,15 +18,24 @@
     "latex": true
   },
   "favicon": "favicon.ico",
-  "topbarLinks": [
-    {
-      "name": "Support",
-      "url": "mailto:akshay@getmaxim.ai"
+  "navbar": {
+    "links": [
+      {
+        "label": "Discord",
+        "href": "https://getmax.im/bifrost-discord",
+        "icon": "discord"
+      },
+      {
+        "label": "GitHub",
+        "href": "https://github.com/maximhq/bifrost",
+        "icon": "github"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Book a demo",
+      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
     }
-  ],
-  "topbarCtaButton": {
-    "name": "Dashboard",
-    "url": "https://www.getbifrost.ai"
   },
   "navigation": {
     "global": {

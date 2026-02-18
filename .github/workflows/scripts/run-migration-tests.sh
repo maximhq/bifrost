@@ -24,6 +24,9 @@ set -euo pipefail
 #   BIFROST_PORT      - Port for bifrost server (default: 8089)
 #   VERSIONS_TO_TEST  - Number of previous versions to test (default: 3)
 
+# Pull all the tags available
+git fetch --tags
+
 # Get the absolute path of the script directory
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
   SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -463,18 +466,18 @@ VALUES
   ('ratelimit-migration-test-2', 50000, '1d', 2500, $now, 500, '1d', 50, $now, 'ratelimit-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
--- governance_customers (with budget_id and config_hash)
-INSERT INTO governance_customers (id, name, budget_id, config_hash, created_at, updated_at)
+-- governance_customers (with budget_id, rate_limit_id, and config_hash)
+INSERT INTO governance_customers (id, name, budget_id, rate_limit_id, config_hash, created_at, updated_at)
 VALUES 
-  ('customer-migration-test-1', 'Migration Test Customer One', 'budget-migration-test-1', 'customer-hash-001', $now, $now),
-  ('customer-migration-test-2', 'Migration Test Customer Two', NULL, 'customer-hash-002', $now, $now)
+  ('customer-migration-test-1', 'Migration Test Customer One', 'budget-migration-test-1', 'ratelimit-migration-test-1', 'customer-hash-001', $now, $now),
+  ('customer-migration-test-2', 'Migration Test Customer Two', NULL, NULL, 'customer-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
--- governance_teams (with customer_id, budget_id, profile, config, claims, config_hash)
-INSERT INTO governance_teams (id, name, customer_id, budget_id, profile, config, claims, config_hash, created_at, updated_at)
+-- governance_teams (with customer_id, budget_id, rate_limit_id, profile, config, claims, config_hash)
+INSERT INTO governance_teams (id, name, customer_id, budget_id, rate_limit_id, profile, config, claims, config_hash, created_at, updated_at)
 VALUES 
-  ('team-migration-test-1', 'Migration Test Team Alpha', 'customer-migration-test-1', 'budget-migration-test-2', '{"role": "admin"}', '{"setting": "value"}', '{"claim1": "val1"}', 'team-hash-001', $now, $now),
-  ('team-migration-test-2', 'Migration Test Team Beta', NULL, NULL, NULL, NULL, NULL, 'team-hash-002', $now, $now)
+  ('team-migration-test-1', 'Migration Test Team Alpha', 'customer-migration-test-1', 'budget-migration-test-2', 'ratelimit-migration-test-2', '{"role": "admin"}', '{"setting": "value"}', '{"claim1": "val1"}', 'team-hash-001', $now, $now),
+  ('team-migration-test-2', 'Migration Test Team Beta', NULL, NULL, NULL, NULL, NULL, NULL, 'team-hash-002', $now, $now)
 ON CONFLICT DO NOTHING;
 
 -- config_providers (with all JSON config fields and governance fields including budget_id, rate_limit_id)
@@ -554,15 +557,15 @@ ON CONFLICT DO NOTHING;
 -- 2. Tables with foreign keys to base tables
 -- ============================================================================
 
--- config_keys (references config_providers) - with ALL columns including Azure/Vertex/Bedrock fields
+-- config_keys (references config_providers) - with ALL columns including Azure/Vertex/Bedrock/Replicate fields
 -- NOTE: azure_scopes column is added dynamically via append_dynamic_inserts() for schema compatibility
-INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, created_at, updated_at)
-SELECT 'migration-test-key-openai', id, 'openai', 'key-migration-uuid-001', 'sk-migration-test-fake-key-value-openai', '["gpt-4", "gpt-3.5-turbo"]', 1.0, true, 'key-hash-001', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, $now, $now
+INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
+SELECT 'migration-test-key-openai', id, 'openai', 'key-migration-uuid-001', 'sk-migration-test-fake-key-value-openai', '["gpt-4", "gpt-3.5-turbo"]', 1.0, true, 'key-hash-001', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
 FROM config_providers WHERE name = 'openai'
 ON CONFLICT DO NOTHING;
 
-INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, created_at, updated_at)
-SELECT 'migration-test-key-anthropic', id, 'anthropic', 'key-migration-uuid-002', 'sk-ant-migration-test-fake-key', '["claude-3-opus"]', 0.8, true, 'key-hash-002', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, $now, $now
+INSERT INTO config_keys (name, provider_id, provider, key_id, value, models_json, weight, enabled, config_hash, azure_endpoint, azure_api_version, azure_deployments_json, azure_client_id, azure_client_secret, azure_tenant_id, vertex_project_id, vertex_project_number, vertex_region, vertex_auth_credentials, vertex_deployments_json, bedrock_access_key, bedrock_secret_key, bedrock_session_token, bedrock_region, bedrock_arn, bedrock_deployments_json, bedrock_batch_s3_config_json, use_for_batch_api, replicate_deployments_json, created_at, updated_at)
+SELECT 'migration-test-key-anthropic', id, 'anthropic', 'key-migration-uuid-002', 'sk-ant-migration-test-fake-key', '["claude-3-opus"]', 0.8, true, 'key-hash-002', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, false, NULL, $now, $now
 FROM config_providers WHERE name = 'anthropic'
 ON CONFLICT DO NOTHING;
 
@@ -986,7 +989,7 @@ column_exists_sqlite() {
   fi
   
   local count
-  count=$(sqlite3 "$db_path" "PRAGMA table_info($table);" 2>/dev/null | grep -c "^[0-9]*|${column}|" || echo "0")
+  count=$(sqlite3 "$db_path" "PRAGMA table_info($table);" 2>/dev/null | grep -c "^[0-9]*|${column}|") || count=0
   
   [ "$count" -ge "1" ]
 }
@@ -1300,11 +1303,19 @@ compare_postgres_snapshots() {
     after_columns=$(head -1 "$after_file" | sed 's/^# COLUMNS: //')
     
     # Check that all before columns still exist (new columns are OK)
+    # Columns that are intentionally renamed during migration should be excluded
+    # routing_engine_used -> routing_engines_used (v1.4.7)
+    local renamed_columns="routing_engine_used"
+    
     local before_col_array
     IFS=',' read -ra before_col_array <<< "$before_columns"
     
     local missing_cols=""
     for col in "${before_col_array[@]}"; do
+      # Skip columns that are intentionally renamed during migration
+      if [[ " $renamed_columns " == *" $col "* ]]; then
+        continue
+      fi
       if [[ ! ",$after_columns," == *",$col,"* ]]; then
         missing_cols="$missing_cols $col"
       fi
