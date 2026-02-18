@@ -4,9 +4,24 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.6
+**Latest Version:** 2.0.8
 
 ## Changelog
+
+### v2.0.8
+
+- Added comprehensive config field coverage for all `config.schema.json` fields
+- Added Pinecone vector store support (external only) with secret injection
+- Added governance routing rules template support
+- Added OTEL metrics fields (metrics_enabled, metrics_endpoint, metrics_push_interval)
+- Added advanced Redis connection pool fields (pool_size, timeouts, idle conns, etc.)
+- Added Weaviate timeout and className fields
+- Expanded values.yaml with commented examples for all provider types (Azure, Vertex, Bedrock), network config, concurrency, proxy config, and governance entities
+- Added helm config field validation CI test (246 assertions covering all config.schema.json fields)
+
+### v2.0.7
+
+- Previous release
 
 ### v2.0.6
 
