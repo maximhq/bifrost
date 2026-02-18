@@ -359,10 +359,10 @@ func TestBudgetResolver_IsProviderAllowed(t *testing.T) {
 		shouldBeAllowed bool
 	}{
 		{
-			name:            "No provider configs (all allowed)",
+			name:            "No provider configs (none allowed - deny-by-default)",
 			vk:              buildVirtualKey("vk1", "sk-bf-test", "Test", true),
 			provider:        schemas.OpenAI,
-			shouldBeAllowed: true,
+			shouldBeAllowed: false,
 		},
 		{
 			name: "Provider in allowlist",
@@ -408,11 +408,11 @@ func TestBudgetResolver_IsModelAllowed(t *testing.T) {
 		shouldBeAllowed bool
 	}{
 		{
-			name:            "No provider configs (all models allowed)",
+			name:            "No provider configs (no models allowed - deny-by-default)",
 			vk:              buildVirtualKey("vk1", "sk-bf-test", "Test", true),
 			provider:        schemas.OpenAI,
 			model:           "gpt-4",
-			shouldBeAllowed: true,
+			shouldBeAllowed: false,
 		},
 		{
 			name: "Empty allowed models (all models allowed)",

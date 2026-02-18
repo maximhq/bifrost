@@ -87,7 +87,7 @@ export interface VirtualKey {
 export interface VirtualKeyProviderConfig {
 	id?: number;
 	provider: string;
-	weight: number;
+	weight: number | null;
 	allowed_models: string[];
 	budget?: Budget;
 	rate_limit?: RateLimit;
@@ -130,7 +130,7 @@ export interface UsageStats {
 // Request interfaces for provider config operations
 export interface VirtualKeyProviderConfigRequest {
 	provider: string;
-	weight?: number;
+	weight?: number | null;
 	allowed_models?: string[];
 	budget?: CreateBudgetRequest;
 	rate_limit?: CreateRateLimitRequest;
@@ -140,7 +140,7 @@ export interface VirtualKeyProviderConfigRequest {
 export interface VirtualKeyProviderConfigUpdateRequest {
 	id?: number;
 	provider: string;
-	weight?: number;
+	weight?: number | null;
 	allowed_models?: string[];
 	budget?: UpdateBudgetRequest;
 	rate_limit?: UpdateRateLimitRequest;

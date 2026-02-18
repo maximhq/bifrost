@@ -1984,10 +1984,10 @@ func AssertExecutionTimeUnder(t *testing.T, fn func(), maxDuration time.Duration
 func CreateTestContextWithMCPFilter(includeClients []string, includeTools []string) *schemas.BifrostContext {
 	baseCtx := context.Background()
 	if includeClients != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeClients, includeClients)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeClients, includeClients)
 	}
 	if includeTools != nil {
-		baseCtx = context.WithValue(baseCtx, mcp.MCPContextKeyIncludeTools, includeTools)
+		baseCtx = context.WithValue(baseCtx, schemas.MCPContextKeyIncludeTools, includeTools)
 	}
 	return schemas.NewBifrostContext(baseCtx, schemas.NoDeadline)
 }

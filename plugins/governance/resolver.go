@@ -324,9 +324,9 @@ func (r *BudgetResolver) EvaluateVirtualKeyFiltering(ctx *schemas.BifrostContext
 
 // isModelAllowed checks if the requested model is allowed for this VK
 func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider, model string) bool {
-	// Empty ProviderConfigs means all models are allowed
+	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return true
+		return false
 	}
 
 	for _, pc := range vk.ProviderConfigs {
@@ -350,9 +350,9 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 
 // isProviderAllowed checks if the requested provider is allowed for this VK
 func (r *BudgetResolver) isProviderAllowed(vk *configstoreTables.TableVirtualKey, provider schemas.ModelProvider) bool {
-	// Empty AllowedProviders means all providers are allowed
+	// Empty ProviderConfigs means no providers are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return true
+		return false
 	}
 
 	for _, pc := range vk.ProviderConfigs {

@@ -224,7 +224,7 @@ func (h *MCPServerHandler) syncServer(server *server.MCPServer, availableTools [
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			// Inject tool filter into execution context if present
 			if toolFilter != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), toolFilter)
+				ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, toolFilter)
 			}
 			// Convert to Bifrost tool call format
 			toolCallType := "function"
@@ -312,8 +312,10 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 	ctx := context.Background()
 	var toolFilter []string
 
+	// Empty MCPConfigs means no MCP tools are allowed (deny-by-default)
+	executeOnlyTools := make([]string, 0)
+
 	if len(vk.MCPConfigs) > 0 {
-		executeOnlyTools := make([]string, 0)
 		for _, vkMcpConfig := range vk.MCPConfigs {
 			if len(vkMcpConfig.ToolsToExecute) == 0 {
 				// No tools specified in virtual key config - skip this client entirely
@@ -335,11 +337,11 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 				}
 			}
 		}
-
-		// Set even when empty to exclude tools when no tools are present in the virtual key config
-		ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), executeOnlyTools)
-		toolFilter = executeOnlyTools
 	}
+
+	// Always set the include-tools filter (empty = deny-all when no MCPConfigs)
+	ctx = context.WithValue(ctx, schemas.MCPContextKeyIncludeTools, executeOnlyTools)
+	toolFilter = executeOnlyTools
 
 	return h.toolManager.GetAvailableMCPTools(ctx), toolFilter
 }
