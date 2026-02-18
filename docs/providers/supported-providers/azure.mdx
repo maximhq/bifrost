@@ -26,6 +26,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | List Models | ✅ | - | `/openai/v1/models` |
 | Image Generation | ✅ | ✅ | `/openai/v1/images/generations` |
 | Image Edit | ✅ | ✅ | `/openai/v1/images/edits` |
+| Video Generation | ✅ | - | `/openai/v1/videos` |
 | Image Variation | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 | Text Completions | ❌ | ❌ | - |
@@ -513,6 +514,23 @@ Lists available models/deployments configured in the Azure key. Response include
 **Impact**: `gpt-4` and `gpt-4-turbo` can map to same deployment
 **Code**: `models.go:13-58`
 </Accordion>
+
+---
+
+# 8. Video Generation
+
+Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compatible endpoint. All parameters are identical to [OpenAI Video Generation](/providers/supported-providers/openai#video-generation).
+
+**Supported Operations**
+
+| Operation | Supported | Notes |
+|-----------|-----------|-------|
+| Generate | ✅ | `POST /v1/videos` |
+| Retrieve | ✅ | `GET /v1/videos/{id}` |
+| Download | ✅ | `GET /v1/videos/{id}/content` |
+| Delete | ✅ | `DELETE /v1/videos/{id}` |
+| List | ✅ | `GET /v1/videos` |
+| Remix | ❌ | Not supported |
 
 ---
 

@@ -24,6 +24,7 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Embeddings | ✅ | - | `/embeddings` |
 | Image Generation | ✅ | - | `/generateContent` or `/predict` (Imagen) |
 | Image Edit | ✅ | - | `/generateContent` or `/predict` (Imagen) |
+| Video Generation | ✅ | - | `/predictLongRunning` (Veo models only) |
 | Image Variation | ❌ | - | Not supported |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
@@ -682,3 +683,24 @@ See **[Provider-Specific Authentication - Google Vertex](../../quickstart/go-sdk
 
 </Tab>
 </Tabs>
+
+---
+
+## Video Generation
+
+Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
+
+<Note>
+Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a non-Veo model name returns a configuration error.
+</Note>
+
+**Supported Operations**
+
+| Operation | Supported | Notes |
+|-----------|-----------|-------|
+| Generate | ✅ | `POST /v1/videos` |
+| Retrieve | ✅ | `GET /v1/videos/{id}` |
+| Download | ✅ | `GET /v1/videos/{id}/content` |
+| Delete | ❌ | Not supported |
+| List | ❌ | Not supported |
+| Remix | ❌ | Not supported |
