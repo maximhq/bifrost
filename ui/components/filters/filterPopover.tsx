@@ -173,7 +173,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 														<Check className="text-primary-foreground size-3" />
 													)}
 												</div>
-												<span className={cn("lowercase", isLoading && "text-muted-foreground")}>
+												<span className={cn(category === "Status" && "lowercase", isLoading && "text-muted-foreground")}>
 													{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] :
 														category === "Routing Engines" ? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value) : value}
 												</span>
