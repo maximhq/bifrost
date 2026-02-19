@@ -1187,13 +1187,13 @@ func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *Bedroc
 							})
 						}
 					case schemas.ResponsesInputMessageContentBlockTypeImage:
-						if block.ImageURL != nil {
+						if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
 							bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
 								Type: "image",
 								Source: &BedrockImageSource{
 									Type:      "base64",
-									MediaType: extractMediaType(*block.ImageURL),
-									Data:      extractBase64Data(*block.ImageURL),
+									MediaType: extractMediaType(*block.ResponsesInputMessageContentBlockImage.ImageURL),
+									Data:      extractBase64Data(*block.ResponsesInputMessageContentBlockImage.ImageURL),
 								},
 							})
 						}
@@ -1384,8 +1384,8 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 							})
 						}
 					case schemas.ResponsesInputMessageContentBlockTypeImage:
-						if block.ImageURL != nil {
-							mediaType := extractMediaType(*block.ImageURL)
+						if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+							mediaType := extractMediaType(*block.ResponsesInputMessageContentBlockImage.ImageURL)
 							format := "jpeg"
 							if strings.Contains(mediaType, "png") {
 								format = "png"
@@ -1398,7 +1398,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 								Image: &ConverseImageSource{
 									Format: format,
 									Source: &ConverseImageSourceData{
-										Bytes: extractBase64Data(*block.ImageURL),
+										Bytes: extractBase64Data(*block.ResponsesInputMessageContentBlockImage.ImageURL),
 									},
 								},
 							})
