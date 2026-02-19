@@ -1413,7 +1413,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.RerankRequest); err != nil {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.RerankRequest); err != nil {
 		return nil, err
 	}
 
@@ -1459,11 +1459,11 @@ func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 
 	tokenSource, err := getAuthTokenSource(key)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, providerName)
 	}
 	token, err := tokenSource.Token()
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		return nil, providerUtils.NewBifrostOperationError("error getting token", err, providerName)
 	}
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
@@ -1786,7 +1786,7 @@ func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	if err := providerUtils.CheckOperationAllowed(schemas.Vertex, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
+	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
 		return nil, err
 	}
 
