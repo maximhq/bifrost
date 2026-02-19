@@ -113,39 +113,18 @@ export default function DashboardPage() {
 		},
 	);
 
+	// Parse comma-separated URL param into a string array
+	const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
+
 	// Parse filter arrays from URL state
-	const selectedProviders = useMemo(
-		() => (urlState.providers ? urlState.providers.split(",").filter(Boolean) : []),
-		[urlState.providers],
-	);
-	const selectedModels = useMemo(
-		() => (urlState.models ? urlState.models.split(",").filter(Boolean) : []),
-		[urlState.models],
-	);
-	const selectedKeyIds = useMemo(
-		() => (urlState.selected_key_ids ? urlState.selected_key_ids.split(",").filter(Boolean) : []),
-		[urlState.selected_key_ids],
-	);
-	const selectedVirtualKeyIds = useMemo(
-		() => (urlState.virtual_key_ids ? urlState.virtual_key_ids.split(",").filter(Boolean) : []),
-		[urlState.virtual_key_ids],
-	);
-	const selectedTypes = useMemo(
-		() => (urlState.objects ? urlState.objects.split(",").filter(Boolean) : []),
-		[urlState.objects],
-	);
-	const selectedStatuses = useMemo(
-		() => (urlState.status ? urlState.status.split(",").filter(Boolean) : []),
-		[urlState.status],
-	);
-	const selectedRoutingRuleIds = useMemo(
-		() => (urlState.routing_rule_ids ? urlState.routing_rule_ids.split(",").filter(Boolean) : []),
-		[urlState.routing_rule_ids],
-	);
-	const selectedRoutingEngines = useMemo(
-		() => (urlState.routing_engine_used ? urlState.routing_engine_used.split(",").filter(Boolean) : []),
-		[urlState.routing_engine_used],
-	);
+	const selectedProviders = useMemo(() => parseCsvParam(urlState.providers), [urlState.providers]);
+	const selectedModels = useMemo(() => parseCsvParam(urlState.models), [urlState.models]);
+	const selectedKeyIds = useMemo(() => parseCsvParam(urlState.selected_key_ids), [urlState.selected_key_ids]);
+	const selectedVirtualKeyIds = useMemo(() => parseCsvParam(urlState.virtual_key_ids), [urlState.virtual_key_ids]);
+	const selectedTypes = useMemo(() => parseCsvParam(urlState.objects), [urlState.objects]);
+	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
+	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
+	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
 
 	// Derived filter for API calls
 	const filters: LogFilters = useMemo(
