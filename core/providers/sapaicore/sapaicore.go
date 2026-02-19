@@ -828,6 +828,7 @@ func (provider *SAPAICoreProvider) Responses(ctx *schemas.BifrostContext, key sc
 }
 
 // handleBedrockResponses handles Responses API requests for Bedrock backends (Anthropic)
+// Uses the Converse API which supports native tool calling
 func (provider *SAPAICoreProvider) handleBedrockResponses(
 	ctx *schemas.BifrostContext,
 	token string,
@@ -837,16 +838,16 @@ func (provider *SAPAICoreProvider) handleBedrockResponses(
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	// Build Bedrock-style URL
-	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke")
+	// Build Bedrock Converse API URL (supports native tool calling)
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse")
 
-	// Convert request to Bedrock format
-	bedrockRequest := convertResponsesToBedrock(request)
+	// Convert request to Bedrock Converse format
+	converseRequest := convertResponsesToBedrockConverse(request)
 
-	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	jsonData, marshalErr := sonic.Marshal(converseRequest)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to marshal Bedrock request",
+			"failed to marshal Bedrock Converse request for Responses API",
 			marshalErr,
 			providerName,
 		)
@@ -875,12 +876,12 @@ func (provider *SAPAICoreProvider) handleBedrockResponses(
 		return nil, ParseSAPAICoreError(resp, schemas.ResponsesRequest, providerName, request.Model)
 	}
 
-	// Parse Bedrock response
+	// Parse Bedrock Converse response
 	responseBody := append([]byte(nil), resp.Body()...)
-	response, parseErr := parseBedrockToResponsesResponse(responseBody, request.Model)
+	response, parseErr := parseBedrockConverseToResponsesResponse(responseBody, request.Model)
 	if parseErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to parse Bedrock response",
+			"failed to parse Bedrock Converse response for Responses API",
 			parseErr,
 			providerName,
 		)
@@ -928,6 +929,7 @@ func (provider *SAPAICoreProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 }
 
 // handleBedrockResponsesStream handles streaming Responses API requests for Bedrock backends (Anthropic)
+// Uses the Converse API (/converse-stream) which supports native tool calling
 func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -938,16 +940,16 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	// Build Bedrock streaming URL
-	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke-with-response-stream")
+	// Build Bedrock Converse streaming URL - uses /converse-stream for native tool support
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse-stream")
 
-	// Convert request to Bedrock format
-	bedrockRequest := convertResponsesToBedrock(request)
+	// Convert request to Bedrock Converse format
+	converseRequest := convertResponsesToBedrockConverse(request)
 
-	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	jsonData, marshalErr := sonic.Marshal(converseRequest)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to marshal Bedrock streaming request",
+			"failed to marshal Bedrock Converse streaming request for Responses API",
 			marshalErr,
 			providerName,
 		)
@@ -1009,8 +1011,8 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		// Process Bedrock event stream for Responses API
-		processBedrockResponsesEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
+		// Process Bedrock Converse event stream for Responses API (has native tool support)
+		processBedrockConverseResponsesEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
 	}()
 
 	return responseChan, nil
