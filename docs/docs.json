@@ -78,6 +78,7 @@
                   "quickstart/gateway/streaming",
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
+                  "quickstart/gateway/reranking",
                   "quickstart/gateway/integrations",
                   "quickstart/gateway/cli-agents"
                 ]
@@ -92,6 +93,7 @@
                   "quickstart/go-sdk/streaming",
                   "quickstart/go-sdk/tool-calling",
                   "quickstart/go-sdk/multimodal",
+                  "quickstart/go-sdk/reranking",
                   "quickstart/go-sdk/logger"
                 ]
               }
