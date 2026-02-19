@@ -493,6 +493,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		if request.Model != deployment {
 			response.ExtraFields.ModelDeployment = deployment
 		}
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -521,6 +522,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			response.ExtraFields.RawRequest = rawRequest
@@ -547,6 +549,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -926,6 +929,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		}
 
 		response.ExtraFields.ModelRequested = request.Model
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1043,6 +1047,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 		response.ExtraFields.Provider = providerName
 		response.ExtraFields.ModelRequested = request.Model
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if request.Model != deployment {
 			response.ExtraFields.ModelDeployment = deployment
@@ -1386,6 +1391,7 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	if bifrostResponse.ExtraFields.ModelRequested != deployment {
 		bifrostResponse.ExtraFields.ModelDeployment = deployment
@@ -1606,6 +1612,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			response.ExtraFields.RawRequest = rawRequest
@@ -1633,6 +1640,7 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			response.ExtraFields.RawRequest = rawRequest
@@ -1826,6 +1834,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			response.ExtraFields.RawRequest = rawRequest
@@ -1853,6 +1862,7 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			response.ExtraFields.ModelDeployment = deployment
 		}
 		response.ExtraFields.Latency = latency.Milliseconds()
+		response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			response.ExtraFields.RawRequest = rawRequest

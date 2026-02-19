@@ -97,7 +97,7 @@ func createPrediction(
 	logger schemas.Logger,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
-) (*ReplicatePredictionResponse, interface{}, time.Duration, *schemas.BifrostError) {
+) (*ReplicatePredictionResponse, interface{}, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -127,28 +127,31 @@ func createPrediction(
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
-		return nil, nil, latency, bifrostErr
+		return nil, nil, latency, nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK && resp.StatusCode() != fasthttp.StatusCreated {
 		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
-		return nil, nil, latency, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, nil, latency, nil, parseReplicateError(resp.Body(), resp.StatusCode())
 	}
+
+	// Extract provider response headers before releasing the response
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Parse response
 	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 	if decodeErr != nil {
-		return nil, nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr, schemas.Replicate)
+		return nil, nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr, schemas.Replicate)
 	}
 
 	var prediction ReplicatePredictionResponse
 	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse))
 	if bifrostErr != nil {
-		return nil, nil, latency, bifrostErr
+		return nil, nil, latency, nil, bifrostErr
 	}
 
-	return &prediction, rawResponse, latency, nil
+	return &prediction, rawResponse, latency, providerResponseHeaders, nil
 }
 
 // getPrediction retrieves the current state of a prediction
@@ -159,7 +162,7 @@ func getPrediction(
 	key schemas.Key,
 	logger schemas.Logger,
 	sendBackRawResponse bool,
-) (*ReplicatePredictionResponse, interface{}, *schemas.BifrostError) {
+) (*ReplicatePredictionResponse, interface{}, map[string]string, *schemas.BifrostError) {
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -178,28 +181,31 @@ func getPrediction(
 	// Make request
 	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
 	if bifrostErr != nil {
-		return nil, nil, bifrostErr
+		return nil, nil, nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
 		logger.Debug(fmt.Sprintf("error from replicate provider: %s", string(resp.Body())))
-		return nil, nil, parseReplicateError(resp.Body(), resp.StatusCode())
+		return nil, nil, nil, parseReplicateError(resp.Body(), resp.StatusCode())
 	}
+
+	// Extract provider response headers before releasing the response
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Parse response
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, schemas.Replicate)
+		return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, schemas.Replicate)
 	}
 
 	prediction := &ReplicatePredictionResponse{}
 	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, prediction, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, nil, bifrostErr
+		return nil, nil, nil, bifrostErr
 	}
 
-	return prediction, rawResponse, nil
+	return prediction, rawResponse, providerResponseHeaders, nil
 }
 
 // pollPrediction polls a prediction URL until it reaches a terminal state or timeout
@@ -211,7 +217,7 @@ func pollPrediction(
 	timeoutSeconds int,
 	logger schemas.Logger,
 	sendBackRawResponse bool,
-) (*ReplicatePredictionResponse, interface{}, *schemas.BifrostError) {
+) (*ReplicatePredictionResponse, interface{}, map[string]string, *schemas.BifrostError) {
 	// Create context with timeout
 	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
@@ -220,14 +226,14 @@ func pollPrediction(
 	defer ticker.Stop()
 
 	// Poll immediately first time
-	prediction, rawResponse, err := getPrediction(ctx, client, predictionURL, key, logger, sendBackRawResponse)
+	prediction, rawResponse, providerResponseHeaders, err := getPrediction(ctx, client, predictionURL, key, logger, sendBackRawResponse)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	// If already in terminal state, return immediately
 	if isTerminalStatus(prediction.Status) {
-		return prediction, rawResponse, checkForErrorStatus(prediction)
+		return prediction, rawResponse, providerResponseHeaders, checkForErrorStatus(prediction)
 	}
 
 	logger.Debug(fmt.Sprintf("polling replicate prediction %s, status: %s", prediction.ID, prediction.Status))
@@ -236,21 +242,21 @@ func pollPrediction(
 	for {
 		select {
 		case <-pollCtx.Done():
-			return nil, nil, providerUtils.NewBifrostOperationError(
+			return nil, nil, nil, providerUtils.NewBifrostOperationError(
 				schemas.ErrProviderRequestTimedOut,
 				fmt.Errorf("prediction polling timed out after %d seconds", timeoutSeconds),
 				schemas.Replicate,
 			)
 		case <-ticker.C:
-			prediction, rawResponse, err = getPrediction(ctx, client, predictionURL, key, logger, sendBackRawResponse)
+			prediction, rawResponse, providerResponseHeaders, err = getPrediction(ctx, client, predictionURL, key, logger, sendBackRawResponse)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 
 			logger.Debug(fmt.Sprintf("prediction %s status: %s", prediction.ID, prediction.Status))
 
 			if isTerminalStatus(prediction.Status) {
-				return prediction, rawResponse, checkForErrorStatus(prediction)
+				return prediction, rawResponse, providerResponseHeaders, checkForErrorStatus(prediction)
 			}
 		}
 	}
@@ -415,7 +421,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	)
 
 	// create prediction
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -433,7 +439,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 
 	// if not sync, poll until done
 	if !isSync && !isTerminalStatus(prediction.Status) {
-		prediction, rawResponse, err = pollPrediction(
+		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
 			prediction.URLs.Get,
@@ -460,6 +466,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	bifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
@@ -511,7 +518,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	)
 
 	// Create prediction
-	prediction, _, _, err := createPrediction(
+	prediction, _, _, _, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -544,6 +551,9 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -790,7 +800,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	)
 
 	// create prediction
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -808,7 +818,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 
 	// if not sync, poll until done
 	if !isSync && !isTerminalStatus(prediction.Status) {
-		prediction, rawResponse, err = pollPrediction(
+		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
 			prediction.URLs.Get,
@@ -835,6 +845,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
@@ -886,7 +897,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	)
 
 	// Create prediction
-	prediction, _, _, err := createPrediction(
+	prediction, _, _, _, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -919,6 +930,9 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1183,7 +1197,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	)
 
 	// create prediction
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -1201,7 +1215,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 
 	// if not sync, poll until done
 	if !isSync && !isTerminalStatus(prediction.Status) {
-		prediction, rawResponse, err = pollPrediction(
+		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
 			prediction.URLs.Get,
@@ -1226,6 +1240,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 	response.ExtraFields.Provider = provider.GetProviderKey()
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
 	}
@@ -1278,7 +1293,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	)
 
 	// Create prediction
-	prediction, _, _, err := createPrediction(
+	prediction, _, _, _, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -1350,6 +1365,9 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		body := resp.Body()
 		return nil, providerUtils.EnrichError(ctx, parseReplicateError(body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1824,7 +1842,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	)
 
 	// Create prediction with appropriate mode
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -1842,7 +1860,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 
 	// If async mode and not complete, poll until done
 	if !isSync && !isTerminalStatus(prediction.Status) {
-		prediction, rawResponse, err = pollPrediction(
+		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
 			prediction.URLs.Get,
@@ -1872,6 +1890,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 	bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
@@ -1922,7 +1941,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		isDeployment,
 	)
 	// Create prediction
-	prediction, _, _, err := createPrediction(
+	prediction, _, _, _, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -1954,6 +1973,9 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -2256,7 +2278,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	)
 
 	// Create prediction with appropriate mode
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -2274,7 +2296,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 
 	// If async mode and not complete, poll until done
 	if !isSync && !isTerminalStatus(prediction.Status) {
-		prediction, rawResponse, err = pollPrediction(
+		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
 			prediction.URLs.Get,
@@ -2304,6 +2326,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 	bifrostResponse.ExtraFields.RequestType = schemas.ImageEditRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}
@@ -2355,7 +2378,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	)
 
 	// Create prediction
-	prediction, _, _, err := createPrediction(
+	prediction, _, _, _, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -2387,6 +2410,9 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+
+	// Store provider response headers in context for transport layer
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -2802,7 +2828,9 @@ func (provider *ReplicateProvider) FileUpload(ctx *schemas.BifrostContext, key s
 		return nil, bifrostErr
 	}
 
-	return replicateResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+	fileResponse := replicateResp.ToBifrostFileUploadResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse)
+	fileResponse.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+	return fileResponse, nil
 }
 
 // FileList lists files using serial pagination across keys.
@@ -2918,9 +2946,10 @@ func (provider *ReplicateProvider) FileList(ctx *schemas.BifrostContext, keys []
 		Data:    files,
 		HasMore: finalHasMore,
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
+			RequestType:             schemas.FileListRequest,
+			Provider:                providerName,
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 	if finalCursor != "" {
@@ -2992,10 +3021,13 @@ func (provider *ReplicateProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 			continue
 		}
 
+		providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		return replicateResp.ToBifrostFileRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse), nil
+		fileRetrieveResponse := replicateResp.ToBifrostFileRetrieveResponse(providerName, latency, sendBackRawRequest, sendBackRawResponse, rawRequest, rawResponse)
+		fileRetrieveResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+		return fileRetrieveResponse, nil
 	}
 
 	return nil, lastErr
@@ -3039,6 +3071,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 		// Handle success response (204 No Content is expected for DELETE)
 		if resp.StatusCode() == fasthttp.StatusNoContent {
+			providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
 			return &schemas.BifrostFileDeleteResponse{
@@ -3046,9 +3079,10 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 				Object:  "file",
 				Deleted: true,
 				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType: schemas.FileDeleteRequest,
-					Provider:    providerName,
-					Latency:     latency.Milliseconds(),
+					RequestType:             schemas.FileDeleteRequest,
+					Provider:                providerName,
+					Latency:                 latency.Milliseconds(),
+					ProviderResponseHeaders: providerResponseHeaders,
 				},
 			}, nil
 		}
@@ -3081,6 +3115,7 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 			continue
 		}
 
+		providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
@@ -3089,9 +3124,10 @@ func (provider *ReplicateProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 			Object:  "file",
 			Deleted: true,
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileDeleteRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
+				RequestType:             schemas.FileDeleteRequest,
+				Provider:                providerName,
+				Latency:                 latency.Milliseconds(),
+				ProviderResponseHeaders: providerResponseHeaders,
 			},
 		}
 
