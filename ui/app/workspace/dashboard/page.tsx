@@ -266,9 +266,13 @@ export default function DashboardPage() {
 				status: "status",
 				routing_rule_ids: "routing_rule_ids",
 				routing_engine_used: "routing_engine_used",
+				missing_cost_only: "missing_cost_only",
 			};
 			const urlKey = urlKeyMap[key];
-			if (urlKey && Array.isArray(values)) {
+			if (!urlKey) return;
+			if (typeof values === "boolean") {
+				setUrlState({ [urlKey]: String(values) });
+			} else {
 				setUrlState({ [urlKey]: values.join(",") });
 			}
 		},
