@@ -12,7 +12,7 @@ services:
       - LOG_LEVEL=info
       - LOG_STYLE=json
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/metrics"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
