@@ -69,10 +69,10 @@ providers:
     vision: "gpt-4o"
     tools: "gpt-4o-mini"
     streaming: "gpt-4o-mini"
-    speech: "tts-1"
-    transcription: "whisper-1"
+    speech: "gpt-4o-mini-tts"
+    transcription: "whisper"
     embeddings: "text-embedding-3-small"
-    image_generation: "dall-e-3"
+    image_generation: "gpt-image-1"
     thinking: "o1"
     count_tokens: "gpt-4o-mini"
 
@@ -85,7 +85,7 @@ providers:
     
   anthropic:
     chat: "claude-sonnet-4-5-20250929"
-    vision: "claude-3-7-sonnet-20250219"
+    vision: "claude-sonnet-4-5-20250929"
     file: "claude-sonnet-4-5-20250929"
     tools: "claude-sonnet-4-5-20250929"
     streaming: "claude-sonnet-4-5-20250929"
