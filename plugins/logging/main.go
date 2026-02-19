@@ -95,6 +95,7 @@ type InitialLogData struct {
 	TranscriptionInput    *schemas.TranscriptionInput
 	ImageGenerationInput  *schemas.ImageGenerationInput
 	Tools                 []schemas.ChatTool
+	Metadata              map[string]interface{}
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -308,6 +309,14 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
+	// Check if this is an async request and add to metadata
+	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
+		if initialData.Metadata == nil {
+			initialData.Metadata = make(map[string]interface{})
+		}
+		initialData.Metadata["isAsyncRequest"] = true
+	}
+
 	// Queue the log creation message (non-blocking) - Using sync.Pool
 	logMsg := p.getLogMessage()
 	logMsg.Operation = LogOperationCreate
@@ -364,6 +373,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 					ResponsesInputHistoryParsed: msg.InitialData.ResponsesInputHistory,
 					ParamsParsed:                msg.InitialData.Params,
 					ToolsParsed:                 msg.InitialData.Tools,
+					MetadataParsed:              msg.InitialData.Metadata,
 					Status:                      "processing",
 					Stream:                      false, // Initially false, will be updated if streaming
 					CreatedAt:                   msg.Timestamp,

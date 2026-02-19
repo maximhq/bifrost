@@ -136,6 +136,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRoutingEngineLogsColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateAsyncJobsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMetadataColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1207,6 +1213,84 @@ func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB) error
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding routing engine logs column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "async_jobs_init",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&AsyncJob{}) {
+				if err := dbMigrator.CreateTable(&AsyncJob{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_status") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_status"); err != nil {
+					return fmt.Errorf("failed to create index on status: %w", err)
+				}
+			}
+
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_vk_id") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_vk_id"); err != nil {
+					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
+				}
+			}
+
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_expires_at") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_expires_at"); err != nil {
+					return fmt.Errorf("failed to create index on expires_at: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&AsyncJob{})
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating async_jobs table: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_metadata_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "metadata") {
+				if err := migrator.AddColumn(&Log{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "metadata") {
+				if err := migrator.DropColumn(&Log{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding metadata column: %s", err.Error())
 	}
 	return nil
 }

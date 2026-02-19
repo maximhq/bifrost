@@ -256,6 +256,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRateLimitToTeamsAndCustomers(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAsyncJobResultTTLColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3469,6 +3472,41 @@ func migrationAddProviderStatusColumns(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while running provider model discovery status migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAsyncJobResultTTLColumn adds async_job_result_ttl column to config_client table
+func migrationAddAsyncJobResultTTLColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_async_job_result_ttl_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "async_job_result_ttl") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "AsyncJobResultTTL"); err != nil {
+					return fmt.Errorf("failed to add async_job_result_ttl column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "async_job_result_ttl") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "async_job_result_ttl"); err != nil {
+					return fmt.Errorf("failed to drop async_job_result_ttl column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running async_job_result_ttl migration: %s", err.Error())
 	}
 	return nil
 }

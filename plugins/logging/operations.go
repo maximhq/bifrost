@@ -41,6 +41,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		TranscriptionInputParsed:    data.TranscriptionInput,
 		ImageGenerationInputParsed:  data.ImageGenerationInput,
 		RoutingEnginesUsed:          routingEnginesUsed,
+		MetadataParsed:              data.Metadata,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID

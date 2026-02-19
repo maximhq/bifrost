@@ -1,0 +1,1 @@
+- feat: add metadata column to logging table for async request tracking
