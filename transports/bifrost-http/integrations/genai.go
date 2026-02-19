@@ -410,6 +410,9 @@ var embeddingPaths = []string{
 
 // extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
 func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	// Detect CLI user agent
+	DetectCLIUserAgent(ctx, bifrostCtx)
+
 	model := ctx.UserValue("model")
 	if model == nil {
 		return fmt.Errorf("model parameter is required")

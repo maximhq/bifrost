@@ -329,3 +329,33 @@ func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	// Default to API mode
 	return true
 }
+
+// DetectCLIUserAgent detects if the request is coming from a known CLI tool or integration.
+// It checks the User-Agent header and sets the BifrostContextKeyUserAgent key in the BifrostContext.
+// Returns the detected user agent string if found, otherwise empty string.
+func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) string {
+	userAgent := string(ctx.Request.Header.Peek("User-Agent"))
+	userAgentLower := strings.ToLower(userAgent)
+	var detectedAgent string
+
+	switch {
+	case strings.Contains(userAgentLower, "claude-cli"):
+		detectedAgent = "claude-cli"
+	case strings.Contains(userAgentLower, "gemini-cli"):
+		detectedAgent = "gemini-cli"
+	case strings.Contains(userAgentLower, "qwen-cli"):
+		detectedAgent = "qwen-cli"
+	case strings.Contains(userAgentLower, "cursor"):
+		detectedAgent = "cursor"
+	case strings.Contains(userAgentLower, "codex"):
+		detectedAgent = "codex"
+	case strings.Contains(userAgentLower, "n8n"):
+		detectedAgent = "n8n"
+	}
+
+	if detectedAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, detectedAgent)
+	}
+
+	return detectedAgent
+}

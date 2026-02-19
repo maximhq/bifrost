@@ -242,37 +242,28 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 
 	// Add integration-specific patterns from existing tools
 	switch integrationUserAgent {
-	case "claude-cli":
-		// Claude CLI uses pattern: mcp__{foreign_name}__{tool_name}
-		// The middle part is a foreign name we cannot check for, so we extract the last part
-		// Examples:
-		//   mcp__bifrost__executeToolCode -> executeToolCode
-		//   mcp__bifrost__listToolFiles -> listToolFiles
-		//   mcp__bifrost__readToolFile -> readToolFile
-		//   mcp__calculator__calculator_add -> calculator_add
+	case "claude-cli", "gemini-cli", "qwen-cli", "cursor", "codex", "n8n":
+		// Handle tool renaming patterns
 		for _, tool := range existingTools {
 			if tool.Function != nil && tool.Function.Name != "" {
 				existingToolName := tool.Function.Name
-				// Check if existing tool matches Claude CLI pattern: mcp__*__{tool_name}
-				if strings.HasPrefix(existingToolName, "mcp__") {
-					// Split on __ and take the last entry (the tool_name)
+				toolName := existingToolName
+
+				// If tool name contains double underscore, extract the last part
+				if strings.Contains(existingToolName, "__") {
 					parts := strings.Split(existingToolName, "__")
-					if len(parts) >= 3 {
-						toolName := parts[len(parts)-1] // Last part is the tool name
-						// Map Claude CLI pattern back to our tool name format
-						// This handles both regular MCP tools and code mode tools
-						if toolName != "" {
-							duplicateCheckMap[toolName] = true
-							// Also keep the original pattern for direct matching
-							duplicateCheckMap[existingToolName] = true
-						}
+					if len(parts) > 1 {
+						toolName = parts[len(parts)-1]
 					}
+				}
+
+				if toolName != "" {
+					duplicateCheckMap[toolName] = true
+					// Also keep the original pattern for direct matching
+					duplicateCheckMap[existingToolName] = true
 				}
 			}
 		}
-		// Add more integration-specific patterns here as needed
-		// case "another-integration":
-		//     // Add patterns for other integrations
 	}
 
 	return duplicateCheckMap
