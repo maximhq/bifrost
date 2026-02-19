@@ -15,6 +15,10 @@ import (
 func BasicRerankExpectations(t *testing.T, rerankResponse *schemas.BifrostRerankResponse, documents []schemas.RerankDocument) {
 	t.Helper()
 
+	if rerankResponse == nil {
+		t.Fatal("❌ Rerank response is nil")
+	}
+
 	if len(rerankResponse.Results) == 0 {
 		t.Fatal("❌ Rerank results are empty")
 	}
