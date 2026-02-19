@@ -2887,6 +2887,9 @@ func (gs *LocalGovernanceStore) GetRoutingProgram(rule *configstoreTables.TableR
 		expr = "true"
 	}
 
+	// Normalize header and param keys to lowercase so CEL expressions match normalized map keys
+	expr = normalizeMapKeysInCEL(expr)
+
 	// Validate expression format
 	if err := validateCELExpression(expr); err != nil {
 		return nil, fmt.Errorf("invalid CEL expression: %w", err)

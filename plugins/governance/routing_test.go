@@ -1234,8 +1234,8 @@ func TestExtractRoutingVariables_ComplexHierarchy(t *testing.T) {
 		VirtualKey:  vk,
 		Provider:    schemas.OpenAI,
 		Model:       "gpt-4o",
-		Headers:     map[string]string{"x-tier": "premium", "x-org": "acme"},
-		QueryParams: map[string]string{"region": "us-east-1"},
+		Headers:     map[string]string{"X-Tier": "premium", "X-Org": "acme"},
+		QueryParams: map[string]string{"Region": "us-east-1"},
 		BudgetAndRateLimitStatus: &BudgetAndRateLimitStatus{
 			BudgetPercentUsed:           60.0,
 			RateLimitTokenPercentUsed:   60.0,
@@ -1270,6 +1270,127 @@ func TestExtractRoutingVariables_ComplexHierarchy(t *testing.T) {
 	assert.Equal(t, 60.0, variables["budget_used"])
 	assert.Equal(t, 60.0, variables["tokens_used"])
 	assert.Equal(t, 60.0, variables["request"])
+}
+
+func TestNormalizeMapKeysInCEL(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Header bracket access
+		{
+			name:     "header double quotes uppercase",
+			input:    `headers["X-Api-Key"] == "secret"`,
+			expected: `headers["x-api-key"] == "secret"`,
+		},
+		{
+			name:     "header single quotes uppercase",
+			input:    `headers['X-Api-Key'] == 'secret'`,
+			expected: `headers['x-api-key'] == 'secret'`,
+		},
+		{
+			name:     "header mixed case with other conditions",
+			input:    `model == "gpt-4o" && headers["X-Tier"] == "premium"`,
+			expected: `model == "gpt-4o" && headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "header already lowercase",
+			input:    `headers["x-tier"] == "premium"`,
+			expected: `headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "multiple header accesses",
+			input:    `headers["X-Org"] == "acme" && headers["X-Tier"] == "premium"`,
+			expected: `headers["x-org"] == "acme" && headers["x-tier"] == "premium"`,
+		},
+		{
+			name:     "no headers or params",
+			input:    `model == "gpt-4o"`,
+			expected: `model == "gpt-4o"`,
+		},
+		// Header "in" operator
+		{
+			name:     "header in operator with double quotes",
+			input:    `"X-Test" in headers`,
+			expected: `"x-test" in headers`,
+		},
+		{
+			name:     "header in operator with single quotes",
+			input:    `'X-Api-Key' in headers`,
+			expected: `'x-api-key' in headers`,
+		},
+		{
+			name:     "header negated in operator",
+			input:    `!("X-Test" in headers)`,
+			expected: `!("x-test" in headers)`,
+		},
+		{
+			name:     "header in operator combined with bracket access",
+			input:    `"X-Tier" in headers && headers["X-Tier"] == "premium"`,
+			expected: `"x-tier" in headers && headers["x-tier"] == "premium"`,
+		},
+		// Param bracket access
+		{
+			name:     "param double quotes uppercase",
+			input:    `params["Region"] == "us-east-1"`,
+			expected: `params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "param single quotes uppercase",
+			input:    `params['Region'] == 'us-east-1'`,
+			expected: `params['region'] == 'us-east-1'`,
+		},
+		{
+			name:     "param already lowercase",
+			input:    `params["region"] == "us-east-1"`,
+			expected: `params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "multiple param accesses",
+			input:    `params["Region"] == "us-east-1" && params["Env"] == "prod"`,
+			expected: `params["region"] == "us-east-1" && params["env"] == "prod"`,
+		},
+		// Param "in" operator
+		{
+			name:     "param in operator with double quotes",
+			input:    `"Region" in params`,
+			expected: `"region" in params`,
+		},
+		{
+			name:     "param in operator with single quotes",
+			input:    `'Region' in params`,
+			expected: `'region' in params`,
+		},
+		{
+			name:     "param negated in operator",
+			input:    `!("Region" in params)`,
+			expected: `!("region" in params)`,
+		},
+		{
+			name:     "param in operator combined with bracket access",
+			input:    `"Region" in params && params["Region"] == "us-east-1"`,
+			expected: `"region" in params && params["region"] == "us-east-1"`,
+		},
+		// Mixed headers and params
+		{
+			name:     "mixed headers and params",
+			input:    `"X-Tier" in headers && headers["X-Tier"] == "premium" && params["Region"] == "us-east-1"`,
+			expected: `"x-tier" in headers && headers["x-tier"] == "premium" && params["region"] == "us-east-1"`,
+		},
+		{
+			name:     "mixed in operators for headers and params",
+			input:    `"X-Test" in headers && "Region" in params`,
+			expected: `"x-test" in headers && "region" in params`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := normalizeMapKeysInCEL(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
 }
 
 // resolveRoutingWithFallback evaluates routing rules and returns decision with fallback chain

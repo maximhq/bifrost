@@ -1,1 +1,3 @@
 - feat: add asynchronous inference support
+- fix: routing rules CEL builder UI fixes
+- fix: routing rules now support case-insensitive header matching

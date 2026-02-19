@@ -32,39 +32,53 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 	const isKeyValueType = valueEditorType === ("keyValue" as ValueEditorType);
 	const isSelectType = valueEditorType === ("select" as ValueEditorType);
 
-	// Parse keyValue format: "key:value"
+	// Parse keyValue format: "key:value" or just "key" for null/notNull operators
 	const [keyValuePair, setKeyValuePair] = useState(() => {
 		if (!isKeyValueType) return { key: "", value: "" };
-		if (typeof value === "string" && value && value.includes(":")) {
-			const parts = value.split(":");
-			const key = parts[0] || "";
-			const valuePart = parts.slice(1).join(":") || "";
-			return { key: key.trim(), value: valuePart.trim() };
+		if (typeof value === "string" && value) {
+			if (value.includes(":")) {
+				const parts = value.split(":");
+				const key = parts[0] || "";
+				const valuePart = parts.slice(1).join(":") || "";
+				return { key: key.trim(), value: valuePart.trim() };
+			}
+			// Key-only value (for null/notNull operators)
+			return { key: value.trim(), value: "" };
 		}
 		return { key: "", value: "" };
 	});
 
 	useEffect(() => {
-		if (isKeyValueType && typeof value === "string" && value && value.includes(":")) {
-			const parts = value.split(":");
-			const key = parts[0] || "";
-			const valuePart = parts.slice(1).join(":") || "";
-			setKeyValuePair({ key: key.trim(), value: valuePart.trim() });
+		if (isKeyValueType && typeof value === "string" && value) {
+			if (value.includes(":")) {
+				const parts = value.split(":");
+				const key = parts[0] || "";
+				const valuePart = parts.slice(1).join(":") || "";
+				setKeyValuePair({ key: key.trim(), value: valuePart.trim() });
+			} else {
+				// Key-only value (for null/notNull operators)
+				setKeyValuePair({ key: value.trim(), value: "" });
+			}
 		} else {
 			setKeyValuePair({ key: "", value: "" });
 		}
 	}, [value, isKeyValueType]);
 
-	// Don't show value editor for null/notNull operators
+	// For null/notNull operators, no value input needed
+	// (keyValue fields show key input in FieldSelector)
 	if (isNullOperator) {
 		return null;
 	}
 
-	const handleKeyValueChange = (field: "key" | "value", newValue: string) => {
-		const updated = { ...keyValuePair, [field]: newValue };
-		setKeyValuePair(updated);
-		if (updated.key && updated.value) {
-			handleOnChange(`${updated.key}:${updated.value}`);
+	// For keyValue fields, the key input is in FieldSelector.
+	// Here we handle updating the value part while preserving the key.
+	const handleKeyValueValueChange = (newValue: string) => {
+		const key = keyValuePair.key;
+		setKeyValuePair({ ...keyValuePair, value: newValue });
+		if (key && newValue) {
+			handleOnChange(`${key}:${newValue}`);
+		} else if (key) {
+			handleOnChange(key);
 		} else {
 			handleOnChange("");
 		}
@@ -226,26 +240,17 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 	}
 
 	// Handle keyValue type (for header and parameter)
+	// Key input is rendered in FieldSelector, only show value input here
 	if (isKeyValueType) {
-		const fieldLabel = fieldData?.label || "Field";
 		return (
-			<div className="flex items-center gap-2">
-				<Input
-					type="text"
-					value={keyValuePair.key}
-					onChange={(e) => handleKeyValueChange("key", e.target.value)}
-					placeholder={`${fieldLabel} name`}
-					className="w-[140px]"
-				/>
-				<span className="text-muted-foreground text-sm">has value</span>
-				<Input
-					type="text"
-					value={keyValuePair.value}
-					onChange={(e) => handleKeyValueChange("value", e.target.value)}
-					placeholder="Value"
-					className="w-[140px]"
-				/>
-			</div>
+			<Input
+				type="text"
+				value={keyValuePair.value}
+				onChange={(e) => handleKeyValueValueChange(e.target.value)}
+				placeholder="Value"
+				className="w-[180px]"
+				data-testid="cel-builder-keyvalue-value-input"
+			/>
 		);
 	}
 
