@@ -302,6 +302,32 @@ type VertexUsageMetadata struct {
 	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
+// mapRoleForAnthropic maps message roles to Anthropic-compatible roles.
+// Anthropic only supports "user" and "assistant" roles. The "developer" role
+// (used by some clients like Codex) is mapped to "user" since developer
+// instructions are similar to user instructions.
+func mapRoleForAnthropic(role schemas.ChatMessageRole) string {
+	switch role {
+	case "developer":
+		return "user"
+	default:
+		return string(role)
+	}
+}
+
+// mapResponsesRoleForAnthropic maps Responses API message roles to Anthropic-compatible roles.
+// Anthropic only supports "user" and "assistant" roles. The "developer" role
+// (used by some clients like Codex) is mapped to "user" since developer
+// instructions are similar to user instructions.
+func mapResponsesRoleForAnthropic(role schemas.ResponsesMessageRoleType) string {
+	switch role {
+	case schemas.ResponsesInputMessageRoleDeveloper:
+		return "user"
+	default:
+		return string(role)
+	}
+}
+
 // convertToBedrock converts a Bifrost chat request to Bedrock format
 func convertToBedrock(request *schemas.BifrostChatRequest) *BedrockRequest {
 	bedrockReq := &BedrockRequest{
@@ -345,7 +371,7 @@ func convertToBedrock(request *schemas.BifrostChatRequest) *BedrockRequest {
 		}
 
 		bedrockMsg := BedrockMessage{
-			Role: string(msg.Role),
+			Role: mapRoleForAnthropic(msg.Role),
 		}
 
 		// Convert content
@@ -1140,7 +1166,7 @@ func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *Bedroc
 		}
 
 		bedrockMsg := BedrockMessage{
-			Role: string(*msg.Role),
+			Role: mapResponsesRoleForAnthropic(*msg.Role),
 		}
 
 		// Convert content
@@ -1195,6 +1221,280 @@ func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *Bedroc
 	}
 
 	return bedrockReq
+}
+
+// convertResponsesToBedrockConverse converts a Bifrost Responses request to Bedrock Converse API format
+// This is required for SAP AI Core to support native tool calling in the Responses API
+func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest) *BedrockConverseRequest {
+	converseReq := &BedrockConverseRequest{}
+
+	// Get model config for max tokens
+	config := GetModelConfig(request.Model)
+	maxTokens := config.MaxTokens
+
+	// Convert messages from Input field
+	var systemMessages []ConverseSystemMessage
+	i := 0
+	for i < len(request.Input) {
+		msg := request.Input[i]
+
+		// Handle system messages
+		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					systemMessages = append(systemMessages, ConverseSystemMessage{
+						Text: msg.Content.ContentStr,
+					})
+				} else if msg.Content.ContentBlocks != nil {
+					// Extract text from content blocks
+					var systemText string
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil {
+							systemText += *block.Text
+						}
+					}
+					if systemText != "" {
+						systemMessages = append(systemMessages, ConverseSystemMessage{
+							Text: &systemText,
+						})
+					}
+				}
+			}
+			i++
+			continue
+		}
+
+		// Handle function_call_output messages - these are tool results
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+			var toolResultBlocks []ConverseContentBlock
+
+			// Collect all consecutive function_call_output messages
+			for i < len(request.Input) {
+				currMsg := request.Input[i]
+				if currMsg.Type == nil || *currMsg.Type != schemas.ResponsesMessageTypeFunctionCallOutput {
+					break
+				}
+
+				// Get tool result content
+				toolResultContent := ""
+				if currMsg.ResponsesToolMessage != nil && currMsg.ResponsesToolMessage.Output != nil {
+					if currMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
+						toolResultContent = *currMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
+					} else if currMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+						// Extract text from output blocks
+						for _, block := range currMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+							if block.Text != nil {
+								toolResultContent += *block.Text
+							}
+						}
+					}
+				}
+
+				toolUseId := ""
+				if currMsg.ResponsesToolMessage != nil && currMsg.ResponsesToolMessage.CallID != nil {
+					toolUseId = *currMsg.ResponsesToolMessage.CallID
+				}
+
+				toolResultBlocks = append(toolResultBlocks, ConverseContentBlock{
+					ToolResult: &ConverseToolResult{
+						ToolUseId: toolUseId,
+						Content: []ConverseContentBlock{
+							{Text: &toolResultContent},
+						},
+					},
+				})
+				i++
+			}
+
+			// Create a single user message with all tool results
+			if len(toolResultBlocks) > 0 {
+				converseMsg := ConverseMessage{
+					Role:    "user", // Bedrock Converse uses user role for tool results
+					Content: toolResultBlocks,
+				}
+				converseReq.Messages = append(converseReq.Messages, converseMsg)
+			}
+			continue
+		}
+
+		// Handle function_call messages (assistant tool calls in history)
+		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCall {
+			if msg.ResponsesToolMessage != nil {
+				// Convert arguments string to any (parse JSON)
+				var inputArgs interface{}
+				if msg.ResponsesToolMessage.Arguments != nil && *msg.ResponsesToolMessage.Arguments != "" {
+					if err := sonic.UnmarshalString(*msg.ResponsesToolMessage.Arguments, &inputArgs); err != nil {
+						inputArgs = map[string]interface{}{}
+					}
+				} else {
+					inputArgs = map[string]interface{}{}
+				}
+
+				toolUseId := ""
+				if msg.ResponsesToolMessage.CallID != nil {
+					toolUseId = *msg.ResponsesToolMessage.CallID
+				}
+				toolName := ""
+				if msg.ResponsesToolMessage.Name != nil {
+					toolName = *msg.ResponsesToolMessage.Name
+				}
+
+				converseMsg := ConverseMessage{
+					Role: "assistant",
+					Content: []ConverseContentBlock{
+						{
+							ToolUse: &ConverseToolUse{
+								ToolUseId: toolUseId,
+								Name:      toolName,
+								Input:     inputArgs,
+							},
+						},
+					},
+				}
+				converseReq.Messages = append(converseReq.Messages, converseMsg)
+			}
+			i++
+			continue
+		}
+
+		// Skip messages without role
+		if msg.Role == nil {
+			i++
+			continue
+		}
+
+		converseMsg := ConverseMessage{
+			Role: mapResponsesRoleForAnthropic(*msg.Role),
+		}
+
+		// Convert content
+		if msg.Content != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+				converseMsg.Content = []ConverseContentBlock{
+					{Text: msg.Content.ContentStr},
+				}
+			} else if msg.Content.ContentBlocks != nil {
+				for _, block := range msg.Content.ContentBlocks {
+					switch block.Type {
+					case schemas.ResponsesInputMessageContentBlockTypeText,
+						schemas.ResponsesOutputMessageContentTypeText:
+						if block.Text != nil && *block.Text != "" {
+							converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
+								Text: block.Text,
+							})
+						}
+					case schemas.ResponsesInputMessageContentBlockTypeImage:
+						if block.ImageURL != nil {
+							mediaType := extractMediaType(*block.ImageURL)
+							format := "jpeg"
+							if strings.Contains(mediaType, "png") {
+								format = "png"
+							} else if strings.Contains(mediaType, "gif") {
+								format = "gif"
+							} else if strings.Contains(mediaType, "webp") {
+								format = "webp"
+							}
+							converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
+								Image: &ConverseImageSource{
+									Format: format,
+									Source: &ConverseImageSourceData{
+										Bytes: extractBase64Data(*block.ImageURL),
+									},
+								},
+							})
+						}
+					}
+				}
+			}
+		}
+
+		if len(converseMsg.Content) > 0 {
+			converseReq.Messages = append(converseReq.Messages, converseMsg)
+		}
+		i++
+	}
+
+	converseReq.System = systemMessages
+
+	// Set inference config
+	converseReq.InferenceConfig = &ConverseInferenceConfig{
+		MaxTokens: &maxTokens,
+	}
+
+	// Copy generation parameters from Params
+	if request.Params != nil {
+		if request.Params.Temperature != nil {
+			converseReq.InferenceConfig.Temperature = request.Params.Temperature
+		}
+		if request.Params.TopP != nil {
+			converseReq.InferenceConfig.TopP = request.Params.TopP
+		}
+		if request.Params.MaxOutputTokens != nil {
+			converseReq.InferenceConfig.MaxTokens = request.Params.MaxOutputTokens
+		}
+
+		// Convert tools
+		if request.Params.Tools != nil {
+			tools := make([]ConverseTool, 0, len(request.Params.Tools))
+			for _, tool := range request.Params.Tools {
+				// Only handle function tools for now
+				if tool.Type != schemas.ResponsesToolTypeFunction {
+					continue
+				}
+
+				var inputSchema ConverseToolInputSchema
+				if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
+					inputSchema = ConverseToolInputSchema{
+						JSON: resolveSchemaRefs(tool.ResponsesToolFunction.Parameters),
+					}
+				}
+
+				converseTool := ConverseTool{
+					ToolSpec: &ConverseToolSpec{
+						Name:        "",
+						Description: tool.Description,
+						InputSchema: inputSchema,
+					},
+				}
+				if tool.Name != nil {
+					converseTool.ToolSpec.Name = *tool.Name
+				}
+				tools = append(tools, converseTool)
+			}
+			if len(tools) > 0 {
+				converseReq.ToolConfig = &ConverseToolConfig{
+					Tools: tools,
+				}
+			}
+		}
+
+		// Convert tool choice
+		if request.Params.ToolChoice != nil && converseReq.ToolConfig != nil {
+			if request.Params.ToolChoice.ResponsesToolChoiceStr != nil {
+				choice := *request.Params.ToolChoice.ResponsesToolChoiceStr
+				switch choice {
+				case "auto":
+					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Auto: &struct{}{}}
+				case "required":
+					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Any: &struct{}{}}
+					// "none" is not directly supported by Converse API, omit it
+				}
+			} else if request.Params.ToolChoice.ResponsesToolChoiceStruct != nil {
+				// Specific tool choice
+				if request.Params.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
+					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{
+						Tool: &struct {
+							Name string `json:"name"`
+						}{
+							Name: *request.Params.ToolChoice.ResponsesToolChoiceStruct.Name,
+						},
+					}
+				}
+			}
+		}
+	}
+
+	return converseReq
 }
 
 // extractBase64Data extracts the base64 data from a data URL or returns the URL as-is if it's already base64
@@ -1577,7 +1877,560 @@ func convertAnthropicEventToResponses(
 	return responses
 }
 
-// ==================== CONVERSE API TYPES ====================
+// ConverseResponsesStreamState tracks the state for streaming Responses API via Converse API
+type ConverseResponsesStreamState struct {
+	MessageID      string
+	CreatedAt      int
+	SequenceNumber int
+
+	// Text output state
+	TextItemID       string
+	TextItemAdded    bool
+	TextContentAdded bool
+	AccumulatedText  string
+
+	// Tool call state
+	CurrentToolCallIndex int
+	ToolCalls            []converseToolCallState
+}
+
+// converseToolCallState tracks state for a single tool call being streamed
+type converseToolCallState struct {
+	ItemID           string
+	ToolUseID        string
+	ToolName         string
+	AccumulatedArgs  string
+	ItemAdded        bool
+	ContentPartAdded bool
+}
+
+// newConverseResponsesStreamState creates a new stream state for Responses API via Converse
+func newConverseResponsesStreamState() *ConverseResponsesStreamState {
+	return &ConverseResponsesStreamState{
+		MessageID:            fmt.Sprintf("resp_%d", time.Now().UnixNano()),
+		CreatedAt:            int(time.Now().Unix()),
+		CurrentToolCallIndex: -1,
+	}
+}
+
+// processBedrockConverseResponsesEventStream processes Bedrock Converse API event stream and sends chunks to the channel
+// This handles the Converse stream format which has native tool calling support and converts to Responses API format
+func processBedrockConverseResponsesEventStream(
+	ctx *schemas.BifrostContext,
+	bodyStream io.Reader,
+	responseChan chan *schemas.BifrostStreamChunk,
+	postHookRunner schemas.PostHookRunner,
+	providerName schemas.ModelProvider,
+	model string,
+	logger schemas.Logger,
+) {
+	state := newConverseResponsesStreamState()
+	state.TextItemID = fmt.Sprintf("msg_%s_text_0", state.MessageID)
+
+	usage := &schemas.ResponsesResponseUsage{}
+	var stopReason *string
+	startTime := time.Now()
+	chunkIndex := 0
+	hasEmittedCreated := false
+
+	// Helper to send a response
+	sendResponse := func(resp *schemas.BifrostResponsesStreamResponse) {
+		if resp != nil {
+			resp.ExtraFields = schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesStreamRequest,
+				Provider:       providerName,
+				ModelRequested: model,
+				ChunkIndex:     chunkIndex,
+			}
+			chunkIndex++
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, resp, nil, nil, nil), responseChan)
+		}
+	}
+
+	// Process AWS Event Stream format using proper decoder
+	decoder := eventstream.NewDecoder()
+	payloadBuf := make([]byte, 0, 1024*1024)
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		message, err := decoder.Decode(bodyStream, payloadBuf)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			if err == io.EOF {
+				break
+			}
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			logger.Warn("Error decoding %s Converse EventStream message for Responses API: %v", providerName, err)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
+			return
+		}
+
+		if len(message.Payload) > 0 {
+			// Check message type header for errors
+			if msgTypeHeader := message.Headers.Get(":message-type"); msgTypeHeader != nil {
+				if msgType := msgTypeHeader.String(); msgType != "event" {
+					excType := msgType
+					if excHeader := message.Headers.Get(":exception-type"); excHeader != nil {
+						if v := excHeader.String(); v != "" {
+							excType = v
+						}
+					}
+					errMsg := string(message.Payload)
+					err := fmt.Errorf("%s Converse stream %s: %s", providerName, excType, errMsg)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
+					return
+				}
+			}
+
+			// Get the event type from headers
+			eventType := ""
+			if eventTypeHeader := message.Headers.Get(":event-type"); eventTypeHeader != nil {
+				eventType = eventTypeHeader.String()
+			}
+
+			// Parse the Converse stream event from the payload
+			var event ConverseStreamEvent
+			if err := sonic.Unmarshal(message.Payload, &event); err != nil {
+				logger.Debug("Failed to parse Converse stream event for Responses API: %v, data: %s", err, string(message.Payload))
+				continue
+			}
+
+			// Emit lifecycle events on first real event
+			if !hasEmittedCreated {
+				sendResponse(&schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeCreated,
+					SequenceNumber: state.SequenceNumber,
+					Response: &schemas.BifrostResponsesResponse{
+						ID:        &state.MessageID,
+						Object:    "response",
+						CreatedAt: state.CreatedAt,
+						Model:     model,
+						Status:    schemas.Ptr("in_progress"),
+					},
+				})
+				state.SequenceNumber++
+				hasEmittedCreated = true
+
+				sendResponse(&schemas.BifrostResponsesStreamResponse{
+					Type:           schemas.ResponsesStreamResponseTypeInProgress,
+					SequenceNumber: state.SequenceNumber,
+					Response: &schemas.BifrostResponsesResponse{
+						ID:        &state.MessageID,
+						Object:    "response",
+						CreatedAt: state.CreatedAt,
+						Model:     model,
+						Status:    schemas.Ptr("in_progress"),
+					},
+				})
+				state.SequenceNumber++
+			}
+
+			// Process based on event type
+			switch eventType {
+			case "contentBlockStart":
+				// Handle tool_use content blocks
+				if event.Start != nil && event.Start.ToolUse != nil {
+					state.CurrentToolCallIndex++
+					toolState := converseToolCallState{
+						ItemID:    fmt.Sprintf("fc_%s_%d", state.MessageID, state.CurrentToolCallIndex),
+						ToolUseID: event.Start.ToolUse.ToolUseId,
+						ToolName:  event.Start.ToolUse.Name,
+					}
+					state.ToolCalls = append(state.ToolCalls, toolState)
+
+					// Emit output_item.added for function_call
+					msgType := schemas.ResponsesMessageTypeFunctionCall
+					sendResponse(&schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+						SequenceNumber: state.SequenceNumber,
+						OutputIndex:    schemas.Ptr(state.CurrentToolCallIndex + 1), // +1 because text item is at index 0
+						Item: &schemas.ResponsesMessage{
+							ID:   &toolState.ItemID,
+							Type: &msgType,
+							ResponsesToolMessage: &schemas.ResponsesToolMessage{
+								CallID: &toolState.ToolUseID,
+								Name:   &toolState.ToolName,
+							},
+						},
+					})
+					state.SequenceNumber++
+					state.ToolCalls[state.CurrentToolCallIndex].ItemAdded = true
+				}
+
+			case "contentBlockDelta":
+				if event.Delta != nil {
+					// Handle text delta
+					if event.Delta.Text != nil && *event.Delta.Text != "" {
+						text := *event.Delta.Text
+						state.AccumulatedText += text
+
+						// Add text output item if not already added
+						if !state.TextItemAdded {
+							msgType := schemas.ResponsesMessageTypeMessage
+							role := schemas.ResponsesInputMessageRoleAssistant
+							sendResponse(&schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+								SequenceNumber: state.SequenceNumber,
+								OutputIndex:    schemas.Ptr(0),
+								Item: &schemas.ResponsesMessage{
+									ID:   &state.TextItemID,
+									Type: &msgType,
+									Role: &role,
+									Content: &schemas.ResponsesMessageContent{
+										ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+									},
+								},
+							})
+							state.SequenceNumber++
+							state.TextItemAdded = true
+						}
+
+						// Add content part if not already added
+						if !state.TextContentAdded {
+							emptyText := ""
+							sendResponse(&schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
+								SequenceNumber: state.SequenceNumber,
+								OutputIndex:    schemas.Ptr(0),
+								ContentIndex:   schemas.Ptr(0),
+								ItemID:         &state.TextItemID,
+								Part: &schemas.ResponsesMessageContentBlock{
+									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: &emptyText,
+									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+									},
+								},
+							})
+							state.SequenceNumber++
+							state.TextContentAdded = true
+						}
+
+						// Emit text delta
+						sendResponse(&schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    schemas.Ptr(0),
+							ContentIndex:   schemas.Ptr(0),
+							ItemID:         &state.TextItemID,
+							Delta:          &text,
+						})
+						state.SequenceNumber++
+					}
+
+					// Handle tool use delta (streaming arguments)
+					if event.Delta.ToolUse != nil && event.Delta.ToolUse.Input != "" && state.CurrentToolCallIndex >= 0 {
+						toolIdx := state.CurrentToolCallIndex
+						args := event.Delta.ToolUse.Input
+						state.ToolCalls[toolIdx].AccumulatedArgs += args
+
+						// Emit function_call_arguments.delta
+						sendResponse(&schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    schemas.Ptr(toolIdx + 1),
+							ItemID:         &state.ToolCalls[toolIdx].ItemID,
+							Delta:          &args,
+						})
+						state.SequenceNumber++
+					}
+				}
+
+			case "contentBlockStop":
+				// If we just finished a tool use block, emit function_call_arguments.done
+				if state.CurrentToolCallIndex >= 0 && len(state.ToolCalls) > 0 {
+					toolIdx := state.CurrentToolCallIndex
+					if state.ToolCalls[toolIdx].ItemAdded && state.ToolCalls[toolIdx].AccumulatedArgs != "" {
+						sendResponse(&schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+							SequenceNumber: state.SequenceNumber,
+							OutputIndex:    schemas.Ptr(toolIdx + 1),
+							ItemID:         &state.ToolCalls[toolIdx].ItemID,
+							Arguments:      &state.ToolCalls[toolIdx].AccumulatedArgs,
+						})
+						state.SequenceNumber++
+					}
+				}
+
+			case "messageStop":
+				if event.StopReason != nil {
+					mappedReason := mapConverseStopReason(*event.StopReason)
+					stopReason = &mappedReason
+				}
+
+			case "metadata":
+				if event.Usage != nil {
+					usage.InputTokens = event.Usage.InputTokens
+					usage.OutputTokens = event.Usage.OutputTokens
+					usage.TotalTokens = event.Usage.TotalTokens
+				}
+			}
+		}
+	}
+
+	// Calculate total tokens if not set
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+
+	// Emit final events
+	// 1. Emit output_text.done if we had text
+	if state.TextItemAdded {
+		sendResponse(&schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			ContentIndex:   schemas.Ptr(0),
+			ItemID:         &state.TextItemID,
+			Text:           &state.AccumulatedText,
+		})
+		state.SequenceNumber++
+
+		// Emit content_part.done
+		sendResponse(&schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			ContentIndex:   schemas.Ptr(0),
+			ItemID:         &state.TextItemID,
+			Part: &schemas.ResponsesMessageContentBlock{
+				Type: schemas.ResponsesOutputMessageContentTypeText,
+				Text: &state.AccumulatedText,
+				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				},
+			},
+		})
+		state.SequenceNumber++
+
+		// Emit output_item.done for text
+		msgType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		sendResponse(&schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    schemas.Ptr(0),
+			Item: &schemas.ResponsesMessage{
+				ID:     &state.TextItemID,
+				Type:   &msgType,
+				Role:   &role,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &state.AccumulatedText,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			},
+		})
+		state.SequenceNumber++
+	}
+
+	// 2. Emit output_item.done for each tool call
+	for i, toolCall := range state.ToolCalls {
+		if toolCall.ItemAdded {
+			msgType := schemas.ResponsesMessageTypeFunctionCall
+			sendResponse(&schemas.BifrostResponsesStreamResponse{
+				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+				SequenceNumber: state.SequenceNumber,
+				OutputIndex:    schemas.Ptr(i + 1),
+				Item: &schemas.ResponsesMessage{
+					ID:     &toolCall.ItemID,
+					Type:   &msgType,
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &toolCall.ToolUseID,
+						Name:      &toolCall.ToolName,
+						Arguments: &toolCall.AccumulatedArgs,
+					},
+				},
+			})
+			state.SequenceNumber++
+		}
+	}
+
+	// 3. Build output for response.completed
+	var outputMessages []schemas.ResponsesMessage
+	if state.TextItemAdded {
+		msgType := schemas.ResponsesMessageTypeMessage
+		role := schemas.ResponsesInputMessageRoleAssistant
+		outputMessages = append(outputMessages, schemas.ResponsesMessage{
+			ID:     &state.TextItemID,
+			Type:   &msgType,
+			Role:   &role,
+			Status: schemas.Ptr("completed"),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type: schemas.ResponsesOutputMessageContentTypeText,
+						Text: &state.AccumulatedText,
+						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+						},
+					},
+				},
+			},
+		})
+	}
+	for _, toolCall := range state.ToolCalls {
+		if toolCall.ItemAdded {
+			msgType := schemas.ResponsesMessageTypeFunctionCall
+			outputMessages = append(outputMessages, schemas.ResponsesMessage{
+				ID:     &toolCall.ItemID,
+				Type:   &msgType,
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    &toolCall.ToolUseID,
+					Name:      &toolCall.ToolName,
+					Arguments: &toolCall.AccumulatedArgs,
+				},
+			})
+		}
+	}
+
+	// 4. Emit response.completed
+	completedAt := int(time.Now().Unix())
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+
+	finalResp := &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeCompleted,
+		SequenceNumber: state.SequenceNumber,
+		Response: &schemas.BifrostResponsesResponse{
+			ID:          &state.MessageID,
+			Object:      "response",
+			CreatedAt:   state.CreatedAt,
+			CompletedAt: &completedAt,
+			Model:       model,
+			Status:      schemas.Ptr("completed"),
+			StopReason:  stopReason,
+			Output:      outputMessages,
+			Usage:       usage,
+		},
+	}
+	finalResp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:    schemas.ResponsesStreamRequest,
+		Provider:       providerName,
+		ModelRequested: model,
+		ChunkIndex:     chunkIndex,
+		Latency:        time.Since(startTime).Milliseconds(),
+	}
+	providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, finalResp, nil, nil, nil), responseChan)
+}
+
+// parseBedrockConverseToResponsesResponse parses a Bedrock Converse API response into Bifrost Responses format
+func parseBedrockConverseToResponsesResponse(body []byte, model string) (*schemas.BifrostResponsesResponse, error) {
+	var converseResp BedrockConverseResponse
+	if err := sonic.Unmarshal(body, &converseResp); err != nil {
+		return nil, err
+	}
+
+	messageID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
+	createdAt := int(time.Now().Unix())
+
+	// Build output messages
+	var outputMessages []schemas.ResponsesMessage
+
+	if converseResp.Output != nil && converseResp.Output.Message != nil {
+		// Extract text content
+		var textContent string
+		for _, block := range converseResp.Output.Message.Content {
+			if block.Text != nil {
+				textContent += *block.Text
+			}
+		}
+
+		// Add text message if we have text content
+		if textContent != "" {
+			msgType := schemas.ResponsesMessageTypeMessage
+			role := schemas.ResponsesInputMessageRoleAssistant
+			outputMessages = append(outputMessages, schemas.ResponsesMessage{
+				ID:     schemas.Ptr(fmt.Sprintf("msg_%s_text_0", messageID)),
+				Type:   &msgType,
+				Role:   &role,
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeText,
+							Text: &textContent,
+							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			})
+		}
+
+		// Extract tool calls
+		toolCallIndex := 0
+		for _, block := range converseResp.Output.Message.Content {
+			if block.ToolUse != nil {
+				// Serialize arguments to JSON string
+				argsJSON := "{}"
+				if block.ToolUse.Input != nil {
+					if argsBytes, err := sonic.Marshal(block.ToolUse.Input); err == nil {
+						argsJSON = string(argsBytes)
+					}
+				}
+
+				msgType := schemas.ResponsesMessageTypeFunctionCall
+				toolUseID := block.ToolUse.ToolUseId
+				toolName := block.ToolUse.Name
+				outputMessages = append(outputMessages, schemas.ResponsesMessage{
+					ID:     schemas.Ptr(fmt.Sprintf("fc_%s_%d", messageID, toolCallIndex)),
+					Type:   &msgType,
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID:    &toolUseID,
+						Name:      &toolName,
+						Arguments: &argsJSON,
+					},
+				})
+				toolCallIndex++
+			}
+		}
+	}
+
+	// Map stop reason
+	mappedStopReason := mapConverseStopReason(converseResp.StopReason)
+
+	response := &schemas.BifrostResponsesResponse{
+		ID:         &messageID,
+		Object:     "response",
+		CreatedAt:  createdAt,
+		Model:      model,
+		Status:     schemas.Ptr("completed"),
+		StopReason: &mappedStopReason,
+		Output:     outputMessages,
+	}
+
+	if converseResp.Usage != nil {
+		response.Usage = &schemas.ResponsesResponseUsage{
+			InputTokens:  converseResp.Usage.InputTokens,
+			OutputTokens: converseResp.Usage.OutputTokens,
+			TotalTokens:  converseResp.Usage.TotalTokens,
+		}
+	}
+
+	return response, nil
+}
+
 // These types are used for the SAP AI Core Converse API which supports native tool calling
 
 // BedrockConverseRequest represents a request to the Bedrock Converse API
@@ -1815,7 +2668,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 		}
 
 		converseMsg := ConverseMessage{
-			Role: string(msg.Role),
+			Role: mapRoleForAnthropic(msg.Role),
 		}
 
 		// Convert content
