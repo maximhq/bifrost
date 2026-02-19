@@ -64,6 +64,8 @@ tags:
     description: Text completion generation
   - name: Responses
     description: OpenAI Responses API compatible endpoints
+  - name: Rerank
+    description: Document reranking by relevance to a query
   - name: Embeddings
     description: Text embedding generation
   - name: Images
@@ -127,6 +129,8 @@ paths:
     $ref: './paths/inference/text-completions.yaml#/text-completions'
   /v1/responses:
     $ref: './paths/inference/responses.yaml#/responses'
+  /v1/rerank:
+    $ref: './paths/inference/rerank.yaml#/rerank'
   /v1/embeddings:
     $ref: './paths/inference/embeddings.yaml#/embeddings'
   /v1/audio/speech:
@@ -662,6 +666,16 @@ components:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
       $ref: './schemas/inference/responses.yaml#/ResponsesResponse'
+
+    # ==================== Rerank ====================
+    RerankRequest:
+      $ref: './schemas/inference/rerank.yaml#/RerankRequest'
+    RerankResponse:
+      $ref: './schemas/inference/rerank.yaml#/RerankResponse'
+    RerankDocument:
+      $ref: './schemas/inference/rerank.yaml#/RerankDocument'
+    RerankResult:
+      $ref: './schemas/inference/rerank.yaml#/RerankResult'
 
     # ==================== Embeddings ====================
     EmbeddingRequest:
