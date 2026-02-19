@@ -20,6 +20,7 @@ import { dateUtils } from "@/lib/types/logs";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartCard } from "./components/chartCard";
+import { DashboardFilters } from "./components/dashboardFilters";
 import { type ChartType, ChartTypeToggle } from "./components/chartTypeToggle";
 import { CostChart } from "./components/costChart";
 import { LogVolumeChart } from "./components/logVolumeChart";
@@ -91,6 +92,11 @@ export default function DashboardPage() {
 			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
 			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
 			period: parseAsString.withDefault("24h"),
+			virtual_key_ids: parseAsString.withDefault(""),
+			providers: parseAsString.withDefault(""),
+			models: parseAsString.withDefault(""),
+			selected_key_ids: parseAsString.withDefault(""),
+			objects: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
@@ -104,13 +110,40 @@ export default function DashboardPage() {
 		},
 	);
 
+	// Parse filter arrays from URL state
+	const selectedProviders = useMemo(
+		() => (urlState.providers ? urlState.providers.split(",").filter(Boolean) : []),
+		[urlState.providers],
+	);
+	const selectedModels = useMemo(
+		() => (urlState.models ? urlState.models.split(",").filter(Boolean) : []),
+		[urlState.models],
+	);
+	const selectedKeyIds = useMemo(
+		() => (urlState.selected_key_ids ? urlState.selected_key_ids.split(",").filter(Boolean) : []),
+		[urlState.selected_key_ids],
+	);
+	const selectedVirtualKeyIds = useMemo(
+		() => (urlState.virtual_key_ids ? urlState.virtual_key_ids.split(",").filter(Boolean) : []),
+		[urlState.virtual_key_ids],
+	);
+	const selectedTypes = useMemo(
+		() => (urlState.objects ? urlState.objects.split(",").filter(Boolean) : []),
+		[urlState.objects],
+	);
+
 	// Derived filter for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
+			...(selectedProviders.length > 0 && { providers: selectedProviders }),
+			...(selectedModels.length > 0 && { models: selectedModels }),
+			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
+			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
+			...(selectedTypes.length > 0 && { objects: selectedTypes }),
 		}),
-		[urlState.start_time, urlState.end_time],
+		[urlState.start_time, urlState.end_time, selectedProviders, selectedModels, selectedKeyIds, selectedVirtualKeyIds, selectedTypes],
 	);
 
 	// Date range for picker
@@ -203,6 +236,13 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 
+	// Filter change handlers
+	const handleProvidersChange = useCallback((values: string[]) => setUrlState({ providers: values.join(",") }), [setUrlState]);
+	const handleModelsChange = useCallback((values: string[]) => setUrlState({ models: values.join(",") }), [setUrlState]);
+	const handleSelectedKeysChange = useCallback((values: string[]) => setUrlState({ selected_key_ids: values.join(",") }), [setUrlState]);
+	const handleVirtualKeysChange = useCallback((values: string[]) => setUrlState({ virtual_key_ids: values.join(",") }), [setUrlState]);
+	const handleTypesChange = useCallback((values: string[]) => setUrlState({ objects: values.join(",") }), [setUrlState]);
+
 	// Model filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
@@ -217,14 +257,28 @@ export default function DashboardPage() {
 						BETA
 					</Badge>
 				</div>
-				<DateTimePickerWithRange
-					dateTime={dateRange}
-					onDateTimeUpdate={handleDateRangeChange}
-					preDefinedPeriods={TIME_PERIODS}
-					predefinedPeriod={urlState.period || undefined}
-					onPredefinedPeriodChange={handlePeriodChange}
-					popupAlignment="end"
-				/>
+				<div className="flex items-center gap-2">
+					<DashboardFilters
+						selectedProviders={selectedProviders}
+						selectedModels={selectedModels}
+						selectedKeyIds={selectedKeyIds}
+						selectedVirtualKeyIds={selectedVirtualKeyIds}
+						selectedTypes={selectedTypes}
+						onProvidersChange={handleProvidersChange}
+						onModelsChange={handleModelsChange}
+						onSelectedKeysChange={handleSelectedKeysChange}
+						onVirtualKeysChange={handleVirtualKeysChange}
+						onTypesChange={handleTypesChange}
+					/>
+					<DateTimePickerWithRange
+						dateTime={dateRange}
+						onDateTimeUpdate={handleDateRangeChange}
+						preDefinedPeriods={TIME_PERIODS}
+						predefinedPeriod={urlState.period || undefined}
+						onPredefinedPeriodChange={handlePeriodChange}
+						popupAlignment="end"
+					/>
+				</div>
 			</div>
 
 			{/* Charts Grid */}
