@@ -218,6 +218,7 @@
               "features/fallbacks",
               "features/litellm-compat",
               "features/keys-management",
+              "features/async-inference",
               {
                 "group": "Governance",
                 "icon": "user-lock",
