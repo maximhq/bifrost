@@ -87,7 +87,7 @@ func RunRerankTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, t
 			Query:     query,
 			Documents: documents,
 			Params: &schemas.RerankParameters{
-				ReturnDocuments: schemas.Ptr(true),
+				ReturnDocuments: bifrost.Ptr(true),
 			},
 			Fallbacks: testConfig.RerankFallbacks,
 		}
@@ -106,15 +106,13 @@ func RunRerankTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, t
 		BasicRerankExpectations(t, rerankResponse, documents)
 
 		// Validate that the most relevant document mentions Paris/France
-		if len(rerankResponse.Results) > 0 {
-			topResult := rerankResponse.Results[0]
-			if topResult.Document != nil {
-				topText := strings.ToLower(topResult.Document.Text)
-				if !strings.Contains(topText, "paris") && !strings.Contains(topText, "capital") {
-					t.Logf("⚠️ Top result may not be the most relevant: %q", topResult.Document.Text)
-				} else {
-					t.Logf("✅ Top result is relevant: %q (score: %f)", topResult.Document.Text, topResult.RelevanceScore)
-				}
+		topResult := rerankResponse.Results[0]
+		if topResult.Document != nil {
+			topText := strings.ToLower(topResult.Document.Text)
+			if !strings.Contains(topText, "paris") && !strings.Contains(topText, "capital") {
+				t.Logf("⚠️ Top result may not be the most relevant: %q", topResult.Document.Text)
+			} else {
+				t.Logf("✅ Top result is relevant: %q (score: %f)", topResult.Document.Text, topResult.RelevanceScore)
 			}
 		}
 
