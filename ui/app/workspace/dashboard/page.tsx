@@ -20,7 +20,7 @@ import { dateUtils } from "@/lib/types/logs";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartCard } from "./components/chartCard";
-import { DashboardFilters } from "./components/dashboardFilters";
+import { FilterPopover } from "@/components/filters/filterPopover";
 import { type ChartType, ChartTypeToggle } from "./components/chartTypeToggle";
 import { CostChart } from "./components/costChart";
 import { LogVolumeChart } from "./components/logVolumeChart";
@@ -97,6 +97,9 @@ export default function DashboardPage() {
 			models: parseAsString.withDefault(""),
 			selected_key_ids: parseAsString.withDefault(""),
 			objects: parseAsString.withDefault(""),
+			status: parseAsString.withDefault(""),
+			routing_rule_ids: parseAsString.withDefault(""),
+			routing_engine_used: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
@@ -131,6 +134,18 @@ export default function DashboardPage() {
 		() => (urlState.objects ? urlState.objects.split(",").filter(Boolean) : []),
 		[urlState.objects],
 	);
+	const selectedStatuses = useMemo(
+		() => (urlState.status ? urlState.status.split(",").filter(Boolean) : []),
+		[urlState.status],
+	);
+	const selectedRoutingRuleIds = useMemo(
+		() => (urlState.routing_rule_ids ? urlState.routing_rule_ids.split(",").filter(Boolean) : []),
+		[urlState.routing_rule_ids],
+	);
+	const selectedRoutingEngines = useMemo(
+		() => (urlState.routing_engine_used ? urlState.routing_engine_used.split(",").filter(Boolean) : []),
+		[urlState.routing_engine_used],
+	);
 
 	// Derived filter for API calls
 	const filters: LogFilters = useMemo(
@@ -142,8 +157,11 @@ export default function DashboardPage() {
 			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
 			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
 			...(selectedTypes.length > 0 && { objects: selectedTypes }),
+			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
+			...(selectedRoutingRuleIds.length > 0 && { routing_rule_ids: selectedRoutingRuleIds }),
+			...(selectedRoutingEngines.length > 0 && { routing_engine_used: selectedRoutingEngines }),
 		}),
-		[urlState.start_time, urlState.end_time, selectedProviders, selectedModels, selectedKeyIds, selectedVirtualKeyIds, selectedTypes],
+		[urlState.start_time, urlState.end_time, selectedProviders, selectedModels, selectedKeyIds, selectedVirtualKeyIds, selectedTypes, selectedStatuses, selectedRoutingRuleIds, selectedRoutingEngines],
 	);
 
 	// Date range for picker
@@ -236,12 +254,26 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 
-	// Filter change handlers
-	const handleProvidersChange = useCallback((values: string[]) => setUrlState({ providers: values.join(",") }), [setUrlState]);
-	const handleModelsChange = useCallback((values: string[]) => setUrlState({ models: values.join(",") }), [setUrlState]);
-	const handleSelectedKeysChange = useCallback((values: string[]) => setUrlState({ selected_key_ids: values.join(",") }), [setUrlState]);
-	const handleVirtualKeysChange = useCallback((values: string[]) => setUrlState({ virtual_key_ids: values.join(",") }), [setUrlState]);
-	const handleTypesChange = useCallback((values: string[]) => setUrlState({ objects: values.join(",") }), [setUrlState]);
+	// Filter change handler for FilterPopover
+	const handleFilterChange = useCallback(
+		(key: keyof LogFilters, values: string[] | boolean) => {
+			const urlKeyMap: Partial<Record<keyof LogFilters, string>> = {
+				providers: "providers",
+				models: "models",
+				selected_key_ids: "selected_key_ids",
+				virtual_key_ids: "virtual_key_ids",
+				objects: "objects",
+				status: "status",
+				routing_rule_ids: "routing_rule_ids",
+				routing_engine_used: "routing_engine_used",
+			};
+			const urlKey = urlKeyMap[key];
+			if (urlKey && Array.isArray(values)) {
+				setUrlState({ [urlKey]: values.join(",") });
+			}
+		},
+		[setUrlState],
+	);
 
 	// Model filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
@@ -258,18 +290,7 @@ export default function DashboardPage() {
 					</Badge>
 				</div>
 				<div className="flex items-center gap-2">
-					<DashboardFilters
-						selectedProviders={selectedProviders}
-						selectedModels={selectedModels}
-						selectedKeyIds={selectedKeyIds}
-						selectedVirtualKeyIds={selectedVirtualKeyIds}
-						selectedTypes={selectedTypes}
-						onProvidersChange={handleProvidersChange}
-						onModelsChange={handleModelsChange}
-						onSelectedKeysChange={handleSelectedKeysChange}
-						onVirtualKeysChange={handleVirtualKeysChange}
-						onTypesChange={handleTypesChange}
-					/>
+					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
 					<DateTimePickerWithRange
 						dateTime={dateRange}
 						onDateTimeUpdate={handleDateRangeChange}
