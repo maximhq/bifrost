@@ -61,22 +61,21 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		"Routing Engines": "routing_engine_used",
 	};
 
+	const resolveValueForCategory = (category: FilterCategory, value: string): string => {
+		if (category === "Selected Keys") return selectedKeyNameToId.get(value) || value;
+		if (category === "Virtual Keys") return virtualKeyNameToId.get(value) || value;
+		if (category === "Routing Rules") return routingRuleNameToId.get(value) || value;
+		return value;
+	};
+
 	const handleFilterSelect = (category: FilterCategory, value: string) => {
 		const filterKey = filterKeyMap[category];
-		let valueToStore = value;
-
-		if (category === "Selected Keys") {
-			valueToStore = selectedKeyNameToId.get(value) || value;
-		} else if (category === "Virtual Keys") {
-			valueToStore = virtualKeyNameToId.get(value) || value;
-		} else if (category === "Routing Rules") {
-			valueToStore = routingRuleNameToId.get(value) || value;
-		}
+		const resolved = resolveValueForCategory(category, value);
 
 		const currentValues = (filters[filterKey] as string[]) || [];
-		const newValues = currentValues.includes(valueToStore)
-			? currentValues.filter((v) => v !== valueToStore)
-			: [...currentValues, valueToStore];
+		const newValues = currentValues.includes(resolved)
+			? currentValues.filter((v) => v !== resolved)
+			: [...currentValues, resolved];
 
 		onFilterChange(filterKey, newValues);
 	};
@@ -84,17 +83,9 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 	const isSelected = (category: FilterCategory, value: string) => {
 		const filterKey = filterKeyMap[category];
 		const currentValues = filters[filterKey];
+		const resolved = resolveValueForCategory(category, value);
 
-		let valueToCheck = value;
-		if (category === "Selected Keys") {
-			valueToCheck = selectedKeyNameToId.get(value) || value;
-		} else if (category === "Virtual Keys") {
-			valueToCheck = virtualKeyNameToId.get(value) || value;
-		} else if (category === "Routing Rules") {
-			valueToCheck = routingRuleNameToId.get(value) || value;
-		}
-
-		return Array.isArray(currentValues) && currentValues.includes(valueToCheck);
+		return Array.isArray(currentValues) && currentValues.includes(resolved);
 	};
 
 	const excludedKeys = ["start_time", "end_time", "content_search"];
