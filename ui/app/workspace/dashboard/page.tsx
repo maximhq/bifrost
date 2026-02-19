@@ -292,6 +292,7 @@ export default function DashboardPage() {
 				<div className="flex items-center gap-2">
 					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
 					<DateTimePickerWithRange
+						triggerTestId="filter-date-range"
 						dateTime={dateRange}
 						onDateTimeUpdate={handleDateRangeChange}
 						preDefinedPeriods={TIME_PERIODS}
