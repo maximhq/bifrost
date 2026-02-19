@@ -97,19 +97,16 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		return Array.isArray(currentValues) && currentValues.includes(valueToCheck);
 	};
 
-	const getSelectedCount = () => {
-		const excludedKeys = ["start_time", "end_time", "content_search"];
-
-		return Object.entries(filters).reduce((count, [key, value]) => {
-			if (excludedKeys.includes(key)) {
-				return count;
-			}
-			if (Array.isArray(value)) {
-				return count + value.length;
-			}
-			return count + (value ? 1 : 0);
-		}, 0);
-	};
+	const excludedKeys = ["start_time", "end_time", "content_search"];
+	const selectedCount = Object.entries(filters).reduce((count, [key, value]) => {
+		if (excludedKeys.includes(key)) {
+			return count;
+		}
+		if (Array.isArray(value)) {
+			return count + value.length;
+		}
+		return count + (value ? 1 : 0);
+	}, 0);
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -117,9 +114,9 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 				<Button variant="outline" size="sm" className="h-7.5 w-[120px]" data-testid="filters-trigger-button">
 					<FilterIcon className="h-4 w-4" />
 					Filters
-					{getSelectedCount() > 0 && (
+					{selectedCount > 0 && (
 						<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
-							{getSelectedCount()}
+							{selectedCount}
 						</span>
 					)}
 				</Button>
