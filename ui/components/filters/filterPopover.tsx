@@ -110,7 +110,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" className="h-7.5 w-[120px]">
+				<Button variant="outline" size="sm" className="h-7.5 w-[120px]" data-testid="filters-trigger-button">
 					<FilterIcon className="h-4 w-4" />
 					Filters
 					{getSelectedCount() > 0 && (
@@ -122,7 +122,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 			</PopoverTrigger>
 			<PopoverContent className="w-[200px] p-0" align="end">
 				<Command>
-					<CommandInput placeholder="Search filters..." />
+					<CommandInput placeholder="Search filters..." data-testid="filters-search-input" />
 					<CommandList>
 						<CommandEmpty>No filters found.</CommandEmpty>
 						{showMissingCost && (
@@ -157,6 +157,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 										return (
 											<CommandItem
 												key={value}
+												data-testid={`filter-item-${category.toLowerCase().replace(/\s+/g, "-")}-${value}`}
 												onSelect={() => !isLoading && handleFilterSelect(category as FilterCategory, value)}
 												disabled={isLoading}
 											>
