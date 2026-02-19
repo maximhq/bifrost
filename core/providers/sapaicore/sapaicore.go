@@ -23,6 +23,44 @@ import (
 // SAPAICoreAuthorizationTokenKey is the context key for passing a pre-fetched SAP AI Core token.
 const SAPAICoreAuthorizationTokenKey schemas.BifrostContextKey = "sapaicore-authorization-token"
 
+// openaiReasoningAndGPT5Models is the list of OpenAI models that require special parameter handling
+// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core
+var openaiReasoningAndGPT5Models = []string{
+	"o1",
+	"o3-mini",
+	"o3",
+	"o4-mini",
+	"gpt-5",
+}
+
+// isOpenAIReasoningOrGPT5Model checks if the model requires special parameter handling
+// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core
+func isOpenAIReasoningOrGPT5Model(model string) bool {
+	modelLower := strings.ToLower(model)
+	for _, rm := range openaiReasoningAndGPT5Models {
+		if strings.Contains(modelLower, rm) {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseStreamingResponseNoDrain releases a streaming response without draining the body stream.
+// Use this for binary EventStream protocols (like AWS EventStream) where:
+// 1. The stream has been fully consumed up to io.EOF
+// 2. Draining would block because the protocol doesn't send additional data after the final event
+// This skips the drain step that can cause the connection to hang on certain streaming protocols.
+func releaseStreamingResponseNoDrain(resp *fasthttp.Response, logger schemas.Logger) {
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		if closer, ok := bodyStream.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("failed to close streaming response body: %v", err)
+			}
+		}
+	}
+	fasthttp.ReleaseResponse(resp)
+}
+
 // SAPAICoreProvider implements the Provider interface for SAP AI Core.
 type SAPAICoreProvider struct {
 	logger              schemas.Logger
@@ -208,7 +246,7 @@ func (provider *SAPAICoreProvider) ListModels(ctx *schemas.BifrostContext, keys 
 	for _, m := range models {
 		ownedBy := "sapaicore"
 		bifrostModels = append(bifrostModels, schemas.Model{
-			ID:      m.ID,
+			ID:      string(providerName) + "/" + m.ID,
 			OwnedBy: &ownedBy,
 		})
 	}
@@ -264,6 +302,13 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
+	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
+	// These models don't accept max_completion_tokens and temperature when accessed via SAP AI Core
+	if isOpenAIReasoningOrGPT5Model(request.Model) {
+		request.Params.MaxCompletionTokens = nil
+		request.Params.Temperature = nil
+	}
+
 	// Build URL with api-version query parameter
 	baseRequestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/chat/completions")
 	requestURL := baseRequestURL + "?api-version=" + SAPAICoreAPIVersion
@@ -296,6 +341,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 }
 
 // handleBedrockChatCompletion handles chat completion for Bedrock backends (Anthropic, Amazon)
+// Uses the Converse API which supports native tool calling
 func (provider *SAPAICoreProvider) handleBedrockChatCompletion(
 	ctx *schemas.BifrostContext,
 	token string,
@@ -305,16 +351,16 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletion(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	// Build Bedrock-style URL
-	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke")
+	// Build Bedrock Converse API URL (supports native tool calling)
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse")
 
-	// Convert request to Bedrock format
-	bedrockRequest := convertToBedrock(request)
+	// Convert request to Bedrock Converse format
+	converseRequest := convertToBedrockConverse(request)
 
-	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	jsonData, marshalErr := sonic.Marshal(converseRequest)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to marshal Bedrock request",
+			"failed to marshal Bedrock Converse request",
 			marshalErr,
 			providerName,
 		)
@@ -343,12 +389,13 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletion(
 		return nil, ParseSAPAICoreError(resp, schemas.ChatCompletionRequest, providerName, request.Model)
 	}
 
-	// Parse Bedrock response
+	// Parse Bedrock Converse response
 	responseBody := append([]byte(nil), resp.Body()...)
-	response, parseErr := parseBedrockResponse(responseBody, request.Model)
+
+	response, parseErr := parseBedrockConverseResponse(responseBody, request.Model)
 	if parseErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to parse Bedrock response",
+			"failed to parse Bedrock Converse response",
 			parseErr,
 			providerName,
 		)
@@ -500,6 +547,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 }
 
 // handleBedrockChatCompletionStream handles streaming chat completion for Bedrock backends
+// Uses the Converse API (/converse-stream) which supports native tool calling
 func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -510,16 +558,16 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	// Build Bedrock streaming URL
-	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/invoke-with-response-stream")
+	// Build Bedrock Converse streaming URL - uses /converse-stream for native tool support
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse-stream")
 
-	// Convert request to Bedrock format
-	bedrockRequest := convertToBedrock(request)
+	// Convert request to Bedrock Converse format
+	converseRequest := convertToBedrockConverse(request)
 
-	jsonData, marshalErr := sonic.Marshal(bedrockRequest)
+	jsonData, marshalErr := sonic.Marshal(converseRequest)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(
-			"failed to marshal Bedrock streaming request",
+			"failed to marshal Bedrock Converse streaming request",
 			marshalErr,
 			providerName,
 		)
@@ -574,13 +622,15 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Use NoDrain variant for AWS EventStream - the stream is fully consumed at io.EOF
+		// and draining would block indefinitely waiting for data that will never come
+		defer releaseStreamingResponseNoDrain(resp, provider.logger)
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		// Process Bedrock event stream
-		processBedrockEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
+		// Process Bedrock Converse event stream (has native tool support)
+		processBedrockConverseEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
 	}()
 
 	return responseChan, nil
@@ -661,7 +711,9 @@ func (provider *SAPAICoreProvider) handleVertexChatCompletionStream(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Use NoDrain variant for SSE streams - the stream is fully consumed when scanner reaches EOF
+		// and draining would block indefinitely waiting for data that will never come
+		defer releaseStreamingResponseNoDrain(resp, provider.logger)
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
@@ -950,7 +1002,9 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 			}
 			close(responseChan)
 		}()
-		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Use NoDrain variant for AWS EventStream - the stream is fully consumed at io.EOF
+		// and draining would block indefinitely waiting for data that will never come
+		defer releaseStreamingResponseNoDrain(resp, provider.logger)
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
@@ -1223,98 +1277,6 @@ func (provider *SAPAICoreProvider) ContainerFileDelete(ctx *schemas.BifrostConte
 	)
 }
 
-// processBedrockEventStream processes Bedrock event stream and sends chunks to the channel
-func processBedrockEventStream(
-	ctx *schemas.BifrostContext,
-	bodyStream io.Reader,
-	responseChan chan *schemas.BifrostStreamChunk,
-	postHookRunner schemas.PostHookRunner,
-	providerName schemas.ModelProvider,
-	model string,
-	logger schemas.Logger,
-) {
-	scanner := bufio.NewScanner(bodyStream)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	chunkIndex := -1
-	usage := &schemas.BifrostLLMUsage{}
-	var finishReason *string
-	startTime := time.Now()
-
-	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return
-		}
-
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, ":") {
-			continue
-		}
-
-		// Parse Bedrock event stream format
-		// This is simplified - full implementation would parse AWS event stream format
-		if strings.HasPrefix(line, "data: ") {
-			jsonData := strings.TrimPrefix(line, "data: ")
-
-			var bedrockEvent BedrockStreamEvent
-			if err := sonic.Unmarshal([]byte(jsonData), &bedrockEvent); err != nil {
-				logger.Warn("Failed to parse Bedrock stream event: %v", err)
-				continue
-			}
-
-			// Convert to Bifrost response
-			if bedrockEvent.Delta != nil && bedrockEvent.Delta.Text != nil {
-				chunkIndex++
-
-				response := &schemas.BifrostChatResponse{
-					ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-					Object:  "chat.completion.chunk",
-					Created: int(time.Now().Unix()),
-					Model:   model,
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index: 0,
-							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-								Delta: &schemas.ChatStreamResponseChoiceDelta{
-									Content: bedrockEvent.Delta.Text,
-								},
-							},
-						},
-					},
-				}
-
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ModelRequested = model
-				response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
-				response.ExtraFields.ChunkIndex = chunkIndex
-
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
-			}
-
-			// Handle stop reason
-			if bedrockEvent.StopReason != nil {
-				finishReason = bedrockEvent.StopReason
-			}
-
-			// Handle usage
-			if bedrockEvent.Usage != nil {
-				usage.PromptTokens = bedrockEvent.Usage.InputTokens
-				usage.CompletionTokens = bedrockEvent.Usage.OutputTokens
-				usage.TotalTokens = bedrockEvent.Usage.TotalTokens
-			}
-		}
-	}
-
-	// Send final chunk with usage
-	if finishReason != nil || usage.TotalTokens > 0 {
-		finalResponse := providerUtils.CreateBifrostChatCompletionChunkResponse("", usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, model)
-		finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
-		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, finalResponse, nil, nil, nil, nil), responseChan)
-	}
-}
-
 // processVertexSSEStream processes Vertex SSE stream and sends chunks to the channel
 func processVertexSSEStream(
 	ctx *schemas.BifrostContext,
@@ -1333,6 +1295,7 @@ func processVertexSSEStream(
 	usage := &schemas.BifrostLLMUsage{}
 	var finishReason *string
 	startTime := time.Now()
+	toolCallIndex := 0
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
@@ -1357,35 +1320,98 @@ func processVertexSSEStream(
 			if len(vertexResp.Candidates) > 0 && len(vertexResp.Candidates[0].Content.Parts) > 0 {
 				chunkIndex++
 
-				text := vertexResp.Candidates[0].Content.Parts[0].Text
-
-				response := &schemas.BifrostChatResponse{
-					ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-					Object:  "chat.completion.chunk",
-					Created: int(time.Now().Unix()),
-					Model:   model,
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index: 0,
-							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-								Delta: &schemas.ChatStreamResponseChoiceDelta{
-									Content: &text,
+				for _, part := range vertexResp.Candidates[0].Content.Parts {
+					// Handle text content
+					if part.Text != "" {
+						text := part.Text
+						response := &schemas.BifrostChatResponse{
+							ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+							Object:  "chat.completion.chunk",
+							Created: int(time.Now().Unix()),
+							Model:   model,
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: 0,
+									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+										Delta: &schemas.ChatStreamResponseChoiceDelta{
+											Content: &text,
+										},
+									},
 								},
 							},
-						},
-					},
+						}
+
+						response.ExtraFields.Provider = providerName
+						response.ExtraFields.ModelRequested = model
+						response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+						response.ExtraFields.ChunkIndex = chunkIndex
+
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+					}
+
+					// Handle function calls
+					if part.FunctionCall != nil {
+						// Serialize args to JSON string
+						argsJSON := "{}"
+						if part.FunctionCall.Args != nil {
+							if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
+								argsJSON = string(argsBytes)
+							}
+						}
+
+						// Generate a tool call ID
+						toolCallID := fmt.Sprintf("call_%s_%d", model, toolCallIndex)
+						toolCallType := "function"
+						funcName := part.FunctionCall.Name
+						idx := uint16(toolCallIndex)
+
+						response := &schemas.BifrostChatResponse{
+							ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+							Object:  "chat.completion.chunk",
+							Created: int(time.Now().Unix()),
+							Model:   model,
+							Choices: []schemas.BifrostResponseChoice{
+								{
+									Index: 0,
+									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+										Delta: &schemas.ChatStreamResponseChoiceDelta{
+											ToolCalls: []schemas.ChatAssistantMessageToolCall{
+												{
+													Index: idx,
+													Type:  &toolCallType,
+													ID:    &toolCallID,
+													Function: schemas.ChatAssistantMessageToolCallFunction{
+														Name:      &funcName,
+														Arguments: argsJSON,
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						}
+
+						response.ExtraFields.Provider = providerName
+						response.ExtraFields.ModelRequested = model
+						response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+						response.ExtraFields.ChunkIndex = chunkIndex
+
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+
+						toolCallIndex++
+					}
 				}
-
-				response.ExtraFields.Provider = providerName
-				response.ExtraFields.ModelRequested = model
-				response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
-				response.ExtraFields.ChunkIndex = chunkIndex
-
-				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 
 				// Handle finish reason
 				if vertexResp.Candidates[0].FinishReason != "" {
 					fr := vertexResp.Candidates[0].FinishReason
+					// If there were tool calls, override finish reason
+					if toolCallIndex > 0 {
+						fr = "tool_calls"
+					} else {
+						fr = mapVertexFinishReason(fr)
+					}
 					finishReason = &fr
 				}
 			}

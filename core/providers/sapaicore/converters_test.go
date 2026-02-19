@@ -579,22 +579,30 @@ func TestGetModelConfig(t *testing.T) {
 	}
 }
 
-func TestBedrockStreamEvent_Types(t *testing.T) {
+func TestAnthropicStreamEvent_Types(t *testing.T) {
 	t.Parallel()
 
-	// Test that BedrockStreamEvent struct can handle various event types
+	// Test that AnthropicStreamEvent struct can handle various event types
 	textValue := "Hello"
 	stopReason := "end_turn"
 
-	event := BedrockStreamEvent{
-		Delta: &BedrockDelta{
+	event := AnthropicStreamEvent{
+		Type: "content_block_delta",
+		Delta: &AnthropicStreamDelta{
 			Type: "text_delta",
 			Text: &textValue,
 		},
-		StopReason: &stopReason,
-		Usage: &BedrockUsage{
+		Usage: &AnthropicStreamUsage{
 			InputTokens:  10,
 			OutputTokens: 5,
+		},
+	}
+
+	// Test message_delta event with stop reason
+	messageDelta := AnthropicStreamEvent{
+		Type: "message_delta",
+		Delta: &AnthropicStreamDelta{
+			StopReason: &stopReason,
 		},
 	}
 
@@ -607,8 +615,8 @@ func TestBedrockStreamEvent_Types(t *testing.T) {
 	if *event.Delta.Text != textValue {
 		t.Errorf("expected Delta.Text %q, got %q", textValue, *event.Delta.Text)
 	}
-	if *event.StopReason != stopReason {
-		t.Errorf("expected StopReason %q, got %q", stopReason, *event.StopReason)
+	if *messageDelta.Delta.StopReason != stopReason {
+		t.Errorf("expected StopReason %q, got %q", stopReason, *messageDelta.Delta.StopReason)
 	}
 }
 
