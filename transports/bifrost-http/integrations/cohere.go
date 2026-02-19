@@ -12,7 +12,7 @@ import (
 )
 
 // CohereRouter holds route registrations for Cohere endpoints.
-// It supports Cohere's v2 chat API and embeddings API.
+// It supports Cohere's v2 chat, embeddings, and rerank APIs.
 type CohereRouter struct {
 	*GenericRouter
 }
@@ -24,7 +24,7 @@ func NewCohereRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	}
 }
 
-// CreateCohereRouteConfigs creates route configurations for Cohere v2 API endpoints.
+// CreateCohereRouteConfigs creates route configurations for Cohere API endpoints.
 func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
 
@@ -93,6 +93,38 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 			return nil, errors.New("invalid embedding request type")
 		},
 		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Cohere {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	})
+
+	// Rerank endpoint (v2/rerank)
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
+		Path:   pathPrefix + "/v2/rerank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &cohere.CohereRerankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if cohereReq, ok := req.(*cohere.CohereRerankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: cohereReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.Cohere {
 				if resp.ExtraFields.RawResponse != nil {
 					return resp.ExtraFields.RawResponse, nil

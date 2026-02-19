@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -82,6 +83,67 @@ func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, 2, response.Results[2].Index)
 	assert.Equal(t, "doc-0", response.Results[0].Document.Text)
 	assert.Equal(t, "doc-1", response.Results[1].Document.Text)
+}
+
+func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
+	topN := 3
+	bedrockReq := &BedrockRerankRequest{
+		Queries: []BedrockRerankQuery{
+			{
+				Type:      bedrockRerankQueryTypeText,
+				TextQuery: BedrockRerankTextRef{Text: "capital of france"},
+			},
+		},
+		Sources: []BedrockRerankSource{
+			{
+				Type: bedrockRerankSourceTypeInline,
+				InlineDocumentSource: BedrockRerankInlineSource{
+					Type:         bedrockRerankInlineDocumentTypeText,
+					TextDocument: BedrockRerankTextValue{Text: "Paris is the capital of France."},
+				},
+			},
+			{
+				Type: bedrockRerankSourceTypeInline,
+				InlineDocumentSource: BedrockRerankInlineSource{
+					Type:         bedrockRerankInlineDocumentTypeText,
+					TextDocument: BedrockRerankTextValue{Text: "Berlin is the capital of Germany."},
+				},
+			},
+		},
+		RerankingConfiguration: BedrockRerankingConfiguration{
+			Type: bedrockRerankConfigurationTypeBedrock,
+			BedrockRerankingConfiguration: BedrockRerankingModelConfiguration{
+				NumberOfResults: &topN,
+				ModelConfiguration: BedrockRerankModelConfiguration{
+					ModelARN: "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0",
+					AdditionalModelRequestFields: map[string]interface{}{
+						"truncate": "END",
+					},
+				},
+			},
+		},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := bedrockReq.ToBifrostRerankRequest(bifrostCtx)
+
+	require.NotNil(t, result)
+	assert.Equal(t, schemas.Bedrock, result.Provider)
+	assert.Equal(t, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", result.Model)
+	assert.Equal(t, "capital of france", result.Query)
+	require.Len(t, result.Documents, 2)
+	assert.Equal(t, "Paris is the capital of France.", result.Documents[0].Text)
+	assert.Equal(t, "Berlin is the capital of Germany.", result.Documents[1].Text)
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.TopN)
+	assert.Equal(t, 3, *result.Params.TopN)
+	require.NotNil(t, result.Params.ExtraParams)
+	assert.Equal(t, "END", result.Params.ExtraParams["truncate"])
+}
+
+func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
+	var req *BedrockRerankRequest
+	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
 func TestResolveBedrockRerankModelARN(t *testing.T) {

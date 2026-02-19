@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -190,6 +191,63 @@ func ToVertexRankRequest(bifrostReq *schemas.BifrostRerankRequest, modelDeployme
 	}
 
 	return rankRequest, nil
+}
+
+// ToBifrostRerankRequest converts a Discovery Engine rank request to Bifrost format.
+func (req *VertexRankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext) *schemas.BifrostRerankRequest {
+	if req == nil {
+		return nil
+	}
+
+	var provider schemas.ModelProvider
+	var model string
+	if req.Model != nil {
+		provider, model = schemas.ParseModelString(*req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex))
+	} else {
+		provider = providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Vertex)
+	}
+
+	bifrostReq := &schemas.BifrostRerankRequest{
+		Provider: provider,
+		Model:    model,
+		Query:    req.Query,
+		Params:   &schemas.RerankParameters{},
+	}
+
+	// Convert records to documents
+	for _, record := range req.Records {
+		doc := schemas.RerankDocument{
+			ID: &record.ID,
+		}
+		if record.Content != nil {
+			doc.Text = *record.Content
+		}
+		if record.Title != nil {
+			doc.Meta = map[string]interface{}{
+				"title": *record.Title,
+			}
+		}
+		bifrostReq.Documents = append(bifrostReq.Documents, doc)
+	}
+
+	// Extract TopN
+	if req.TopN != nil {
+		bifrostReq.Params.TopN = req.TopN
+	}
+
+	// Pass extra fields as ExtraParams
+	extraParams := make(map[string]interface{})
+	if req.IgnoreRecordDetailsInResponse != nil {
+		extraParams["ignore_record_details_in_response"] = *req.IgnoreRecordDetailsInResponse
+	}
+	if len(req.UserLabels) > 0 {
+		extraParams["user_labels"] = req.UserLabels
+	}
+	if len(extraParams) > 0 {
+		bifrostReq.Params.ExtraParams = extraParams
+	}
+
+	return bifrostReq
 }
 
 func parseVertexSyntheticRecordIndex(recordID string, maxDocs int) (int, error) {

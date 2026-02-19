@@ -191,6 +191,42 @@ func createBedrockInvokeRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 	}
 }
 
+// createBedrockRerankRouteConfig creates a route configuration for the Bedrock Rerank API endpoint
+// Handles POST /bedrock/rerank
+func createBedrockRerankRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/rerank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &bedrock.BedrockRerankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if bedrockReq, ok := req.(*bedrock.BedrockRerankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: bedrockReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Bedrock {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: bedrockBatchPreCallback(handlerStore),
+	}
+}
+
 // CreateBedrockRouteConfigs creates route configurations for Bedrock endpoints
 func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
@@ -198,6 +234,7 @@ func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore)
 		createBedrockConverseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeRouteConfig(pathPrefix, handlerStore),
+		createBedrockRerankRouteConfig(pathPrefix, handlerStore),
 	}
 }
 

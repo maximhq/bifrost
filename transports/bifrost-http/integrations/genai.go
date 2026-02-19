@@ -12,6 +12,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -161,6 +162,8 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		PreCallback: extractGeminiListModelsParams,
 	})
+
+	routes = append(routes, createGenAIRerankRouteConfig(pathPrefix))
 
 	return routes
 }
@@ -391,6 +394,41 @@ func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	}
 
 	return nil
+}
+
+// createGenAIRerankRouteConfig creates a route configuration for the GenAI/Vertex Rerank API endpoint
+// Handles POST /genai/v1/rank
+func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1/rank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &vertex.VertexRankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: vertexReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+	}
 }
 
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.

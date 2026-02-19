@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -189,6 +190,46 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse() *schemas.Bifros
 	})
 
 	return bifrostResponse
+}
+
+// ToBifrostRerankRequest converts a Bedrock Agent Runtime rerank request to Bifrost format.
+func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostContext) *schemas.BifrostRerankRequest {
+	if req == nil {
+		return nil
+	}
+
+	modelARN := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.ModelARN
+	provider, model := schemas.ParseModelString(modelARN, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Bedrock))
+
+	bifrostReq := &schemas.BifrostRerankRequest{
+		Provider: provider,
+		Model:    model,
+		Params:   &schemas.RerankParameters{},
+	}
+
+	// Extract query from the first query entry
+	if len(req.Queries) > 0 {
+		bifrostReq.Query = req.Queries[0].TextQuery.Text
+	}
+
+	// Convert sources to documents
+	for _, source := range req.Sources {
+		bifrostReq.Documents = append(bifrostReq.Documents, schemas.RerankDocument{
+			Text: source.InlineDocumentSource.TextDocument.Text,
+		})
+	}
+
+	// Extract TopN from NumberOfResults
+	if req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults != nil {
+		bifrostReq.Params.TopN = req.RerankingConfiguration.BedrockRerankingConfiguration.NumberOfResults
+	}
+
+	// Pass AdditionalModelRequestFields as ExtraParams
+	if fields := req.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields; len(fields) > 0 {
+		bifrostReq.Params.ExtraParams = fields
+	}
+
+	return bifrostReq
 }
 
 func resolveBedrockRerankModelARN(model string, key schemas.Key) (modelARN string, deployment string, err error) {

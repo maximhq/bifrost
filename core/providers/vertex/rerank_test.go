@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -129,6 +130,68 @@ func TestVertexRankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, 2, response.Results[2].Index)
 	require.NotNil(t, response.Results[0].Document)
 	assert.Equal(t, "doc-0", response.Results[0].Document.Text)
+}
+
+func TestVertexRankRequestToBifrostRerankRequest(t *testing.T) {
+	t.Parallel()
+
+	topN := 5
+	model := "semantic-ranker-default@latest"
+	ignoreDetails := true
+	title := "Doc A"
+	content1 := "Paris is the capital of France."
+	content2 := "Berlin is the capital of Germany."
+
+	req := &VertexRankRequest{
+		Model: &model,
+		Query: "capital of france",
+		Records: []VertexRankRecord{
+			{ID: "rec-1", Content: &content1, Title: &title},
+			{ID: "rec-2", Content: &content2},
+		},
+		TopN:                          &topN,
+		IgnoreRecordDetailsInResponse: &ignoreDetails,
+		UserLabels:                    map[string]string{"env": "test"},
+	}
+
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := req.ToBifrostRerankRequest(bifrostCtx)
+
+	require.NotNil(t, result)
+	assert.Equal(t, schemas.Vertex, result.Provider)
+	assert.Equal(t, "semantic-ranker-default@latest", result.Model)
+	assert.Equal(t, "capital of france", result.Query)
+	require.Len(t, result.Documents, 2)
+
+	// First document has ID, content, and title in meta
+	require.NotNil(t, result.Documents[0].ID)
+	assert.Equal(t, "rec-1", *result.Documents[0].ID)
+	assert.Equal(t, "Paris is the capital of France.", result.Documents[0].Text)
+	require.NotNil(t, result.Documents[0].Meta)
+	assert.Equal(t, "Doc A", result.Documents[0].Meta["title"])
+
+	// Second document has no title
+	require.NotNil(t, result.Documents[1].ID)
+	assert.Equal(t, "rec-2", *result.Documents[1].ID)
+	assert.Equal(t, "Berlin is the capital of Germany.", result.Documents[1].Text)
+	assert.Nil(t, result.Documents[1].Meta)
+
+	// TopN
+	require.NotNil(t, result.Params)
+	require.NotNil(t, result.Params.TopN)
+	assert.Equal(t, 5, *result.Params.TopN)
+
+	// ExtraParams
+	require.NotNil(t, result.Params.ExtraParams)
+	assert.Equal(t, true, result.Params.ExtraParams["ignore_record_details_in_response"])
+	assert.Equal(t, map[string]string{"env": "test"}, result.Params.ExtraParams["user_labels"])
+}
+
+func TestVertexRankRequestToBifrostRerankRequestNil(t *testing.T) {
+	t.Parallel()
+
+	var req *VertexRankRequest
+	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
 func TestVertexRankResponseToBifrostRerankResponseInvalidID(t *testing.T) {
