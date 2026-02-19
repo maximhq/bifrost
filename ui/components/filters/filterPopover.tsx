@@ -34,15 +34,19 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 	const routingRuleNameToId = new Map(availableRoutingRules.map((rule) => [rule.name, rule.id]));
 
 	const FILTER_OPTIONS = {
-		Status: Statuses,
-		Providers: providersLoading ? ["Loading providers..."] : availableProviders.map((provider) => provider.name),
-		Type: RequestTypes,
-		Models: filterDataLoading ? ["Loading models..."] : availableModels,
-		"Selected Keys": filterDataLoading ? ["Loading selected keys..."] : availableSelectedKeys.map((key) => key.name),
-		"Virtual Keys": filterDataLoading ? ["Loading virtual keys..."] : availableVirtualKeys.map((key) => key.name),
-		"Routing Engines": filterDataLoading ? ["Loading routing engines..."] : availableRoutingEngines,
-		"Routing Rules": filterDataLoading ? ["Loading routing rules..."] : availableRoutingRules.map((rule) => rule.name),
-	} as const;
+		Status: [...Statuses],
+		Providers: providersLoading ? [] : availableProviders.map((provider) => provider.name),
+		Type: [...RequestTypes],
+		Models: filterDataLoading ? [] : availableModels,
+		"Selected Keys": filterDataLoading ? [] : availableSelectedKeys.map((key) => key.name),
+		"Virtual Keys": filterDataLoading ? [] : availableVirtualKeys.map((key) => key.name),
+		"Routing Engines": filterDataLoading ? [] : availableRoutingEngines,
+		"Routing Rules": filterDataLoading ? [] : availableRoutingRules.map((rule) => rule.name),
+	};
+
+	const isCategoryLoading = (category: string) =>
+		(category === "Providers" && providersLoading) ||
+		(category !== "Status" && category !== "Type" && category !== "Providers" && filterDataLoading);
 
 	type FilterCategory = keyof typeof FILTER_OPTIONS;
 
@@ -142,44 +146,41 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 							</CommandGroup>
 						)}
 						{Object.entries(FILTER_OPTIONS)
-							.filter(([_, values]) => values.length > 0)
+							.filter(([category, values]) => values.length > 0 || isCategoryLoading(category))
 							.map(([category, values]) => (
 								<CommandGroup key={category} heading={category}>
-									{values.map((value: string) => {
-										const selected = isSelected(category as FilterCategory, value);
-										const isLoading =
-											(category === "Providers" && providersLoading) ||
-											(category === "Models" && filterDataLoading) ||
-											(category === "Selected Keys" && filterDataLoading) ||
-											(category === "Virtual Keys" && filterDataLoading) ||
-											(category === "Routing Rules" && filterDataLoading) ||
-											(category === "Routing Engines" && filterDataLoading);
-										return (
-											<CommandItem
-												key={value}
-												data-testid={`filter-item-${category.toLowerCase().replace(/\s+/g, "-")}-${value}`}
-												onSelect={() => !isLoading && handleFilterSelect(category as FilterCategory, value)}
-												disabled={isLoading}
-											>
-												<div
-													className={cn(
-														"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
-														selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
-													)}
+									{isCategoryLoading(category) && values.length === 0 ? (
+										<CommandItem disabled>
+											<div className="border-primary mr-2 flex h-4 w-4 items-center justify-center">
+												<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
+											</div>
+											<span className="text-muted-foreground text-sm">Loading...</span>
+										</CommandItem>
+									) : (
+										values.map((value: string) => {
+											const selected = isSelected(category as FilterCategory, value);
+											return (
+												<CommandItem
+													key={value}
+													data-testid={`filter-item-${category.toLowerCase().replace(/\s+/g, "-")}-${value}`}
+													onSelect={() => handleFilterSelect(category as FilterCategory, value)}
 												>
-													{isLoading ? (
-														<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
-													) : (
+													<div
+														className={cn(
+															"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
+															selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
+														)}
+													>
 														<Check className="text-primary-foreground size-3" />
-													)}
-												</div>
-												<span className={cn(category === "Status" && "lowercase", isLoading && "text-muted-foreground")}>
-													{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] :
-														category === "Routing Engines" ? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value) : value}
-												</span>
-											</CommandItem>
-										);
-									})}
+													</div>
+													<span className={cn(category === "Status" && "lowercase")}>
+														{category === "Type" ? RequestTypeLabels[value as keyof typeof RequestTypeLabels] :
+															category === "Routing Engines" ? (RoutingEngineUsedLabels[value as keyof typeof RoutingEngineUsedLabels] ?? value) : value}
+													</span>
+												</CommandItem>
+											);
+										})
+									)}
 								</CommandGroup>
 							))}
 					</CommandList>
