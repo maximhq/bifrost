@@ -63,7 +63,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyVirtualKey, "vk-engineering-main")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -102,7 +102,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "premium-key")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -137,7 +137,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyRequestID, "req-12345-abc")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -172,7 +172,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -231,7 +231,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -270,7 +270,7 @@ directKey := schemas.Key{
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyDirectKey, directKey)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o",
     Input:    messages,
@@ -290,7 +290,7 @@ Skip the key selection process entirely and pass an empty key to the provider. U
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeySkipKeySelection, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -310,7 +310,7 @@ Append a custom path to the provider's base URL. Useful for accessing provider-s
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, "/custom/endpoint")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -337,7 +337,7 @@ rawPayload := []byte(`{
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider:       schemas.OpenAI,
     Model:          "gpt-4o",
     RawRequestBody: rawPayload,
@@ -381,7 +381,7 @@ extraHeaders := map[string][]string{
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -428,7 +428,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheKey, "custom-key-123")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -463,7 +463,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheTTLKey, 5*time.Minute)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -500,7 +500,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheThresholdKey, 0.85)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -535,7 +535,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheTypeKey, semanticcache.CacheTypeSemantic)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -570,7 +570,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, semanticcache.CacheNoStoreKey, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -609,7 +609,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-clients"), []string{"client1", "client2"})
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -644,7 +644,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("mcp-include-tools"), []string{"tool1", "tool2"})
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -683,7 +683,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.TraceIDKey, "trace-12345")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -718,7 +718,7 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.GenerationIDKey, "gen-12345")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -758,7 +758,7 @@ tags := map[string]string{
 ctx := context.Background()
 ctx = context.WithValue(ctx, maxim.TagsKey, tags)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -795,7 +795,7 @@ ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("environment"), "production")
 ctx = context.WithValue(ctx, schemas.BifrostContextKey("team"), "engineering")
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,

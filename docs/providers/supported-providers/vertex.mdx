@@ -187,7 +187,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Vertex,
     Model:    "claude-3-5-sonnet",
     Input:    messages,
@@ -250,7 +250,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
     Input: &schemas.EmbeddingInput{
@@ -357,7 +357,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Vertex,
     Model:    "imagen-4.0-generate-001",
     Input: &schemas.ImageGenerationInput{

@@ -214,10 +214,10 @@ Must set cache key in request context:
 ```go
 // This request WILL be cached
 ctx = context.WithValue(ctx, semanticcache.CacheKey, "session-123")
-response, err := client.ChatCompletionRequest(ctx, request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 
 // This request will NOT be cached (no context value)
-response, err := client.ChatCompletionRequest(context.Background(), request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
 ```
 
 </Tab>

@@ -121,7 +121,7 @@ type BifrostChatResponse struct {
 }
 
 // Works with any provider
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,    // or Anthropic, Bedrock, etc.
     Model:    "gpt-4o-mini",     // or "claude-3-sonnet", etc.
     Input:    messages,

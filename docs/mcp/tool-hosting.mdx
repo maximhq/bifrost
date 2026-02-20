@@ -172,7 +172,7 @@ func main() {
     registerTimeTool(client)
 
     // Make a request - tools are automatically available
-    response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o",
         Input: []schemas.ChatMessage{

@@ -337,7 +337,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.HuggingFace,
     Model:    "huggingface/fal-ai/fal-ai/flux/dev",
     Input: &schemas.ImageGenerationInput{
@@ -364,7 +364,7 @@ resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationR
 <Tab title="Go SDK - Streaming">
 
 ```go
-streamChan, err := client.ImageGenerationStreamRequest(ctx, &schemas.BifrostImageGenerationRequest{
+streamChan, err := client.ImageGenerationStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.HuggingFace,
     Model:    "huggingface/fal-ai/fal-ai/flux/dev",
     Input: &schemas.ImageGenerationInput{

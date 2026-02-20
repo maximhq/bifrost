@@ -182,7 +182,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Replicate,
     Model:    "meta/llama-2-7b-chat",
     Input:    messages,
@@ -381,7 +381,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Replicate,
     Model:    "black-forest-labs/flux-schnell",
     Input: &schemas.ImageGenerationInput{
@@ -495,7 +495,7 @@ curl -X POST 'http://localhost:8080/v1/images/edits' \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageEditRequest(ctx, &schemas.BifrostImageEditRequest{
+resp, err := client.ImageEditRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageEditRequest{
     Provider: schemas.Replicate,
     Model:    "black-forest-labs/flux-fill-pro",
     Input: &schemas.ImageEditInput{

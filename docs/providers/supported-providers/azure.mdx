@@ -73,7 +73,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Azure,
     Model:    "gpt-4",
     Input:    messages,
@@ -255,7 +255,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Azure,
     Model:    "claude-3-sonnet",
     Input:    messages,
@@ -312,7 +312,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Azure,
     Model:    "text-embedding-3-small",
     Input: &schemas.EmbeddingInput{
@@ -406,7 +406,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Azure,
     Model:    "dall-e-3",
     Input: &schemas.ImageGenerationInput{

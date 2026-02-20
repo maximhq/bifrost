@@ -42,7 +42,7 @@ func main() {
     // All chat and responses requests will now return: "This is a mock response from the Mocker plugin"
     
     // Chat completion request
-    chatResponse, _ := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+    chatResponse, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4",
         Input: []schemas.ChatMessage{
@@ -56,7 +56,7 @@ func main() {
     })
     
     // Responses request
-    responsesResponse, _ := client.ResponsesRequest(context.Background(), &schemas.BifrostResponsesRequest{
+    responsesResponse, _ := client.ResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o",
         Input: []schemas.ResponsesMessage{
@@ -197,7 +197,7 @@ ctx := context.WithValue(context.Background(),
     schemas.BifrostContextKey("skip-mocker"), true)
 
 // This request will bypass the mocker and go to the real provider
-response, err := client.ChatCompletionRequest(ctx, request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 ```
 
 ## Key Features

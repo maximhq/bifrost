@@ -183,7 +183,7 @@ ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
     []string{"bifrostInternal-*"})
 
-response, err := client.ChatCompletionRequest(ctx, request)
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 
 // Empty include-clients blocks ALL tools - no tools available
 ctx = context.WithValue(context.Background(),
@@ -435,7 +435,7 @@ ctx = context.WithValue(
 )
 
 // Request will only see filtered tools
-response, _ := client.ChatCompletionRequest(ctx, request)
+response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 ```
 
 ### Filter Precedence

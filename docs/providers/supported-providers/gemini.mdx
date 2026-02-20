@@ -98,7 +98,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Gemini,
     Model:    "gemini-2.0-flash",
     Input:    messages,
@@ -244,7 +244,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Gemini,
     Model:    "gemini-2.0-flash",
     Input:    messages,
@@ -417,7 +417,7 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.TranscriptionRequest(ctx, &schemas.BifrostTranscriptionRequest{
+resp, err := client.TranscriptionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
     Provider: schemas.Gemini,
     Model:    "gemini-2.0-flash",
     Input: &schemas.TranscriptionInput{
@@ -559,7 +559,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Gemini,
     Model:    "imagen-4.0-generate-001",
     Input: &schemas.ImageGenerationInput{

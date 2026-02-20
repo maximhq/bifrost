@@ -43,7 +43,7 @@ func main() {
 		},
 	}
 
-	resp, bfErr := client.RerankRequest(context.Background(), request)
+	resp, bfErr := client.RerankRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
 	if bfErr != nil {
 		panic(bfErr.Error.Message)
 	}

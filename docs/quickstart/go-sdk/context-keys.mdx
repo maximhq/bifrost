@@ -23,7 +23,7 @@ extraHeaders := map[string][]string{
 }
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -95,7 +95,7 @@ rawPayload := []byte(`{
 ctx := context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, true)
 
 // Set the raw body on the request
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider:       schemas.OpenAI,
     Model:          "gpt-4o",
     RawRequestBody: rawPayload,  // This will be sent directly to the provider
@@ -121,7 +121,7 @@ ctx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawResponse, true
 Access in response:
 
 ```go
-response, _ := client.ChatCompletionRequest(ctx, request)
+response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 if response.ChatResponse != nil {
     rawReq := response.ChatResponse.ExtraFields.RawRequest
     rawResp := response.ChatResponse.ExtraFields.RawResponse
@@ -135,7 +135,7 @@ Enable passthrough mode for extra parameters. When enabled, any parameters in `E
 ```go
 ctx := context.WithValue(ctx, schemas.BifrostContextKeyPassthroughExtraParams, true)
 
-response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,
     Model:    "gpt-4o-mini",
     Input:    messages,
@@ -249,7 +249,7 @@ func makeRequest(client *bifrost.Bifrost) {
         {Role: "user", Content: &schemas.BifrostMessageContent{Text: bifrost.Ptr("Hello!")}},
     }
 
-    response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
         Provider: schemas.OpenAI,
         Model:    "gpt-4o-mini",
         Input:    messages,
