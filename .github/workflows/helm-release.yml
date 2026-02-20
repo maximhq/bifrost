@@ -40,6 +40,11 @@ jobs:
           chmod +x .github/workflows/scripts/validate-helm-templates.sh
           .github/workflows/scripts/validate-helm-templates.sh
 
+      - name: Validate Helm config fields
+        run: |
+          chmod +x .github/workflows/scripts/validate-helm-config-fields.sh
+          .github/workflows/scripts/validate-helm-config-fields.sh
+
       - name: Get chart version
         id: chart-version
         run: |

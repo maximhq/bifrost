@@ -125,6 +125,7 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
+                  "providers/supported-providers/vllm",
                   "providers/supported-providers/xai"
                 ]
               },
@@ -398,6 +399,7 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
+          "changelogs/v1.4.7",
           "changelogs/v1.4.6",
           "changelogs/v1.4.5",
           "changelogs/v1.4.4",

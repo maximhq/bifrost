@@ -182,6 +182,9 @@
         "cerebras": {
           "$ref": "#/$defs/provider"
         },
+        "vllm": {
+          "$ref": "#/$defs/provider"
+        },
         "huggingface": {
           "$ref": "#/$defs/provider"
         }
@@ -968,6 +971,7 @@
                         "openrouter",
                         "vertex",
                         "cerebras",
+                        "vllm",
                         "parasail",
                         "perplexity",
                         "replicate",

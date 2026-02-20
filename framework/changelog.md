@@ -1,4 +1,0 @@
-- feat: rename routing_engine_used column to routing_engines_used for multi-engine tracking (parsed as comma-separated string)
-- feat: add routing engine decision logs to logs table
-- chore: upgrade core to 1.4.3
-- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0

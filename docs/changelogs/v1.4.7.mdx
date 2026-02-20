@@ -1,0 +1,112 @@
+---
+title: "v1.4.7"
+description: "v1.4.7 changelog - 2026-02-18"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.7
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.7
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.7
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.7">
+- feat: added multi level routing support for routing rules + vk based provider routing
+- feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
+- feat: add key-level model discovery status tracking to improve visibility into API key health and model availability.
+- feat: add routing engine decision logs
+- feat: view/hide toggle for password on login field [@Aaryan Meena](https://github.com/aaryan359)
+- fix: add custom model support to routing rules UI
+- fix: add passthrough for count tokens for anthropic integration
+- fix: add object field to responses response
+- fix: reduce provider API connection max idle time to 30 seconds to avoid ttl mismatch
+- fix: add message sanitization for huggingface provider to remove unsupported fields from chat messages
+- fix: use status instead of error field for tool result errors for anthropic provider [@Edward Upton](https://github.com/Edward-Upton)
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+- refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
+- fix: add skip plugin pipeline flag to context for list models requests to avoid internal list models logs
+- fix: duplicate 'not found' error on custom provider deletion
+
+</Update>
+<Update label="Core" description="1.4.3">
+- feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
+- feat: add routing engine decision logs to context
+- feat: add skip plugin pipeline flag to context
+- fix: add object field to responses response
+- fix: reduce provider API connection max idle time to 30 seconds to avoid ttl mismatch
+- fix: add message sanitization for huggingface provider to remove unsupported fields from chat messages
+- fix: use status instead of error field for tool result errors for anthropic provider [@Edward Upton](https://github.com/Edward-Upton)
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+- refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
+
+</Update>
+<Update label="Framework" description="1.2.21">
+- feat: rename routing_engine_used column to routing_engines_used for multi-engine tracking (parsed as comma-separated string)
+- feat: add routing engine decision logs to logs table
+- chore: upgrade core to 1.4.3
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="governance" description="1.4.22">
+- feat: added multi level routing support for routing rules + vk based provider routing
+- feat: cross-provider model matching - budget/rate-limit configs for `gpt-4o` now apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: expand GovernanceData with ModelConfigs and Providers for in-memory reads
+- feat: added routing rules for dynamic routing of requests based on predefined rules
+- feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
+- feat: plugin now filters `/v1/models` responses based on virtual key configurations
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+- feat: add routing engine decision logs to context
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="jsonparser" description="1.4.21">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="litellmcompat" description="0.0.11">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="logging" description="1.4.21">
+- feat: support multiple routing engines in log entries with array-based tracking
+- feat: add routing engine decision logs to log entries
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="maxim" description="1.5.20">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="mocker" description="1.4.21">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="otel" description="1.1.21">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="semanticcache" description="1.4.20">
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>
+<Update label="telemetry" description="1.4.22">
+- feat: support multiple routing engines in telemetry metrics with comma-separated label format
+- chore: upgrade core to 1.4.3 and framework to 1.2.21
+- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
+
+</Update>

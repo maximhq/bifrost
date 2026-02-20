@@ -149,13 +149,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 # Empty clients filter blocks ALL tools - no tools available to LLM
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-clients: []" \
+  -H "x-bf-mcp-include-clients:" \
   -d '...'
 # Result: No MCP tools available (deny-all)
 
 # Empty tools filter also blocks ALL tools
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: []" \
+  -H "x-bf-mcp-include-tools:" \
   -d '...'
 # Result: No MCP tools available (deny-all)
 ```

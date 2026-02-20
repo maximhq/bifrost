@@ -49,7 +49,7 @@ transports/schema/config.schema.json
 test-reports
 
 # AI Agent specific
-.claude/
+settings.local.json
 .codex/
 .cursor/
 

@@ -1,9 +1,3 @@
-- feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
-- feat: add routing engine decision logs to context
-- feat: add skip plugin pipeline flag to context
-- fix: add object field to responses response
-- fix: reduce provider API connection max idle time to 30 seconds to avoid ttl mismatch
-- fix: add message sanitization for huggingface provider to remove unsupported fields from chat messages
-- fix: use status instead of error field for tool result errors for anthropic provider [@Edward Upton](https://github.com/Edward-Upton)
-- chore: fix CVE-2025-68121 by upgrading to Go 1.26.0
 - refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
+- feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
+- feat: add vllm provider support

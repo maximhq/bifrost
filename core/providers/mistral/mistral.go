@@ -164,6 +164,7 @@ func (provider *MistralProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -189,6 +190,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Mistral,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,
@@ -237,6 +239,7 @@ func (provider *MistralProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		schemas.Mistral,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 }

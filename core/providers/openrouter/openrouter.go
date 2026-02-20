@@ -146,6 +146,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -172,6 +173,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -188,6 +190,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -219,6 +222,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		nil,
 		nil,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -235,6 +239,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -258,6 +263,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,

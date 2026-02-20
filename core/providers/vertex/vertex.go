@@ -820,6 +820,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			postHookRunner,
 			nil,
 			nil,
+			nil,
 			postRequestConverter,
 			postResponseConverter,
 			provider.logger,

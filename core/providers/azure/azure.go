@@ -441,6 +441,7 @@ func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext,
 		provider.GetProviderKey(),
 		nil,
 		postHookRunner,
+		nil,
 		customPostResponseConverter,
 		provider.logger,
 	)
@@ -632,6 +633,7 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 			nil,
 			nil,
 			nil,
+			nil,
 			postResponseConverter,
 			provider.logger,
 		)
@@ -805,6 +807,7 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 			provider.GetProviderKey(),
 			postHookRunner,
 			nil,
+			nil,
 			postRequestConverter,
 			postResponseConverter,
 			provider.logger,
@@ -910,6 +913,7 @@ func (provider *AzureProvider) Speech(ctx *schemas.BifrostContext, key schemas.K
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 
@@ -1243,6 +1247,7 @@ func (provider *AzureProvider) Transcription(ctx *schemas.BifrostContext, key sc
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		nil,
 		provider.logger,
 	)
 

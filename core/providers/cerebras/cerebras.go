@@ -87,6 +87,7 @@ func (provider *CerebrasProvider) TextCompletion(ctx *schemas.BifrostContext, ke
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -113,6 +114,7 @@ func (provider *CerebrasProvider) TextCompletionStream(ctx *schemas.BifrostConte
 		nil,
 		postHookRunner,
 		nil,
+		nil,
 		provider.logger,
 	)
 }
@@ -129,6 +131,7 @@ func (provider *CerebrasProvider) ChatCompletion(ctx *schemas.BifrostContext, ke
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
+		nil,
 		nil,
 		provider.logger,
 	)
@@ -155,6 +158,7 @@ func (provider *CerebrasProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		schemas.Cerebras,
 		postHookRunner,
+		nil,
 		nil,
 		nil,
 		nil,

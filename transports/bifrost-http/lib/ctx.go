@@ -199,6 +199,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 							parsedValues = append(parsedValues, trimmed)
 						}
 					}
+				} else {
+					parsedValues = []string{""}
 				}
 				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
