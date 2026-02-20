@@ -59,6 +59,11 @@ type HandlerStore interface {
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
 	// Returns nil if no plugins are loaded or streaming interception is not needed.
 	GetStreamChunkInterceptor() StreamChunkInterceptor
+	// GetAsyncJobExecutor returns the cached async job executor.
+	// Returns nil if LogsStore or governance plugin is not configured.
+	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
+	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
+	GetAsyncJobResultTTL() int
 }
 
 // Retry backoff constants for validation
@@ -271,6 +276,9 @@ type Config struct {
 
 	OAuthProvider      *oauth2.OAuth2Provider
 	TokenRefreshWorker *oauth2.TokenRefreshWorker
+
+	// Async job executor (initialized during setup if LogsStore + governance are available)
+	AsyncJobExecutor *logstore.AsyncJobExecutor
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -2447,6 +2455,20 @@ func (c *Config) GetStreamChunkInterceptor() StreamChunkInterceptor {
 		return nil
 	}
 	return &pluginChunkInterceptor{plugins: plugins}
+}
+
+// GetAsyncJobExecutor returns the async job executor.
+// Returns nil if LogsStore or governance plugin is not configured.
+func (c *Config) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
+	return c.AsyncJobExecutor
+}
+
+// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
+func (c *Config) GetAsyncJobResultTTL() int {
+	if c.ClientConfig.AsyncJobResultTTL > 0 {
+		return c.ClientConfig.AsyncJobResultTTL
+	}
+	return logstore.DefaultAsyncJobResultTTL
 }
 
 // GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.

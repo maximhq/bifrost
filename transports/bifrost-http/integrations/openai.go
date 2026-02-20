@@ -194,6 +194,23 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				return resp, nil
 			},
+			AsyncChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, chatResponseConverter ChatResponseConverter) (interface{}, map[string]string, error) {
+				bifrostResponse := &schemas.BifrostChatResponse{
+					ID: resp.ID,
+				}
+				if resp.Status == schemas.AsyncJobStatusCompleted {
+					chatResponse, ok := resp.Result.(*schemas.BifrostChatResponse)
+					if !ok {
+						return nil, nil, errors.New("invalid chat response type")
+					}
+					bifrostResponse = chatResponse
+				}
+				response, err := chatResponseConverter(ctx, bifrostResponse)
+				if err != nil {
+					return nil, nil, err
+				}
+				return response, nil, nil
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
@@ -299,6 +316,24 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				return resp.WithDefaults(), nil
+			},
+			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
+				bifrostResponse := &schemas.BifrostResponsesResponse{
+					ID:     &resp.ID,
+					Status: bifrost.Ptr(string(resp.Status)),
+				}
+				if resp.Status == schemas.AsyncJobStatusCompleted {
+					responsesResp, ok := resp.Result.(*schemas.BifrostResponsesResponse)
+					if !ok {
+						return nil, nil, errors.New("invalid responses response type")
+					}
+					bifrostResponse = responsesResp
+				}
+				response, err := responsesResponseConverter(ctx, bifrostResponse)
+				if err != nil {
+					return nil, nil, err
+				}
+				return response, nil, nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err

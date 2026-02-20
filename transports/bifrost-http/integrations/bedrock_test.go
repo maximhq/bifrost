@@ -7,6 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,14 @@ func (m *mockHandlerStore) GetAvailableProviders() []schemas.ModelProvider {
 
 func (m *mockHandlerStore) GetStreamChunkInterceptor() lib.StreamChunkInterceptor {
 	return nil
+}
+
+func (m *mockHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
+	return nil
+}
+
+func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
+	return 3600
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

@@ -322,6 +322,111 @@ const openaiResponseWithHeader = await anthropic.messages.create({
 
 ---
 
+## Async Inference
+
+Submit inference requests asynchronously and poll for results later using the `x-bf-async` header. This is useful for long-running requests where you don't want to hold a connection open. See [Async Inference](../../features/async-inference) for full details.
+
+<Note>
+Async inference requires a [Logs Store](../../features/observability/default) to be configured and is not compatible with streaming.
+</Note>
+
+### Messages
+
+<Tabs group="anthropic-sdk">
+<Tab title="Python">
+
+```python
+import anthropic
+import time
+
+client = anthropic.Anthropic(
+    base_url="http://localhost:8080/anthropic",
+    api_key="dummy-key"
+)
+
+# Submit async request
+initial = client.messages.create(
+    model="anthropic/claude-sonnet-4-20250514",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "Tell me a short story."}],
+    extra_headers={"x-bf-async": "true"}
+)
+
+# If content is present, the request completed synchronously
+if initial.content:
+    print(initial.content[0].text)
+else:
+    # Poll until completed
+    while True:
+        time.sleep(2)
+        poll = client.messages.create(
+            model="anthropic/claude-sonnet-4-20250514",
+            max_tokens=256,
+            messages=[{"role": "user", "content": "Tell me a short story."}],
+            extra_headers={"x-bf-async-id": initial.id}
+        )
+        if poll.content:
+            print(poll.content[0].text)
+            break
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import Anthropic from "@anthropic-ai/sdk";
+
+const anthropic = new Anthropic({
+  baseURL: "http://localhost:8080/anthropic",
+  apiKey: "dummy-key",
+});
+
+// Submit async request
+const initial = await anthropic.messages.create(
+  {
+    model: "anthropic/claude-sonnet-4-20250514",
+    max_tokens: 256,
+    messages: [{ role: "user", content: "Tell me a short story." }],
+  },
+  { headers: { "x-bf-async": "true" } }
+);
+
+// If content is present, the request completed synchronously
+if (initial.content?.length > 0) {
+  console.log(initial.content[0].text);
+} else {
+  // Poll until completed
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const poll = await anthropic.messages.create(
+      {
+        model: "anthropic/claude-sonnet-4-20250514",
+        max_tokens: 256,
+        messages: [{ role: "user", content: "Tell me a short story." }],
+      },
+      { headers: { "x-bf-async-id": initial.id } }
+    );
+    if (poll.content?.length > 0) {
+      console.log(poll.content[0].text);
+      break;
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+### Async Headers
+
+| Header | Description |
+|---|---|
+| `x-bf-async: true` | Submit the request as an async job. Returns immediately with a job ID. |
+| `x-bf-async-id: <job-id>` | Poll for results of a previously submitted async job. |
+| `x-bf-async-job-result-ttl: <seconds>` | Override the default result TTL (default: 3600s). |
+
+---
+
 ## Supported Features
 
 The Anthropic integration supports all features that are available in both the Anthropic SDK and Bifrost core functionality. If the Anthropic SDK supports a feature and Bifrost supports it, the integration will work seamlessly.

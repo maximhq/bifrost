@@ -89,6 +89,22 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil
 			},
+			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
+				if resp.Status == schemas.AsyncJobStatusCompleted {
+					responsesResp, ok := resp.Result.(*schemas.BifrostResponsesResponse)
+					if !ok {
+						return nil, nil, errors.New("invalid responses response type")
+					}
+					response, err := responsesResponseConverter(ctx, responsesResp)
+					if err != nil {
+						return nil, nil, err
+					}
+					return response, nil, nil
+				}
+				return &anthropic.AnthropicMessageResponse{
+					ID: resp.ID,
+				}, nil, nil
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},

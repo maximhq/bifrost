@@ -148,7 +148,7 @@ type Log struct {
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
-	MetadataParsed              map[string]interface{}                   `gorm:"-" json:"metadata,omitempty"`
+	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
@@ -646,9 +646,69 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	}
 
 	if j.Response != "" {
-		var result interface{}
-		if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
-			resp.Result = result
+		switch j.RequestType {
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+			var result schemas.BifrostResponsesResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+			var result schemas.BifrostChatResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+			var result schemas.BifrostTextCompletionResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.EmbeddingRequest:
+			var result schemas.BifrostEmbeddingResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+			var result schemas.BifrostSpeechResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+			var result schemas.BifrostTranscriptionResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+			var result schemas.BifrostImageGenerationResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+			var result schemas.BifrostImageGenerationResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.ImageVariationRequest:
+			var result schemas.BifrostImageGenerationResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		case schemas.CountTokensRequest:
+			var result schemas.BifrostCountTokensResponse
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = &result
+			}
+		default:
+			var result interface{}
+			if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+				resp.Result = result
+			}
+		}
+		// Should never happen, but just in case
+		if resp.Result == nil {
+			var raw interface{}
+			if err := sonic.Unmarshal([]byte(j.Response), &raw); err == nil {
+				resp.Result = raw
+			}
 		}
 	}
 

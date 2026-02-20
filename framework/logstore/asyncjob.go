@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -55,7 +56,10 @@ func NewAsyncJobExecutor(logstore LogStore, governanceStore GovernanceStore, log
 func (e *AsyncJobExecutor) RetrieveJob(ctx context.Context, jobID string, vkValue *string, operationType schemas.RequestType) (*AsyncJob, error) {
 	job, err := e.logstore.FindAsyncJobByID(ctx, jobID)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("job not found or expired")
+		}
+		return nil, fmt.Errorf("failed to retrieve async job: %w", err)
 	}
 	if job.VirtualKeyID != nil {
 		if vkValue == nil {

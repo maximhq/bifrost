@@ -8,7 +8,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -49,21 +48,15 @@ func RegisterAsyncRequestTypeMiddleware(next fasthttp.RequestHandler) fasthttp.R
 }
 
 // NewAsyncHandler creates a new AsyncHandler.
-func NewAsyncHandler(client *bifrost.Bifrost, config *lib.Config) (*AsyncHandler, error) {
-	if config.LogsStore == nil {
-		return nil, fmt.Errorf("logs store not found")
-	}
-	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](config, governance.PluginName)
-	if err != nil {
-		return nil, fmt.Errorf("governance plugin not found: %v", err)
-	}
-	executor := logstore.NewAsyncJobExecutor(config.LogsStore, governancePlugin.GetGovernanceStore(), logger)
+// If the async job executor is not available (e.g., LogsStore or governance plugin not configured),
+// the handler is created with a nil executor and RegisterRoutes will skip async route registration.
+func NewAsyncHandler(client *bifrost.Bifrost, config *lib.Config) *AsyncHandler {
 	return &AsyncHandler{
 		client:       client,
-		executor:     executor,
+		executor:     config.GetAsyncJobExecutor(),
 		handlerStore: config,
 		config:       config,
-	}, nil
+	}
 }
 
 // RegisterRoutes registers async job endpoints.
@@ -453,7 +446,7 @@ func (h *AsyncHandler) getJob(operationType schemas.RequestType) fasthttp.Reques
 
 		job, err := h.executor.RetrieveJob(bifrostCtx, jobID, getVirtualKeyFromContext(bifrostCtx), operationType)
 		if err != nil {
-			SendError(ctx, fasthttp.StatusNotFound, "Job not found or expired")
+			SendError(ctx, fasthttp.StatusNotFound, err.Error())
 			return
 		}
 
@@ -482,7 +475,7 @@ func getVirtualKeyFromContext(ctx *schemas.BifrostContext) *string {
 }
 
 func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int) int {
-	resultTTL := string(ctx.Request.Header.Peek("x-bf-async-job-result-ttl"))
+	resultTTL := string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL))
 	if resultTTL == "" {
 		return defaultTTL
 	}

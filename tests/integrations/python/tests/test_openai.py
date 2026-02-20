@@ -3497,3 +3497,117 @@ class TestOpenAIIntegration:
         print(f"✓ Second turn completed with {len(response2.output)} output items")
         print(f"✓ Multi-turn conversation test passed!")
 
+    # =========================================================================
+    # Async Inference Tests
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("simple_chat"))
+    def test_58_async_chat_completions(self, test_config, provider, model, vk_enabled):
+        """Test Case 58: Async chat completions - submit and poll"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"\n=== Testing Async Chat Completions for provider {provider} ===")
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        request_params = {
+            "model": format_provider_model(provider, model),
+            "messages": SIMPLE_CHAT_MESSAGES,
+            "max_tokens": 100,
+        }
+
+        # Submit async request
+        initial = client.chat.completions.create(
+            **request_params,
+            extra_headers={"x-bf-async": "true"},
+        )
+
+        assert initial.id is not None, "Async response should have an ID"
+        print(f"  Async job ID: {initial.id}")
+
+        # If completed synchronously, validate and return
+        if initial.choices and len(initial.choices) > 0:
+            print("  Status: completed (sync)")
+            assert initial.choices[0].message.content is not None
+            assert len(initial.choices[0].message.content) > 0
+            print(f"  Result: {initial.choices[0].message.content[:80]}...")
+            return
+
+        print("  Status: processing")
+
+        # Poll until completed
+        max_polls = 30
+        for i in range(max_polls):
+            time.sleep(2)
+            print(f"  Polling attempt {i + 1}/{max_polls}...")
+
+            poll = client.chat.completions.create(
+                **request_params,
+                extra_headers={"x-bf-async-id": initial.id},
+            )
+
+            if poll.choices and len(poll.choices) > 0:
+                print("  Status: completed")
+                assert poll.choices[0].message.content is not None
+                assert len(poll.choices[0].message.content) > 0
+                print(f"  Result: {poll.choices[0].message.content[:80]}...")
+                print("✓ Async chat completions test passed!")
+                return
+
+        pytest.fail(f"Async job did not complete after {max_polls} polls")
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("responses"))
+    def test_59_async_responses(self, test_config, provider, model, vk_enabled):
+        """Test Case 59: Async responses API - submit and poll"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"\n=== Testing Async Responses for provider {provider} ===")
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        request_params = {
+            "model": format_provider_model(provider, model),
+            "input": RESPONSES_SIMPLE_TEXT_INPUT,
+            "max_output_tokens": 100,
+        }
+
+        # Submit async request
+        initial = client.responses.create(
+            **request_params,
+            extra_headers={"x-bf-async": "true"},
+        )
+
+        assert initial.id is not None, "Async response should have an ID"
+        print(f"  Async job ID: {initial.id}")
+
+        # If completed synchronously, validate and return
+        if initial.status == "completed":
+            print("  Status: completed (sync)")
+            assert_valid_responses_response(initial)
+            print(f"  Result: {initial.output_text[:80]}...")
+            return
+
+        print("  Status: processing")
+
+        # Poll until completed
+        max_polls = 30
+        for i in range(max_polls):
+            time.sleep(2)
+            print(f"  Polling attempt {i + 1}/{max_polls}...")
+
+            poll = client.responses.create(
+                **request_params,
+                extra_headers={"x-bf-async-id": initial.id},
+            )
+
+            if poll.status == "completed":
+                print("  Status: completed")
+                assert_valid_responses_response(poll)
+                print(f"  Result: {poll.output_text[:80]}...")
+                print("✓ Async responses test passed!")
+                return
+
+        pytest.fail(f"Async job did not complete after {max_polls} polls")
+

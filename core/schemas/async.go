@@ -12,6 +12,15 @@ const (
 	AsyncJobStatusFailed     AsyncJobStatus = "failed"
 )
 
+const (
+	// AsyncHeaderResultTTL is the header containing the result TTL for async job retrieval.
+	AsyncHeaderResultTTL = "x-bf-async-job-result-ttl"
+	// AsyncHeaderCreate is the header that triggers async job creation on integration routes.
+	AsyncHeaderCreate = "x-bf-async"
+	// AsyncHeaderGetID is the header containing the job ID for async job retrieval on integration routes.
+	AsyncHeaderGetID = "x-bf-async-id"
+)
+
 // AsyncJobResponse is the JSON response returned when creating or polling an async job
 type AsyncJobResponse struct {
 	ID          string         `json:"id"`

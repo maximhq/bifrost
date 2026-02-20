@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -20,6 +22,9 @@ var availableIntegrations = []string{
 	"genai",
 	"litellm",
 	"langchain",
+	"bedrock",
+	"pydantic",
+	"cohere",
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -184,9 +189,15 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}, extraHeaders map[string]string) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
+
+	if extraHeaders != nil {
+		for key, value := range extraHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
+	}
 
 	responseBody, err := sonic.Marshal(response)
 	if err != nil {
@@ -313,6 +324,30 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	}
 
 	return nil, nil
+}
+
+// getVirtualKeyFromBifrostContext extracts the virtual key value from bifrost context.
+// Returns nil if no VK is present (e.g., direct key mode or no governance).
+func getVirtualKeyFromBifrostContext(ctx *schemas.BifrostContext) *string {
+	vkValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if vkValue == "" {
+		return nil
+	}
+	return &vkValue
+}
+
+// getResultTTLFromHeaderWithDefault extracts the result TTL from the x-bf-async-job-result-ttl header.
+// Returns the default TTL if the header is not present or invalid.
+func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int) int {
+	resultTTL := string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL))
+	if resultTTL == "" {
+		return defaultTTL
+	}
+	resultTTLInt, err := strconv.Atoi(resultTTL)
+	if err != nil || resultTTLInt < 0 {
+		return defaultTTL
+	}
+	return resultTTLInt
 }
 
 // isAnthropicAPIKeyAuth checks if the request uses standard API key authentication.

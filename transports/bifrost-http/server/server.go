@@ -880,10 +880,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
 	s.MCPServerHandler = mcpServerHandler
-	asyncHandler, err := handlers.NewAsyncHandler(s.Client, s.Config)
-	if err != nil {
-		return fmt.Errorf("failed to initialize async handler: %v", err)
-	}
+	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1121,6 +1118,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Load all plugins
 	if err := s.LoadPlugins(ctx); err != nil {
 		return fmt.Errorf("failed to instantiate plugins: %v", err)
+	}
+
+	// Initialize async job executor (requires LogsStore + governance plugin)
+	if s.Config.LogsStore != nil {
+		governancePlugin, govErr := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+		if govErr == nil {
+			s.Config.AsyncJobExecutor = logstore.NewAsyncJobExecutor(s.Config.LogsStore, governancePlugin.GetGovernanceStore(), logger)
+			logger.Info("async job executor initialized")
+		}
 	}
 
 	tableMCPConfig := s.Config.MCPConfig

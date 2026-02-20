@@ -43,6 +43,7 @@ Tests all core scenarios using Anthropic SDK directly:
 """
 
 import logging
+import time
 from typing import Any, Dict, List
 
 import pytest
@@ -2809,6 +2810,68 @@ This document is used to verify that the AI can read and understand text documen
             print(f"⚠ No search sources found (may indicate no search was performed)")
         
         print(f"✓ Sources validation test passed!")
+
+    # =========================================================================
+    # Async Inference Tests
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model", get_cross_provider_params_for_scenario("simple_chat")
+    )
+    def test_50_async_messages(self, anthropic_client, test_config, provider, model):
+        """Test Case 50: Async messages - submit and poll"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"\n=== Testing Async Messages for provider {provider} ===")
+        messages = convert_to_anthropic_messages(SIMPLE_CHAT_MESSAGES)
+
+        request_params = {
+            "model": format_provider_model(provider, model),
+            "messages": messages,
+            "max_tokens": 100,
+        }
+
+        # Submit async request
+        initial = anthropic_client.messages.create(
+            **request_params,
+            extra_headers={"x-bf-async": "true"},
+        )
+
+        assert initial.id is not None, "Async response should have an ID"
+        print(f"  Async job ID: {initial.id}")
+
+        # If completed synchronously (content is present), validate and return
+        if initial.content and len(initial.content) > 0:
+            print("  Status: completed (sync)")
+            assert initial.content[0].type == "text"
+            assert len(initial.content[0].text) > 0
+            print(f"  Result: {initial.content[0].text[:80]}...")
+            return
+
+        print("  Status: processing")
+
+        # Poll until completed
+        max_polls = 30
+        for i in range(max_polls):
+            time.sleep(2)
+            print(f"  Polling attempt {i + 1}/{max_polls}...")
+
+            poll = anthropic_client.messages.create(
+                **request_params,
+                extra_headers={"x-bf-async-id": initial.id},
+            )
+
+            if poll.content and len(poll.content) > 0:
+                print("  Status: completed")
+                assert poll.content[0].type == "text"
+                assert len(poll.content[0].text) > 0
+                print(f"  Result: {poll.content[0].text[:80]}...")
+                print("✓ Async messages test passed!")
+                return
+
+        pytest.fail(f"Async job did not complete after {max_polls} polls")
 
 
 # Additional helper functions specific to Anthropic
