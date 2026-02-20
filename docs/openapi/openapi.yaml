@@ -571,9 +571,9 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
 
   # MCP - OAuth
-  /api/mcp/oauth/callback:
+  /api/oauth/callback:
     $ref: './paths/management/oauth.yaml#/oauth-callback'
-  /api/mcp/oauth/{id}:
+  /api/oauth/config/{id}/status:
     $ref: './paths/management/oauth.yaml#/oauth-config-status'
 
   # Governance - Virtual Keys
