@@ -52,6 +52,7 @@ RerankDocument:
       description: Document text content
     id:
       type: string
+      minLength: 1
       description: Optional document identifier
     meta:
       type: object
