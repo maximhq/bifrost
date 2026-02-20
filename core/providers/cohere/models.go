@@ -6,6 +6,43 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// CohereRerankRequest represents a Cohere rerank API request.
+type CohereRerankRequest struct {
+	Model           string                 `json:"model"`
+	Query           string                 `json:"query"`
+	Documents       []string               `json:"documents"`
+	TopN            *int                   `json:"top_n,omitempty"`
+	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
+	Priority        *int                   `json:"priority,omitempty"`
+	ExtraParams     map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams returns extra parameters for the rerank request.
+func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// CohereRerankResult represents a single result from Cohere rerank.
+type CohereRerankResult struct {
+	Index          int                    `json:"index"`
+	RelevanceScore float64                `json:"relevance_score"`
+	Document       map[string]interface{} `json:"document,omitempty"`
+}
+
+// CohereRerankResponse represents a Cohere rerank API response.
+type CohereRerankResponse struct {
+	ID      string               `json:"id"`
+	Results []CohereRerankResult `json:"results"`
+	Meta    *CohereRerankMeta    `json:"meta,omitempty"`
+}
+
+// CohereRerankMeta represents metadata in Cohere rerank response.
+type CohereRerankMeta struct {
+	APIVersion  *CohereEmbeddingAPIVersion `json:"api_version,omitempty"`
+	BilledUnits *CohereBilledUnits         `json:"billed_units,omitempty"`
+	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
+}
+
 func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil

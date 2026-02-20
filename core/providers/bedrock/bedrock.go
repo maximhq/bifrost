@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -84,6 +85,31 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 // GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
+}
+
+func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *schemas.BifrostError {
+	fastResp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(fastResp)
+
+	fastResp.SetStatusCode(statusCode)
+	for k, values := range headers {
+		for _, value := range values {
+			fastResp.Header.Add(k, value)
+		}
+	}
+	fastResp.SetBody(body)
+
+	var errorResp BedrockError
+	bifrostErr := providerUtils.HandleProviderAPIError(fastResp, &errorResp)
+	if errorResp.Message != "" {
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = &schemas.ErrorField{}
+		}
+		bifrostErr.Error.Message = errorResp.Message
+		bifrostErr.Error.Code = errorResp.Code
+	}
+
+	return bifrostErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -300,36 +326,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
-
-		var rawErrorResponse interface{}
-		if err := sonic.Unmarshal(body, &rawErrorResponse); err != nil {
-			rawErrorResponse = string(body)
-		}
-
-		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, latency, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RawResponse: rawErrorResponse,
-				},
-			}
-		}
-
-		return nil, latency, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Message,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RawResponse: rawErrorResponse,
-			},
-		}
+		return nil, latency, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
 	}
 
 	return body, latency, nil
@@ -1667,16 +1664,19 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		return nil, providerUtils.NewConfigurationError("bedrock key config is not provided", providerName)
 	}
 
-	modelARN, deployment, err := resolveBedrockRerankModelARN(request.Model, key)
-	if err != nil {
-		return nil, providerUtils.NewConfigurationError(err.Error(), providerName)
+	deployment := strings.TrimSpace(resolveBedrockDeployment(request.Model, key))
+	if deployment == "" {
+		return nil, providerUtils.NewConfigurationError("bedrock rerank model is empty", providerName)
+	}
+	if !strings.HasPrefix(deployment, "arn:") {
+		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("bedrock rerank requires an ARN model identifier; got %q", deployment), providerName)
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToBedrockRerankRequest(request, modelARN)
+			return ToBedrockRerankRequest(request, deployment)
 		},
 		providerName,
 	)
@@ -1695,17 +1695,9 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, rawResponseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	bifrostResponse := response.ToBifrostRerankResponse()
+	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
+	bifrostResponse := response.ToBifrostRerankResponse(request.Documents, returnDocuments)
 	bifrostResponse.Model = request.Model
-
-	if request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments {
-		for i := range bifrostResponse.Results {
-			resultIndex := bifrostResponse.Results[i].Index
-			if resultIndex >= 0 && resultIndex < len(request.Documents) {
-				bifrostResponse.Results[i].Document = schemas.Ptr(request.Documents[resultIndex])
-			}
-		}
-	}
 
 	bifrostResponse.ExtraFields.Provider = providerName
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
@@ -3399,12 +3391,7 @@ func (provider *BedrockProvider) BatchResults(ctx *schemas.BifrostContext, keys 
 }
 
 func (provider *BedrockProvider) getModelPath(basePath string, model string, key schemas.Key) (string, string) {
-	deployment := model
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Deployments != nil {
-		if mapped, ok := key.BedrockKeyConfig.Deployments[model]; ok && mapped != "" {
-			deployment = mapped
-		}
-	}
+	deployment := resolveBedrockDeployment(model, key)
 	// Default: use model/deployment directly
 	path := fmt.Sprintf("%s/%s", deployment, basePath)
 	// If ARN is present, Bedrock expects the ARN-scoped identifier
@@ -3413,6 +3400,16 @@ func (provider *BedrockProvider) getModelPath(basePath string, model string, key
 		path = fmt.Sprintf("%s/%s", encodedModelIdentifier, basePath)
 	}
 	return path, deployment
+}
+
+func resolveBedrockDeployment(model string, key schemas.Key) string {
+	deployment := model
+	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Deployments != nil {
+		if mapped, ok := key.BedrockKeyConfig.Deployments[model]; ok && mapped != "" {
+			deployment = mapped
+		}
+	}
+	return deployment
 }
 
 func (provider *BedrockProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {

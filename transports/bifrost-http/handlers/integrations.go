@@ -21,7 +21,6 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 	extensions := []integrations.ExtensionRouter{
 		integrations.NewOpenAIRouter(client, handlerStore, logger),
 		integrations.NewAnthropicRouter(client, handlerStore, logger),
-		integrations.NewCohereRouter(client, handlerStore, logger),
 		integrations.NewGenAIRouter(client, handlerStore, logger),
 		integrations.NewLiteLLMRouter(client, handlerStore, logger),
 		integrations.NewLangChainRouter(client, handlerStore, logger),

@@ -942,20 +942,6 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 			}
 		}
 	}
-	if req.Params != nil && req.Params.TopN != nil && *req.Params.TopN < 1 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "top_n must be at least 1",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.RerankRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
-		}
-	}
-
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.RerankRequest
 	bifrostReq.RerankRequest = req

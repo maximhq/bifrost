@@ -56,12 +56,11 @@ func removeVertexClient(authCredentials string) {
 
 // VertexProvider implements the Provider interface for Google's Vertex AI API.
 type VertexProvider struct {
-	logger               schemas.Logger        // Logger for provider operations
-	client               *fasthttp.Client      // HTTP client for API requests
-	networkConfig        schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest   bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse  bool                  // Whether to include raw response in BifrostResponse
-	customProviderConfig *schemas.CustomProviderConfig
+	logger              schemas.Logger        // Logger for provider operations
+	client              *fasthttp.Client      // HTTP client for API requests
+	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
+	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
+	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 }
 
 // NewVertexProvider creates a new Vertex provider instance.
@@ -79,12 +78,11 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 	return &VertexProvider{
-		logger:               logger,
-		client:               client,
-		networkConfig:        config.NetworkConfig,
-		sendBackRawRequest:   config.SendBackRawRequest,
-		sendBackRawResponse:  config.SendBackRawResponse,
-		customProviderConfig: config.CustomProviderConfig,
+		logger:              logger,
+		client:              client,
+		networkConfig:       config.NetworkConfig,
+		sendBackRawRequest:  config.SendBackRawRequest,
+		sendBackRawResponse: config.SendBackRawResponse,
 	}, nil
 }
 
@@ -118,7 +116,7 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 
 // GetProviderKey returns the provider identifier for Vertex.
 func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
-	return providerUtils.GetProviderName(schemas.Vertex, provider.customProviderConfig)
+	return schemas.Vertex
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -1414,10 +1412,6 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 func (provider *VertexProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.RerankRequest); err != nil {
-		return nil, err
-	}
-
 	if key.VertexKeyConfig == nil {
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
@@ -1786,10 +1780,6 @@ func (provider *VertexProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 // Returns a BifrostResponse containing the images and any error that occurred.
 func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-
-	if err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
-		return nil, err
-	}
 
 	if key.VertexKeyConfig == nil {
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)

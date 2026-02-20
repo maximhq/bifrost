@@ -73,7 +73,7 @@ func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 				},
 			},
 		},
-	}).ToBifrostRerankResponse()
+	}).ToBifrostRerankResponse(nil, false)
 
 	require.NotNil(t, response)
 	require.Len(t, response.Results, 3)
@@ -83,6 +83,53 @@ func TestBedrockRerankResponseToBifrostRerankResponse(t *testing.T) {
 	assert.Equal(t, 2, response.Results[2].Index)
 	assert.Equal(t, "doc-0", response.Results[0].Document.Text)
 	assert.Equal(t, "doc-1", response.Results[1].Document.Text)
+}
+
+func TestBedrockRerankResponseToBifrostRerankResponseReturnDocuments(t *testing.T) {
+	requestDocs := []schemas.RerankDocument{
+		{Text: "request-doc-0"},
+		{Text: "request-doc-1"},
+		{Text: "request-doc-2"},
+	}
+
+	response := (&BedrockRerankResponse{
+		Results: []BedrockRerankResult{
+			{
+				Index:          2,
+				RelevanceScore: 0.21,
+				Document: &BedrockRerankResponseDocument{
+					TextDocument: &BedrockRerankTextValue{Text: "provider-doc-2"},
+				},
+			},
+			{
+				Index:          1,
+				RelevanceScore: 0.95,
+				Document: &BedrockRerankResponseDocument{
+					TextDocument: &BedrockRerankTextValue{Text: "provider-doc-1"},
+				},
+			},
+			{
+				Index:          0,
+				RelevanceScore: 0.95,
+				Document: &BedrockRerankResponseDocument{
+					TextDocument: &BedrockRerankTextValue{Text: "provider-doc-0"},
+				},
+			},
+		},
+	}).ToBifrostRerankResponse(requestDocs, true)
+
+	require.NotNil(t, response)
+	require.Len(t, response.Results, 3)
+	require.NotNil(t, response.Results[0].Document)
+	require.NotNil(t, response.Results[1].Document)
+	require.NotNil(t, response.Results[2].Document)
+
+	assert.Equal(t, 0, response.Results[0].Index)
+	assert.Equal(t, 1, response.Results[1].Index)
+	assert.Equal(t, 2, response.Results[2].Index)
+	assert.Equal(t, "request-doc-0", response.Results[0].Document.Text)
+	assert.Equal(t, "request-doc-1", response.Results[1].Document.Text)
+	assert.Equal(t, "request-doc-2", response.Results[2].Document.Text)
 }
 
 func TestBedrockRerankRequestToBifrostRerankRequest(t *testing.T) {
@@ -146,7 +193,7 @@ func TestBedrockRerankRequestToBifrostRerankRequestNil(t *testing.T) {
 	assert.Nil(t, req.ToBifrostRerankRequest(nil))
 }
 
-func TestResolveBedrockRerankModelARN(t *testing.T) {
+func TestResolveBedrockDeployment(t *testing.T) {
 	key := schemas.Key{
 		BedrockKeyConfig: &schemas.BedrockKeyConfig{
 			Deployments: map[string]string{
@@ -155,12 +202,33 @@ func TestResolveBedrockRerankModelARN(t *testing.T) {
 		},
 	}
 
-	arn, deployment, err := resolveBedrockRerankModelARN("cohere-rerank", key)
-	require.NoError(t, err)
-	assert.Equal(t, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", arn)
-	assert.Equal(t, arn, deployment)
+	deployment := resolveBedrockDeployment("cohere-rerank", key)
+	assert.Equal(t, "arn:aws:bedrock:us-east-1::foundation-model/cohere.rerank-v3-5:0", deployment)
+	assert.Equal(t, "cohere.rerank-v3-5:0", resolveBedrockDeployment("cohere.rerank-v3-5:0", key))
+	assert.Equal(t, "", resolveBedrockDeployment("", key))
+}
 
-	_, _, err = resolveBedrockRerankModelARN("cohere.rerank-v3-5:0", key)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires an ARN")
+func TestBedrockRerankRequiresARNModelIdentifier(t *testing.T) {
+	provider := &BedrockProvider{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{
+		BedrockKeyConfig: &schemas.BedrockKeyConfig{
+			Deployments: map[string]string{
+				"cohere-rerank": "cohere.rerank-v3-5:0",
+			},
+		},
+	}
+
+	response, bifrostErr := provider.Rerank(ctx, key, &schemas.BifrostRerankRequest{
+		Model: "cohere-rerank",
+		Query: "capital of france",
+		Documents: []schemas.RerankDocument{
+			{Text: "Paris is the capital of France."},
+		},
+	})
+
+	require.Nil(t, response)
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "requires an ARN")
 }

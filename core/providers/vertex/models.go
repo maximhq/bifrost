@@ -9,6 +9,47 @@ import (
 	"golang.org/x/text/language"
 )
 
+// VertexRankRequest represents the Discovery Engine rank API request.
+type VertexRankRequest struct {
+	Model                         *string            `json:"model,omitempty"`
+	Query                         string             `json:"query"`
+	Records                       []VertexRankRecord `json:"records"`
+	TopN                          *int               `json:"topN,omitempty"`
+	IgnoreRecordDetailsInResponse *bool              `json:"ignoreRecordDetailsInResponse,omitempty"`
+	UserLabels                    map[string]string  `json:"userLabels,omitempty"`
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (*VertexRankRequest) GetExtraParams() map[string]interface{} {
+	return nil
+}
+
+// VertexRankRecord represents a record for ranking.
+type VertexRankRecord struct {
+	ID      string  `json:"id"`
+	Title   *string `json:"title,omitempty"`
+	Content *string `json:"content,omitempty"`
+}
+
+// VertexRankResponse represents the Discovery Engine rank API response.
+type VertexRankResponse struct {
+	Records []VertexRankedRecord `json:"records"`
+}
+
+// VertexRankedRecord represents a ranked record in response.
+type VertexRankedRecord struct {
+	ID      string  `json:"id"`
+	Score   float64 `json:"score"`
+	Title   *string `json:"title,omitempty"`
+	Content *string `json:"content,omitempty"`
+}
+
+type vertexRerankOptions struct {
+	RankingConfig                 string
+	IgnoreRecordDetailsInResponse bool
+	UserLabels                    map[string]string
+}
+
 // formatDeploymentName converts a deployment alias into a human-readable name.
 // It splits the alias by "-" or "_", capitalizes each word, and joins them with spaces.
 // Example: "gemini-pro" → "Gemini Pro", "claude_3_opus" → "Claude 3 Opus"

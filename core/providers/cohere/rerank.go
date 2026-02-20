@@ -8,43 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// CohereRerankRequest represents a Cohere rerank API request
-type CohereRerankRequest struct {
-	Model           string                 `json:"model"`
-	Query           string                 `json:"query"`
-	Documents       []string               `json:"documents"`
-	TopN            *int                   `json:"top_n,omitempty"`
-	MaxTokensPerDoc *int                   `json:"max_tokens_per_doc,omitempty"`
-	Priority        *int                   `json:"priority,omitempty"`
-	ExtraParams     map[string]interface{} `json:"-"`
-}
-
-// GetExtraParams returns extra parameters for the rerank request.
-func (r *CohereRerankRequest) GetExtraParams() map[string]interface{} {
-	return r.ExtraParams
-}
-
-// CohereRerankResult represents a single result from Cohere rerank
-type CohereRerankResult struct {
-	Index          int                    `json:"index"`
-	RelevanceScore float64                `json:"relevance_score"`
-	Document       map[string]interface{} `json:"document,omitempty"`
-}
-
-// CohereRerankResponse represents a Cohere rerank API response
-type CohereRerankResponse struct {
-	ID      string               `json:"id"`
-	Results []CohereRerankResult `json:"results"`
-	Meta    *CohereRerankMeta    `json:"meta,omitempty"`
-}
-
-// CohereRerankMeta represents metadata in Cohere rerank response
-type CohereRerankMeta struct {
-	APIVersion  *CohereEmbeddingAPIVersion `json:"api_version,omitempty"`
-	BilledUnits *CohereBilledUnits         `json:"billed_units,omitempty"`
-	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
-}
-
 // ToCohereRerankRequest converts a Bifrost rerank request to Cohere format
 func ToCohereRerankRequest(bifrostReq *schemas.BifrostRerankRequest) *CohereRerankRequest {
 	if bifrostReq == nil {
@@ -111,8 +74,8 @@ func (req *CohereRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostConte
 	return bifrostReq
 }
 
-// ToBifrostRerankResponse converts a Cohere rerank response to Bifrost format
-func (response *CohereRerankResponse) ToBifrostRerankResponse() *schemas.BifrostRerankResponse {
+// ToBifrostRerankResponse converts a Cohere rerank response to Bifrost format.
+func (response *CohereRerankResponse) ToBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
 	if response == nil {
 		return nil
 	}
@@ -158,6 +121,14 @@ func (response *CohereRerankResponse) ToBifrostRerankResponse() *schemas.Bifrost
 		}
 		return bifrostResponse.Results[i].RelevanceScore > bifrostResponse.Results[j].RelevanceScore
 	})
+	if returnDocuments {
+		for i := range bifrostResponse.Results {
+			resultIndex := bifrostResponse.Results[i].Index
+			if resultIndex >= 0 && resultIndex < len(documents) {
+				bifrostResponse.Results[i].Document = schemas.Ptr(documents[resultIndex])
+			}
+		}
+	}
 
 	// Convert usage information
 	if response.Meta != nil {

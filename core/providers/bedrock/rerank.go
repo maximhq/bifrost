@@ -16,73 +16,6 @@ const (
 	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
 )
 
-// BedrockRerankRequest is the Bedrock Agent Runtime rerank request body.
-type BedrockRerankRequest struct {
-	Queries                []BedrockRerankQuery          `json:"queries"`
-	Sources                []BedrockRerankSource         `json:"sources"`
-	RerankingConfiguration BedrockRerankingConfiguration `json:"rerankingConfiguration"`
-}
-
-// GetExtraParams implements RequestBodyWithExtraParams.
-func (*BedrockRerankRequest) GetExtraParams() map[string]interface{} {
-	return nil
-}
-
-type BedrockRerankQuery struct {
-	Type      string               `json:"type"`
-	TextQuery BedrockRerankTextRef `json:"textQuery"`
-}
-
-type BedrockRerankSource struct {
-	Type                 string                    `json:"type"`
-	InlineDocumentSource BedrockRerankInlineSource `json:"inlineDocumentSource"`
-}
-
-type BedrockRerankInlineSource struct {
-	Type         string                 `json:"type"`
-	TextDocument BedrockRerankTextValue `json:"textDocument"`
-}
-
-type BedrockRerankTextRef struct {
-	Text string `json:"text"`
-}
-
-type BedrockRerankTextValue struct {
-	Text string `json:"text"`
-}
-
-type BedrockRerankingConfiguration struct {
-	Type                          string                             `json:"type"`
-	BedrockRerankingConfiguration BedrockRerankingModelConfiguration `json:"bedrockRerankingConfiguration"`
-}
-
-type BedrockRerankingModelConfiguration struct {
-	ModelConfiguration BedrockRerankModelConfiguration `json:"modelConfiguration"`
-	NumberOfResults    *int                            `json:"numberOfResults,omitempty"`
-}
-
-type BedrockRerankModelConfiguration struct {
-	ModelARN                     string                 `json:"modelArn"`
-	AdditionalModelRequestFields map[string]interface{} `json:"additionalModelRequestFields,omitempty"`
-}
-
-// BedrockRerankResponse is the Bedrock Agent Runtime rerank response body.
-type BedrockRerankResponse struct {
-	Results   []BedrockRerankResult `json:"results"`
-	NextToken *string               `json:"nextToken,omitempty"`
-}
-
-type BedrockRerankResult struct {
-	Index          int                            `json:"index"`
-	RelevanceScore float64                        `json:"relevanceScore"`
-	Document       *BedrockRerankResponseDocument `json:"document,omitempty"`
-}
-
-type BedrockRerankResponseDocument struct {
-	Type         string                  `json:"type,omitempty"`
-	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
-}
-
 // ToBedrockRerankRequest converts a Bifrost rerank request into Bedrock Agent Runtime format.
 func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN string) (*BedrockRerankRequest, error) {
 	if bifrostReq == nil {
@@ -160,7 +93,7 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 }
 
 // ToBifrostRerankResponse converts a Bedrock rerank response into Bifrost format.
-func (response *BedrockRerankResponse) ToBifrostRerankResponse() *schemas.BifrostRerankResponse {
+func (response *BedrockRerankResponse) ToBifrostRerankResponse(documents []schemas.RerankDocument, returnDocuments bool) *schemas.BifrostRerankResponse {
 	if response == nil {
 		return nil
 	}
@@ -188,6 +121,15 @@ func (response *BedrockRerankResponse) ToBifrostRerankResponse() *schemas.Bifros
 		}
 		return bifrostResponse.Results[i].RelevanceScore > bifrostResponse.Results[j].RelevanceScore
 	})
+
+	if returnDocuments {
+		for i := range bifrostResponse.Results {
+			resultIndex := bifrostResponse.Results[i].Index
+			if resultIndex >= 0 && resultIndex < len(documents) {
+				bifrostResponse.Results[i].Document = schemas.Ptr(documents[resultIndex])
+			}
+		}
+	}
 
 	return bifrostResponse
 }
@@ -230,21 +172,4 @@ func (req *BedrockRerankRequest) ToBifrostRerankRequest(ctx *schemas.BifrostCont
 	}
 
 	return bifrostReq
-}
-
-func resolveBedrockRerankModelARN(model string, key schemas.Key) (modelARN string, deployment string, err error) {
-	deployment = strings.TrimSpace(model)
-	if key.BedrockKeyConfig != nil && key.BedrockKeyConfig.Deployments != nil {
-		if mapped, ok := key.BedrockKeyConfig.Deployments[model]; ok && strings.TrimSpace(mapped) != "" {
-			deployment = strings.TrimSpace(mapped)
-		}
-	}
-	if deployment == "" {
-		return "", "", fmt.Errorf("bedrock rerank model is empty")
-	}
-	if !strings.HasPrefix(deployment, "arn:") {
-		return "", deployment, fmt.Errorf("bedrock rerank requires an ARN model identifier; got %q", deployment)
-	}
-
-	return deployment, deployment, nil
 }

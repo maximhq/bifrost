@@ -942,16 +942,9 @@ func (provider *CohereProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	bifrostResponse := response.ToBifrostRerankResponse()
+	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
+	bifrostResponse := response.ToBifrostRerankResponse(request.Documents, returnDocuments)
 	bifrostResponse.Model = request.Model
-	if request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments {
-		for i := range bifrostResponse.Results {
-			resultIndex := bifrostResponse.Results[i].Index
-			if resultIndex >= 0 && resultIndex < len(request.Documents) {
-				bifrostResponse.Results[i].Document = schemas.Ptr(request.Documents[resultIndex])
-			}
-		}
-	}
 
 	// Set ExtraFields
 	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
