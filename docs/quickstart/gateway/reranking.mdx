@@ -76,11 +76,14 @@ curl --location 'http://localhost:8080/v1/rerank' \
   "model": "rerank-v3.5",
   "usage": {
     "prompt_tokens": 52,
+    "completion_tokens": 0,
     "total_tokens": 52
   },
   "extra_fields": {
     "request_type": "rerank",
-    "provider": "cohere"
+    "provider": "cohere",
+    "latency": 245,
+    "chunk_index": 0
   }
 }
 ```

@@ -13,10 +13,12 @@ RerankRequest:
       example: cohere/rerank-v3.5
     query:
       type: string
+      minLength: 1
       description: Query used to score and reorder documents
     documents:
       type: array
       description: Documents to rerank
+      minItems: 1
       items:
         $ref: '#/RerankDocument'
     fallbacks:
@@ -57,15 +59,21 @@ RerankDocument:
 
 RerankResponse:
   type: object
+  required:
+    - results
+    - model
   properties:
     id:
       type: string
+      description: Unique identifier for the rerank response
     results:
       type: array
+      description: Ranked results ordered by relevance score descending
       items:
         $ref: '#/RerankResult'
     model:
       type: string
+      description: Model used to perform reranking
     usage:
       $ref: './usage.yaml#/BifrostLLMUsage'
     extra_fields:
