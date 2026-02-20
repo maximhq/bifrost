@@ -21,6 +21,7 @@ export const KnownProvidersNames = [
 	"xai",
 	"replicate",
 	"vllm",
+	"runway",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -48,6 +49,12 @@ export const RequestTypes = [
 	"image_edit",
 	"image_edit_stream",
 	"image_variation",
+	"video_generation",
+	"video_retrieve",
+	"video_download",
+	"video_delete",
+	"video_list",
+	"video_remix",
 	"count_tokens",
 	// Container operations
 	"container_create",
@@ -84,6 +91,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	xai: "xAI",
 	replicate: "Replicate",
 	vllm: "vLLM",
+	runway: "Runway",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -146,7 +154,12 @@ export const RequestTypeLabels = {
 	image_edit: "Image Edit",
 	image_edit_stream: "Image Edit Stream",
 	image_variation: "Image Variation",
-
+	video_generation: "Video Generation",
+	video_retrieve: "Video Retrieve",
+	video_download: "Video Download",
+	video_delete: "Video Delete",
+	video_list: "Video List",
+	video_remix: "Video Remix",
 	count_tokens: "Count Tokens",
 
 	batch_create: "Batch Create",
@@ -212,7 +225,12 @@ export const RequestTypeColors = {
 	image_edit: "bg-emerald-100 text-emerald-800",
 	image_edit_stream: "bg-teal-100 text-teal-800",
 	image_variation: "bg-violet-100 text-violet-800",
-
+	video_generation: "bg-fuchsia-100 text-fuchsia-800",
+	video_retrieve: "bg-blue-100 text-blue-800",
+	video_download: "bg-purple-100 text-purple-800",
+	video_delete: "bg-rose-100 text-rose-800",
+	video_list: "bg-cyan-100 text-cyan-800",
+	video_remix: "bg-pink-100 text-pink-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
 
 	// Container operations

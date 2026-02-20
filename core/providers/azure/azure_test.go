@@ -38,7 +38,7 @@ func TestAzure(t *testing.T) {
 		TranscriptionModel:   "whisper",
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
-
+		VideoGenerationModel: "sora-2",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
@@ -67,6 +67,11 @@ func TestAzure(t *testing.T) {
 			ImageEdit:             false, // Model not deployed on Azure endpoint
 			ImageEditStream:       false, // Model not deployed on Azure endpoint
 			ImageVariation:        false, // Not supported by Azure
+			VideoGeneration:       true,
+			VideoDownload:         true,
+			VideoRetrieve:         true,
+			VideoList:             true,
+			VideoDelete:           true,
 		},
 		DisableParallelFor: []string{"Transcription"}, // Azure Whisper has 3 calls/minute quota
 	}
