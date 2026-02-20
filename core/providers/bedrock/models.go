@@ -19,6 +19,13 @@ func (*BedrockRerankRequest) GetExtraParams() map[string]interface{} {
 	return nil
 }
 
+const (
+	bedrockRerankQueryTypeText            = "TEXT"
+	bedrockRerankSourceTypeInline         = "INLINE"
+	bedrockRerankInlineDocumentTypeText   = "TEXT"
+	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
+)
+
 type BedrockRerankQuery struct {
 	Type      string               `json:"type"`
 	TextQuery BedrockRerankTextRef `json:"textQuery"`

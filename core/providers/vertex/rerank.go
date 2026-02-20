@@ -11,12 +11,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const (
-	vertexDefaultRankingConfigID   = "default_ranking_config"
-	vertexMaxRerankRecordsPerQuery = 200
-	vertexSyntheticRecordPrefix    = "idx:"
-)
-
 func buildVertexRankingConfig(projectID, rankingConfigOverride string) (string, error) {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {

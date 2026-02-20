@@ -9,13 +9,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-const (
-	bedrockRerankQueryTypeText            = "TEXT"
-	bedrockRerankSourceTypeInline         = "INLINE"
-	bedrockRerankInlineDocumentTypeText   = "TEXT"
-	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
-)
-
 // ToBedrockRerankRequest converts a Bifrost rerank request into Bedrock Agent Runtime format.
 func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN string) (*BedrockRerankRequest, error) {
 	if bifrostReq == nil {

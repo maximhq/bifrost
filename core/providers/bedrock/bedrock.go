@@ -25,7 +25,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -85,31 +84,6 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 // GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
-}
-
-func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *schemas.BifrostError {
-	fastResp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(fastResp)
-
-	fastResp.SetStatusCode(statusCode)
-	for k, values := range headers {
-		for _, value := range values {
-			fastResp.Header.Add(k, value)
-		}
-	}
-	fastResp.SetBody(body)
-
-	var errorResp BedrockError
-	bifrostErr := providerUtils.HandleProviderAPIError(fastResp, &errorResp)
-	if errorResp.Message != "" {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		bifrostErr.Error.Message = errorResp.Message
-		bifrostErr.Error.Code = errorResp.Code
-	}
-
-	return bifrostErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
@@ -612,24 +586,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
-
-		if err := sonic.Unmarshal(responseBody, &errorResp); err != nil {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				StatusCode:     &resp.StatusCode,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderResponseUnmarshal,
-					Error:   err,
-				},
-			}
-		}
-		return nil, &schemas.BifrostError{
-			StatusCode: &resp.StatusCode,
-			Error: &schemas.ErrorField{
-				Message: errorResp.Message,
-			},
-		}
+		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, responseBody)
 	}
 
 	// Parse Bedrock-specific response
@@ -2739,11 +2696,7 @@ func (provider *BedrockProvider) BatchCreate(ctx *schemas.BifrostContext, key sc
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		var errorResp BedrockError
-		if err := sonic.Unmarshal(body, &errorResp); err == nil && errorResp.Message != "" {
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Message, nil, resp.StatusCode, providerName, nil, nil), jsonData, body, sendBackRawRequest, sendBackRawResponse)
-		}
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(string(body), nil, resp.StatusCode, providerName, nil, nil), jsonData, body, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseBedrockHTTPError(resp.StatusCode, resp.Header, body), jsonData, body, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	var bedrockResp BedrockBatchJobResponse
@@ -2882,11 +2835,7 @@ func (provider *BedrockProvider) BatchList(ctx *schemas.BifrostContext, keys []s
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errorResp BedrockError
-		if err := sonic.Unmarshal(body, &errorResp); err == nil && errorResp.Message != "" {
-			return nil, providerUtils.NewProviderAPIError(errorResp.Message, nil, resp.StatusCode, providerName, nil, nil)
-		}
-		return nil, providerUtils.NewProviderAPIError(string(body), nil, resp.StatusCode, providerName, nil, nil)
+		return nil, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
 	}
 
 	var bedrockResp BedrockBatchJobListResponse
@@ -3077,12 +3026,7 @@ func (provider *BedrockProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			var errorResp BedrockError
-			if err := sonic.Unmarshal(body, &errorResp); err == nil && errorResp.Message != "" {
-				lastErr = providerUtils.NewProviderAPIError(errorResp.Message, nil, resp.StatusCode, providerName, nil, nil)
-			} else {
-				lastErr = providerUtils.NewProviderAPIError(string(body), nil, resp.StatusCode, providerName, nil, nil)
-			}
+			lastErr = parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
 			continue
 		}
 
@@ -3226,12 +3170,7 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			var errorResp BedrockError
-			if err := sonic.Unmarshal(body, &errorResp); err == nil && errorResp.Message != "" {
-				lastErr = providerUtils.NewProviderAPIError(errorResp.Message, nil, resp.StatusCode, providerName, nil, nil)
-			} else {
-				lastErr = providerUtils.NewProviderAPIError(string(body), nil, resp.StatusCode, providerName, nil, nil)
-			}
+			lastErr = parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
 			continue
 		}
 
