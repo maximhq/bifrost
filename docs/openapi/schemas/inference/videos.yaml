@@ -1,0 +1,246 @@
+# Video Generation Schemas
+
+VideoGenerationRequest:
+  type: object
+  required:
+    - model
+    - prompt
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    prompt:
+      type: string
+      description: Text prompt describing the video to generate
+    input_reference:
+      type: string
+      description: Optional reference image for image-to-video (base64 data URL or plain URL)
+    seconds:
+      type: integer
+      minimum: 1
+      maximum: 60
+      description: Duration of the video in seconds
+    size:
+      type: string
+      description: Resolution of the generated video (e.g., `1280x720`, `720x1280`, `1920x1080`)
+    negative_prompt:
+      type: string
+      description: Text describing what to avoid in the generated video
+    seed:
+      type: integer
+      description: Seed for reproducible generation
+    video_uri:
+      type: string
+      description: Source video URI for video-to-video generation (provider-specific, e.g. GCS URI)
+    audio:
+      type: boolean
+      description: Enable audio generation in the video (supported by select providers/models)
+    fallbacks:
+      type: array
+      items:
+        $ref: './common.yaml#/Fallback'
+      description: Fallback models to try if primary model fails
+
+VideoGenerationResponse:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the video generation job (format `provider:id`)
+    object:
+      type: string
+      enum:
+        - "video"
+      description: Object type, always "video"
+    model:
+      type: string
+      description: Model used for video generation
+    status:
+      $ref: '#/VideoStatus'
+    progress:
+      type: number
+      format: float
+      minimum: 0
+      maximum: 100
+      description: Approximate completion percentage (0-100)
+    prompt:
+      type: string
+      description: Prompt used to generate the video
+    remixed_from_video_id:
+      type: string
+      description: Source video ID if this is a remix
+    seconds:
+      type: integer
+      description: Duration of the generated video in seconds
+    size:
+      $ref: '#/VideoSize'
+    created_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when the job was created
+    completed_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when the job completed
+    expires_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when downloadable assets expire
+    videos:
+      type: array
+      description: Generated video outputs (only present when status is "completed")
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+            enum:
+              - "url"
+              - "base64"
+            description: Output format of this video
+          url:
+            type: string
+            format: uri
+            description: URL to the generated video (present when type is "url")
+          base64:
+            type: string
+            description: Base64-encoded video content (present when type is "base64")
+          content_type:
+            type: string
+            description: MIME type of the video (e.g., "video/mp4")
+    error:
+      $ref: '#/VideoError'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+VideoRemixRequest:
+  type: object
+  required:
+    - prompt
+  properties:
+    prompt:
+      type: string
+      description: Text prompt describing how to remix the video
+    fallbacks:
+      type: array
+      items:
+        $ref: './common.yaml#/Fallback'
+      description: Fallback models to try if primary model fails
+
+VideoListResponse:
+  type: object
+  properties:
+    object:
+      type: string
+      enum:
+        - "list"
+      description: Object type, always "list"
+    data:
+      type: array
+      items:
+        $ref: '#/VideoObject'
+      description: Array of video generation jobs
+    first_id:
+      type: string
+      description: ID of the first item in the list
+    last_id:
+      type: string
+      description: ID of the last item in the list
+    has_more:
+      type: boolean
+      description: Whether there are more results available
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+VideoObject:
+  type: object
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the video (format `provider:id`)
+    object:
+      type: string
+      enum:
+        - "video"
+      description: Object type, always "video"
+    model:
+      type: string
+      description: Model used for generation
+    status:
+      $ref: '#/VideoStatus'
+    progress:
+      type: number
+      format: float
+      minimum: 0
+      maximum: 100
+      description: Approximate completion percentage (0-100)
+    prompt:
+      type: string
+      description: Prompt used to generate the video
+    remixed_from_video_id:
+      type: string
+      description: Source video ID if this is a remix
+    seconds:
+      type: integer
+      description: Duration of the video in seconds
+    size:
+      $ref: '#/VideoSize'
+    created_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when the job was created
+    completed_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when the job completed
+    expires_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when downloadable assets expire
+    error:
+      $ref: '#/VideoError'
+
+VideoDeleteResponse:
+  type: object
+  properties:
+    id:
+      type: string
+      description: ID of the deleted video
+    object:
+      type: string
+      enum:
+        - "video.deleted"
+      description: Object type, always "video.deleted"
+    deleted:
+      type: boolean
+      description: Whether the video was successfully deleted
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+VideoStatus:
+  type: string
+  enum:
+    - "queued"
+    - "in_progress"
+    - "completed"
+    - "failed"
+  description: |
+    Current lifecycle status of the video generation job:
+    - `queued`: Job is waiting to be processed
+    - `in_progress`: Video is currently being generated
+    - `completed`: Video generation completed successfully
+    - `failed`: Video generation failed
+
+VideoSize:
+  type: string
+  description: Resolution of the generated video (e.g., "1920x1080")
+
+VideoError:
+  type: object
+  properties:
+    code:
+      type: string
+      description: Error code
+    message:
+      type: string
+      description: Human-readable error message

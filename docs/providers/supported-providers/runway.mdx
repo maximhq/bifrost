@@ -1,0 +1,118 @@
+---
+title: "Runway ML"
+description: "Runway ML API conversion guide - text-to-video, image-to-video, and video-to-video generation"
+icon: "film"
+---
+
+## Overview
+
+Runway ML provides video generation via an asynchronous task-based API. Bifrost maps the unified video schema to Runway's task API and polls until completion.
+
+### Supported Operations
+
+| Operation | Supported | Endpoint |
+|-----------|-----------|----------|
+| Video Generation | ✅ | `/v1/text_to_video`, `/v1/image_to_video`, `/v1/video_to_video` |
+| Video Retrieve | ✅ | `/v1/tasks/{task_id}` |
+| Video Download | ✅ | via Retrieve + URL download |
+| Video Delete | ✅ | `/v1/tasks/{task_id}` (cancel) |
+| Video List | ❌ | - |
+| Video Remix | ❌ | - |
+
+---
+
+# 1. Video Generation
+
+<Note>
+Video IDs in Bifrost use `runway:{task_id}` format. Pass the full prefixed ID to all retrieve/download/delete endpoints.
+</Note>
+
+## Generate (`POST /v1/videos`)
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Runway model |
+| `prompt` | string | ✅ | Text description of the video |
+| `input_reference` | string | ❌ | Input image for image-to-video |
+| `seconds` | int | ❌ | Duration in seconds (default: `2`) |
+| `size` | string | ❌ | Resolution as `WxH` (e.g., `1280x720`; default: `1280x720`) — converted to `W:H` ratio |
+| `seed` | int | ❌ | **Gen models only** |
+| `audio` | bool | ❌ | Enable audio generation. **Veo models only** |
+| `video_uri` | string | ❌ | Source video URL for video-to-video. **gen4_aleph only** |
+
+**Extra Params**
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `references` | array | Video reference objects `[{"uri": "...", "tag": "..."}]` for video-to-video |
+| `content_moderation` | object | Content moderation config |
+| `reference_images` | array | Reference image objects for style/asset guidance |
+
+**Generation Modes** (auto-detected from inputs)
+
+- **Text-to-video**: `prompt` only
+- **Image-to-video**: `prompt` + `input_reference`
+- **Video-to-video**: `prompt` + `video_uri` — **gen4_aleph only**
+
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/maximhq/bifrost/blob/main/core/schemas/videos.go) with `id`, `status`, `videos[]`
+
+**Job Statuses**: `queued` → `in_progress` → `completed` / `failed`
+
+## Retrieve / Download / Delete
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed` |
+| Download content | `GET /v1/videos/{id}/content` | Returns raw video bytes (MP4) |
+| Cancel/Delete | `DELETE /v1/videos/{id}` | Cancels the running task |
+
+---
+
+## Configuration
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl --location 'http://localhost:8080/api/providers' \
+--header 'Content-Type: application/json' \
+--data '{
+    "provider": "runway",
+    "keys": [
+        {
+            "name": "runway-key-1",
+            "value": "env.RUNWAY_API_KEY",
+            "models": [],
+            "weight": 1.0
+        }
+    ]
+}'
+```
+
+See **[Provider Configuration](../../quickstart/gateway/provider-configuration)** for full setup options.
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Runway:
+    return []schemas.Key{{
+        Value:  os.Getenv("RUNWAY_API_KEY"),
+        Models: []string{},
+        Weight: 1.0,
+    }}, nil
+```
+
+See **[Provider Configuration](../../quickstart/go-sdk/provider-configuration)** for full setup options.
+
+</Tab>
+</Tabs>
+
+---
+
+## Reference Links
+
+- [Runway ML API Documentation](https://docs.dev.runwayml.com/)
+- [Runway ML Models](https://runwayml.com/research/)
