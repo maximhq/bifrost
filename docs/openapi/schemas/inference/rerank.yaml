@@ -48,6 +48,7 @@ RerankDocument:
   properties:
     text:
       type: string
+      minLength: 1
       description: Document text content
     id:
       type: string
@@ -87,6 +88,7 @@ RerankResult:
   properties:
     index:
       type: integer
+      minimum: 0
       description: Index into the original documents array
     relevance_score:
       type: number
