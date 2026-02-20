@@ -240,16 +240,28 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 		}
 	}
 
-	// Add integration-specific patterns from existing tools
+	// Add integration-specific patterns from existing tools.
+	// Known CLI tools and integrations may prefix tool names with a server/namespace
+	// using double-underscores (e.g. "mcp__myserver__tool_name"). We extract the
+	// bare tool name from the suffix so that MCP tools added by Bifrost are not
+	// appended a second time when the CLI already supplied a prefixed version.
+	//
+	// Supported integrations and their naming patterns:
+	// - Claude CLI: mcp__{server}__{tool}
+	// - Gemini CLI: mcp__{server}__{tool}
+	// - Qwen CLI:   mcp__{server}__{tool}
+	// - Cursor:     mcp__{server}__{tool}
+	// - Codex:      mcp__{server}__{tool}
+	// - n8n:        mcp__{server}__{tool}
 	switch integrationUserAgent {
 	case "claude-cli", "gemini-cli", "qwen-cli", "cursor", "codex", "n8n":
-		// Handle tool renaming patterns
 		for _, tool := range existingTools {
 			if tool.Function != nil && tool.Function.Name != "" {
 				existingToolName := tool.Function.Name
 				toolName := existingToolName
 
-				// If tool name contains double underscore, extract the last part
+				// If tool name contains double underscore, extract the last part.
+				// e.g. "mcp__myserver__read_file" → "read_file"
 				if strings.Contains(existingToolName, "__") {
 					parts := strings.Split(existingToolName, "__")
 					if len(parts) > 1 {
@@ -259,7 +271,7 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 
 				if toolName != "" {
 					duplicateCheckMap[toolName] = true
-					// Also keep the original pattern for direct matching
+					// Also keep the original prefixed name for direct matching.
 					duplicateCheckMap[existingToolName] = true
 				}
 			}

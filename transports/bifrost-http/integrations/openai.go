@@ -39,9 +39,6 @@ type OpenAIRouter struct {
 
 func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
-		// Detect CLI user agent for all OpenAI routes
-		DetectCLIUserAgent(ctx, bifrostCtx)
-
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
 		deploymentID := ctx.UserValue("deployment-id")
