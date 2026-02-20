@@ -7,6 +7,17 @@ export interface MemoryStats {
   heap_inuse: number
   heap_objects: number
   sys: number
+  // Detailed breakdown
+  heap_idle: number
+  heap_released: number
+  heap_sys: number
+  stack_inuse: number
+  stack_sys: number
+  mspan_inuse: number
+  mcache_inuse: number
+  buck_hash_sys: number
+  gc_sys: number
+  other_sys: number
 }
 
 // CPU statistics
@@ -25,13 +36,21 @@ export interface RuntimeStats {
   gomaxprocs: number
 }
 
-// Allocation info for top allocations
+// Single frame in a call stack
+export interface StackFrame {
+  function: string
+  file: string
+  line: number
+}
+
+// Allocation info for top allocations with full call stack
 export interface AllocationInfo {
   function: string
   file: string
   line: number
   bytes: number
   count: number
+  stack: StackFrame[]
 }
 
 // Single point in the metrics history
@@ -81,6 +100,23 @@ export interface GoroutineProfile {
   summary: GoroutineSummary
 }
 
+// Pool statistics for a single object pool
+export interface PoolStats {
+  name: string
+  acquires: number
+  releases: number
+  creates: number
+  active: number
+  hit_rate: number
+}
+
+// Pool stats response from /api/dev/pprof/pools
+export interface PoolStatsResponse {
+  timestamp: string
+  build: string // "debug" or "production"
+  pools: PoolStats[]
+}
+
 export const devApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
     // Get dev pprof data - polls every 10 seconds
@@ -95,6 +131,12 @@ export const devApi = baseApi.injectEndpoints({
         url: '/dev/pprof/goroutines',
       }),
     }),
+    // Get pool statistics for object pool tracking
+    getDevPoolStats: builder.query<PoolStatsResponse, void>({
+      query: () => ({
+        url: '/dev/pprof/pools',
+      }),
+    }),
   }),
 })
 
@@ -103,5 +145,7 @@ export const {
   useLazyGetDevPprofQuery,
   useGetDevGoroutinesQuery,
   useLazyGetDevGoroutinesQuery,
+  useGetDevPoolStatsQuery,
+  useLazyGetDevPoolStatsQuery,
 } = devApi
 

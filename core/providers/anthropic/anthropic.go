@@ -550,8 +550,9 @@ func HandleAnthropicChatCompletionStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		chunkIndex := 0
 
@@ -685,27 +686,26 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
-						response := &schemas.BifrostChatResponse{
-							ID:     messageID,
-							Object: "chat.completion.chunk",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: &content,
-										},
-									},
+					response := schemas.AcquireBifrostChatResponse()
+					response.ID = messageID
+					response.Object = "chat.completion.chunk"
+					response.Choices = []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									Content: &content,
 								},
 							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       providerName,
-								ModelRequested: modelName,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
+						},
+					}
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionStreamRequest,
+						Provider:       providerName,
+						ModelRequested: modelName,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					}
 						lastChunkTime = time.Now()
 						chunkIndex++
 
@@ -727,11 +727,12 @@ func HandleAnthropicChatCompletionStreaming(
 
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					Provider:       providerName,
-					ModelRequested: modelName,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = modelName
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				break
@@ -1099,11 +1100,12 @@ func HandleAnthropicResponsesStream(
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       providerName,
-					ModelRequested: modelName,
-				}
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+				}	
+				bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = modelName
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
 					return
@@ -1139,7 +1141,7 @@ func HandleAnthropicResponsesStream(
 
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
-							response.Response = &schemas.BifrostResponsesResponse{}
+							response.Response = schemas.AcquireBifrostResponsesResponse()
 						}
 						response.Response.Usage = usage
 						// Set raw request if enabled

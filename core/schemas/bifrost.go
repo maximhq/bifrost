@@ -4,6 +4,9 @@ package schemas
 import (
 	"encoding/json"
 	"errors"
+	"sync"
+
+	"github.com/maximhq/bifrost/core/pool"
 )
 
 const (
@@ -627,6 +630,27 @@ type BifrostMCPResponse struct {
 	ExtraFields      BifrostMCPResponseExtraFields
 }
 
+// bifrostMCPResponsePool provides a pool for BifrostMCPResponse objects.
+var bifrostMCPResponsePool = pool.New[BifrostMCPResponse]("BifrostMCPResponse", func() *BifrostMCPResponse {
+	return &BifrostMCPResponse{}
+})
+
+// AcquireBifrostMCPResponse gets a BifrostMCPResponse from the pool and resets it.
+func AcquireBifrostMCPResponse() *BifrostMCPResponse {
+	return bifrostMCPResponsePool.Get()
+}
+
+// ReleaseBifrostMCPResponse returns a BifrostMCPResponse to the pool.
+func ReleaseBifrostMCPResponse(r *BifrostMCPResponse) {
+	if r == nil {
+		return
+	}
+	r.ChatMessage = nil
+	r.ResponsesMessage = nil
+	r.ExtraFields = BifrostMCPResponseExtraFields{}
+	bifrostMCPResponsePool.Put(r)
+}
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType             RequestType        `json:"request_type"`
@@ -641,6 +665,36 @@ type BifrostResponseExtraFields struct {
 	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
 	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
+}
+
+// bifrostResponseExtraFieldsPool provides a pool for BifrostResponseExtraFields objects.
+var bifrostResponseExtraFieldsPool = pool.New[BifrostResponseExtraFields]("BifrostResponseExtraFields", func() *BifrostResponseExtraFields {
+	return &BifrostResponseExtraFields{}
+})
+
+// AcquireBifrostResponseExtraFields gets a BifrostResponseExtraFields from the pool and resets it.
+func AcquireBifrostResponseExtraFields() *BifrostResponseExtraFields {
+	return bifrostResponseExtraFieldsPool.Get()
+}
+
+// ReleaseBifrostResponseExtraFields returns a BifrostResponseExtraFields to the pool.
+func ReleaseBifrostResponseExtraFields(r *BifrostResponseExtraFields) {
+	if r == nil {
+		return
+	}
+	r.RequestType = ""
+	r.Provider = ""
+	r.ModelRequested = ""
+	r.ModelDeployment = ""
+	r.Latency = 0
+	r.ChunkIndex = 0
+	r.RawRequest = nil
+	r.RawResponse = nil
+	r.CacheDebug = nil
+	r.ParseErrors = nil
+	r.LiteLLMCompat = false
+	r.ProviderResponseHeaders = nil
+	bifrostResponseExtraFieldsPool.Put(r)
 }
 
 type BifrostMCPResponseExtraFields struct {
@@ -712,14 +766,14 @@ func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
 type BifrostError struct {
-	EventID        *string                 `json:"event_id,omitempty"`
-	Type           *string                 `json:"type,omitempty"`
-	IsBifrostError bool                    `json:"is_bifrost_error"`
-	StatusCode     *int                    `json:"status_code,omitempty"`
-	Error          *ErrorField             `json:"error"`
-	AllowFallbacks *bool                   `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
-	StreamControl  *StreamControl          `json:"-"` // Optional: Controls stream behavior
-	ExtraFields    BifrostErrorExtraFields `json:"extra_fields"`
+	EventID        *string                  `json:"event_id,omitempty"`
+	Type           *string                  `json:"type,omitempty"`
+	IsBifrostError bool                     `json:"is_bifrost_error"`
+	StatusCode     *int                     `json:"status_code,omitempty"`
+	Error          *ErrorField              `json:"error"`
+	AllowFallbacks *bool                    `json:"-"` // Optional: Controls fallback behavior (nil = true by default)
+	StreamControl  *StreamControl           `json:"-"` // Optional: Controls stream behavior
+	ExtraFields    *BifrostErrorExtraFields `json:"extra_fields,omitempty"`
 }
 
 // StreamControl represents stream control options.
@@ -777,6 +831,29 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+var bifrostErrorFieldPool = pool.New("BifrostErrorField", func() *ErrorField {
+	return &ErrorField{}
+})
+
+// AcquireBifrostErrorField gets a ErrorField from the pool and resets it.
+func AcquireBifrostErrorField() *ErrorField {
+	return bifrostErrorFieldPool.Get()
+}
+
+// ReleaseBifrostErrorField returns a ErrorField to the pool.
+func ReleaseBifrostErrorField(e *ErrorField) {
+	if e == nil {
+		return
+	}
+	e.Type = nil
+	e.Code = nil
+	e.Message = ""
+	e.Error = nil
+	e.Param = nil
+	e.EventID = nil
+	bifrostErrorFieldPool.Put(e)
+}
+
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
 	Provider       ModelProvider `json:"provider,omitempty"`
@@ -786,4 +863,228 @@ type BifrostErrorExtraFields struct {
 	RawResponse    interface{}   `json:"raw_response,omitempty"`
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
 	KeyStatuses    []KeyStatus   `json:"-"`
+}
+
+// AcquireBifrostErrorExtraFields gets a BifrostErrorExtraFields from the pool and resets it.
+var bifrostErrorExtraFieldsPool = pool.New("BifrostErrorExtraFields", func() *BifrostErrorExtraFields {
+	return &BifrostErrorExtraFields{}
+})
+
+// AcquireBifrostErrorExtraFields gets a BifrostErrorExtraFields from the pool and resets it.
+func AcquireBifrostErrorExtraFields() *BifrostErrorExtraFields {
+	return bifrostErrorExtraFieldsPool.Get()
+}
+
+// ReleaseBifrostErrorExtraFields returns a BifrostErrorExtraFields to the pool.
+func ReleaseBifrostErrorExtraFields(r *BifrostErrorExtraFields) {
+	if r == nil {
+		return
+	}
+	r.Provider = ""
+	r.ModelRequested = ""
+	r.RequestType = ""
+	r.RawRequest = nil
+	r.RawResponse = nil
+	r.LiteLLMCompat = false
+	r.KeyStatuses = nil
+	bifrostErrorExtraFieldsPool.Put(r)
+}
+
+// bifrostErrorPool provides a pool for BifrostError objects to reduce allocations
+// during streaming error detection. This is particularly useful in streaming handlers
+// where error checking happens on every chunk but errors are rare.
+var bifrostErrorPool = pool.New("BifrostError", func() *BifrostError {
+	return &BifrostError{}
+})
+
+// AcquireBifrostError gets a BifrostError from the pool and resets it.
+// Use this for streaming error detection to avoid allocations on every chunk.
+func AcquireBifrostError() *BifrostError {
+	err := bifrostErrorPool.Get()
+	err.Error = AcquireBifrostErrorField()
+	err.StatusCode = nil
+	err.Type = nil
+	err.EventID = nil
+	return err
+}
+
+// ReleaseBifrostError returns a BifrostError to the pool.
+// Do NOT release errors that are passed to error handlers or sent on channels,
+// as they may still be in use.
+func ReleaseBifrostError(err *BifrostError) {
+	if err != nil {
+		err.IsBifrostError = false
+		if err.Error != nil {
+			ReleaseBifrostErrorField(err.Error)
+			err.Error = nil
+		}
+		err.AllowFallbacks = nil
+		err.StreamControl = nil
+		
+		if err.ExtraFields != nil {
+			ReleaseBifrostErrorExtraFields(err.ExtraFields)
+			err.ExtraFields = nil
+		}
+		bifrostErrorPool.Put(err)
+	}
+}
+
+// bifrostRequestPool provides a pool for BifrostRequest objects to reduce allocations.
+// BifrostRequest is a container struct with pointers to specific request types.
+var bifrostRequestPool = pool.New("BifrostRequest", func() *BifrostRequest {
+	return &BifrostRequest{}
+})
+
+// AcquireBifrostRequest gets a BifrostRequest from the pool and resets it.
+func AcquireBifrostRequest() *BifrostRequest {
+	return bifrostRequestPool.Get()
+}
+
+// ReleaseBifrostRequest returns a BifrostRequest to the pool.
+func ReleaseBifrostRequest(br *BifrostRequest) {
+	if br == nil {
+		return
+	}
+	// Nil all pointer fields to break references and allow GC of inner structs
+	br.RequestType = ""
+	br.ListModelsRequest = nil
+	br.TextCompletionRequest = nil
+	br.ChatRequest = nil
+	br.ResponsesRequest = nil
+	br.CountTokensRequest = nil
+	br.EmbeddingRequest = nil
+	br.SpeechRequest = nil
+	br.TranscriptionRequest = nil
+	br.ImageGenerationRequest = nil
+	br.ImageEditRequest = nil
+	br.ImageVariationRequest = nil
+	br.FileUploadRequest = nil
+	br.FileListRequest = nil
+	br.FileRetrieveRequest = nil
+	br.FileDeleteRequest = nil
+	br.FileContentRequest = nil
+	br.BatchCreateRequest = nil
+	br.BatchListRequest = nil
+	br.BatchRetrieveRequest = nil
+	br.BatchCancelRequest = nil
+	br.BatchResultsRequest = nil
+	br.ContainerCreateRequest = nil
+	br.ContainerListRequest = nil
+	br.ContainerRetrieveRequest = nil
+	br.ContainerDeleteRequest = nil
+	br.ContainerFileCreateRequest = nil
+	br.ContainerFileListRequest = nil
+	br.ContainerFileRetrieveRequest = nil
+	br.ContainerFileContentRequest = nil
+	br.ContainerFileDeleteRequest = nil
+	bifrostRequestPool.Put(br)
+}
+
+// bifrostResponsePool provides a pool for BifrostResponse wrapper objects to reduce
+// per-chunk allocations during streaming. The BifrostResponse is a temporary container
+// that wraps inner response pointers; it is no longer needed after the BifrostStreamChunk
+// copies those pointers and is sent on the channel.
+var bifrostResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostResponse{}
+	},
+}
+
+// AcquireBifrostResponse gets a BifrostResponse from the pool and resets it.
+func AcquireBifrostResponse() *BifrostResponse {
+	r := bifrostResponsePool.Get().(*BifrostResponse)
+	*r = BifrostResponse{}
+	return r
+}
+
+// ReleaseBifrostResponse returns a BifrostResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Deprecated: Use r.Release() instead for consistency.
+func ReleaseBifrostResponse(r *BifrostResponse) {
+	if r != nil {
+		r.Release()
+	}
+}
+
+// Release returns a BifrostResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling Release().
+func (r *BifrostResponse) Release() {
+	if r == nil {
+		return
+	}
+	// Nil all pointer fields to break references and allow GC of inner structs
+	r.ListModelsResponse = nil
+	r.TextCompletionResponse = nil
+	r.ChatResponse = nil
+	r.ResponsesResponse = nil
+	r.ResponsesStreamResponse = nil
+	r.CountTokensResponse = nil
+	r.EmbeddingResponse = nil
+	r.SpeechResponse = nil
+	r.SpeechStreamResponse = nil
+	r.TranscriptionResponse = nil
+	r.TranscriptionStreamResponse = nil
+	r.ImageGenerationResponse = nil
+	r.ImageGenerationStreamResponse = nil
+	r.FileUploadResponse = nil
+	r.FileListResponse = nil
+	r.FileRetrieveResponse = nil
+	r.FileDeleteResponse = nil
+	r.FileContentResponse = nil
+	r.BatchCreateResponse = nil
+	r.BatchListResponse = nil
+	r.BatchRetrieveResponse = nil
+	r.BatchCancelResponse = nil
+	r.BatchResultsResponse = nil
+	r.ContainerCreateResponse = nil
+	r.ContainerListResponse = nil
+	r.ContainerRetrieveResponse = nil
+	r.ContainerDeleteResponse = nil
+	r.ContainerFileCreateResponse = nil
+	r.ContainerFileListResponse = nil
+	r.ContainerFileRetrieveResponse = nil
+	r.ContainerFileContentResponse = nil
+	r.ContainerFileDeleteResponse = nil
+	bifrostResponsePool.Put(r)
+}
+
+// bifrostStreamChunkPool provides a pool for BifrostStreamChunk objects to reduce
+// per-chunk allocations during streaming. Each chunk sent on the streaming channel
+// allocates a BifrostStreamChunk; pooling avoids this heap allocation.
+var bifrostStreamChunkPool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostStreamChunk{}
+	},
+}
+
+// AcquireBifrostStreamChunk gets a BifrostStreamChunk from the pool and resets it.
+func AcquireBifrostStreamChunk() *BifrostStreamChunk {
+	c := bifrostStreamChunkPool.Get().(*BifrostStreamChunk)
+	*c = BifrostStreamChunk{}
+	return c
+}
+
+// ReleaseBifrostStreamChunk returns a BifrostStreamChunk to its pool.
+// NOTE: The inner BifrostChatResponse is NOT released here because post-hook
+// goroutines (e.g. PostLLMHook) may still hold a reference to it via the
+// original BifrostResponse. Releasing it while a goroutine reads it causes
+// a data race (nil-pointer panic on ChatResponse.Usage). The ChatResponse
+// is reclaimed by GC once all references are dropped.
+func ReleaseBifrostStreamChunk(c *BifrostStreamChunk) {
+	if c == nil {
+		return
+	}
+	// Release the BifrostError back to its pool if present
+	if c.BifrostError != nil {
+		ReleaseBifrostError(c.BifrostError)
+	}
+	c.BifrostChatResponse = nil
+	c.BifrostTextCompletionResponse = nil
+	c.BifrostResponsesStreamResponse = nil
+	c.BifrostSpeechStreamResponse = nil
+	c.BifrostTranscriptionStreamResponse = nil
+	c.BifrostImageGenerationStreamResponse = nil
+	c.BifrostError = nil
+	bifrostStreamChunkPool.Put(c)
 }

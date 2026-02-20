@@ -580,8 +580,9 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 
 		// Setup scanner to read SSE stream
 		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		messageID := prediction.ID
@@ -667,11 +668,12 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 							fmt.Errorf("stream ended: prediction canceled"),
 							provider.GetProviderKey(),
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.TextCompletionStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.TextCompletionStreamRequest
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
@@ -689,11 +691,12 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 							fmt.Errorf("stream ended with error"),
 							provider.GetProviderKey(),
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.TextCompletionStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.TextCompletionStreamRequest
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
@@ -959,8 +962,9 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 		// Setup scanner to read SSE stream
 		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		messageID := prediction.ID
@@ -1053,11 +1057,12 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 							fmt.Errorf("stream ended: prediction canceled"),
 							provider.GetProviderKey(),
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.ChatCompletionStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
@@ -1075,11 +1080,12 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 							fmt.Errorf("stream ended with error"),
 							provider.GetProviderKey(),
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.ChatCompletionStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
@@ -1344,14 +1350,12 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	if streamErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(streamErr, context.Canceled) {
-			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   streamErr,
-				},
-			}, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = streamErr
+			return nil, providerUtils.EnrichError(ctx, bfErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		if errors.Is(streamErr, fasthttp.ErrTimeout) || errors.Is(streamErr, context.DeadlineExceeded) {
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, streamErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -1721,11 +1725,12 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 							fmt.Errorf("stream error: %s", errorMsg),
 							provider.GetProviderKey(),
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.ResponsesStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
 
 						// Include accumulated raw responses in error
 						if sendBackRawResponse && len(rawResponseChunks) > 0 {
@@ -2002,8 +2007,9 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 
 		// Setup scanner to read SSE stream
 		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk
@@ -2109,11 +2115,12 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 							fmt.Errorf("stream ended: prediction canceled"),
 							providerName,
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest
 						// Include accumulated raw responses in error
 						if sendBackRawResponse && len(rawResponseChunks) > 0 {
 							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
@@ -2127,11 +2134,12 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 							fmt.Errorf("stream ended with error"),
 							providerName,
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest
 						// Include accumulated raw responses in error
 						if sendBackRawResponse && len(rawResponseChunks) > 0 {
 							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
@@ -2190,18 +2198,18 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 							errorMsg = errorData.Detail
 						}
 					}
-
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorMsg,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						},
+					bifrostErr := schemas.AcquireBifrostError()
+					bifrostErr.IsBifrostError = false
+					if bifrostErr.Error == nil {
+						bifrostErr.Error = schemas.AcquireBifrostErrorField()
 					}
+					bifrostErr.Error.Message = errorMsg
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+					}
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
+					bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest
 					// Include accumulated raw responses in error
 					if sendBackRawResponse {
 						rawResponseChunks = append(rawResponseChunks, currentEvent)
@@ -2439,8 +2447,9 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 
 		// Setup scanner to read SSE stream
 		scanner := bufio.NewScanner(bodyStream)
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk
@@ -2544,11 +2553,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 							fmt.Errorf("stream ended: prediction canceled"),
 							providerName,
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
 						if sendBackRawResponse && len(rawResponseChunks) > 0 {
 							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
 						}
@@ -2561,11 +2571,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 							fmt.Errorf("stream ended with error"),
 							providerName,
 						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
 						if sendBackRawResponse && len(rawResponseChunks) > 0 {
 							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
 						}
@@ -2618,11 +2629,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 						fmt.Errorf("%s", errorData.Detail),
 						providerName,
 					)
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						RequestType:    schemas.ImageEditStreamRequest,
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 					}
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
+					bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
 					if sendBackRawResponse && len(rawResponseChunks) > 0 {
 						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
 					}
@@ -2648,7 +2660,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 
 		// Check for scanner errors
 		if err := scanner.Err(); err != nil {
-			if errors.Is(err, context.Canceled) {
+			if ctx.Err() != nil {
 				return
 			}
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -2656,11 +2668,12 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 				err,
 				providerName,
 			)
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				RequestType:    schemas.ImageEditStreamRequest,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = providerName
+			bifrostErr.ExtraFields.ModelRequested = request.Model
+			bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 		}

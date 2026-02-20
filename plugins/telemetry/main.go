@@ -425,38 +425,95 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
-	// Calculate cost and record metrics in a separate goroutine to avoid blocking the main thread
-	go func() {
-		// For streaming requests, handle per-token metrics for intermediate chunks
-		if bifrost.IsStreamRequestType(requestType) {
-			// For intermediate chunks, record per-token metrics and exit.
-			// The final chunk will fall through to record full request metrics.
-			if !hasFinalChunkIndicator || !isFinalChunk {
-				// Record metrics for the first token
-				if result != nil {
-					extraFields := result.GetExtraFields()
-					if extraFields.ChunkIndex == 0 {
-						p.StreamFirstTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
-					} else {
-						p.StreamInterTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
-					}
-				}
-				return // Exit goroutine for intermediate chunks
+	// For non-final streaming chunks, record per-token metrics synchronously and return.
+	// This avoids spawning a goroutine for each intermediate chunk.
+	if bifrost.IsStreamRequestType(requestType) && (!hasFinalChunkIndicator || !isFinalChunk) {
+		if result != nil {
+			extraFields := result.GetExtraFields()
+			if extraFields.ChunkIndex == 0 {
+				p.StreamFirstTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
+			} else {
+				p.StreamInterTokenLatencySeconds.WithLabelValues(promLabelValues...).Observe(float64(extraFields.Latency) / 1000.0)
+			}
+		}
+		return result, bifrostErr, nil
+	}
+
+	// Extract ALL values from pooled objects (result, bifrostErr) BEFORE spawning the goroutine.
+	// After PostLLMHook returns, the caller may release these objects back to pools. The goroutine
+	// would then access freed memory — e.g., bifrostErr.Error.Message races with ReleaseBifrostErrorField
+	// setting Message="". Since Go string assignment isn't atomic (ptr+len), this causes SIGSEGV.
+	cost := 0.0
+	if p.pricingManager != nil && result != nil {
+		cost = p.pricingManager.CalculateCostWithCacheDebug(result)
+	}
+
+	isError := bifrostErr != nil
+	errorReason := ""
+	if bifrostErr != nil && bifrostErr.Error != nil {
+		errorReason = bifrostErr.Error.Message
+	}
+
+	hasResult := result != nil
+	var inputTokens, outputTokens int
+	var cacheHit bool
+	var cacheType string
+	if hasResult {
+		switch {
+		case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+			inputTokens = result.TextCompletionResponse.Usage.PromptTokens
+			outputTokens = result.TextCompletionResponse.Usage.CompletionTokens
+		case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+			inputTokens = result.ChatResponse.Usage.PromptTokens
+			outputTokens = result.ChatResponse.Usage.CompletionTokens
+		case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+			inputTokens = result.ResponsesResponse.Usage.InputTokens
+			outputTokens = result.ResponsesResponse.Usage.OutputTokens
+		case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
+			inputTokens = result.ResponsesStreamResponse.Response.Usage.InputTokens
+			outputTokens = result.ResponsesStreamResponse.Response.Usage.OutputTokens
+		case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+			inputTokens = result.EmbeddingResponse.Usage.PromptTokens
+			outputTokens = result.EmbeddingResponse.Usage.CompletionTokens
+		case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
+			inputTokens = result.SpeechStreamResponse.Usage.InputTokens
+			outputTokens = result.SpeechStreamResponse.Usage.OutputTokens
+		case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+			if result.TranscriptionResponse.Usage.InputTokens != nil {
+				inputTokens = *result.TranscriptionResponse.Usage.InputTokens
+			}
+			if result.TranscriptionResponse.Usage.OutputTokens != nil {
+				outputTokens = *result.TranscriptionResponse.Usage.OutputTokens
+			}
+		case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
+			if result.TranscriptionStreamResponse.Usage.InputTokens != nil {
+				inputTokens = *result.TranscriptionStreamResponse.Usage.InputTokens
+			}
+			if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
+				outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
 			}
 		}
 
-		cost := 0.0
-		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCostWithCacheDebug(result)
+		extraFields := result.GetExtraFields()
+		if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
+			cacheHit = true
+			cacheType = "unknown"
+			if extraFields.CacheDebug.HitType != nil {
+				cacheType = *extraFields.CacheDebug.HitType
+			}
 		}
+	}
 
+	// Record metrics in a separate goroutine to avoid blocking the main thread.
+	// Only pre-extracted values (no pooled object references) are used below.
+	go func() {
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 
 		// Record latency
 		duration := time.Since(startTime).Seconds()
 		latencyLabelValues := make([]string, 0, len(promLabelValues)+1)
 		latencyLabelValues = append(latencyLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(bifrostErr == nil))            // is_success
+		latencyLabelValues = append(latencyLabelValues, strconv.FormatBool(!isError))                     // is_success
 		latencyLabelValues = append(latencyLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 		p.UpstreamLatencySeconds.WithLabelValues(latencyLabelValues...).Observe(duration)
 
@@ -466,11 +523,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		}
 
 		// Record error and success counts
-		if bifrostErr != nil {
+		if isError {
 			// Add reason to label values (create new slice to avoid modifying original)
 			errorPromLabelValues := make([]string, 0, len(promLabelValues)+1)
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-			errorPromLabelValues = append(errorPromLabelValues, bifrostErr.Error.Message)                         // reason
+			errorPromLabelValues = append(errorPromLabelValues, errorReason)                                      // reason
 			errorPromLabelValues = append(errorPromLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
 			p.ErrorRequestsTotal.WithLabelValues(errorPromLabelValues...).Inc()
@@ -478,64 +535,19 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			p.SuccessRequestsTotal.WithLabelValues(promLabelValues...).Inc()
 		}
 
-		if result != nil {
-			// Record input and output tokens
-			var inputTokens, outputTokens int
-
-			switch {
-			case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-				inputTokens = result.TextCompletionResponse.Usage.PromptTokens
-				outputTokens = result.TextCompletionResponse.Usage.CompletionTokens
-			case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-				inputTokens = result.ChatResponse.Usage.PromptTokens
-				outputTokens = result.ChatResponse.Usage.CompletionTokens
-			case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-				inputTokens = result.ResponsesResponse.Usage.InputTokens
-				outputTokens = result.ResponsesResponse.Usage.OutputTokens
-			case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
-				inputTokens = result.ResponsesStreamResponse.Response.Usage.InputTokens
-				outputTokens = result.ResponsesStreamResponse.Response.Usage.OutputTokens
-			case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-				inputTokens = result.EmbeddingResponse.Usage.PromptTokens
-				outputTokens = result.EmbeddingResponse.Usage.CompletionTokens
-			case result.SpeechStreamResponse != nil && result.SpeechStreamResponse.Usage != nil:
-				inputTokens = result.SpeechStreamResponse.Usage.InputTokens
-				outputTokens = result.SpeechStreamResponse.Usage.OutputTokens
-			case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
-				if result.TranscriptionResponse.Usage.InputTokens != nil {
-					inputTokens = *result.TranscriptionResponse.Usage.InputTokens
-				}
-				if result.TranscriptionResponse.Usage.OutputTokens != nil {
-					outputTokens = *result.TranscriptionResponse.Usage.OutputTokens
-				}
-			case result.TranscriptionStreamResponse != nil && result.TranscriptionStreamResponse.Usage != nil:
-				if result.TranscriptionStreamResponse.Usage.InputTokens != nil {
-					inputTokens = *result.TranscriptionStreamResponse.Usage.InputTokens
-				}
-				if result.TranscriptionStreamResponse.Usage.OutputTokens != nil {
-					outputTokens = *result.TranscriptionStreamResponse.Usage.OutputTokens
-				}
-			}
-
+		if hasResult {
 			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(inputTokens))
 			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(outputTokens))
+		}
 
-			// Record cache hits with cache type
-			extraFields := result.GetExtraFields()
-			if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
-				cacheType := "unknown"
-				if extraFields.CacheDebug.HitType != nil {
-					cacheType = *extraFields.CacheDebug.HitType
-				}
+		// Record cache hits with cache type
+		if cacheHit {
+			cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
+			cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
+			cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
+			cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
 
-				// Add cache_type to label values (create new slice to avoid modifying original)
-				cacheHitLabelValues := make([]string, 0, len(promLabelValues)+1)
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[:len(p.defaultBifrostLabels)]...) // all default labels
-				cacheHitLabelValues = append(cacheHitLabelValues, cacheType)                                        // cache_type
-				cacheHitLabelValues = append(cacheHitLabelValues, promLabelValues[len(p.defaultBifrostLabels):]...) // then custom labels
-
-				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
-			}
+			p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
 		}
 	}()
 

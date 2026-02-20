@@ -314,9 +314,6 @@ func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext
 			if resp.StatusCode() != fasthttp.StatusOK {
 				var errorResp HuggingFaceHubError
 				bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
-				if bifrostErr.Error == nil {
-					bifrostErr.Error = &schemas.ErrorField{}
-				}
 				if strings.TrimSpace(errorResp.Message) != "" {
 					bifrostErr.Error.Message = errorResp.Message
 				}
@@ -454,17 +451,19 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ChatCompletionRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+		return nil, bifrostErr
 	}
 	if inferenceProvider != "" {
 		request.Model = fmt.Sprintf("%s:%s", modelName, inferenceProvider)
@@ -497,7 +496,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	bifrostResponse := &schemas.BifrostChatResponse{}
+	bifrostResponse := schemas.AcquireBifrostChatResponse()
 
 	var rawResponse interface{}
 	var rawRequest interface{}
@@ -542,17 +541,19 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ChatCompletionStreamRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+		return nil, bifrostErr
 	}
 	if inferenceProvider != "" {
 		request.Model = fmt.Sprintf("%s:%s", modelName, inferenceProvider)
@@ -635,17 +636,19 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.EmbeddingRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.EmbeddingRequest
+		return nil, bifrostErr
 	}
 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
@@ -723,17 +726,19 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.SpeechRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.SpeechRequest
+		return nil, bifrostErr
 	}
 
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
@@ -813,17 +818,19 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.TranscriptionRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.TranscriptionRequest
+		return nil, bifrostErr
 	}
 
 	var jsonData []byte
@@ -922,17 +929,19 @@ func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ImageGenerationRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationRequest
+		return nil, bifrostErr
 	}
 
 	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
@@ -1013,17 +1022,19 @@ func (provider *HuggingFaceProvider) ImageGenerationStream(ctx *schemas.BifrostC
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ImageGenerationStreamRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest
+		return nil, bifrostErr
 	}
 
 	// Only fal-ai supports streaming for HuggingFace
@@ -1126,14 +1137,12 @@ func HandleHuggingFaceImageGenerationStreaming(
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
@@ -1156,8 +1165,15 @@ func HandleHuggingFaceImageGenerationStreaming(
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageGenerationStreamRequest, logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		defer close(responseChan)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1175,8 +1191,9 @@ func HandleHuggingFaceImageGenerationStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		lastChunkTime := startTime
 		chunkIndex := 0
@@ -1212,33 +1229,39 @@ func HandleHuggingFaceImageGenerationStreaming(
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := schemas.AcquireBifrostError()
+						bifrostErr.IsBifrostError = false
+						if bifrostErr.Error == nil {
+							bifrostErr.Error = schemas.AcquireBifrostErrorField()
+						}
+						bifrostErr.Error.Message = errorResp.Message						
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest						
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
@@ -1323,16 +1346,20 @@ func HandleHuggingFaceImageGenerationStreaming(
 		}
 
 		if err := scanner.Err(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("Error reading fal-ai stream: %v", err),
 				err,
 				providerName,
 			)
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				RequestType:    schemas.ImageGenerationStreamRequest,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = providerName
+			bifrostErr.ExtraFields.ModelRequested = request.Model
+			bifrostErr.ExtraFields.RequestType = schemas.ImageGenerationStreamRequest
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 		}
@@ -1348,17 +1375,19 @@ func (provider *HuggingFaceProvider) ImageEdit(ctx *schemas.BifrostContext, key 
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ImageEditRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ImageEditRequest
+		return nil, bifrostErr
 	}
 
 	// Only fal-ai supports image edit for HuggingFace
@@ -1440,17 +1469,19 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	inferenceProvider, modelName, nameErr := splitIntoModelProvider(request.Model)
 	if nameErr != nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: nameErr.Error(),
-				Error:   nameErr,
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				Provider:    provider.GetProviderKey(),
-				RequestType: schemas.ImageEditStreamRequest,
-			},
+		bifrostErr := schemas.AcquireBifrostError()
+		bifrostErr.IsBifrostError = false
+		if bifrostErr.Error == nil {
+			bifrostErr.Error = schemas.AcquireBifrostErrorField()
 		}
+		bifrostErr.Error.Message = nameErr.Error()
+		bifrostErr.Error.Error = nameErr
+		if bifrostErr.ExtraFields == nil {
+			bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+		}
+		bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+		bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
+		return nil, bifrostErr
 	}
 
 	// Only fal-ai supports streaming for HuggingFace image edit
@@ -1527,14 +1558,12 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.Error.Type = schemas.Ptr(schemas.RequestCancelled)
+			bfErr.Error.Message = schemas.ErrRequestCancelled
+			bfErr.Error.Error = err
+			return nil, bfErr
 		}
 		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, providerName)
@@ -1557,8 +1586,15 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 
 	// Start streaming in a goroutine
 	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ImageEditStreamRequest, provider.logger)
+			}
+			close(responseChan)
+		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		defer close(responseChan)
 
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -1576,8 +1612,9 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		lastChunkTime := startTime
 		chunkIndex := 0
@@ -1613,33 +1650,39 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := schemas.AcquireBifrostError()
+						bifrostErr.IsBifrostError = false
+						if bifrostErr.Error == nil {
+							bifrostErr.Error = schemas.AcquireBifrostErrorField()
+						}
+						bifrostErr.Error.Message = errorResp.Message
+						if bifrostErr.ExtraFields == nil {
+							bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+						}
+						bifrostErr.ExtraFields.Provider = providerName
+						bifrostErr.ExtraFields.ModelRequested = request.Model
+						bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
@@ -1724,16 +1767,20 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		}
 
 		if err := scanner.Err(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("Error reading fal-ai stream: %v", err),
 				err,
 				providerName,
 			)
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				RequestType:    schemas.ImageEditStreamRequest,
+			if bifrostErr.ExtraFields == nil {
+				bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 			}
+			bifrostErr.ExtraFields.Provider = providerName
+			bifrostErr.ExtraFields.ModelRequested = request.Model
+			bifrostErr.ExtraFields.RequestType = schemas.ImageEditStreamRequest
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 		}

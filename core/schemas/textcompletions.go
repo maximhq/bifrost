@@ -2,6 +2,9 @@ package schemas
 
 import (
 	"fmt"
+	"sync"
+
+	"github.com/maximhq/bifrost/core/pool"
 )
 
 // BifrostTextCompletionRequest is the request struct for text completion requests
@@ -14,6 +17,7 @@ type BifrostTextCompletionRequest struct {
 	RawRequestBody []byte                    `json:"-"` // set bifrost-use-raw-request-body to true in ctx to use the raw request body. Bifrost will directly send this to the downstream provider.
 }
 
+// GetRawRequestBody returns the raw request body for the text completion request
 func (r *BifrostTextCompletionRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
 }
@@ -64,6 +68,32 @@ func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatReques
 	}
 }
 
+var bifrostTextCompletionRequestPool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostTextCompletionRequest{}
+	},
+}
+
+// AcquireBifrostTextCompletionRequest gets a BifrostTextCompletionRequest from the pool and resets it.
+func AcquireBifrostTextCompletionRequest() *BifrostTextCompletionRequest {
+	return bifrostTextCompletionRequestPool.Get().(*BifrostTextCompletionRequest)
+}
+
+// ReleaseBifrostTextCompletionRequest returns a BifrostTextCompletionRequest to the pool.
+func ReleaseBifrostTextCompletionRequest(r *BifrostTextCompletionRequest) {
+	if r == nil {
+		return
+	}
+	r.Provider = ""
+	r.Model = ""
+	r.Input = nil
+	r.Params = nil
+	r.RawRequestBody = nil
+	r.Fallbacks = nil
+	bifrostTextCompletionRequestPool.Put(r)
+}
+
+// BifrostTextCompletionResponse is the response struct for text completion requests
 type BifrostTextCompletionResponse struct {
 	ID                string                     `json:"id"`
 	Choices           []BifrostResponseChoice    `json:"choices"`
@@ -74,11 +104,38 @@ type BifrostTextCompletionResponse struct {
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// bifrostTextCompletionResponsePool provides a pool for BifrostTextCompletionResponse objects.
+var bifrostTextCompletionResponsePool = pool.New[BifrostTextCompletionResponse]("BifrostTextCompletionResponse", func() *BifrostTextCompletionResponse {
+	return &BifrostTextCompletionResponse{}
+})
+
+// AcquireBifrostTextCompletionResponse gets a BifrostTextCompletionResponse from the pool and resets it.
+func AcquireBifrostTextCompletionResponse() *BifrostTextCompletionResponse {
+	return bifrostTextCompletionResponsePool.Get()
+}
+
+// ReleaseBifrostTextCompletionResponse returns a BifrostTextCompletionResponse to the pool.
+func ReleaseBifrostTextCompletionResponse(r *BifrostTextCompletionResponse) {
+	if r == nil {
+		return
+	}
+	r.ID = ""
+	r.Choices = nil
+	r.Model = ""
+	r.Object = ""
+	r.SystemFingerprint = ""
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostTextCompletionResponsePool.Put(r)
+}
+
+// TextCompletionInput is the input struct for text completion requests
 type TextCompletionInput struct {
 	PromptStr   *string
 	PromptArray []string
 }
 
+// MarshalJSON implements custom JSON marshalling for TextCompletionInput.
 func (t *TextCompletionInput) MarshalJSON() ([]byte, error) {
 	set := 0
 	if t.PromptStr != nil {
@@ -99,6 +156,7 @@ func (t *TextCompletionInput) MarshalJSON() ([]byte, error) {
 	return Marshal(t.PromptArray)
 }
 
+// UnmarshalJSON implements custom JSON unmarshalling for TextCompletionInput.
 func (t *TextCompletionInput) UnmarshalJSON(data []byte) error {
 	var prompt string
 	if err := Unmarshal(data, &prompt); err == nil {
@@ -115,6 +173,27 @@ func (t *TextCompletionInput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("invalid text completion input")
 }
 
+// textCompletionInputPool provides a pool for TextCompletionInput objects.
+var textCompletionInputPool = pool.New[TextCompletionInput]("TextCompletionInput", func() *TextCompletionInput {
+	return &TextCompletionInput{}
+})
+
+// AcquireTextCompletionInput gets a TextCompletionInput from the pool and resets it.
+func AcquireTextCompletionInput() *TextCompletionInput {
+	return textCompletionInputPool.Get()
+}
+
+// ReleaseTextCompletionInput returns a TextCompletionInput to the pool.
+func ReleaseTextCompletionInput(t *TextCompletionInput) {
+	if t == nil {
+		return
+	}
+	t.PromptStr = nil
+	t.PromptArray = nil
+	textCompletionInputPool.Put(t)
+}
+
+// TextCompletionParameters is the parameters struct for text completion requests
 type TextCompletionParameters struct {
 	BestOf           *int                `json:"best_of,omitempty"`
 	Echo             *bool               `json:"echo,omitempty"`
@@ -135,6 +214,40 @@ type TextCompletionParameters struct {
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// textCompletionParametersPool provides a pool for TextCompletionParameters objects.
+var textCompletionParametersPool = pool.New[TextCompletionParameters]("TextCompletionParameters", func() *TextCompletionParameters {
+	return &TextCompletionParameters{}
+})
+
+// AcquireTextCompletionParameters gets a TextCompletionParameters from the pool and resets it.
+func AcquireTextCompletionParameters() *TextCompletionParameters {
+	return textCompletionParametersPool.Get()
+}
+
+// ReleaseTextCompletionParameters returns a TextCompletionParameters to the pool.
+func ReleaseTextCompletionParameters(p *TextCompletionParameters) {
+	if p == nil {
+		return
+	}
+	p.BestOf = nil
+	p.Echo = nil
+	p.FrequencyPenalty = nil
+	p.LogitBias = nil
+	p.LogProbs = nil
+	p.MaxTokens = nil
+	p.N = nil
+	p.PresencePenalty = nil
+	p.Seed = nil
+	p.Stop = nil
+	p.Suffix = nil
+	p.StreamOptions = nil
+	p.Temperature = nil
+	p.TopP = nil
+	p.User = nil
+	p.ExtraParams = nil
+	textCompletionParametersPool.Put(p)
 }
 
 // TextCompletionLogProb represents log probability information for text completion.

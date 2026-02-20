@@ -3,6 +3,7 @@ package schemas
 import (
 	"bytes"
 	"fmt"
+	"sync"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -44,6 +45,55 @@ type BifrostChatResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// bifrostChatResponsePool provides a pool for BifrostChatResponse objects to reduce allocations
+// during streaming. Each SSE chunk in the streaming hot path allocates a BifrostChatResponse
+// for JSON unmarshaling; pooling avoids this per-chunk heap allocation.
+var bifrostChatResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostChatResponse{}
+	},
+}
+
+// AcquireBifrostChatResponse gets a BifrostChatResponse from the pool and resets it.
+func AcquireBifrostChatResponse() *BifrostChatResponse {
+	r := bifrostChatResponsePool.Get().(*BifrostChatResponse)
+	*r = BifrostChatResponse{}
+	return r
+}
+
+// ReleaseBifrostChatResponse returns a BifrostChatResponse to the pool.
+// Do NOT release responses that are still referenced by other goroutines.
+// Deprecated: Use r.Release() instead for consistency.
+func ReleaseBifrostChatResponse(r *BifrostChatResponse) {
+	if r != nil {
+		r.Release()
+	}
+}
+
+// Release returns a BifrostChatResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling Release().
+func (cr *BifrostChatResponse) Release() {
+	if cr == nil {
+		return
+	}
+	// Nil pointer and slice fields to break references and allow GC
+	cr.ID = ""
+	cr.Choices = nil
+	cr.Created = 0
+	cr.Model = ""
+	cr.Object = ""
+	cr.ServiceTier = nil
+	cr.SystemFingerprint = ""
+	cr.Usage = nil
+	cr.ExtraFields = BifrostResponseExtraFields{}
+	cr.ExtraParams = nil
+	cr.SearchResults = nil
+	cr.Videos = nil
+	cr.Citations = nil
+	bifrostChatResponsePool.Put(cr)
 }
 
 // ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse

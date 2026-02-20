@@ -375,7 +375,7 @@ func (provider *AzureProvider) TextCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostTextCompletionResponse{}
+	response := schemas.AcquireBifrostTextCompletionResponse()
 
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
@@ -505,7 +505,7 @@ func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostChatResponse{}
+	response := schemas.AcquireBifrostChatResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -697,7 +697,7 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostResponsesResponse{}
+	response := schemas.AcquireBifrostResponsesResponse()
 	var rawRequest interface{}
 	var rawResponse interface{}
 
@@ -856,7 +856,7 @@ func (provider *AzureProvider) Embedding(ctx *schemas.BifrostContext, key schema
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
-	response := &schemas.BifrostEmbeddingResponse{}
+	response := schemas.AcquireBifrostEmbeddingResponse()
 
 	// Use enhanced response handler with pre-allocated response
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, jsonData, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
@@ -1128,18 +1128,24 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 					var response schemas.BifrostSpeechStreamResponse
 					if err := sonic.Unmarshal(audioData, &response); err != nil {
 						// If JSON parsing fails, check if this might be an error response
-						var bifrostErr schemas.BifrostError
-						if errParseErr := sonic.Unmarshal(audioData, &bifrostErr); errParseErr == nil {
-							if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-								bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-									Provider:       provider.GetProviderKey(),
-									ModelRequested: request.Model,
-									RequestType:    schemas.SpeechStreamRequest,
+						// Quick check for error field (allocation-free using sonic.Get)
+						if errorNode, _ := sonic.Get(audioData, "error"); errorNode.Exists() {
+							// Only unmarshal when we know there's an error
+							bifrostErr := schemas.AcquireBifrostError()
+							if errParseErr := sonic.Unmarshal(audioData, bifrostErr); errParseErr == nil {
+								if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
+									if bifrostErr.ExtraFields == nil {
+										bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+									}
+									bifrostErr.ExtraFields.Provider = provider.GetProviderKey()
+									bifrostErr.ExtraFields.ModelRequested = request.Model
+									bifrostErr.ExtraFields.RequestType = schemas.SpeechStreamRequest
+									ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+									providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+									return
 								}
-								ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-								providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &bifrostErr, responseChan, provider.logger)
-								return
 							}
+							schemas.ReleaseBifrostError(bifrostErr)
 						}
 						// If it's not valid JSON, log and skip
 						provider.logger.Warn("failed to parse speech stream response: %v", err)

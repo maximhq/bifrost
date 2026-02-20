@@ -73,6 +73,7 @@ func RunTextCompletionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Co
 		if bifrostErr != nil {
 			t.Fatalf("❌ TextCompletion request failed after retries: %v", GetErrorMessage(bifrostErr))
 		}
+		defer schemas.ReleaseBifrostTextCompletionResponse(response)
 
 		content := GetTextCompletionContent(response)
 		t.Logf("✅ Text completion result: %s", content)

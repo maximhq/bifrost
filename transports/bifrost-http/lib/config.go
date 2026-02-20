@@ -598,7 +598,7 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 	// Process provider configurations from file
 	if configData.Providers != nil {
 		for providerName, providerCfgInFile := range configData.Providers {
-			if err = processProviderFromFile(config, providerName, providerCfgInFile, providersInConfigStore); err != nil {
+			if err = processProviderFromFile(providerName, providerCfgInFile, providersInConfigStore); err != nil {
 				logger.Warn("failed to process provider %s: %v", providerName, err)
 			}
 		}
@@ -618,7 +618,6 @@ func loadProvidersFromFile(ctx context.Context, config *Config, configData *Conf
 
 // processProviderFromFile processes a single provider configuration from config file
 func processProviderFromFile(
-	config *Config,
 	providerName string,
 	providerCfgInFile configstore.ProviderConfig,
 	providersInConfigStore map[schemas.ModelProvider]configstore.ProviderConfig,
@@ -630,6 +629,13 @@ func processProviderFromFile(
 		if providerKeyInFile.ID == "" {
 			providerCfgInFile.Keys[i].ID = uuid.NewString()
 		}
+	}
+	// Fill zero-valued fields with defaults for partially specified configs
+	if providerCfgInFile.NetworkConfig != nil {
+		providerCfgInFile.NetworkConfig.CheckAndSetDefaults()
+	}
+	if providerCfgInFile.ConcurrencyAndBufferSize != nil {
+		providerCfgInFile.ConcurrencyAndBufferSize.CheckAndSetDefaults()
 	}
 	// Generate hash from config.json provider config
 	fileProviderConfigHash, err := providerCfgInFile.GenerateConfigHash(string(provider))
@@ -1989,20 +1995,20 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 			keys := make([]schemas.Key, len(dbProvider.Keys))
 			for i, dbKey := range dbProvider.Keys {
 				keys[i] = schemas.Key{
-					ID:               dbKey.ID,
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					Enabled:          dbKey.Enabled,
-					UseForBatchAPI:   dbKey.UseForBatchAPI,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					ID:                 dbKey.ID,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					Weight:             dbKey.Weight,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					ConfigHash:       dbKey.ConfigHash,
-					Status:           dbKey.Status,
-					Description:      dbKey.Description,
+					ConfigHash:         dbKey.ConfigHash,
+					Status:             dbKey.Status,
+					Description:        dbKey.Description,
 				}
 			}
 			providerConfig := configstore.ProviderConfig{

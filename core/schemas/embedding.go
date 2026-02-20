@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"sync"
 )
 
 type BifrostEmbeddingRequest struct {
@@ -23,6 +24,35 @@ type BifrostEmbeddingResponse struct {
 	Object      string                     `json:"object"` // "list"
 	Usage       *BifrostLLMUsage           `json:"usage"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostEmbeddingResponsePool provides a pool for BifrostEmbeddingResponse objects.
+var bifrostEmbeddingResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostEmbeddingResponse{}
+	},
+}
+
+// AcquireBifrostEmbeddingResponse gets a BifrostEmbeddingResponse from the pool and resets it.
+func AcquireBifrostEmbeddingResponse() *BifrostEmbeddingResponse {
+	r := bifrostEmbeddingResponsePool.Get().(*BifrostEmbeddingResponse)
+	*r = BifrostEmbeddingResponse{}
+	return r
+}
+
+// Release returns a BifrostEmbeddingResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling Release().
+func (r *BifrostEmbeddingResponse) Release() {
+	if r == nil {
+		return
+	}
+	r.Data = nil
+	r.Model = ""
+	r.Object = ""
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostEmbeddingResponsePool.Put(r)
 }
 
 // EmbeddingInput represents the input for an embedding request.

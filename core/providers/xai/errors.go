@@ -26,9 +26,6 @@ func ParseXAIError(resp *fasthttp.Response, requestType schemas.RequestType, pro
 
 	// If we successfully parsed xAI format, extract the fields
 	if xaiErr.Error != "" {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
 		bifrostErr.Error.Message = xaiErr.Error
 		if xaiErr.Code != "" {
 			bifrostErr.Error.Code = schemas.Ptr(xaiErr.Code)

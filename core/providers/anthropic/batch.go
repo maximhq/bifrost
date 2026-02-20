@@ -240,11 +240,12 @@ func ParseAnthropicError(resp *fasthttp.Response, requestType schemas.RequestTyp
 			bifrostErr.Error.Message = errorResp.Error.Message
 		}
 	}
-	bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-		RequestType:    requestType,
-		Provider:       providerName,
-		ModelRequested: model,
+	if bifrostErr.ExtraFields == nil {
+		bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 	}
+	bifrostErr.ExtraFields.RequestType = requestType
+	bifrostErr.ExtraFields.Provider = providerName
+	bifrostErr.ExtraFields.ModelRequested = model
 	return bifrostErr
 }
 

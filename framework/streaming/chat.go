@@ -3,11 +3,30 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// chatStreamDeltaPool pools ChatStreamResponseChoiceDelta structs used in deepCopyChatStreamDelta.
+// Each streaming chunk allocates a delta copy for the accumulator; pooling avoids per-chunk heap allocation.
+var chatStreamDeltaPool = sync.Pool{
+	New: func() interface{} {
+		return &schemas.ChatStreamResponseChoiceDelta{}
+	},
+}
+
+// releaseChatStreamDelta returns a ChatStreamResponseChoiceDelta to the pool.
+func releaseChatStreamDelta(d *schemas.ChatStreamResponseChoiceDelta) {
+	if d == nil {
+		return
+	}
+	*d = schemas.ChatStreamResponseChoiceDelta{}
+	chatStreamDeltaPool.Put(d)
+}
 
 // deepCopyChatStreamDelta creates a deep copy of ChatStreamResponseChoiceDelta
 // to prevent shared data mutation between different chunks
@@ -16,7 +35,8 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		return nil
 	}
 
-	copy := &schemas.ChatStreamResponseChoiceDelta{}
+	copy := chatStreamDeltaPool.Get().(*schemas.ChatStreamResponseChoiceDelta)
+	*copy = schemas.ChatStreamResponseChoiceDelta{}
 
 	if original.Role != nil {
 		copyRole := *original.Role
@@ -349,20 +369,24 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
-	// Accumulate raw response
+	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ChatStreamChunks) > 0 {
 		// Sort chunks by chunk index
 		sort.Slice(accumulator.ChatStreamChunks, func(i, j int) bool {
 			return accumulator.ChatStreamChunks[i].ChunkIndex < accumulator.ChatStreamChunks[j].ChunkIndex
 		})
+		var rawBuilder strings.Builder
 		for _, chunk := range accumulator.ChatStreamChunks {
 			if chunk.RawResponse != nil {
-				if data.RawResponse == nil {
-					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
-				} else {
-					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				if rawBuilder.Len() > 0 {
+					rawBuilder.WriteString("\n\n")
 				}
+				rawBuilder.WriteString(*chunk.RawResponse)
 			}
+		}
+		if rawBuilder.Len() > 0 {
+			s := rawBuilder.String()
+			data.RawResponse = &s
 		}
 	}
 	return data, nil
@@ -477,18 +501,13 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			RawRequest: &rawRequest,
 		}, nil
 	}
-	// This is going to be a delta response
-	data, processErr := a.processAccumulatedChatStreamingChunks(requestID, bifrostErr, isFinalChunk)
-	if processErr != nil {
-		a.logger.Error("failed to process accumulated chunks for request %s: %v", requestID, processErr)
-		return nil, processErr
-	}
-	// This is not the final chunk, so we will send back the delta
+	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
+	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
 		RequestID:  requestID,
 		StreamType: streamType,
 		Provider:   provider,
 		Model:      model,
-		Data:       data,
+		Data:       nil,
 	}, nil
 }

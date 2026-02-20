@@ -12,13 +12,13 @@ import (
 
 // DeferredSpanInfo stores information about a deferred span for streaming requests
 type DeferredSpanInfo struct {
-	SpanID            string
-	StartTime         time.Time
-	Tracer            schemas.Tracer             // Reference to tracer for completing the span
-	RequestID         string                     // Request ID for accumulator lookup
-	FirstChunkTime    time.Time                  // Timestamp of first chunk (for TTFT calculation)
-	AccumulatedChunks []*schemas.BifrostResponse // Accumulated streaming chunks
-	mu                sync.Mutex                 // Mutex for thread-safe chunk accumulation
+	SpanID         string
+	StartTime      time.Time
+	Tracer         schemas.Tracer // Reference to tracer for completing the span
+	RequestID      string         // Request ID for accumulator lookup
+	FirstChunkTime time.Time      // Timestamp of first chunk (for TTFT calculation)
+	ChunkCount     int            // Count of received streaming chunks (for AttrTotalChunks)
+	mu             sync.Mutex     // Mutex for thread-safe chunk accumulation
 }
 
 // TraceStore manages traces with thread-safe access and object pooling
@@ -148,7 +148,10 @@ func (s *TraceStore) ClearDeferredSpan(traceID string) {
 	s.deferredSpans.Delete(traceID)
 }
 
-// AppendStreamingChunk adds a streaming chunk to the deferred span's accumulated data
+// AppendStreamingChunk tracks TTFT and chunk count for the deferred span.
+// Chunks are no longer stored — the new streaming.Accumulator handles full content
+// accumulation for plugins (logging, maxim). This eliminates storing 1M+ BifrostResponse
+// objects in the old accumulator at high concurrency.
 func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.BifrostResponse) {
 	if chunk == nil {
 		return
@@ -165,26 +168,25 @@ func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.Bifrost
 		info.FirstChunkTime = time.Now()
 	}
 
-	// Append chunk to accumulated list
-	info.AccumulatedChunks = append(info.AccumulatedChunks, chunk)
+	info.ChunkCount++
 }
 
-// GetAccumulatedData returns the accumulated chunks and TTFT for a deferred span
-func (s *TraceStore) GetAccumulatedData(traceID string) ([]*schemas.BifrostResponse, int64) {
+// GetAccumulatedData returns TTFT and chunk count for a deferred span.
+// Chunks are no longer stored; full content is available via the streaming.Accumulator.
+func (s *TraceStore) GetAccumulatedData(traceID string) (ttftMs int64, chunkCount int) {
 	info := s.GetDeferredSpan(traceID)
 	if info == nil {
-		return nil, 0
+		return 0, 0
 	}
 	info.mu.Lock()
 	defer info.mu.Unlock()
 
 	// Calculate TTFT in milliseconds
-	var ttftMs int64
 	if !info.StartTime.IsZero() && !info.FirstChunkTime.IsZero() {
 		ttftMs = info.FirstChunkTime.Sub(info.StartTime).Milliseconds()
 	}
 
-	return info.AccumulatedChunks, ttftMs
+	return ttftMs, info.ChunkCount
 }
 
 // ReleaseTrace returns the trace and its spans to the pools for reuse
