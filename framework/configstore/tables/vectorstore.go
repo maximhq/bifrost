@@ -10,9 +10,10 @@ type TableVectorStoreConfig struct {
 	TTLSeconds      int       `gorm:"default:300" json:"ttl_seconds"`        // TTL in seconds (default: 5 minutes)
 	CacheByModel    bool      `gorm:"" json:"cache_by_model"`                // Include model in cache key
 	CacheByProvider bool      `gorm:"" json:"cache_by_provider"`             // Include provider in cache key
-	Config          *string   `gorm:"type:text" json:"config"`               // JSON serialized schemas.RedisVectorStoreConfig
-	CreatedAt       time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
+	Config           *string   `gorm:"type:text" json:"config"` // JSON serialized schemas.RedisVectorStoreConfig
+	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName sets the table name for each model

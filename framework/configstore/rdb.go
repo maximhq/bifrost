@@ -330,6 +330,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.BedrockBatchS3ConfigJSON = nil
 			}
 
+			if err := encryptKeyFields(&dbKey); err != nil {
+				return fmt.Errorf("failed to encrypt key fields: %w", err)
+			}
 			dbKeys = append(dbKeys, dbKey)
 		}
 
@@ -490,11 +493,12 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			}
 		}
 
+		if err := encryptKeyFields(&dbKey); err != nil {
+			return fmt.Errorf("failed to encrypt key fields: %w", err)
+		}
+
 		// Check if this key already exists
 		if existingKey, exists := existingKeysMap[key.ID]; exists {
-			// Update existing key - preserve the database ID and ConfigHash
-			// ConfigHash should only be set during initial sync from config.json,
-			// not when updating via UI (so DB updates aren't overwritten on restart)
 			dbKey.ID = existingKey.ID
 			dbKey.ConfigHash = existingKey.ConfigHash
 			dbKey.Status = existingKey.Status
@@ -502,10 +506,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
-			// Remove from map to track which keys are still in use
 			delete(existingKeysMap, key.ID)
 		} else {
-			// Create new key - ConfigHash is set from the generated hash above
 			if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
@@ -606,6 +608,10 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			}
 		}
 
+		if err := encryptKeyFields(&dbKey); err != nil {
+			return fmt.Errorf("failed to encrypt key fields: %w", err)
+		}
+
 		// Create the key
 		if err := txDB.WithContext(ctx).Create(&dbKey).Error; err != nil {
 			return s.parseGormError(err)
@@ -671,10 +677,16 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 	}
 	processedProviders := make(map[schemas.ModelProvider]ProviderConfig)
 	for _, dbProvider := range dbProviders {
+		if err := decryptProviderProxy(&dbProvider); err != nil {
+			return nil, fmt.Errorf("failed to decrypt provider proxy config: %w", err)
+		}
 		provider := schemas.ModelProvider(dbProvider.Name)
 		// Convert database keys to schemas.Key
 		keys := make([]schemas.Key, len(dbProvider.Keys))
 		for i, dbKey := range dbProvider.Keys {
+			if err := decryptKeyFields(&dbKey); err != nil {
+				return nil, fmt.Errorf("failed to decrypt key fields: %w", err)
+			}
 			keys[i] = schemas.Key{
 				ID:                 dbKey.KeyID,
 				Name:               dbKey.Name,
@@ -719,8 +731,14 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		return nil, err
 	}
 
+	if err := decryptProviderProxy(&dbProvider); err != nil {
+		return nil, fmt.Errorf("failed to decrypt provider proxy config: %w", err)
+	}
 	keys := make([]schemas.Key, len(dbProvider.Keys))
 	for i, dbKey := range dbProvider.Keys {
+		if err := decryptKeyFields(&dbKey); err != nil {
+			return nil, fmt.Errorf("failed to decrypt key fields: %w", err)
+		}
 		keys[i] = schemas.Key{
 			ID:                 dbKey.KeyID,
 			Name:               dbKey.Name,
@@ -1030,6 +1048,15 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			return fmt.Errorf("failed to marshal tool_pricing: %w", err)
 		}
 
+		headersJSONStr := string(headersJSON)
+		if encrypt.IsEnabled() && headersJSONStr != "" && headersJSONStr != "{}" {
+			encrypted, encErr := encrypt.Encrypt(headersJSONStr)
+			if encErr != nil {
+				return fmt.Errorf("failed to encrypt mcp headers: %w", encErr)
+			}
+			headersJSONStr = encrypted
+		}
+
 		// Update only editable fields using a map to avoid updating connection info
 		// Connection info (ConnectionType, ConnectionString, StdioConfig) is read-only and should not be modified via API
 		updates := map[string]interface{}{
@@ -1037,10 +1064,13 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			"is_code_mode_client":        clientConfigCopy.IsCodeModeClient,
 			"tools_to_execute_json":      string(toolsToExecuteJSON),
 			"tools_to_auto_execute_json": string(toolsToAutoExecuteJSON),
-			"headers_json":               string(headersJSON),
+			"headers_json":               headersJSONStr,
 			"tool_pricing_json":          string(toolPricingJSON),
 			"tool_sync_interval":         clientConfigCopy.ToolSyncInterval,
 			"updated_at":                 time.Now(),
+		}
+		if encrypt.IsEnabled() {
+			updates["encryption_status"] = encryptionStatusEncrypted
 		}
 
 		// Only update is_ping_available if explicitly provided (non-nil)
@@ -1088,6 +1118,9 @@ func (s *RDBConfigStore) GetVectorStoreConfig(ctx context.Context) (*vectorstore
 		}
 		return nil, err
 	}
+	if err := decryptVectorStoreConfig(&vectorStoreTableConfig); err != nil {
+		return nil, fmt.Errorf("failed to decrypt vector store config: %w", err)
+	}
 	return &vectorstore.Config{
 		Enabled: vectorStoreTableConfig.Enabled,
 		Config:  vectorStoreTableConfig.Config,
@@ -1110,6 +1143,9 @@ func (s *RDBConfigStore) UpdateVectorStoreConfig(ctx context.Context, config *ve
 			Type:    string(config.Type),
 			Enabled: config.Enabled,
 			Config:  jsonConfig,
+		}
+		if err := encryptVectorStoreConfig(record); err != nil {
+			return fmt.Errorf("failed to encrypt vector store config: %w", err)
 		}
 		// Create new cache config
 		return tx.WithContext(ctx).Create(record).Error
@@ -1400,6 +1436,11 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 		Find(&virtualKeys).Error; err != nil {
 		return nil, err
 	}
+	for i := range virtualKeys {
+		if err := decryptVirtualKeyValue(&virtualKeys[i]); err != nil {
+			return nil, fmt.Errorf("failed to decrypt virtual key value: %w", err)
+		}
+	}
 
 	return virtualKeys, nil
 }
@@ -1427,13 +1468,17 @@ func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.
 		}
 		return nil, err
 	}
+	if err := decryptVirtualKeyValue(&virtualKey); err != nil {
+		return nil, fmt.Errorf("failed to decrypt virtual key value: %w", err)
+	}
 	return &virtualKey, nil
 }
 
-// GetVirtualKeyByValue retrieves a virtual key by its value
+// GetVirtualKeyByValue retrieves a virtual key by its value using hash-based lookup.
 func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error) {
+	valueHash := encrypt.HashSHA256(value)
 	var virtualKey tables.TableVirtualKey
-	if err := s.db.WithContext(ctx).
+	query := s.db.WithContext(ctx).
 		Preload("Team").
 		Preload("Team.Customer").
 		Preload("Customer").
@@ -1446,12 +1491,24 @@ func (s *RDBConfigStore) GetVirtualKeyByValue(ctx context.Context, value string)
 			return db.Select("id, name, key_id, models_json, provider")
 		}).
 		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient").
-		First(&virtualKey, "value = ?", value).Error; err != nil {
+		Preload("MCPConfigs.MCPClient")
+
+	// Use hash-based lookup if hash column is populated, fall back to plaintext for backward compat
+	if err := query.Where("value_hash = ?", valueHash).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
+			// Fallback: try plaintext lookup for rows not yet migrated
+			if err := query.Where("value = ?", value).First(&virtualKey).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, ErrNotFound
+				}
+				return nil, err
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
+	}
+	if err := decryptVirtualKeyValue(&virtualKey); err != nil {
+		return nil, fmt.Errorf("failed to decrypt virtual key value: %w", err)
 	}
 	return &virtualKey, nil
 }
@@ -1463,7 +1520,9 @@ func (s *RDBConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *table
 	} else {
 		txDB = s.db
 	}
-	// Create virtual key
+	if err := encryptVirtualKeyValue(virtualKey); err != nil {
+		return fmt.Errorf("failed to encrypt virtual key value: %w", err)
+	}
 	if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 		return s.parseGormError(err)
 	}
@@ -1488,18 +1547,18 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		return s.parseGormError(err)
 	}
 
+	if err := encryptVirtualKeyValue(virtualKey); err != nil {
+		return fmt.Errorf("failed to encrypt virtual key value: %w", err)
+	}
+
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// Create new record
 		if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
 	} else {
-		// Update existing record (use existing.ID to ensure we update the found record)
 		virtualKey.ID = existing.ID
-		// Use Select() to explicitly update all fields, including nil pointer fields
-		// This ensures TeamID gets set to NULL when switching from team to customer association
 		if err := txDB.WithContext(ctx).
-			Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "config_hash", "updated_at").
+			Select("name", "description", "value", "is_active", "team_id", "customer_id", "budget_id", "rate_limit_id", "config_hash", "updated_at", "encryption_status", "value_hash").
 			Updates(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
@@ -1516,6 +1575,11 @@ func (s *RDBConfigStore) GetKeysByIDs(ctx context.Context, ids []string) ([]tabl
 	if err := s.db.WithContext(ctx).Where("key_id IN ?", ids).Find(&keys).Error; err != nil {
 		return nil, err
 	}
+	for i := range keys {
+		if err := decryptKeyFields(&keys[i]); err != nil {
+			return nil, fmt.Errorf("failed to decrypt key fields: %w", err)
+		}
+	}
 	return keys, nil
 }
 
@@ -1524,6 +1588,11 @@ func (s *RDBConfigStore) GetKeysByProvider(ctx context.Context, provider string)
 	var keys []tables.TableKey
 	if err := s.db.WithContext(ctx).Where("provider = ?", provider).Find(&keys).Error; err != nil {
 		return nil, err
+	}
+	for i := range keys {
+		if err := decryptKeyFields(&keys[i]); err != nil {
+			return nil, fmt.Errorf("failed to decrypt key fields: %w", err)
+		}
 	}
 	return keys, nil
 }
@@ -2829,23 +2898,47 @@ func (s *RDBConfigStore) ClearRestartRequiredConfig(ctx context.Context) error {
 // GetSession retrieves a session from the database.
 func (s *RDBConfigStore) GetSession(ctx context.Context, token string) (*tables.SessionsTable, error) {
 	var session tables.SessionsTable
-	if err := s.db.WithContext(ctx).First(&session, "token = ?", token).Error; err != nil {
+	tokenHash := encrypt.HashSHA256(token)
+	err := s.db.WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
+			// Fall back to plaintext lookup for backward compatibility
+			if err := s.db.WithContext(ctx).First(&session, "token = ?", token).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, nil
+				}
+				return nil, err
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
+	}
+	if err := decryptSessionToken(&session); err != nil {
+		return nil, fmt.Errorf("failed to decrypt session: %w", err)
 	}
 	return &session, nil
 }
 
 // CreateSession creates a new session in the database.
 func (s *RDBConfigStore) CreateSession(ctx context.Context, session *tables.SessionsTable) error {
+	if err := encryptSessionToken(session); err != nil {
+		return fmt.Errorf("failed to encrypt session: %w", err)
+	}
 	return s.db.WithContext(ctx).Create(session).Error
 }
 
 // DeleteSession deletes a session from the database.
 func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error {
-	return s.db.WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error
+	tokenHash := encrypt.HashSHA256(token)
+	result := s.db.WithContext(ctx).Delete(&tables.SessionsTable{}, "token_hash = ?", tokenHash)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		// Fall back to plaintext lookup for backward compatibility
+		return s.db.WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error
+	}
+	return nil
 }
 
 // FlushSessions flushes all sessions from the database.
@@ -3056,6 +3149,9 @@ func (s *RDBConfigStore) GetOauthConfigByID(ctx context.Context, id string) (*ta
 		}
 		return nil, fmt.Errorf("failed to get oauth config: %w", result.Error)
 	}
+	if err := decryptOAuthConfig(&config); err != nil {
+		return nil, fmt.Errorf("failed to decrypt oauth config: %w", err)
+	}
 	return &config, nil
 }
 
@@ -3070,6 +3166,9 @@ func (s *RDBConfigStore) GetOauthConfigByState(ctx context.Context, state string
 		}
 		return nil, fmt.Errorf("failed to get oauth config by state: %w", result.Error)
 	}
+	if err := decryptOAuthConfig(&config); err != nil {
+		return nil, fmt.Errorf("failed to decrypt oauth config: %w", err)
+	}
 	return &config, nil
 }
 
@@ -3083,11 +3182,17 @@ func (s *RDBConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tab
 		}
 		return nil, fmt.Errorf("failed to get oauth token: %w", result.Error)
 	}
+	if err := decryptOAuthToken(&token); err != nil {
+		return nil, fmt.Errorf("failed to decrypt oauth token: %w", err)
+	}
 	return &token, nil
 }
 
 // CreateOauthConfig creates a new OAuth config
 func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	if err := encryptOAuthConfig(config); err != nil {
+		return fmt.Errorf("failed to encrypt oauth config: %w", err)
+	}
 	result := s.db.WithContext(ctx).Create(config)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth config: %w", result.Error)
@@ -3097,6 +3202,9 @@ func (s *RDBConfigStore) CreateOauthConfig(ctx context.Context, config *tables.T
 
 // CreateOauthToken creates a new OAuth token
 func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	if err := encryptOAuthToken(token); err != nil {
+		return fmt.Errorf("failed to encrypt oauth token: %w", err)
+	}
 	result := s.db.WithContext(ctx).Create(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to create oauth token: %w", result.Error)
@@ -3106,6 +3214,9 @@ func (s *RDBConfigStore) CreateOauthToken(ctx context.Context, token *tables.Tab
 
 // UpdateOauthConfig updates an existing OAuth config
 func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
+	if err := encryptOAuthConfig(config); err != nil {
+		return fmt.Errorf("failed to encrypt oauth config: %w", err)
+	}
 	result := s.db.WithContext(ctx).Save(config)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth config: %w", result.Error)
@@ -3115,6 +3226,9 @@ func (s *RDBConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.T
 
 // UpdateOauthToken updates an existing OAuth token
 func (s *RDBConfigStore) UpdateOauthToken(ctx context.Context, token *tables.TableOauthToken) error {
+	if err := encryptOAuthToken(token); err != nil {
+		return fmt.Errorf("failed to encrypt oauth token: %w", err)
+	}
 	result := s.db.WithContext(ctx).Save(token)
 	if result.Error != nil {
 		return fmt.Errorf("failed to update oauth token: %w", result.Error)
@@ -3140,6 +3254,11 @@ func (s *RDBConfigStore) GetExpiringOauthTokens(ctx context.Context, before time
 	if result.Error != nil {
 		return nil, fmt.Errorf("failed to get expiring tokens: %w", result.Error)
 	}
+	for _, t := range tokens {
+		if err := decryptOAuthToken(t); err != nil {
+			return nil, fmt.Errorf("failed to decrypt oauth token: %w", err)
+		}
+	}
 	return tokens, nil
 }
 
@@ -3152,6 +3271,9 @@ func (s *RDBConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID st
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get oauth config by token id: %w", result.Error)
+	}
+	if err := decryptOAuthConfig(&config); err != nil {
+		return nil, fmt.Errorf("failed to decrypt oauth config: %w", err)
 	}
 	return &config, nil
 }

@@ -2,10 +2,12 @@ package tables
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -33,6 +35,8 @@ type TableMCPClient struct {
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
+
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
@@ -107,11 +111,46 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	} else {
 		c.ToolPricingJSON = "{}"
 	}
-		return nil
+
+	if encrypt.IsEnabled() {
+		if c.HeadersJSON != "" && c.HeadersJSON != "{}" {
+			encrypted, err := encrypt.Encrypt(c.HeadersJSON)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp headers: %w", err)
+			}
+			c.HeadersJSON = encrypted
+		}
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+			encrypted, err := encrypt.Encrypt(c.ConnectionString.Val)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp connection string: %w", err)
+			}
+			c.ConnectionString.Val = encrypted
+		}
+		c.EncryptionStatus = "encrypted"
+	}
+
+	return nil
 }
 
 // AfterFind hooks for deserialization
 func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
+	if c.EncryptionStatus == "encrypted" {
+		if c.HeadersJSON != "" {
+			decrypted, err := encrypt.Decrypt(c.HeadersJSON)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp headers: %w", err)
+			}
+			c.HeadersJSON = decrypted
+		}
+		if c.ConnectionString != nil && !c.ConnectionString.IsFromEnv() && c.ConnectionString.GetValue() != "" {
+			decrypted, err := encrypt.Decrypt(c.ConnectionString.Val)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp connection string: %w", err)
+			}
+			c.ConnectionString.Val = decrypted
+		}
+	}
 	if c.StdioConfigJSON != nil {
 		var config schemas.MCPStdioConfig
 		if err := sonic.Unmarshal([]byte(*c.StdioConfigJSON), &config); err != nil {

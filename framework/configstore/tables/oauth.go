@@ -25,9 +25,10 @@ type TableOauthConfig struct {
 	ServerURL            string  `gorm:"type:text" json:"server_url"`                      // MCP server URL for OAuth discovery
 	UseDiscovery         bool    `gorm:"default:false" json:"use_discovery"`               // Flag to enable OAuth discovery
 	MCPClientConfigJSON  *string `gorm:"type:text" json:"-"`                               // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
-	CreatedAt            time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
-	ExpiresAt       time.Time `gorm:"index;not null" json:"expires_at"`                 // State expiry (15 min)
+	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
+	ExpiresAt        time.Time `gorm:"index;not null" json:"expires_at"` // State expiry (15 min)
 }
 
 // TableName sets the table name
@@ -53,9 +54,10 @@ type TableOauthToken struct {
 	TokenType       string     `gorm:"type:varchar(50);not null" json:"token_type"`       // "Bearer"
 	ExpiresAt       time.Time  `gorm:"index;not null" json:"expires_at"`                  // Token expiration
 	Scopes          string     `gorm:"type:text" json:"scopes"`                           // JSON array of granted scopes
-	LastRefreshedAt *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`          // Track when token was last refreshed
-	CreatedAt       time.Time  `gorm:"index;not null" json:"created_at"`
-	UpdatedAt       time.Time  `gorm:"index;not null" json:"updated_at"`
+	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"` // Track when token was last refreshed
+	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time  `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time  `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName sets the table name
