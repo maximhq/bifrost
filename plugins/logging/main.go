@@ -337,6 +337,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Tools = tools
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
+		case schemas.RerankRequest:
+			initialData.Params = req.RerankRequest.Params
 		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 			initialData.Params = req.SpeechRequest.Params
 			initialData.SpeechInput = req.SpeechRequest.Input
@@ -638,6 +640,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
 				case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 					usage = result.EmbeddingResponse.Usage
+				case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+					usage = result.RerankResponse.Usage
 				case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
 					usage = &schemas.BifrostLLMUsage{}
 					if result.TranscriptionResponse.Usage.InputTokens != nil {

@@ -39,6 +39,7 @@ export const RequestTypes = [
 	"responses",
 	"responses_stream",
 	"embedding",
+	"rerank",
 	"speech",
 	"speech_stream",
 	"transcription",
@@ -134,6 +135,7 @@ export const RequestTypeLabels = {
 	responses_stream: "Responses Stream",
 
 	embedding: "Embedding",
+	rerank: "Rerank",
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
@@ -200,6 +202,7 @@ export const RequestTypeColors = {
 	responses_stream: "bg-violet-100 text-violet-800",
 
 	embedding: "bg-red-100 text-red-800",
+	rerank: "bg-fuchsia-100 text-fuchsia-800",
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",
