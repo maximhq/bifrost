@@ -22,10 +22,6 @@ func (noOpLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 	return schemas.NoopLogEvent
 }
 
-func floatPtr(v float64) *float64 {
-	return &v
-}
-
 func TestSetProviderPricingOverrides_InvalidRegex(t *testing.T) {
 	mc := newTestCatalog(nil, nil)
 	err := mc.SetProviderPricingOverrides(schemas.OpenAI, []schemas.ProviderPricingOverride{
@@ -334,15 +330,15 @@ func TestPatchPricing_PartialPatchOnlyChangesSpecifiedFields(t *testing.T) {
 		CacheReadInputTokenCost:      &baseCacheRead,
 		InputCostPerImageToken:       &baseImageInput,
 		OutputCostPerImageToken:      &baseImageOutput,
-		CacheReadInputImageTokenCost: floatPtr(0.2),
+		CacheReadInputImageTokenCost: schemas.Ptr(0.2),
 	}
 
 	patched := patchPricing(base, schemas.ProviderPricingOverride{
 		ModelPattern:            "gpt-4o",
 		MatchType:               schemas.PricingOverrideMatchExact,
-		InputCostPerToken:       floatPtr(3),
-		CacheReadInputTokenCost: floatPtr(0.9),
-		OutputCostPerImageToken: floatPtr(1.2),
+		InputCostPerToken:       schemas.Ptr(3.0),
+		CacheReadInputTokenCost: schemas.Ptr(0.9),
+		OutputCostPerImageToken: schemas.Ptr(1.2),
 	})
 
 	// Changed fields

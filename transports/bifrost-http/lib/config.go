@@ -295,8 +295,8 @@ var DefaultClientConfig = configstore.ClientConfig{
 	InitialPoolSize:         schemas.DefaultInitialPoolSize,
 	EnableLogging:           true,
 	DisableContentLogging:   false,
-	EnableGovernance:       true,
-	EnforceAuthOnInference: false,
+	EnableGovernance:        true,
+	EnforceAuthOnInference:  false,
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},
 	AllowedHeaders:          []string{},
@@ -1998,20 +1998,20 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 			keys := make([]schemas.Key, len(dbProvider.Keys))
 			for i, dbKey := range dbProvider.Keys {
 				keys[i] = schemas.Key{
-					ID:               dbKey.ID,
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					Enabled:          dbKey.Enabled,
-					UseForBatchAPI:   dbKey.UseForBatchAPI,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					ID:                 dbKey.ID,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					Weight:             dbKey.Weight,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					ConfigHash:       dbKey.ConfigHash,
-					Status:           dbKey.Status,
-					Description:      dbKey.Description,
+					ConfigHash:         dbKey.ConfigHash,
+					Status:             dbKey.Status,
+					Description:        dbKey.Description,
 				}
 			}
 			providerConfig := configstore.ProviderConfig{
@@ -2022,6 +2022,7 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 				SendBackRawRequest:       dbProvider.SendBackRawRequest,
 				SendBackRawResponse:      dbProvider.SendBackRawResponse,
 				CustomProviderConfig:     dbProvider.CustomProviderConfig,
+				PricingOverrides:         dbProvider.PricingOverrides,
 				ConfigHash:               dbProvider.ConfigHash,
 			}
 			if err := ValidateCustomProvider(providerConfig, provider); err != nil {

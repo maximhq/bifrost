@@ -696,9 +696,10 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:      make(map[schemas.ModelProvider][]string),
-		baseModelIndex: baseModelIndex,
-		pricingData:    make(map[string]configstoreTables.TableModelPricing),
-		done:           make(chan struct{}),
+		modelPool:         make(map[schemas.ModelProvider][]string),
+		baseModelIndex:    baseModelIndex,
+		pricingData:       make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides: make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		done:              make(chan struct{}),
 	}
 }

@@ -26,12 +26,16 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 	const initialValue = useMemo(() => toPrettyJSON(provider.pricing_overrides ?? []), [provider.pricing_overrides]);
 	const [overridesJSON, setOverridesJSON] = useState(initialValue);
 	const [validationError, setValidationError] = useState<string>("");
-	const isDirty = overridesJSON !== initialValue;
+	const [hasUserEdits, setHasUserEdits] = useState(false);
+	const isDirty = hasUserEdits && overridesJSON !== initialValue;
 
 	useEffect(() => {
+		if (hasUserEdits) {
+			return;
+		}
 		setOverridesJSON(initialValue);
 		setValidationError("");
-	}, [initialValue, provider.name]);
+	}, [hasUserEdits, initialValue, provider.name]);
 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(isDirty));
@@ -40,6 +44,7 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 	const onReset = () => {
 		setOverridesJSON(initialValue);
 		setValidationError("");
+		setHasUserEdits(false);
 	};
 
 	const onSave = async () => {
@@ -66,6 +71,7 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 			}).unwrap();
 			toast.success("Pricing overrides updated successfully");
 			setOverridesJSON(toPrettyJSON(validated.data));
+			setHasUserEdits(false);
 		} catch (err) {
 			toast.error("Failed to update pricing overrides", {
 				description: getErrorMessage(err),
@@ -78,14 +84,18 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 			<div className="space-y-1">
 				<p className="text-sm font-medium">Provider Pricing Overrides</p>
 				<p className="text-muted-foreground text-xs">
-					Enter a JSON array of override objects. Match precedence is exact &gt; wildcard &gt; regex. Unspecified fields fall back to datasheet pricing.
+					Enter a JSON array of override objects. Match precedence is exact &gt; wildcard &gt; regex. Unspecified fields fall back to
+					datasheet pricing.
 				</p>
 			</div>
 
 			<Textarea
 				data-testid="provider-pricing-overrides-json-input"
 				value={overridesJSON}
-				onChange={(event) => setOverridesJSON(event.target.value)}
+				onChange={(event) => {
+					setOverridesJSON(event.target.value);
+					setHasUserEdits(true);
+				}}
 				rows={18}
 				className="font-mono text-xs"
 				disabled={!hasUpdateProviderAccess}
@@ -103,7 +113,13 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 			{validationError ? <p className="text-destructive text-xs">{validationError}</p> : null}
 
 			<div className="flex justify-end gap-2">
-				<Button type="button" variant="outline" onClick={onReset} disabled={!hasUpdateProviderAccess || !isDirty}>
+				<Button
+					type="button"
+					variant="outline"
+					data-testid="provider-pricing-overrides-reset-button"
+					onClick={onReset}
+					disabled={!hasUpdateProviderAccess || !isDirty}
+				>
 					Reset
 				</Button>
 				<Button

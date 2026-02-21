@@ -1621,6 +1621,25 @@
         "regex"
       ]
     },
+    "pricing_override_request_type": {
+      "type": "string",
+      "enum": [
+        "text_completion",
+        "text_completion_stream",
+        "chat_completion",
+        "chat_completion_stream",
+        "responses",
+        "responses_stream",
+        "embedding",
+        "rerank",
+        "speech",
+        "speech_stream",
+        "transcription",
+        "transcription_stream",
+        "image_generation",
+        "image_generation_stream"
+      ]
+    },
     "provider_pricing_override": {
       "type": "object",
       "properties": {
@@ -1634,7 +1653,7 @@
         "request_types": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/pricing_override_request_type"
           }
         },
         "input_cost_per_token": { "type": "number", "minimum": 0 },
