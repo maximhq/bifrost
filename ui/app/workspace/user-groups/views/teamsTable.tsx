@@ -26,6 +26,7 @@ import { Edit, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import TeamDialog from "./teamDialog";
+import { TeamsEmptyState } from "./teamsEmptyState";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -82,6 +83,20 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 		return customer ? customer.name : "Unknown Customer";
 	};
 
+	// Empty state when user has no teams (same pattern as Virtual Keys)
+	if (teams?.length === 0) {
+		return (
+			<>
+				<TooltipProvider>
+					{showTeamDialog && (
+						<TeamDialog team={editingTeam} customers={customers} onSave={handleTeamSaved} onCancel={() => setShowTeamDialog(false)} />
+					)}
+					<TeamsEmptyState onAddClick={handleAddTeam} canCreate={hasCreateAccess} />
+				</TooltipProvider>
+			</>
+		);
+	}
+
 	return (
 		<>
 			<TooltipProvider>
@@ -92,6 +107,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
 						<div>
+							<h2 className="text-lg font-semibold">Teams</h2>
 							<p className="text-muted-foreground text-sm">Organize users into teams with shared budgets and access controls.</p>
 						</div>
 						<Button data-testid="create-team-btn" onClick={handleAddTeam} disabled={!hasCreateAccess}>
@@ -113,14 +129,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{teams?.length === 0 ? (
-									<TableRow>
-										<TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
-											No teams found. Create your first team to get started.
-										</TableCell>
-									</TableRow>
-								) : (
-									teams?.map((team) => {
+								{teams?.map((team) => {
 										const vks = getVirtualKeysForTeam(team.id);
 										const customerName = getCustomerName(team.customer_id);
 
@@ -204,7 +213,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 															</TooltipContent>
 														</Tooltip>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
@@ -280,7 +289,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 															)}
 														</div>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell>
@@ -296,41 +305,31 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 															</Tooltip>
 														</div>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell className="text-right">
 													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-														<Tooltip>
-															<TooltipTrigger asChild>
+														<Button
+															variant="ghost"
+															size="icon"
+															className="h-8 w-8"
+															onClick={() => handleEditTeam(team)}
+															disabled={!hasUpdateAccess}
+														>
+															<Edit className="h-4 w-4" />
+														</Button>
+														<AlertDialog>
+															<AlertDialogTrigger asChild>
 																<Button
 																	variant="ghost"
 																	size="icon"
-																	className="h-8 w-8"
-																	onClick={() => handleEditTeam(team)}
-																	disabled={!hasUpdateAccess}
+																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+																	disabled={!hasDeleteAccess}
 																>
-																	<Edit className="h-4 w-4" />
+																	<Trash2 className="h-4 w-4" />
 																</Button>
-															</TooltipTrigger>
-															<TooltipContent>Edit</TooltipContent>
-														</Tooltip>
-														<AlertDialog>
-															<Tooltip>
-																<AlertDialogTrigger asChild>
-																	<TooltipTrigger asChild>
-																		<Button
-																			variant="ghost"
-																			size="icon"
-																			className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																			disabled={!hasDeleteAccess}
-																		>
-																			<Trash2 className="h-4 w-4" />
-																		</Button>
-																	</TooltipTrigger>
-																</AlertDialogTrigger>
-																<TooltipContent>Delete</TooltipContent>
-															</Tooltip>
+															</AlertDialogTrigger>
 															<AlertDialogContent>
 																<AlertDialogHeader>
 																	<AlertDialogTitle>Delete Team</AlertDialogTitle>
@@ -355,8 +354,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 												</TableCell>
 											</TableRow>
 										);
-									})
-								)}
+									})}
 							</TableBody>
 						</Table>
 					</div>

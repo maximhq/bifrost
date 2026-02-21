@@ -15,7 +15,6 @@ import { Validator } from "@/lib/utils/validation"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { formatDistanceToNow } from "date-fns"
 import isEqual from "lodash.isequal"
-import { Building } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 
@@ -243,24 +242,25 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 
 							{/* Customer Assignment */}
 							{customers?.length > 0 && (
-								<div className="w-full space-y-2">
-									<Label>Customer Assignment (optional)</Label>
-									<Select value={formData.customerId} onValueChange={(value) => updateField("customerId", value)}>
-										<SelectTrigger className="w-full">
+								<div className="space-y-2">
+									<Label htmlFor="customer">Customer (optional)</Label>
+									<Select
+										value={formData.customerId || "__none__"}
+										onValueChange={(value) => updateField("customerId", value === "__none__" ? "" : value)}
+									>
+										<SelectTrigger id="customer" className="w-full">
 											<SelectValue placeholder="Select a customer" />
 										</SelectTrigger>
-										<SelectContent className="w-full">
+										<SelectContent>
+											<SelectItem value="__none__">None</SelectItem>
 											{customers.map((customer) => (
 												<SelectItem key={customer.id} value={customer.id}>
-													<div className="flex items-center gap-2">
-														<Building className="h-4 w-4" />
-														{customer.name}
-													</div>
+													{customer.name}
 												</SelectItem>
 											))}
 										</SelectContent>
 									</Select>
-									<p className="text-muted-foreground text-sm">Assign this team to a customer or leave independent.</p>
+									<p className="text-muted-foreground text-sm">Assign to a customer or leave independent.</p>
 								</div>
 							)}
 						</div>

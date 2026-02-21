@@ -5,12 +5,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { prometheusFormSchema, type PrometheusFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { AlertTriangle, Copy, Eye, EyeOff, Info, Plus, Trash } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { AlertTriangle, Copy, Eye, EyeOff, Info, Plus, Trash, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 
@@ -27,15 +27,21 @@ interface PrometheusFormFragmentProps {
 		};
 	};
 	onSave: (config: PrometheusFormSchema) => Promise<void>;
+	onDelete?: () => void;
+	isDeleting?: boolean;
 	isLoading?: boolean;
 	metricsEndpoint?: string;
+	enableToggle?: { enabled: boolean; onToggle: () => void; disabled?: boolean };
 }
 
 export function PrometheusFormFragment({
 	currentConfig: initialConfig,
 	onSave,
+	onDelete,
+	isDeleting = false,
 	isLoading = false,
 	metricsEndpoint,
+	enableToggle,
 }: PrometheusFormFragmentProps) {
 	const hasPrometheusAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showPassword, setShowPassword] = useState(false);
@@ -308,21 +314,31 @@ export function PrometheusFormFragment({
 
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center">
-					<FormField
-						control={form.control}
-						name="enabled"
-						render={({ field }) => (
-							<FormItem className="flex flex-row items-center gap-2">
-								<FormLabel>Enable Push Gateway</FormLabel>
-								<Switch
-									checked={form.watch("enabled")}
-									onCheckedChange={field.onChange}
-									disabled={!hasPrometheusAccess || isLoading || !form.formState.isValid}
-								/>
-							</FormItem>
-						)}
-					/>
+					{enableToggle && (
+						<div className="flex items-center gap-2 py-2">
+							<span className="text-muted-foreground text-sm font-medium">Enabled</span>
+							<Switch
+								checked={enableToggle.enabled}
+								onCheckedChange={enableToggle.onToggle}
+								disabled={enableToggle.disabled}
+								title={enableToggle.enabled ? "Enabled" : "Disabled"}
+								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
+							/>
+						</div>
+					)}
 					<div className="ml-auto flex justify-end space-x-2 py-2">
+						{onDelete && (
+							<Button
+								type="button"
+								variant="outline"
+								onClick={onDelete}
+								disabled={isDeleting}
+								title="Delete connector"
+								aria-label="Delete connector"
+							>
+								<Trash2 className="size-4" />
+							</Button>
+						)}
 						<Button
 							type="button"
 							variant="outline"

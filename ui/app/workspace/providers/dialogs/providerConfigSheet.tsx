@@ -6,6 +6,7 @@ import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
 import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
+import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
 
@@ -25,15 +26,15 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 	}
 	tabs.push({
 		id: "network",
-		label: "Network config",
+		label: "Network",
 	});
 	tabs.push({
 		id: "proxy",
-		label: "Proxy config",
+		label: "Proxy",
 	});
 	tabs.push({
 		id: "performance",
-		label: "Performance tuning",
+		label: "Performance",
 	});
 	if (hasGovernanceAccess && isGovernanceEnabled) {
 		tabs.push({
@@ -41,6 +42,10 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 			label: "Governance",
 		});
 	}
+	tabs.push({
+		id: "debugging",
+		label: "Debugging",
+	});
 	return tabs;
 };
 
@@ -102,6 +107,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="debugging">
+							<DebuggingFormFragment provider={provider} />
 						</TabsContent>
 					</Tabs>
 				</div>

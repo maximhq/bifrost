@@ -1,9 +1,12 @@
-import RBACView from "@enterprise/components/rbac/rbacView";
+"use client"
 
-export default function RBACPage() {
-	return (
-		<div className="mx-auto w-full max-w-7xl">
-			<RBACView />
-		</div>
-	);
+import { useRouter } from "next/navigation"
+import { useEffect } from "react"
+
+export default function RBACRedirectPage() {
+  const router = useRouter()
+  useEffect(() => {
+    router.replace("/workspace/governance/rbac")
+  }, [router])
+  return null
 }

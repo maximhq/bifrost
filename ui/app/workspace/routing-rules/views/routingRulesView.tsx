@@ -12,6 +12,7 @@ import { RoutingRule } from "@/lib/types/routingRules";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { RoutingRuleSheet } from "./routingRuleSheet";
+import { RoutingRulesEmptyState } from "./routingRulesEmptyState";
 import { RoutingRulesTable } from "./routingRulesTable";
 
 export function RoutingRulesView() {
@@ -42,6 +43,16 @@ export function RoutingRulesView() {
 		}
 	};
 
+	// Empty state (same pattern as Plugins / MCP Servers): no header, just empty state + sheet
+	if (!isLoading && rules.length === 0) {
+		return (
+			<>
+				<RoutingRulesEmptyState onAddClick={handleCreateNew} canCreate={canCreate} />
+				<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
+			</>
+		);
+	}
+
 	return (
 		<div className="space-y-4">
 			{/* Header */}
@@ -58,24 +69,8 @@ export function RoutingRulesView() {
 				)}
 			</div>
 
-			{/* Empty state or Table */}
-			{!isLoading && rules.length === 0 ? (
-				<div className="rounded-lg border border-dashed p-12 text-center">
-					<Plus className="text-muted-foreground mx-auto mb-4 h-12 w-12" />
-					<h3 className="mb-1 text-lg font-semibold">No routing rules yet</h3>
-					<p className="text-muted-foreground mb-6">Create your first routing rule to start intelligently routing requests</p>
-					{canCreate && (
-						<Button onClick={handleCreateNew} className="gap-2">
-							<Plus className="h-4 w-4" />
-							Create First Rule
-						</Button>
-					)}
-				</div>
-			) : (
-				<RoutingRulesTable rules={rules} isLoading={isLoading} onEdit={handleEdit} canDelete={canDelete} />
-			)}
+			<RoutingRulesTable rules={rules} isLoading={isLoading} onEdit={handleEdit} canDelete={canDelete} />
 
-			{/* RoutingRuleSheet */}
 			<RoutingRuleSheet open={dialogOpen} onOpenChange={handleDialogOpenChange} editingRule={editingRule} />
 		</div>
 	);

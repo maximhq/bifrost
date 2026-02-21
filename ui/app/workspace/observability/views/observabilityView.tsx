@@ -1,13 +1,18 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
-import { Badge } from "@/components/ui/badge";
-import { setSelectedPlugin, useAppDispatch, useAppSelector, useGetPluginsQuery } from "@/lib/store";
+import { Button } from "@/components/ui/button";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { getErrorMessage, setSelectedPlugin, useAppDispatch, useAppSelector, useCreatePluginMutation, useDeletePluginMutation, useGetPluginsQuery, useUpdatePluginMutation } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
 import Image from "next/image";
+import { Plus, Settings } from "lucide-react";
 import { useQueryState } from "nuqs";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { AddConnectorDialog } from "../dialogs/addConnectorDialog";
+import { ConnectorsEmptyState } from "./connectorsEmptyState";
 import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
@@ -64,15 +69,23 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 				<path d="M256.2 572.3L0 424.6V239.9l416.4 240v479.9l-160.2-92.2z" fill="#1d252c" />
 			</svg>
 		),
-		disabled: true,
 	},
 ];
 
-export default function ObservabilityView() {
+interface ObservabilityViewProps {
+	/** When set, a Settings button is shown next to Add New that opens config/observability in the sidepane */
+	onOpenObservabilityConfig?: () => void;
+}
+
+export default function ObservabilityView({ onOpenObservabilityConfig }: ObservabilityViewProps) {
 	const dispatch = useAppDispatch();
 	const { data: plugins, isLoading } = useGetPluginsQuery();
+	const [createPlugin, { isLoading: isCreating }] = useCreatePluginMutation();
+	const [deletePlugin, { isLoading: isDeleting }] = useDeletePluginMutation();
+	const [updatePlugin, { isLoading: isUpdating }] = useUpdatePluginMutation();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
+	const [showAddConnectorDialog, setShowAddConnectorDialog] = useState(false);
 
 	const { resolvedTheme } = useTheme();
 
@@ -80,12 +93,80 @@ export default function ObservabilityView() {
 
 	// Map UI tab IDs to actual plugin names (prometheus tab uses telemetry plugin)
 	const getPluginNameForTab = (tabId: string) => (tabId === "prometheus" ? "telemetry" : tabId);
+	const getTabIdForPluginName = (pluginName: string) => (pluginName === "telemetry" ? "prometheus" : pluginName);
+
+	// Only show connectors that are configured (exist in plugins); each card shows green/red dot for enabled/disabled
+	const configuredConnectors = useMemo(() => {
+		if (!plugins) return [];
+		return plugins
+			.map((plugin) => {
+				const tabId = getTabIdForPluginName(plugin.name);
+				const platform = supportedPlatforms.find((p) => p.id === tabId && !p.disabled);
+				if (!platform) return null;
+				return { ...platform, enabled: plugin.enabled, plugin };
+			})
+			.filter((c): c is NonNullable<typeof c> => c !== null);
+	}, [plugins, supportedPlatforms]);
+
+	// Connector types that can be added (not yet configured)
+	const availableToAdd = useMemo(() => {
+		const configuredIds = new Set(configuredConnectors.map((c) => c.id));
+		return supportedPlatforms.filter((p) => !p.disabled && !configuredIds.has(p.id));
+	}, [supportedPlatforms, configuredConnectors]);
+
+	const handleAddConnector = async (tabId: string) => {
+		const pluginName = getPluginNameForTab(tabId);
+		try {
+			await createPlugin({
+				name: pluginName,
+				path: "",
+				enabled: false,
+				config: {},
+			}).unwrap();
+			setSelectedPluginId(tabId);
+			toast.success("Connector added.");
+		} catch (err) {
+			toast.error(getErrorMessage(err));
+		}
+	};
+
+	const handleAddConnectorFromDialog = async (tabId: string) => {
+		await handleAddConnector(tabId);
+		setShowAddConnectorDialog(false);
+	};
+
+	const handleDeleteConnectorById = async (tabId: string) => {
+		const pluginName = getPluginNameForTab(tabId);
+		try {
+			await deletePlugin(pluginName).unwrap();
+			const remaining = configuredConnectors.filter((c) => c.id !== tabId);
+			setSelectedPluginId(remaining[0]?.id ?? null);
+			toast.success("Connector removed.");
+		} catch (err) {
+			toast.error(getErrorMessage(err));
+		}
+	};
+
+	const handleToggleEnabled = async (connector: (typeof configuredConnectors)[number]) => {
+		try {
+			await updatePlugin({
+				name: getPluginNameForTab(connector.id),
+				data: {
+					enabled: !connector.enabled,
+					config: connector.plugin.config ?? {},
+				},
+			}).unwrap();
+			toast.success(connector.enabled ? "Connector disabled." : "Connector enabled.");
+		} catch (err) {
+			toast.error(getErrorMessage(err));
+		}
+	};
 
 	useEffect(() => {
 		if (!plugins || plugins.length === 0) return;
-		if (!selectedPluginId) {
-			setSelectedPluginId(supportedPlatforms[0].id);
-		} else {
+		if (!selectedPluginId && configuredConnectors.length > 0) {
+			setSelectedPluginId(configuredConnectors[0].id);
+		} else if (selectedPluginId) {
 			const pluginName = getPluginNameForTab(selectedPluginId);
 			const plugin = plugins.find((plugin) => plugin.name === pluginName) ?? {
 				name: selectedPluginId,
@@ -97,12 +178,12 @@ export default function ObservabilityView() {
 			dispatch(setSelectedPlugin(plugin));
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [plugins]);
+	}, [plugins, configuredConnectors.length]);
 
 	useEffect(() => {
-		if (selectedPluginId) {
+		if (selectedPluginId && plugins) {
 			const pluginName = getPluginNameForTab(selectedPluginId);
-			const plugin = plugins?.find((plugin) => plugin.name === pluginName) ?? {
+			const plugin = plugins.find((plugin) => plugin.name === pluginName) ?? {
 				name: selectedPluginId,
 				enabled: false,
 				config: {},
@@ -110,69 +191,127 @@ export default function ObservabilityView() {
 				path: "",
 			};
 			dispatch(setSelectedPlugin(plugin));
-		} else {
-			setSelectedPluginId(supportedPlatforms[0].id);
 		}
-	}, [selectedPluginId]);
+	}, [selectedPluginId, plugins, dispatch]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
 	}
 
+	const currentId = selectedPluginId ?? configuredConnectors[0]?.id ?? "";
+
 	return (
-		<div className="flex h-full flex-row gap-4">
-			<div className="flex flex-col">
-				<div className="flex w-[270px] flex-col gap-2 pb-10">
-					<div className="rounded-md bg-zinc-100/10 p-4 dark:bg-zinc-800/20">
-						<div className="flex flex-col gap-1">
-							<div className="text-muted-foreground mb-2 text-xs font-medium">Providers</div>
-							{supportedPlatforms.map((tab) => (
-								<button
-									type="button"
-									key={tab.id}
-									disabled={!!tab.disabled}
-									aria-disabled={tab.disabled ? true : undefined}
-									aria-current={selectedPluginId === tab.id ? "page" : undefined}
-									className={cn(
-										"mb-1 flex max-h-[32px] w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
-										tab.disabled ? "opacity-50" : "",
-										selectedPluginId === tab.id
-											? "bg-secondary opacity-100 hover:opacity-100"
-											: tab.disabled
-												? "border-none"
-												: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-									)}
-									onClick={() => {
-										if (tab.disabled) {
-											return;
-										}
-										setSelectedPluginId(tab.id ?? supportedPlatforms[0].id);
-									}}
+		<div className="flex flex-col gap-6 -mt-5">
+			<div className="flex w-full flex-col gap-3">
+				{configuredConnectors.length > 0 && (
+					<div className="flex w-full items-center justify-between gap-2">
+						<span className="text-muted-foreground text-sm font-medium">Configure Connectors</span>
+						<div className="flex items-center gap-2">
+							{onOpenObservabilityConfig && (
+								<Button variant="outline" size="sm" onClick={onOpenObservabilityConfig}>
+									<Settings className="size-4" />
+									Settings
+								</Button>
+							)}
+							{availableToAdd.length > 0 && (
+								<Button
+									variant="outline"
+									size="sm"
+									disabled={isCreating}
+									onClick={() => setShowAddConnectorDialog(true)}
 								>
-									<div className="w-[24px]">{tab.icon}</div> {tab.name}
-									{tab.tag && (
-										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
-											{tab.tag.toUpperCase()}
-										</Badge>
-									)}
-									{tab.disabled && (
-										<Badge variant="secondary" className="text-muted-foreground ml-auto text-[10px] font-medium">
-											{"Coming soon".toUpperCase()}
-										</Badge>
-									)}
-								</button>
-							))}
+									<Plus className="size-4" />
+									Add new
+								</Button>
+							)}
 						</div>
 					</div>
+				)}
+				{configuredConnectors.length === 0 ? (
+					<ConnectorsEmptyState onOpenAddConnector={() => setShowAddConnectorDialog(true)} />
+				) : (
+					<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+						{configuredConnectors.map((connector) => {
+							const isDatadogOssOnly = connector.id === "datadog" && !IS_ENTERPRISE;
+							const isUnclickable = connector.id === "newrelic" || isDatadogOssOnly;
+							return (
+							<div
+								key={connector.id}
+								{...(isUnclickable ? {} : { role: "button" as const, tabIndex: 0, onClick: () => setSelectedPluginId(connector.id), onKeyDown: (e: React.KeyboardEvent) => e.key === "Enter" && setSelectedPluginId(connector.id) })}
+								className={cn(
+									"group flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors",
+									isUnclickable ? "cursor-default opacity-90" : "cursor-pointer hover:bg-muted/50",
+									currentId === connector.id && !isUnclickable && "border-primary ring-1 ring-primary",
+								)}
+							>
+								<div className="flex min-w-0 flex-1 items-center gap-3">
+									<div className="flex shrink-0 items-center [&>svg]:size-5 [&>img]:size-5">
+										{connector.icon}
+									</div>
+									<span className="min-w-0 truncate text-sm font-medium">{connector.name}</span>
+								</div>
+								{connector.id === "newrelic" ? (
+									<span className="text-muted-foreground text-sm">Coming soon</span>
+								) : isDatadogOssOnly ? (
+									<span className="text-muted-foreground text-sm">Enterprise Exclusive</span>
+								) : null}
+							</div>
+							);
+						})}
+					</div>
+				)}
+			</div>
+			{configuredConnectors.length > 0 && (
+				<div className="min-h-0 flex-1">
+					{(() => {
+						const currentConnector = configuredConnectors.find((c) => c.id === currentId);
+						const enableToggle =
+							currentConnector &&
+							currentConnector.id !== "newrelic" &&
+							!(currentConnector.id === "datadog" && !IS_ENTERPRISE)
+								? {
+										enabled: currentConnector.enabled,
+										onToggle: () => handleToggleEnabled(currentConnector),
+										disabled: isUpdating,
+									}
+								: undefined;
+						return (
+							<>
+								{currentId === "prometheus" && (
+									<PrometheusView
+										onDelete={() => handleDeleteConnectorById("prometheus")}
+										isDeleting={isDeleting}
+										enableToggle={enableToggle}
+									/>
+								)}
+								{currentId === "otel" && (
+									<OtelView
+										onDelete={() => handleDeleteConnectorById("otel")}
+										isDeleting={isDeleting}
+										enableToggle={enableToggle}
+									/>
+								)}
+								{currentId === "maxim" && (
+									<MaximView
+										onDelete={() => handleDeleteConnectorById("maxim")}
+										isDeleting={isDeleting}
+										enableToggle={enableToggle}
+									/>
+								)}
+								{currentId === "datadog" && <DatadogView onDelete={() => handleDeleteConnectorById("datadog")} isDeleting={isDeleting} />}
+								{currentId === "newrelic" && <NewrelicView />}
+							</>
+						);
+					})()}
 				</div>
-			</div>
-			<div className="w-full pt-4">
-				{selectedPluginId === "prometheus" && <PrometheusView />}
-				{selectedPluginId === "otel" && <OtelView />}
-				{selectedPluginId === "maxim" && <MaximView />}
-				{selectedPluginId === "datadog" && <DatadogView />}
-				{selectedPluginId === "newrelic" && <NewrelicView />}
-			</div>
+			)}
+			<AddConnectorDialog
+				open={showAddConnectorDialog}
+				onOpenChange={setShowAddConnectorDialog}
+				availableToAdd={availableToAdd}
+				onAdd={handleAddConnectorFromDialog}
+				isAdding={isCreating}
+			/>
 		</div>
 	);
 }
