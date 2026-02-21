@@ -225,7 +225,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if err := validatePricingOverrides(payload.PricingOverrides); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid pricing overrides: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing overrides: %v", err))
 		return
 	}
 	// Validate retry backoff values if NetworkConfig is provided
@@ -336,7 +336,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := validatePricingOverrides(payload.PricingOverrides); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid pricing overrides: %v", err))
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid pricing overrides: %v", err))
 		return
 	}
 
