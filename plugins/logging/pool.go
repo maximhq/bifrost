@@ -42,6 +42,7 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.SpeechOutput = nil
 	data.TranscriptionOutput = nil
 	data.EmbeddingOutput = nil
+	data.RerankOutput = nil
 	data.Cost = nil
 	data.ImageGenerationOutput = nil
 	data.RawRequest = nil

@@ -98,6 +98,7 @@ type Log struct {
 	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
 	ResponsesOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
 	EmbeddingOutput       string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	RerankOutput          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
 	Params                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
 	Tools                 string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
 	ToolCalls             string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
@@ -135,6 +136,7 @@ type Log struct {
 	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
 	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
 	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
+	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
 	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
 	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
 	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"` // For backward compatibility, tool calls are now in the content
@@ -239,6 +241,14 @@ func (l *Log) SerializeFields() error {
 			return err
 		} else {
 			l.EmbeddingOutput = string(data)
+		}
+	}
+
+	if l.RerankOutputParsed != nil {
+		if data, err := json.Marshal(l.RerankOutputParsed); err != nil {
+			return err
+		} else {
+			l.RerankOutput = string(data)
 		}
 	}
 
@@ -398,6 +408,13 @@ func (l *Log) DeserializeFields() error {
 		if err := json.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.EmbeddingOutputParsed = nil
+		}
+	}
+
+	if l.RerankOutput != "" {
+		if err := json.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
+			// Log error but don't fail the operation - initialize as nil
+			l.RerankOutputParsed = nil
 		}
 	}
 
@@ -851,6 +868,15 @@ func (l *Log) BuildContentSummary() string {
 				for _, summary := range msg.ResponsesReasoning.Summary {
 					parts = append(parts, summary.Text)
 				}
+			}
+		}
+	}
+
+	// Add rerank output content
+	if l.RerankOutputParsed != nil {
+		for _, result := range l.RerankOutputParsed {
+			if result.Document != nil && result.Document.Text != "" {
+				parts = append(parts, result.Document.Text)
 			}
 		}
 	}
