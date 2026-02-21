@@ -427,8 +427,6 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
 				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
-				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
 				data-testid="vk-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start px-3 pt-8">

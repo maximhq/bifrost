@@ -86,6 +86,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const form = useForm<FormData>({
+		mode: "onChange",
 		resolver: zodResolver(formSchema),
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
@@ -206,11 +207,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-			<SheetContent
-				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8"
-				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
-			>
+			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8">
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
 					<SheetDescription>
@@ -271,7 +268,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												provider={form.watch("provider") || undefined}
 												value={field.value}
 												onChange={field.onChange}
-												placeholder="Select a model..."
+												placeholder="Search for a model..."
 												isSingleSelect
 												loadModelsOnEmptyProvider="base_models"
 												disabled={isEditing}
