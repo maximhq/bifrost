@@ -387,7 +387,7 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
-	metadata?: Record<string, unknown>; // JSON metadata (e.g., isAsyncRequest)
+	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 }
 
 export interface LogFilters {
@@ -769,6 +769,7 @@ export interface MCPToolLogEntry {
 	latency?: number; // Execution time in milliseconds
 	cost?: number; // Cost in dollars (per execution cost)
 	status: string; // "processing", "success", or "error"
+	metadata?: Record<string, string>;
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 }

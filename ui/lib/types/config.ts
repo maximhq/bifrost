@@ -403,6 +403,7 @@ export interface CoreConfig {
 	mcp_tool_sync_interval: number;
 	async_job_result_ttl: number;
 	required_headers: string[];
+	logging_headers: string[];
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -427,6 +428,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	async_job_result_ttl: 3600,
 	allowed_headers: [],
 	required_headers: [],
+	logging_headers: [],
 };
 
 // Semantic cache configuration types

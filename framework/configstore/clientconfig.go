@@ -57,6 +57,7 @@ type ClientConfig struct {
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL       int                              `json:"async_job_result_ttl"`                // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeaders         []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 

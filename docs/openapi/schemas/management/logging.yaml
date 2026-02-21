@@ -114,6 +114,10 @@ LogEntry:
     cache_debug:
       type: object
       additionalProperties: true
+    metadata:
+      type: object
+      additionalProperties: true
+      description: Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)
     selected_key:
       type: object
       additionalProperties: true
@@ -167,6 +171,10 @@ MCPToolLogEntry:
       type: string
       enum: ["processing", "success", "error"]
       description: Execution status
+    metadata:
+      type: object
+      additionalProperties: true
+      description: Custom metadata captured from request headers (configured via logging_headers or x-bf-lh-* prefix)
     created_at:
       type: string
       format: date-time

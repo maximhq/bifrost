@@ -426,6 +426,21 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									</div>
 								</>
 							)}
+							{log.metadata && Object.keys(log.metadata).filter((k) => k !== "isAsyncRequest").length > 0 && (
+								<>
+									<DottedSeparator />
+									<div className="space-y-4">
+										<BlockHeader title="Metadata" />
+										<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+											{Object.entries(log.metadata)
+												.filter(([key]) => key !== "isAsyncRequest")
+												.map(([key, value]) => (
+													<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+												))}
+										</div>
+									</div>
+								</>
+							)}
 						</>
 					)}
 				</div>

@@ -525,12 +525,14 @@ type MCPToolLog struct {
 	Latency        *float64  `gorm:"index:idx_mcp_logs_latency" json:"latency,omitempty"`               // Execution time in milliseconds
 	Cost           *float64  `gorm:"index:idx_mcp_logs_cost" json:"cost,omitempty"`                     // Cost in dollars (per execution cost)
 	Status         string    `gorm:"type:varchar(50);index:idx_mcp_logs_status;not null" json:"status"` // "processing", "success", or "error"
+	Metadata       string    `gorm:"type:text" json:"-"`                                               // JSON serialized map[string]interface{}
 	CreatedAt      time.Time `gorm:"index;not null" json:"created_at"`
 
 	// Virtual fields for JSON output - populated when needed
 	ArgumentsParsed    interface{}             `gorm:"-" json:"arguments,omitempty"`
 	ResultParsed       interface{}             `gorm:"-" json:"result,omitempty"`
 	ErrorDetailsParsed *schemas.BifrostError   `gorm:"-" json:"error_details,omitempty"`
+	MetadataParsed     map[string]interface{}  `gorm:"-" json:"metadata,omitempty"`
 	VirtualKey         *tables.TableVirtualKey `gorm:"-" json:"virtual_key,omitempty"`
 }
 
@@ -586,6 +588,14 @@ func (l *MCPToolLog) SerializeFields() error {
 		}
 	}
 
+	if l.MetadataParsed != nil {
+		if data, err := json.Marshal(l.MetadataParsed); err != nil {
+			return err
+		} else {
+			l.Metadata = string(data)
+		}
+	}
+
 	return nil
 }
 
@@ -606,6 +616,12 @@ func (l *MCPToolLog) DeserializeFields() error {
 	if l.ErrorDetails != "" {
 		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			l.ErrorDetailsParsed = nil
+		}
+	}
+
+	if l.Metadata != "" {
+		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+			l.MetadataParsed = nil
 		}
 	}
 

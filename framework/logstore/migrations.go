@@ -142,6 +142,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMetadataColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMetadataColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1291,6 +1294,40 @@ func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding metadata column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMetadataColumnToMCPToolLogs adds the metadata column to the mcp_tool_logs table
+func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_metadata_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&MCPToolLog{}, "metadata") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&MCPToolLog{}, "metadata") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding metadata column to mcp_tool_logs: %s", err.Error())
 	}
 	return nil
 }

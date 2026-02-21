@@ -105,7 +105,8 @@ type LogCallback func(ctx context.Context, logEntry *logstore.Log)
 type MCPToolLogCallback func(*logstore.MCPToolLog)
 
 type Config struct {
-	DisableContentLogging *bool `json:"disable_content_logging"`
+	DisableContentLogging *bool     `json:"disable_content_logging"`
+	LoggingHeaders        *[]string `json:"logging_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 }
 
 // LoggerPlugin implements the schemas.LLMPlugin and schemas.MCPPlugin interfaces
@@ -113,6 +114,7 @@ type LoggerPlugin struct {
 	ctx                   context.Context
 	store                 logstore.LogStore
 	disableContentLogging *bool
+	loggingHeaders        *[]string // Pointer to live config slice for headers to capture in metadata
 	pricingManager        *modelcatalog.ModelCatalog
 	mcpCatalog            *mcpcatalog.MCPCatalog // MCP catalog for tool cost calculation
 	mu                    sync.Mutex
@@ -149,6 +151,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		pricingManager:        pricingManager,
 		mcpCatalog:            mcpCatalog,
 		disableContentLogging: config.DisableContentLogging,
+		loggingHeaders:        config.LoggingHeaders,
 		done:                  make(chan struct{}),
 		logger:                logger,
 		logMsgPool: sync.Pool{
@@ -234,6 +237,43 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 	return chunk, nil
 }
 
+// captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
+// from the request context. Returns a new metadata map, or nil if no headers were captured.
+// System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
+func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[string]interface{} {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if allHeaders == nil {
+		return nil
+	}
+
+	var metadata map[string]interface{}
+
+	// Check configured logging headers
+	if p.loggingHeaders != nil {
+		for _, h := range *p.loggingHeaders {
+			key := strings.ToLower(h)
+			if val, ok := allHeaders[key]; ok {
+				if metadata == nil {
+					metadata = make(map[string]interface{})
+				}
+				metadata[key] = val
+			}
+		}
+	}
+
+	// Check x-bf-lh-* prefixed headers
+	for key, val := range allHeaders {
+		if labelName, ok := strings.CutPrefix(key, "x-bf-lh-"); ok && labelName != "" {
+			if metadata == nil {
+				metadata = make(map[string]interface{})
+			}
+			metadata[labelName] = val
+		}
+	}
+
+	return metadata
+}
+
 // PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
@@ -309,7 +349,10 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Check if this is an async request and add to metadata
+	// Capture configured logging headers and x-bf-lh-* headers into metadata first
+	initialData.Metadata = p.captureLoggingHeaders(ctx)
+
+	// System entries are set after so they take precedence over dynamic header values
 	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 		if initialData.Metadata == nil {
 			initialData.Metadata = make(map[string]interface{})
@@ -849,6 +892,9 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		if p.disableContentLogging == nil || !*p.disableContentLogging {
 			entry.ArgumentsParsed = arguments
 		}
+
+		// Capture configured logging headers and x-bf-lh-* headers into metadata
+		entry.MetadataParsed = p.captureLoggingHeaders(ctx)
 
 		if err := p.store.CreateMCPToolLog(p.ctx, entry); err != nil {
 			p.logger.Warn("Failed to insert initial MCP tool log entry for request %s: %v", requestID, err)

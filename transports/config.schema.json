@@ -127,6 +127,13 @@
             "type": "string"
           },
           "description": "Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching."
+        },
+        "logging_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         }
       },
       "additionalProperties": false

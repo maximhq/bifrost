@@ -204,6 +204,18 @@ export function MCPLogDetailSheet({ log, open, onOpenChange, handleDelete }: MCP
 					</div>
 				)}
 
+				{/* Metadata */}
+				{log.metadata && Object.keys(log.metadata).length > 0 && (
+					<div className="space-y-4 rounded-sm border px-6 py-4">
+						<BlockHeader title="Metadata" />
+						<div className="grid w-full grid-cols-3 items-start justify-between gap-4">
+							{Object.entries(log.metadata).map(([key, value]) => (
+								<LogEntryDetailsView key={key} className="w-full" label={key} value={String(value)} />
+							))}
+						</div>
+					</div>
+				)}
+
 				{/* Error Details */}
 				{log.error_details && (
 					<div className="border-destructive/50 w-full rounded-sm border">

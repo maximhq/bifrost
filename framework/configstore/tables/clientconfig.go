@@ -30,6 +30,7 @@ type TableClientConfig struct {
 	MCPToolSyncInterval     int    `gorm:"default:10" json:"mcp_tool_sync_interval"`          // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	AsyncJobResultTTL       int    `gorm:"default:3600" json:"async_job_result_ttl"`          // Default TTL for async job results in seconds (default: 3600 = 1 hour)
 	RequiredHeadersJSON     string `gorm:"type:text" json:"-"`                                // JSON serialized []string
+	LoggingHeadersJSON      string `gorm:"type:text" json:"-"`                                // JSON serialized []string
 
 	// LiteLLM fallback flag
 	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`
@@ -46,6 +47,7 @@ type TableClientConfig struct {
 	AllowedOrigins     []string                  `gorm:"-" json:"allowed_origins,omitempty"`
 	AllowedHeaders     []string                  `gorm:"-" json:"allowed_headers,omitempty"`
 	RequiredHeaders    []string                  `gorm:"-" json:"required_headers,omitempty"`
+	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
 	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
 }
 
@@ -93,6 +95,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.RequiredHeadersJSON = "[]"
 	}
 
+	if cc.LoggingHeaders != nil {
+		data, err := json.Marshal(cc.LoggingHeaders)
+		if err != nil {
+			return err
+		}
+		cc.LoggingHeadersJSON = string(data)
+	} else {
+		cc.LoggingHeadersJSON = "[]"
+	}
+
 	if cc.HeaderFilterConfig != nil {
 		data, err := json.Marshal(cc.HeaderFilterConfig)
 		if err != nil {
@@ -128,6 +140,12 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 
 	if cc.RequiredHeadersJSON != "" {
 		if err := json.Unmarshal([]byte(cc.RequiredHeadersJSON), &cc.RequiredHeaders); err != nil {
+			return err
+		}
+	}
+
+	if cc.LoggingHeadersJSON != "" {
+		if err := json.Unmarshal([]byte(cc.LoggingHeadersJSON), &cc.LoggingHeaders); err != nil {
 			return err
 		}
 	}

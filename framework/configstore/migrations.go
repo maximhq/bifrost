@@ -262,6 +262,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRequiredHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddLoggingHeadersJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3594,6 +3597,41 @@ func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running required_headers_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLoggingHeadersJSONColumn adds the logging_headers_json column to the config_client table
+func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_logging_headers_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "logging_headers_json") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "LoggingHeadersJSON"); err != nil {
+					return fmt.Errorf("failed to add logging_headers_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "logging_headers_json") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "logging_headers_json"); err != nil {
+					return fmt.Errorf("failed to drop logging_headers_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running logging_headers_json migration: %s", err.Error())
 	}
 	return nil
 }

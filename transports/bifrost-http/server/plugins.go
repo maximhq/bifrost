@@ -162,6 +162,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	if s.Config.ClientConfig.EnableLogging && s.Config.LogsStore != nil {
 		config := &logging.Config{
 			DisableContentLogging: &s.Config.ClientConfig.DisableContentLogging,
+			LoggingHeaders:        &s.Config.ClientConfig.LoggingHeaders,
 		}
 		s.registerPluginWithStatus(ctx, logging.PluginName, nil, config, false)
 	} else {

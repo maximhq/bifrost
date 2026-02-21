@@ -1,3 +1,4 @@
+- feat: added support for logging headers to capture request headers into log metadata
 - fix: OAuth callback URL now respects X-Forwarded-Proto header for correct HTTPS scheme behind reverse proxies
 - feat: add asynchronous inference support
 - feat: added required headers support — configure headers that must be present on every request
