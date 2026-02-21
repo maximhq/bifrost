@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  
+  contents: write
 
 jobs:
   release:
@@ -102,3 +102,18 @@ jobs:
           enable_jekyll: false
           user_name: 'github-actions[bot]'
           user_email: 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Login to OCI Registry
+        uses: docker/login-action@v3.6.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Helm charts to OCI registry
+        shell: bash
+        env:
+          PACKAGE_FILE: bifrost-${{ steps.chart-version.outputs.version }}.tgz
+          CHART_TAG_BASE: docker.io/maximhq/bifrost-helm
+        run: |-
+          helm push "${PACKAGE_FILE}" oci://${CHART_TAG_BASE}
