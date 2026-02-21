@@ -1,8 +1,10 @@
 package tables
 
 import (
+	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -25,9 +27,10 @@ type TableOauthConfig struct {
 	ServerURL            string  `gorm:"type:text" json:"server_url"`                      // MCP server URL for OAuth discovery
 	UseDiscovery         bool    `gorm:"default:false" json:"use_discovery"`               // Flag to enable OAuth discovery
 	MCPClientConfigJSON  *string `gorm:"type:text" json:"-"`                               // JSON serialized MCPClientConfig for multi-instance support (pending MCP client waiting for OAuth completion)
-	CreatedAt            time.Time `gorm:"index;not null" json:"created_at"`
-	UpdatedAt       time.Time `gorm:"index;not null" json:"updated_at"`
-	ExpiresAt       time.Time `gorm:"index;not null" json:"expires_at"`                 // State expiry (15 min)
+	EncryptionStatus string    `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
+	ExpiresAt        time.Time `gorm:"index;not null" json:"expires_at"` // State expiry (15 min)
 }
 
 // TableName sets the table name
@@ -41,6 +44,39 @@ func (c *TableOauthConfig) BeforeSave(tx *gorm.DB) error {
 	if c.Status == "" {
 		c.Status = "pending"
 	}
+
+	// Encrypt sensitive fields
+	if encrypt.IsEnabled() {
+		encrypted := false
+		if c.ClientSecret != "" {
+			if err := encryptString(&c.ClientSecret); err != nil {
+				return fmt.Errorf("failed to encrypt oauth client secret: %w", err)
+			}
+			encrypted = true
+		}
+		if c.CodeVerifier != "" {
+			if err := encryptString(&c.CodeVerifier); err != nil {
+				return fmt.Errorf("failed to encrypt oauth code verifier: %w", err)
+			}
+			encrypted = true
+		}
+		if encrypted {
+			c.EncryptionStatus = EncryptionStatusEncrypted
+		}
+	}
+	return nil
+}
+
+// AfterFind hook to decrypt sensitive fields
+func (c *TableOauthConfig) AfterFind(tx *gorm.DB) error {
+	if c.EncryptionStatus == EncryptionStatusEncrypted {
+		if err := decryptString(&c.ClientSecret); err != nil {
+			return fmt.Errorf("failed to decrypt oauth client secret: %w", err)
+		}
+		if err := decryptString(&c.CodeVerifier); err != nil {
+			return fmt.Errorf("failed to decrypt oauth code verifier: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -53,9 +89,10 @@ type TableOauthToken struct {
 	TokenType       string     `gorm:"type:varchar(50);not null" json:"token_type"`       // "Bearer"
 	ExpiresAt       time.Time  `gorm:"index;not null" json:"expires_at"`                  // Token expiration
 	Scopes          string     `gorm:"type:text" json:"scopes"`                           // JSON array of granted scopes
-	LastRefreshedAt *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"`          // Track when token was last refreshed
-	CreatedAt       time.Time  `gorm:"index;not null" json:"created_at"`
-	UpdatedAt       time.Time  `gorm:"index;not null" json:"updated_at"`
+	LastRefreshedAt  *time.Time `gorm:"index" json:"last_refreshed_at,omitempty"` // Track when token was last refreshed
+	EncryptionStatus string     `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	CreatedAt        time.Time  `gorm:"index;not null" json:"created_at"`
+	UpdatedAt        time.Time  `gorm:"index;not null" json:"updated_at"`
 }
 
 // TableName sets the table name
@@ -68,6 +105,30 @@ func (t *TableOauthToken) BeforeSave(tx *gorm.DB) error {
 	// Ensure token type is set
 	if t.TokenType == "" {
 		t.TokenType = "Bearer"
+	}
+
+	// Encrypt sensitive fields
+	if encrypt.IsEnabled() {
+		if err := encryptString(&t.AccessToken); err != nil {
+			return fmt.Errorf("failed to encrypt oauth access token: %w", err)
+		}
+		if err := encryptString(&t.RefreshToken); err != nil {
+			return fmt.Errorf("failed to encrypt oauth refresh token: %w", err)
+		}
+		t.EncryptionStatus = EncryptionStatusEncrypted
+	}
+	return nil
+}
+
+// AfterFind hook to decrypt sensitive fields
+func (t *TableOauthToken) AfterFind(tx *gorm.DB) error {
+	if t.EncryptionStatus == EncryptionStatusEncrypted {
+		if err := decryptString(&t.AccessToken); err != nil {
+			return fmt.Errorf("failed to decrypt oauth access token: %w", err)
+		}
+		if err := decryptString(&t.RefreshToken); err != nil {
+			return fmt.Errorf("failed to decrypt oauth refresh token: %w", err)
+		}
 	}
 	return nil
 }

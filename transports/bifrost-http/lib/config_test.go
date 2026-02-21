@@ -394,8 +394,9 @@ func NewMockConfigStore() *MockConfigStore {
 }
 
 // Implement ConfigStore interface methods
-func (m *MockConfigStore) Ping(ctx context.Context) error  { return nil }
-func (m *MockConfigStore) Close(ctx context.Context) error { return nil }
+func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
+func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
+func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
 func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)

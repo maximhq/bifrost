@@ -2404,8 +2404,8 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				provider.RateLimit = &rateLimit
 			}
 		}
-		// Update the provider first to remove FK references
-		if err := tx.Save(provider).Error; err != nil {
+		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
+		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
 			return err
 		}
 
@@ -2480,8 +2480,8 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 			provider.RateLimit = nil
 		}
 
-		// Update the provider first to remove FK references
-		if err := tx.Save(provider).Error; err != nil {
+		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
+		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
 			return err
 		}
 
