@@ -13,7 +13,7 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
-func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider) *schemas.BifrostListModelsResponse {
+func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -23,6 +23,11 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	}
 	for _, model := range response.Models {
 		if model.ModelID == "" {
+			continue
+		}
+
+		key := fmt.Sprintf("%s/%s", inferenceProvider, model.ModelID)
+		if len(allowedModels) > 0 && !slices.Contains(allowedModels, key) {
 			continue
 		}
 
