@@ -1613,6 +1613,63 @@
       },
       "additionalProperties": false
     },
+    "pricing_override_match_type": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "wildcard",
+        "regex"
+      ]
+    },
+    "provider_pricing_override": {
+      "type": "object",
+      "properties": {
+        "model_pattern": {
+          "type": "string",
+          "minLength": 1
+        },
+        "match_type": {
+          "$ref": "#/$defs/pricing_override_match_type"
+        },
+        "request_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "input_cost_per_token": { "type": "number", "minimum": 0 },
+        "output_cost_per_token": { "type": "number", "minimum": 0 },
+        "input_cost_per_video_per_second": { "type": "number", "minimum": 0 },
+        "input_cost_per_audio_per_second": { "type": "number", "minimum": 0 },
+        "input_cost_per_character": { "type": "number", "minimum": 0 },
+        "output_cost_per_character": { "type": "number", "minimum": 0 },
+        "input_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "input_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "input_cost_per_image_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "input_cost_per_video_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "input_cost_per_audio_per_second_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "output_cost_per_token_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "output_cost_per_character_above_128k_tokens": { "type": "number", "minimum": 0 },
+        "input_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
+        "output_cost_per_token_above_200k_tokens": { "type": "number", "minimum": 0 },
+        "cache_creation_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
+        "cache_read_input_token_cost_above_200k_tokens": { "type": "number", "minimum": 0 },
+        "cache_read_input_token_cost": { "type": "number", "minimum": 0 },
+        "cache_creation_input_token_cost": { "type": "number", "minimum": 0 },
+        "input_cost_per_token_batches": { "type": "number", "minimum": 0 },
+        "output_cost_per_token_batches": { "type": "number", "minimum": 0 },
+        "input_cost_per_image_token": { "type": "number", "minimum": 0 },
+        "output_cost_per_image_token": { "type": "number", "minimum": 0 },
+        "input_cost_per_image": { "type": "number", "minimum": 0 },
+        "output_cost_per_image": { "type": "number", "minimum": 0 },
+        "cache_read_input_image_token_cost": { "type": "number", "minimum": 0 }
+      },
+      "required": [
+        "model_pattern",
+        "match_type"
+      ],
+      "additionalProperties": false
+    },
     "network_config": {
       "type": "object",
       "properties": {
@@ -1857,6 +1914,13 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -1887,6 +1951,13 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -1917,6 +1988,13 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -1947,6 +2025,13 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [

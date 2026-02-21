@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import { PricingOverridesFormFragment } from "../fragments/pricingOverridesFormFragment";
 
 interface Props {
 	show: boolean;
@@ -34,6 +35,10 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 	tabs.push({
 		id: "performance",
 		label: "Performance tuning",
+	});
+	tabs.push({
+		id: "pricing-overrides",
+		label: "Pricing Overrides",
 	});
 	if (hasGovernanceAccess && isGovernanceEnabled) {
 		tabs.push({
@@ -99,6 +104,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="performance">
 							<PerformanceFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="pricing-overrides">
+							<PricingOverridesFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />

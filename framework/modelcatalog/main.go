@@ -37,6 +37,11 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
+	// Provider-level pricing overrides are maintained separately to avoid contention
+	// with pricing cache rebuilds.
+	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
+	overridesMu       sync.RWMutex
+
 	modelPool      map[schemas.ModelProvider][]string
 	baseModelIndex map[string]string // model string → canonical base model name
 
@@ -112,6 +117,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
 		done:                   make(chan struct{}),
