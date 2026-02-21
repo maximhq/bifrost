@@ -24,6 +24,12 @@ func (*VertexRankRequest) GetExtraParams() map[string]interface{} {
 	return nil
 }
 
+const (
+	vertexDefaultRankingConfigID   = "default_ranking_config"
+	vertexMaxRerankRecordsPerQuery = 200
+	vertexSyntheticRecordPrefix    = "idx:"
+)
+
 // VertexRankRecord represents a record for ranking.
 type VertexRankRecord struct {
 	ID      string  `json:"id"`

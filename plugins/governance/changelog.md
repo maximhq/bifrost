@@ -1,0 +1,1 @@
+- fix: routing rules now support case-insensitive header matching

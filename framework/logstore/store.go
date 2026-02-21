@@ -52,6 +52,13 @@ type LogStore interface {
 	GetAvailableToolNames(ctx context.Context) ([]string, error)
 	GetAvailableServerLabels(ctx context.Context) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error)
+
+	// Async Job methods
+	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
+	FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error)
+	UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error
+	DeleteExpiredAsyncJobs(ctx context.Context) (int64, error)
+	DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error)
 }
 
 // NewLogStore creates a new log store based on the configuration.

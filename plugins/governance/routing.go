@@ -2,12 +2,25 @@ package governance
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+// headerKeyPattern matches header map access patterns like headers["X-Api-Key"] or headers['X-Api-Key']
+var headerKeyPattern = regexp.MustCompile(`headers\[["']([^"']+)["']\]`)
+
+// headerInPattern matches "in headers" membership test patterns like "X-Api-Key" in headers or 'X-Api-Key' in headers
+var headerInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+headers`)
+
+// paramKeyPattern matches param map access patterns like params["Region"] or params['Region']
+var paramKeyPattern = regexp.MustCompile(`params\[["']([^"']+)["']\]`)
+
+// paramInPattern matches "in params" membership test patterns like "Region" in params or 'Region' in params
+var paramInPattern = regexp.MustCompile(`["']([^"']+)["']\s+in\s+params`)
 
 // ScopeLevel represents a level in the scope precedence hierarchy
 type ScopeLevel struct {
@@ -78,7 +91,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// Determine scope chain based on organizational hierarchy
 	scopeChain := buildScopeChain(routingCtx.VirtualKey)
 	re.logger.Debug("[RoutingEngine] Scope chain: %v", scopeChainToStrings(scopeChain))
-	ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Scope chain: %v", scopeChainToStrings(scopeChain)))
 
 	// Evaluate rules in scope precedence order (first-match-wins)
 	for _, scope := range scopeChain {
@@ -96,7 +109,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 		for _, r := range rules {
 			ruleNames = append(ruleNames, r.Name)
 		}
-		ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
 
 		// Evaluate each rule
 		for _, rule := range rules {
@@ -106,7 +119,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			program, err := re.store.GetRoutingProgram(rule)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to compile rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
 				continue
 			}
 
@@ -114,14 +127,14 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 			matched, err := evaluateCELExpression(program, variables)
 			if err != nil {
 				re.logger.Warn("[RoutingEngine] Failed to evaluate rule %s: %v", rule.Name, err)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' skipped: eval error: %v", rule.Name, err))
 				continue
 			}
 
 			re.logger.Debug("[RoutingEngine] Rule %s evaluation result: matched=%v", rule.Name, matched)
 
 			if !matched {
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
 			}
 
 			// If rule matched, return routing decision
@@ -149,7 +162,7 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
 
 				re.logger.Debug("[RoutingEngine] Rule matched! Decision: provider=%s, model=%s, fallbacks=%v", provider, model, rule.ParsedFallbacks)
-				ctx.AppendRoutingEngineLog( schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
 				return decision, nil
 			}
 
@@ -256,10 +269,14 @@ func extractRoutingVariables(ctx *RoutingContext) (map[string]interface{}, error
 	}
 	variables["headers"] = normalizedHeaders
 
-	if ctx.QueryParams == nil {
-		ctx.QueryParams = make(map[string]string)
+	// Normalize query params to lowercase keys for case-insensitive CEL matching
+	normalizedParams := make(map[string]string)
+	if ctx.QueryParams != nil {
+		for k, v := range ctx.QueryParams {
+			normalizedParams[strings.ToLower(k)] = v
+		}
 	}
-	variables["params"] = ctx.QueryParams
+	variables["params"] = normalizedParams
 
 	// Extract VirtualKey context if available
 	if ctx.VirtualKey != nil {
@@ -351,6 +368,23 @@ func validateCELExpression(expr string) error {
 	}
 
 	return nil
+}
+
+// normalizeMapKeysInCEL lowercases header and param keys in CEL expressions
+// so that headers["X-Api-Key"] becomes headers["x-api-key"], "X-Api-Key" in headers becomes "x-api-key" in headers,
+// params["Region"] becomes params["region"], and "Region" in params becomes "region" in params.
+// This ensures CEL expressions match against the normalized (lowercase) map keys at runtime.
+func normalizeMapKeysInCEL(expr string) string {
+	toLower := func(match string) string {
+		return strings.ToLower(match)
+	}
+	// Normalize bracket access
+	expr = headerKeyPattern.ReplaceAllStringFunc(expr, toLower)
+	expr = paramKeyPattern.ReplaceAllStringFunc(expr, toLower)
+	// Normalize "in" membership test
+	expr = headerInPattern.ReplaceAllStringFunc(expr, toLower)
+	expr = paramInPattern.ReplaceAllStringFunc(expr, toLower)
+	return expr
 }
 
 // createCELEnvironment creates a new CEL environment for routing rules

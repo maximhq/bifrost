@@ -220,6 +220,22 @@ func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider)
 // Dependencies is a list of dependencies that the plugin requires.
 var Dependencies []framework.FrameworkDependency = []framework.FrameworkDependency{framework.FrameworkDependencyVectorStore}
 
+// ProvidersWithEmbeddingSupport lists all providers that support embedding operations.
+// Providers not in this list will return UnsupportedOperationError for embedding requests.
+var ProvidersWithEmbeddingSupport = map[schemas.ModelProvider]bool{
+	schemas.OpenAI:      true,
+	schemas.Azure:       true,
+	schemas.Bedrock:     true,
+	schemas.Cohere:      true,
+	schemas.Gemini:      true,
+	schemas.Vertex:      true,
+	schemas.Mistral:     true,
+	schemas.Ollama:      true,
+	schemas.Nebius:      true,
+	schemas.HuggingFace: true,
+	schemas.SGL:         true,
+}
+
 const (
 	CacheKey          schemas.BifrostContextKey = "semantic_cache_key"        // To set the cache key for a request - REQUIRED for all requests
 	CacheTTLKey       schemas.BifrostContextKey = "semantic_cache_ttl"        // To explicitly set the TTL for a request
@@ -303,6 +319,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 	if config.Provider == "" || len(config.Keys) == 0 {
 		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
 	} else {
+		// Validate that the provider supports embeddings
+		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
+			return nil, fmt.Errorf("provider '%s' does not support embedding operations required for semantic cache. Supported providers: openai, azure, bedrock, cohere, gemini, vertex, mistral, ollama, nebius, huggingface, sgl. Note: custom providers based on embedding-capable providers are also supported", config.Provider)
+		}
+
 		bifrost, err := bifrost.Init(ctx, schemas.BifrostConfig{
 			Logger: logger,
 			Account: &PluginAccount{

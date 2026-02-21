@@ -119,6 +119,7 @@ type Log struct {
 	RawRequest            string    `gorm:"type:text" json:"raw_request"`                   // Populated when `send-back-raw-request` is on
 	RawResponse           string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
 	RoutingEngineLogs     string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
+	Metadata              string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`
@@ -147,6 +148,7 @@ type Log struct {
 	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
 	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
 	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
+	MetadataParsed              map[string]interface{}                   `gorm:"-" json:"metadata,omitempty"`
 	// Populated in handlers after find using the virtual key id and key id
 	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`  // redacted
 	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"` // redacted
@@ -348,6 +350,14 @@ func (l *Log) SerializeFields() error {
 		}
 	}
 
+	if l.MetadataParsed != nil {
+		if data, err := json.Marshal(l.MetadataParsed); err != nil {
+			return err
+		} else {
+			l.Metadata = string(data)
+		}
+	}
+
 	// Build content summary for search
 	l.ContentSummary = l.BuildContentSummary()
 
@@ -483,6 +493,12 @@ func (l *Log) DeserializeFields() error {
 		}
 	}
 
+	if l.Metadata != "" {
+		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+			l.MetadataParsed = nil
+		}
+	}
+
 	if l.RoutingEnginesUsedStr != nil && *l.RoutingEnginesUsedStr != "" {
 		// Parse comma-separated routing engines
 		l.RoutingEnginesUsed = strings.Split(*l.RoutingEnginesUsedStr, ",")
@@ -594,6 +610,56 @@ func (l *MCPToolLog) DeserializeFields() error {
 	}
 
 	return nil
+}
+
+// AsyncJob represents an asynchronous job record in the database.
+// Jobs are created when requests are submitted to async endpoints and
+// updated when the background operation completes or fails.
+type AsyncJob struct {
+	ID           string                 `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	Status       schemas.AsyncJobStatus `gorm:"type:varchar(50);index:idx_async_jobs_status;not null" json:"status"`
+	RequestType  schemas.RequestType    `gorm:"type:varchar(50);index:idx_async_jobs_request_type;not null" json:"request_type"`
+	Response     string                 `gorm:"type:text" json:"response"`
+	StatusCode   int                    `gorm:"default:0" json:"status_code,omitempty"`
+	Error        string                 `gorm:"type:text" json:"error,omitempty"`
+	VirtualKeyID *string                `gorm:"type:varchar(255);index:idx_async_jobs_vk_id" json:"virtual_key_id,omitempty"`
+	ResultTTL    int                    `gorm:"default:3600" json:"-"` // TTL in seconds, used to calculate ExpiresAt on completion
+	ExpiresAt    *time.Time             `gorm:"index:idx_async_jobs_expires_at" json:"expires_at,omitempty"`
+	CreatedAt    time.Time              `gorm:"index;not null" json:"created_at"`
+	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (AsyncJob) TableName() string {
+	return "async_jobs"
+}
+
+// ToResponse converts an AsyncJob database record to an AsyncJobResponse for JSON output.
+func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
+	resp := &schemas.AsyncJobResponse{
+		ID:          j.ID,
+		Status:      j.Status,
+		ExpiresAt:   j.ExpiresAt,
+		CreatedAt:   j.CreatedAt,
+		CompletedAt: j.CompletedAt,
+		StatusCode:  j.StatusCode,
+	}
+
+	if j.Response != "" {
+		var result interface{}
+		if err := sonic.Unmarshal([]byte(j.Response), &result); err == nil {
+			resp.Result = result
+		}
+	}
+
+	if j.Error != "" {
+		var bifrostErr schemas.BifrostError
+		if err := sonic.Unmarshal([]byte(j.Error), &bifrostErr); err == nil {
+			resp.Error = &bifrostErr
+		}
+	}
+
+	return resp
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches

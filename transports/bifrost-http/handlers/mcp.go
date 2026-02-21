@@ -210,7 +210,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// Build redirect URI - use Bifrost's own callback endpoint
 		// Extract the base URL from the current request
 		scheme := "http"
-		if ctx.IsTLS() {
+		if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
 			scheme = "https"
 		}
 		host := string(ctx.Host())

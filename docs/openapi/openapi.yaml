@@ -14,6 +14,11 @@ info:
     The primary API using Bifrost's unified format. Model parameters use the format
     `provider/model` (e.g., `openai/gpt-4`, `anthropic/claude-3-opus`).
 
+    ### Async Inference API (`/v1/async/*`)
+    Submit inference requests for asynchronous execution. Returns a job ID immediately
+    and allows polling for results. Supports all inference types except batches, files,
+    and containers.
+
     ### Provider Integration APIs
     Native provider-format APIs for drop-in compatibility:
     - `/openai/*` - OpenAI-compatible API
@@ -80,6 +85,8 @@ tags:
     description: File management operations
   - name: Containers
     description: Container management operations
+  - name: Async Jobs
+    description: Asynchronous job submission and retrieval endpoints
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
@@ -169,6 +176,44 @@ paths:
     $ref: './paths/inference/containers.yaml#/container-files-by-id'
   /v1/containers/{container_id}/files/{file_id}/content:
     $ref: './paths/inference/containers.yaml#/container-files-content'
+
+  # ==================== Async Inference API ====================
+  /v1/async/chat/completions:
+    $ref: './paths/inference/async.yaml#/async-chat-completions'
+  /v1/async/completions:
+    $ref: './paths/inference/async.yaml#/async-text-completions'
+  /v1/async/responses:
+    $ref: './paths/inference/async.yaml#/async-responses'
+  /v1/async/embeddings:
+    $ref: './paths/inference/async.yaml#/async-embeddings'
+  /v1/async/audio/speech:
+    $ref: './paths/inference/async.yaml#/async-speech'
+  /v1/async/audio/transcriptions:
+    $ref: './paths/inference/async.yaml#/async-transcriptions'
+  /v1/async/images/generations:
+    $ref: './paths/inference/async.yaml#/async-image-generation'
+  /v1/async/images/edits:
+    $ref: './paths/inference/async.yaml#/async-image-edit'
+  /v1/async/images/variations:
+    $ref: './paths/inference/async.yaml#/async-image-variation'
+  /v1/async/chat/completions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-chat-completions-job'
+  /v1/async/completions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-text-completions-job'
+  /v1/async/responses/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-responses-job'
+  /v1/async/embeddings/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-embeddings-job'
+  /v1/async/audio/speech/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-speech-job'
+  /v1/async/audio/transcriptions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-transcriptions-job'
+  /v1/async/images/generations/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-generation-job'
+  /v1/async/images/edits/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-edit-job'
+  /v1/async/images/variations/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-variation-job'
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
@@ -530,9 +575,9 @@ paths:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
 
   # MCP - OAuth
-  /api/mcp/oauth/callback:
+  /api/oauth/callback:
     $ref: './paths/management/oauth.yaml#/oauth-callback'
-  /api/mcp/oauth/{id}:
+  /api/oauth/config/{id}/status:
     $ref: './paths/management/oauth.yaml#/oauth-config-status'
 
   # Governance - Virtual Keys
@@ -626,6 +671,12 @@ components:
       $ref: './schemas/inference/common.yaml#/BifrostCacheDebug'
     CacheControl:
       $ref: './schemas/inference/common.yaml#/CacheControl'
+
+    # ==================== Async Jobs ====================
+    AsyncJobStatus:
+      $ref: './schemas/inference/async.yaml#/AsyncJobStatus'
+    AsyncJobResponse:
+      $ref: './schemas/inference/async.yaml#/AsyncJobResponse'
 
     # ==================== Usage ====================
     BifrostLLMUsage:

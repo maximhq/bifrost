@@ -124,6 +124,7 @@ from .utils.common import (
 )
 from .utils.config_loader import get_config, get_model, get_integration_url
 from .utils.parametrize import (
+    format_provider_model,
     get_cross_provider_params_with_vk_for_scenario,
 )
 
@@ -239,7 +240,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("simple_chat", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("simple_chat"),
     )
     def test_01_simple_chat(self, provider, model, vk_enabled):
         """Test Case 1: Simple chat interaction using AzureOpenAI SDK"""
@@ -247,7 +248,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=SIMPLE_CHAT_MESSAGES,
             max_tokens=100,
         )
@@ -258,7 +259,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "multi_turn_conversation", include_providers=["azure"]
+            "multi_turn_conversation"
         ),
     )
     def test_02_multi_turn_conversation(self, provider, model, vk_enabled):
@@ -267,7 +268,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=MULTI_TURN_MESSAGES,
             max_tokens=150,
         )
@@ -279,7 +280,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("tool_calls", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("tool_calls"),
     )
     def test_03_single_tool_call(self, provider, model, vk_enabled):
         """Test Case 3: Single tool call using AzureOpenAI SDK"""
@@ -287,7 +288,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=SINGLE_TOOL_CALL_MESSAGES,
             tools=[{"type": "function", "function": WEATHER_TOOL}],
             max_tokens=100,
@@ -301,7 +302,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "multiple_tool_calls", include_providers=["azure"]
+            "multiple_tool_calls"
         ),
     )
     def test_04_multiple_tool_calls(self, provider, model, vk_enabled):
@@ -310,7 +311,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=MULTIPLE_TOOL_CALL_MESSAGES,
             tools=[
                 {"type": "function", "function": WEATHER_TOOL},
@@ -328,7 +329,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "end2end_tool_calling", include_providers=["azure"]
+            "end2end_tool_calling"
         ),
     )
     def test_05_end2end_tool_calling(self, provider, model, vk_enabled):
@@ -340,7 +341,7 @@ class TestAzureIntegration:
         messages = [{"role": "user", "content": "What's the weather in Boston in fahrenheit?"}]
 
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=messages,
             tools=[{"type": "function", "function": WEATHER_TOOL}],
             max_tokens=100,
@@ -365,7 +366,7 @@ class TestAzureIntegration:
 
         # Get final response
         final_response = client.chat.completions.create(
-            model=model, messages=messages, max_tokens=150
+            model=format_provider_model(provider, model), messages=messages, max_tokens=150
         )
 
         assert_valid_chat_response(final_response)
@@ -376,7 +377,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "automatic_function_calling", include_providers=["azure"]
+            "automatic_function_calling"
         ),
     )
     def test_06_automatic_function_calling(self, provider, model, vk_enabled):
@@ -385,7 +386,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=[{"role": "user", "content": "Calculate 25 * 4 for me"}],
             tools=[{"type": "function", "function": CALCULATOR_TOOL}],
             tool_choice="auto",  # Let model decide
@@ -399,7 +400,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("image_url", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("image_url"),
     )
     def test_07_image_url(self, provider, model, vk_enabled):
         """Test Case 7: Image analysis from URL using AzureOpenAI SDK"""
@@ -407,7 +408,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=IMAGE_URL_MESSAGES,
             max_tokens=200,
         )
@@ -417,7 +418,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "image_base64", include_providers=["azure"]
+            "image_base64"
         ),
     )
     def test_08_image_base64(self, provider, model, vk_enabled):
@@ -426,7 +427,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=IMAGE_BASE64_MESSAGES,
             max_tokens=200,
         )
@@ -436,7 +437,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "multiple_images", include_providers=["azure"]
+            "multiple_images"
         ),
     )
     def test_09_multiple_images(self, provider, model, vk_enabled):
@@ -445,7 +446,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=MULTIPLE_IMAGES_MESSAGES,
             max_tokens=300,
         )
@@ -579,7 +580,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("streaming", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("streaming"),
     )
     def test_13_streaming(self, provider, model, vk_enabled):
         """Test Case 13: Streaming chat completion using AzureOpenAI SDK"""
@@ -588,7 +589,7 @@ class TestAzureIntegration:
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         # Test basic streaming
         stream = client.chat.completions.create(
-            model=model,
+            model=format_provider_model(provider, model),
             messages=STREAMING_CHAT_MESSAGES,
             max_tokens=200,
             stream=True,
@@ -610,7 +611,7 @@ class TestAzureIntegration:
             tools_model = config.get_provider_model(provider, "tools")
             if tools_model:
                 stream_with_tools = client.chat.completions.create(
-                    model=tools_model,
+                    model=format_provider_model(provider, tools_model),
                     messages=STREAMING_TOOL_CALL_MESSAGES,
                     max_tokens=150,
                     tools=convert_to_openai_tools([WEATHER_TOOL]),
@@ -1211,7 +1212,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("responses", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("responses"),
     )
     def test_32_responses_simple_text(self, provider, model, vk_enabled):
         """Test Case 32: Responses API with simple text input using AzureOpenAI SDK"""
@@ -1219,7 +1220,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=RESPONSES_SIMPLE_TEXT_INPUT,
             max_output_tokens=1000,
         )
@@ -1250,7 +1251,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("responses", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("responses"),
     )
     def test_33_responses_with_system_message(self, provider, model, vk_enabled):
         """Test Case 33: Responses API with system message using AzureOpenAI SDK"""
@@ -1258,7 +1259,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=RESPONSES_TEXT_WITH_SYSTEM,
             max_output_tokens=1000,
         )
@@ -1287,7 +1288,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "responses_image", include_providers=["azure"]
+            "responses_image"
         ),
     )
     def test_34_responses_with_image(self, provider, model, vk_enabled):
@@ -1296,7 +1297,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=RESPONSES_IMAGE_INPUT,
             max_output_tokens=1000,
         )
@@ -1336,7 +1337,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("responses", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("responses"),
     )
     def test_35_responses_with_tools(self, provider, model, vk_enabled):
         """Test Case 35: Responses API with tool calls using AzureOpenAI SDK"""
@@ -1347,7 +1348,7 @@ class TestAzureIntegration:
         tools = convert_to_responses_tools([WEATHER_TOOL])
 
         response = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=RESPONSES_TOOL_CALL_INPUT,
             tools=tools,
             max_output_tokens=150,
@@ -1392,7 +1393,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("responses", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("responses"),
     )
     def test_36_responses_streaming(self, provider, model, vk_enabled):
         """Test Case 36: Responses API streaming using AzureOpenAI SDK"""
@@ -1400,7 +1401,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         stream = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=RESPONSES_STREAMING_INPUT,
             max_output_tokens=1000,
             stream=True,
@@ -1455,7 +1456,7 @@ class TestAzureIntegration:
         tools = convert_to_responses_tools([WEATHER_TOOL])
 
         stream = client.responses.create(
-            model=model,
+            model=format_provider_model(provider, model),
             input=[
                 {
                     "role": "user",
@@ -1487,7 +1488,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("thinking", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("thinking"),
     )
     def test_38_responses_reasoning(self, provider, model, vk_enabled):
         """Test Case 38: Responses API with reasoning using AzureOpenAI SDK"""
@@ -1495,7 +1496,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         # Use the thinking model for reasoning
-        model_to_use = model
+        model_to_use = format_provider_model(provider, model)
 
         try:
             response = client.responses.create(
