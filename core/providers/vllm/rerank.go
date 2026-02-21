@@ -119,13 +119,17 @@ func parseVLLMUsage(rawUsage interface{}) (*schemas.BifrostLLMUsage, bool) {
 		return nil, false
 	}
 
-	promptTokens, _ := schemas.SafeExtractInt(usageMap["prompt_tokens"])
-	if promptTokens == 0 {
+	promptTokens := 0
+	if _, hasPromptTokens := usageMap["prompt_tokens"]; hasPromptTokens {
+		promptTokens, _ = schemas.SafeExtractInt(usageMap["prompt_tokens"])
+	} else {
 		promptTokens, _ = schemas.SafeExtractInt(usageMap["input_tokens"])
 	}
 
-	completionTokens, _ := schemas.SafeExtractInt(usageMap["completion_tokens"])
-	if completionTokens == 0 {
+	completionTokens := 0
+	if _, hasCompletionTokens := usageMap["completion_tokens"]; hasCompletionTokens {
+		completionTokens, _ = schemas.SafeExtractInt(usageMap["completion_tokens"])
+	} else {
 		completionTokens, _ = schemas.SafeExtractInt(usageMap["output_tokens"])
 	}
 
