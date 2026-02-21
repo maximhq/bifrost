@@ -30,12 +30,12 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 	const isDirty = hasUserEdits && overridesJSON !== initialValue;
 
 	useEffect(() => {
-		if (hasUserEdits) {
+		if (isDirty) {
 			return;
 		}
 		setOverridesJSON(initialValue);
 		setValidationError("");
-	}, [hasUserEdits, initialValue, provider.name]);
+	}, [initialValue, isDirty, provider.name]);
 
 	useEffect(() => {
 		dispatch(setProviderFormDirtyState(isDirty));
