@@ -130,6 +130,15 @@ func (p *LoggerPlugin) updateLogEntry(
 			}
 		}
 
+		if data.RerankOutput != nil {
+			tempEntry.RerankOutputParsed = data.RerankOutput
+			if err := tempEntry.SerializeFields(); err != nil {
+				p.logger.Error("failed to serialize rerank output: %v", err)
+			} else {
+				updates["rerank_output"] = tempEntry.RerankOutput
+			}
+		}
+
 		if data.SpeechOutput != nil {
 			tempEntry.SpeechOutputParsed = data.SpeechOutput
 			if err := tempEntry.SerializeFields(); err != nil {

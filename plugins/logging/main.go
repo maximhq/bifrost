@@ -44,6 +44,7 @@ type UpdateLogData struct {
 	ChatOutput            *schemas.ChatMessage
 	ResponsesOutput       []schemas.ResponsesMessage
 	EmbeddingOutput       []schemas.EmbeddingData
+	RerankOutput          []schemas.RerankResult
 	ErrorDetails          *schemas.BifrostError
 	SpeechOutput          *schemas.BifrostSpeechResponse          // For non-streaming speech responses
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
@@ -706,6 +707,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 					if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
 						updateData.EmbeddingOutput = result.EmbeddingResponse.Data
+					}
+					if result.RerankResponse != nil {
+						updateData.RerankOutput = result.RerankResponse.Results
 					}
 					// Handle speech and transcription outputs for NON-streaming responses
 					if result.SpeechResponse != nil {
