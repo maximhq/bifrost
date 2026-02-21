@@ -105,11 +105,40 @@ func getAuthTokenSource(key schemas.Key) (oauth2.TokenSource, error) {
 		}
 		tokenSource = creds.TokenSource
 	} else {
-		conf, err := google.JWTConfigFromJSON([]byte(authCredentials.GetValue()), cloudPlatformScope)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create JWT config from auth credentials: %w", err)
+		jsonData := []byte(authCredentials.GetValue())
+
+		// Peek at the JSON to detect the "type" field
+		var meta struct {
+			Type string `json:"type"`
 		}
-		tokenSource = conf.TokenSource(context.Background())
+		if err := sonic.Unmarshal(jsonData, &meta); err != nil {
+			return nil, fmt.Errorf("failed to parse auth credentials JSON: %w", err)
+		}
+
+		// Map string to google.CredentialsType with a security whitelist
+		var credType google.CredentialsType
+		switch meta.Type {
+		case string(google.ServiceAccount):
+			credType = google.ServiceAccount
+		case string(google.ImpersonatedServiceAccount):
+			credType = google.ImpersonatedServiceAccount
+		case string(google.AuthorizedUser):
+			credType = google.AuthorizedUser
+		case string(google.ExternalAccount):
+			credType = google.ExternalAccount
+		case string(google.ExternalAccountAuthorizedUser):
+			credType = google.ExternalAccountAuthorizedUser
+		case "":
+			return nil, fmt.Errorf("invalid google auth credentials: missing 'type'")
+		default:
+			return nil, fmt.Errorf("unsupported or restricted credential type: %s", meta.Type)
+		}
+
+		conf, err := google.CredentialsFromJSONWithType(context.Background(), jsonData, credType, cloudPlatformScope)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create credentials from auth credentials JSON: %w", err)
+		}
+		tokenSource = conf.TokenSource
 	}
 	return tokenSource, nil
 }
