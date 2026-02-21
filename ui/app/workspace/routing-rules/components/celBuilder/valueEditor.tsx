@@ -125,7 +125,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 			<ModelMultiselect
 				value={value || ""}
 				onChange={handleOnChange}
-				placeholder="Select a model..."
+				placeholder="Search for a model..."
 				isSingleSelect
 				loadModelsOnEmptyProvider
 				allowCustomValuesForSingleSelect

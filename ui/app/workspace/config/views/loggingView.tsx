@@ -72,14 +72,8 @@ export default function LoggingView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Logging</h2>
-					<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+			<div>
+				<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
 			</div>
 
 			<div className="space-y-4">
@@ -182,6 +176,12 @@ export default function LoggingView() {
 						/>
 					</div>
 				)}
+			</div>
+
+			<div className="pt-2 flex justify-end">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);
