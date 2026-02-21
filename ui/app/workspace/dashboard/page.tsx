@@ -20,6 +20,7 @@ import { dateUtils } from "@/lib/types/logs";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartCard } from "./components/chartCard";
+import { FilterPopover } from "@/components/filters/filterPopover";
 import { type ChartType, ChartTypeToggle } from "./components/chartTypeToggle";
 import { CostChart } from "./components/costChart";
 import { LogVolumeChart } from "./components/logVolumeChart";
@@ -91,6 +92,14 @@ export default function DashboardPage() {
 			start_time: parseAsInteger.withDefault(DEFAULT_START_TIME),
 			end_time: parseAsInteger.withDefault(DEFAULT_END_TIME),
 			period: parseAsString.withDefault("24h"),
+			virtual_key_ids: parseAsString.withDefault(""),
+			providers: parseAsString.withDefault(""),
+			models: parseAsString.withDefault(""),
+			selected_key_ids: parseAsString.withDefault(""),
+			objects: parseAsString.withDefault(""),
+			status: parseAsString.withDefault(""),
+			routing_rule_ids: parseAsString.withDefault(""),
+			routing_engine_used: parseAsString.withDefault(""),
 			volume_chart: parseAsString.withDefault("bar"),
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
@@ -104,13 +113,34 @@ export default function DashboardPage() {
 		},
 	);
 
+	// Parse comma-separated URL param into a string array
+	const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
+
+	// Parse filter arrays from URL state
+	const selectedProviders = useMemo(() => parseCsvParam(urlState.providers), [urlState.providers]);
+	const selectedModels = useMemo(() => parseCsvParam(urlState.models), [urlState.models]);
+	const selectedKeyIds = useMemo(() => parseCsvParam(urlState.selected_key_ids), [urlState.selected_key_ids]);
+	const selectedVirtualKeyIds = useMemo(() => parseCsvParam(urlState.virtual_key_ids), [urlState.virtual_key_ids]);
+	const selectedTypes = useMemo(() => parseCsvParam(urlState.objects), [urlState.objects]);
+	const selectedStatuses = useMemo(() => parseCsvParam(urlState.status), [urlState.status]);
+	const selectedRoutingRuleIds = useMemo(() => parseCsvParam(urlState.routing_rule_ids), [urlState.routing_rule_ids]);
+	const selectedRoutingEngines = useMemo(() => parseCsvParam(urlState.routing_engine_used), [urlState.routing_engine_used]);
+
 	// Derived filter for API calls
 	const filters: LogFilters = useMemo(
 		() => ({
 			start_time: dateUtils.toISOString(urlState.start_time),
 			end_time: dateUtils.toISOString(urlState.end_time),
+			...(selectedProviders.length > 0 && { providers: selectedProviders }),
+			...(selectedModels.length > 0 && { models: selectedModels }),
+			...(selectedKeyIds.length > 0 && { selected_key_ids: selectedKeyIds }),
+			...(selectedVirtualKeyIds.length > 0 && { virtual_key_ids: selectedVirtualKeyIds }),
+			...(selectedTypes.length > 0 && { objects: selectedTypes }),
+			...(selectedStatuses.length > 0 && { status: selectedStatuses }),
+			...(selectedRoutingRuleIds.length > 0 && { routing_rule_ids: selectedRoutingRuleIds }),
+			...(selectedRoutingEngines.length > 0 && { routing_engine_used: selectedRoutingEngines }),
 		}),
-		[urlState.start_time, urlState.end_time],
+		[urlState.start_time, urlState.end_time, selectedProviders, selectedModels, selectedKeyIds, selectedVirtualKeyIds, selectedTypes, selectedStatuses, selectedRoutingRuleIds, selectedRoutingEngines],
 	);
 
 	// Date range for picker
@@ -203,6 +233,31 @@ export default function DashboardPage() {
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
 
+	// Filter change handler for FilterPopover
+	const handleFilterChange = useCallback(
+		(key: keyof LogFilters, values: string[] | boolean) => {
+			const urlKeyMap: Partial<Record<keyof LogFilters, string>> = {
+				providers: "providers",
+				models: "models",
+				selected_key_ids: "selected_key_ids",
+				virtual_key_ids: "virtual_key_ids",
+				objects: "objects",
+				status: "status",
+				routing_rule_ids: "routing_rule_ids",
+				routing_engine_used: "routing_engine_used",
+				missing_cost_only: "missing_cost_only",
+			};
+			const urlKey = urlKeyMap[key];
+			if (!urlKey) return;
+			if (typeof values === "boolean") {
+				setUrlState({ [urlKey]: String(values) });
+			} else {
+				setUrlState({ [urlKey]: values.join(",") });
+			}
+		},
+		[setUrlState],
+	);
+
 	// Model filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
@@ -217,14 +272,18 @@ export default function DashboardPage() {
 						BETA
 					</Badge>
 				</div>
-				<DateTimePickerWithRange
-					dateTime={dateRange}
-					onDateTimeUpdate={handleDateRangeChange}
-					preDefinedPeriods={TIME_PERIODS}
-					predefinedPeriod={urlState.period || undefined}
-					onPredefinedPeriodChange={handlePeriodChange}
-					popupAlignment="end"
-				/>
+				<div className="flex items-center gap-2">
+					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
+					<DateTimePickerWithRange
+						triggerTestId="filter-date-range"
+						dateTime={dateRange}
+						onDateTimeUpdate={handleDateRangeChange}
+						preDefinedPeriods={TIME_PERIODS}
+						predefinedPeriod={urlState.period || undefined}
+						onPredefinedPeriodChange={handlePeriodChange}
+						popupAlignment="end"
+					/>
+				</div>
 			</div>
 
 			{/* Charts Grid */}
