@@ -36,7 +36,8 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory *bool `json:"is_vk_mandatory"`
+	IsVkMandatory   *bool      `json:"is_vk_mandatory"`
+	RequiredHeaders *[]string  `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 }
 
 type InMemoryStore interface {
@@ -77,7 +78,8 @@ type GovernancePlugin struct {
 	// Transport dependencies
 	inMemoryStore InMemoryStore
 
-	isVkMandatory *bool
+	isVkMandatory   *bool
+	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -139,10 +141,12 @@ func Init(
 		logger.Warn("governance plugin requires MCP catalog to calculate cost, all MCP cost calculations will be skipped.")
 	}
 
-	// Handle nil config - use safe default for IsVkMandatory
+	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
+	var requiredHeaders *[]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
+		requiredHeaders = config.RequiredHeaders
 	}
 
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
@@ -199,12 +203,13 @@ func Init(
 		resolver:      resolver,
 		tracker:       tracker,
 		engine:        engine,
-		configStore:   configStore,
-		modelCatalog:  modelCatalog,
-		mcpCatalog:    mcpCatalog,
-		logger:        logger,
-		isVkMandatory: isVkMandatory,
-		inMemoryStore: inMemoryStore,
+		configStore:     configStore,
+		modelCatalog:    modelCatalog,
+		mcpCatalog:      mcpCatalog,
+		logger:          logger,
+		isVkMandatory:   isVkMandatory,
+		requiredHeaders: requiredHeaders,
+		inMemoryStore:   inMemoryStore,
 	}
 	return plugin, nil
 }
@@ -243,10 +248,12 @@ func InitFromStore(
 	if governanceStore == nil {
 		return nil, fmt.Errorf("governance store is nil")
 	}
-	// Handle nil config - use safe default for IsVkMandatory
+	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
+	var requiredHeaders *[]string
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
+		requiredHeaders = config.RequiredHeaders
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -273,18 +280,19 @@ func InitFromStore(
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:           ctx,
-		cancelFunc:    cancelFunc,
-		store:         governanceStore,
-		resolver:      resolver,
-		tracker:       tracker,
-		engine:        engine,
-		configStore:   configStore,
-		modelCatalog:  modelCatalog,
-		mcpCatalog:    mcpCatalog,
-		logger:        logger,
-		inMemoryStore: inMemoryStore,
-		isVkMandatory: isVkMandatory,
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
+		store:           governanceStore,
+		resolver:        resolver,
+		tracker:         tracker,
+		engine:          engine,
+		configStore:     configStore,
+		modelCatalog:    modelCatalog,
+		mcpCatalog:      mcpCatalog,
+		logger:          logger,
+		inMemoryStore:   inMemoryStore,
+		isVkMandatory:   isVkMandatory,
+		requiredHeaders: requiredHeaders,
 	}
 	return plugin, nil
 }
@@ -733,6 +741,35 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 	return headers, nil
 }
 
+// validateRequiredHeaders checks that all configured required headers are present in the request.
+// Headers are compared case-insensitively (both sides lowercased).
+// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
+func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
+		return nil
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	var missing []string
+	for _, h := range *p.requiredHeaders {
+		if _, ok := headers[strings.ToLower(h)]; !ok {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 {
+		return &schemas.BifrostError{
+			Type:       bifrost.Ptr("missing_required_headers"),
+			StatusCode: bifrost.Ptr(400),
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")),
+			},
+		}
+	}
+	return nil
+}
+
 // evaluateGovernanceRequest is a common function that handles virtual key validation
 // and governance evaluation logic. It returns the evaluation result and a BifrostError
 // if the request should be rejected, or nil if allowed.
@@ -832,6 +869,10 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	if bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeySkipKeySelection) {
 		return req, nil, nil
 	}
+	// Validate required headers are present
+	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
+	}
 	// Extract governance headers and virtual key using utility functions
 	virtualKeyValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 	// Getting provider and mode from the request
@@ -927,6 +968,11 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// Skip governance for codemode tools
 	if bifrost.IsCodemodeTool(toolName) {
 		return req, nil, nil
+	}
+
+	// Validate required headers are present
+	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
+		return req, &schemas.MCPPluginShortCircuit{Error: headerErr}, nil
 	}
 
 	// Extract governance headers and virtual key using utility functions

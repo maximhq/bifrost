@@ -371,6 +371,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
 
+	// Collect all request headers for downstream use (e.g., governance required headers check)
+	// Keys are lowercased for case-insensitive lookup
+	allHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		allHeaders[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
+
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header
 		var apiKey string

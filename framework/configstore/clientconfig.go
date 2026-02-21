@@ -56,6 +56,7 @@ type ClientConfig struct {
 	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL       int                              `json:"async_job_result_ttl"`                // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders         []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
@@ -195,6 +196,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if err != nil {
 			return "", err
 		}
+		hash.Write(data)
+	}
+
+	// Hash RequiredHeaders (sorted for deterministic hashing)
+	if len(c.RequiredHeaders) > 0 {
+		sortedRequired := make([]string, len(c.RequiredHeaders))
+		copy(sortedRequired, c.RequiredHeaders)
+		sort.Strings(sortedRequired)
+		data, err := sonic.Marshal(sortedRequired)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("requiredHeaders:"))
 		hash.Write(data)
 	}
 

@@ -30,9 +30,11 @@ export default function SecurityView() {
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 		allowed_headers: string;
+		required_headers: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
+		required_headers: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -48,6 +50,7 @@ export default function SecurityView() {
 			setLocalValues({
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
+				required_headers: config?.required_headers?.join(", ") || "",
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -79,10 +82,14 @@ export default function SecurityView() {
 			passwordChanged ||
 			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
 
+		const localRequired = localConfig.required_headers?.slice().sort().join(",");
+		const serverRequired = config.required_headers?.slice().sort().join(",");
+		const requiredChanged = localRequired !== serverRequired;
+
 		const enforceVirtualKeyChanged = localConfig.enforce_governance_header !== config.enforce_governance_header;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || authChanged || enforceVirtualKeyChanged || allowDirectKeysChanged;
+		return originsChanged || headersChanged || requiredChanged || authChanged || enforceVirtualKeyChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const needsRestart = useMemo(() => {
@@ -107,6 +114,11 @@ export default function SecurityView() {
 	const handleAllowedHeadersChange = useCallback((value: string) => {
 		setLocalValues((prev) => ({ ...prev, allowed_headers: value }));
 		setLocalConfig((prev) => ({ ...prev, allowed_headers: parseArrayFromText(value) }));
+	}, []);
+
+	const handleRequiredHeadersChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, required_headers: value }));
+		setLocalConfig((prev) => ({ ...prev, required_headers: parseArrayFromText(value) }));
 	}, []);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
@@ -326,6 +338,30 @@ export default function SecurityView() {
 						/>
 					</div>
 				</div>
+				{/* Required Headers */}
+				{localConfig.enable_governance && (
+					<div>
+						<div className="space-y-2 rounded-lg border p-4">
+							<div className="space-y-0.5">
+								<label htmlFor="required-headers" className="text-sm font-medium">
+									Required Headers
+								</label>
+								<p className="text-muted-foreground text-sm">
+									Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
+									rejected with a 400 error. Header names are case-insensitive. Requires governance to be enabled.
+								</p>
+							</div>
+							<Textarea
+								id="required-headers"
+								data-testid="required-headers-textarea"
+								className="h-24"
+								placeholder="X-Tenant-ID, X-Custom-Header"
+								value={localValues.required_headers}
+								onChange={(e) => handleRequiredHeadersChange(e.target.value)}
+							/>
+						</div>
+					</div>
+				)}
 			</div>
 		</div>
 	);

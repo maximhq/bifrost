@@ -228,7 +228,8 @@
                   "features/governance/virtual-keys",
                   "features/governance/routing",
                   "features/governance/budget-and-limits",
-                  "features/governance/mcp-tools"
+                  "features/governance/mcp-tools",
+                  "features/governance/required-headers"
                 ]
               },
               {

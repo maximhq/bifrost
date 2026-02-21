@@ -60,6 +60,11 @@ ClientConfig:
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
+    required_headers:
+      type: array
+      items:
+        type: string
+      description: Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching.
 
 FrameworkConfig:
   type: object

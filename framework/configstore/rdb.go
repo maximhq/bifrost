@@ -57,6 +57,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:     config.MCPToolSyncInterval,
 		AsyncJobResultTTL:       config.AsyncJobResultTTL,
+		RequiredHeaders:         config.RequiredHeaders,
 		HeaderFilterConfig:      config.HeaderFilterConfig,
 		ConfigHash:              config.ConfigHash,
 	}
@@ -219,6 +220,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:     dbConfig.MCPToolSyncInterval,
 		AsyncJobResultTTL:       dbConfig.AsyncJobResultTTL,
+		RequiredHeaders:         dbConfig.RequiredHeaders,
 		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
 		ConfigHash:              dbConfig.ConfigHash,
 	}, nil

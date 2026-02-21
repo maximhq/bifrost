@@ -387,6 +387,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.AsyncJobResultTTL = payload.ClientConfig.AsyncJobResultTTL
 	}
 
+	// Handle RequiredHeaders changes (no restart needed - governance plugin reads via pointer)
+	updatedConfig.RequiredHeaders = payload.ClientConfig.RequiredHeaders
+
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
 		// Validate that no security headers are in the allowlist or denylist

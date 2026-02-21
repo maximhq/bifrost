@@ -1,1 +1,2 @@
 - feat: add tables for async job results
+- feat: added required_headers config field with DB persistence and migration

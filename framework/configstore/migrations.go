@@ -259,6 +259,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAsyncJobResultTTLColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRequiredHeadersJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3556,6 +3559,41 @@ func migrationAddRateLimitToTeamsAndCustomers(ctx context.Context, db *gorm.DB) 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running rate limit migration for teams and customers: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddRequiredHeadersJSONColumn adds the required_headers_json column to the config_client table
+func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_required_headers_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "required_headers_json") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "RequiredHeadersJSON"); err != nil {
+					return fmt.Errorf("failed to add required_headers_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "required_headers_json") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "required_headers_json"); err != nil {
+					return fmt.Errorf("failed to drop required_headers_json column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running required_headers_json migration: %s", err.Error())
 	}
 	return nil
 }

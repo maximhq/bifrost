@@ -171,7 +171,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// 3. Governance (if enabled and not enterprise)
 	if s.Config.ClientConfig.EnableGovernance && ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
 		config := &governance.Config{
-			IsVkMandatory: &s.Config.ClientConfig.EnforceGovernanceHeader,
+			IsVkMandatory:   &s.Config.ClientConfig.EnforceGovernanceHeader,
+			RequiredHeaders: &s.Config.ClientConfig.RequiredHeaders,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {

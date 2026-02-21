@@ -1,1 +1,2 @@
 - fix: routing rules now support case-insensitive header matching
+- feat: added required headers validation — requests missing configured headers are rejected with a 400 error

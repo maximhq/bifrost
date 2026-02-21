@@ -1,4 +1,5 @@
 - fix: OAuth callback URL now respects X-Forwarded-Proto header for correct HTTPS scheme behind reverse proxies
 - feat: add asynchronous inference support
+- feat: added required headers support — configure headers that must be present on every request
 - fix: routing rules CEL builder UI fixes
 - fix: routing rules now support case-insensitive header matching
