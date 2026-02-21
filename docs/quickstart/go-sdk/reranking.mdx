@@ -6,6 +6,10 @@ icon: "book-open-cover"
 
 Use the Go SDK to rank candidate documents by relevance to a query.
 
+Provider/model examples:
+- Cohere: `Provider: schemas.Cohere`, `Model: "rerank-v3.5"`
+- vLLM: `Provider: schemas.VLLM`, `Model: "BAAI/bge-reranker-v2-m3"`
+
 ## Basic Example
 
 ```go
@@ -64,6 +68,8 @@ func main() {
 - `Params.Priority`: provider-dependent priority hint
 - `Params.ReturnDocuments`: include source document in each result
 - `Fallbacks`: fallback provider/model choices
+
+For vLLM, set `Provider` to `schemas.VLLM` and use the upstream model ID as `Model` (without the `vllm/` prefix that is used in Gateway HTTP requests).
 
 ## Response
 
