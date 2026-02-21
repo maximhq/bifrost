@@ -25,7 +25,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -85,31 +84,6 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 // GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
-}
-
-func parseBedrockHTTPError(statusCode int, headers http.Header, body []byte) *schemas.BifrostError {
-	fastResp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(fastResp)
-
-	fastResp.SetStatusCode(statusCode)
-	for k, values := range headers {
-		for _, value := range values {
-			fastResp.Header.Add(k, value)
-		}
-	}
-	fastResp.SetBody(body)
-
-	var errorResp BedrockError
-	bifrostErr := providerUtils.HandleProviderAPIError(fastResp, &errorResp)
-	if errorResp.Message != "" {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
-		bifrostErr.Error.Message = errorResp.Message
-		bifrostErr.Error.Code = errorResp.Code
-	}
-
-	return bifrostErr
 }
 
 // completeRequest sends a request to Bedrock's API and handles the response.
