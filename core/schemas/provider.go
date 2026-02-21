@@ -319,6 +319,62 @@ type CustomProviderConfig struct {
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 }
 
+type PricingOverrideMatchType string
+
+const (
+	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
+	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
+	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
+)
+
+// ProviderPricingOverride contains a partial pricing patch applied at lookup time.
+// Any nil field falls back to the base pricing data.
+type ProviderPricingOverride struct {
+	ModelPattern string                   `json:"model_pattern"`
+	MatchType    PricingOverrideMatchType `json:"match_type"`
+	RequestTypes []RequestType            `json:"request_types,omitempty"`
+
+	// Basic token pricing
+	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
+
+	// Additional pricing for media
+	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+
+	// Character-based pricing
+	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
+	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+
+	// Pricing above 128k tokens
+	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+
+	// Pricing above 200k tokens
+	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+
+	// Cache and batch pricing
+	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+
+	// Image generation pricing
+	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
+	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
+	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+}
+
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
 func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
@@ -334,11 +390,12 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger               Logger                `json:"-"`
-	ProxyConfig          *ProxyConfig          `json:"proxy_config,omitempty"` // Proxy configuration
-	SendBackRawRequest   bool                  `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
-	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	Logger               Logger                    `json:"-"`
+	ProxyConfig          *ProxyConfig              `json:"proxy_config,omitempty"` // Proxy configuration
+	SendBackRawRequest   bool                      `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse  bool                      `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
+	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
