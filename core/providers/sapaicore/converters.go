@@ -1494,6 +1494,9 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 		}
 	}
 
+	// Ensure toolConfig is present when conversation history contains tool blocks
+	ensureToolConfigForHistory(converseReq)
+
 	return converseReq
 }
 
@@ -2603,6 +2606,85 @@ type ConverseToolUseDelta struct {
 	Input string `json:"input"` // Incremental JSON string
 }
 
+// extractToolNamesFromConverseMessages scans Converse messages for toolUse blocks
+// and returns a list of unique tool names found. This is used to create stub tool
+// definitions when conversation history contains tool use/result blocks but the
+// current request doesn't include tool definitions (e.g., during compaction).
+// Bedrock Converse API requires toolConfig when toolUse/toolResult blocks are present.
+func extractToolNamesFromConverseMessages(messages []ConverseMessage) []string {
+	seen := make(map[string]bool)
+	var names []string
+
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil && block.ToolUse.Name != "" {
+				if !seen[block.ToolUse.Name] {
+					seen[block.ToolUse.Name] = true
+					names = append(names, block.ToolUse.Name)
+				}
+			}
+		}
+	}
+
+	return names
+}
+
+// ensureToolConfigForHistory checks if the Converse request messages contain
+// toolUse or toolResult blocks but no toolConfig is defined. If so, it creates
+// stub tool definitions from the tool names found in history. This is required
+// because Bedrock Converse API mandates toolConfig when tool blocks are present.
+func ensureToolConfigForHistory(converseReq *BedrockConverseRequest) {
+	if converseReq.ToolConfig != nil {
+		return
+	}
+
+	// Detect any tool-related blocks and collect tool names from toolUse blocks
+	hasAnyToolBlocks := false
+	seen := make(map[string]bool)
+	var toolNames []string
+	for _, msg := range converseReq.Messages {
+		for _, block := range msg.Content {
+			if block.ToolUse != nil {
+				hasAnyToolBlocks = true
+				if block.ToolUse.Name != "" && !seen[block.ToolUse.Name] {
+					seen[block.ToolUse.Name] = true
+					toolNames = append(toolNames, block.ToolUse.Name)
+				}
+			}
+			if block.ToolResult != nil {
+				hasAnyToolBlocks = true
+			}
+		}
+	}
+
+	if !hasAnyToolBlocks {
+		return
+	}
+
+	// If we have names, build stub tool specs for those names; otherwise provide an empty tools list
+	if len(toolNames) > 0 {
+		tools := make([]ConverseTool, 0, len(toolNames))
+		for _, name := range toolNames {
+			tools = append(tools, ConverseTool{
+				ToolSpec: &ConverseToolSpec{
+					Name: name,
+					InputSchema: ConverseToolInputSchema{
+						JSON: map[string]interface{}{
+							"type":       "object",
+							"properties": map[string]interface{}{},
+						},
+					},
+				},
+			})
+		}
+		converseReq.ToolConfig = &ConverseToolConfig{Tools: tools}
+		return
+	}
+
+	// No tool names found (e.g., only toolResult blocks) — still attach an empty toolConfig to satisfy Bedrock
+	converseReq.ToolConfig = &ConverseToolConfig{Tools: []ConverseTool{}}
+}
+
 // convertToBedrockConverse converts a Bifrost chat request to Bedrock Converse API format
 // This is required for SAP AI Core to support native tool calling
 func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConverseRequest {
@@ -2821,6 +2903,9 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 			}
 		}
 	}
+
+	// Ensure toolConfig is present when conversation history contains tool blocks
+	ensureToolConfigForHistory(converseReq)
 
 	return converseReq
 }
