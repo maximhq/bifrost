@@ -105,11 +105,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
 								{log.status}
 							</Badge>
-							{log.metadata?.isAsyncRequest ? (
-								<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
-									Async
-								</Badge>
-							) : null}
+								{log.metadata?.isAsyncRequest ? (
+									<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
+										Async
+									</Badge>
+								) : null}
 						</SheetTitle>
 					</div>
 					<AlertDialog>
@@ -575,6 +575,25 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 										),
 									}}
 								/>
+							</>
+						)}
+							{log.rerank_output && !log.error_details?.error.message && (
+								<>
+									<CollapsibleBox
+										title={`Rerank Output (${log.rerank_output.length})`}
+										onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
+									>
+									<CodeEditor
+										className="z-0 w-full"
+										shouldAdjustInitialHeight={true}
+										maxHeight={450}
+										wrap={true}
+										code={JSON.stringify(log.rerank_output, null, 2)}
+										lang="json"
+										readonly={true}
+										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+									/>
+								</CollapsibleBox>
 							</>
 						)}
 						{log.raw_request && (

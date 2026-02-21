@@ -36,6 +36,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "responses"
 	case schemas.EmbeddingRequest:
 		baseType = "embedding"
+	case schemas.RerankRequest:
+		baseType = "rerank"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		baseType = "audio_speech"
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:

@@ -44,6 +44,7 @@ type UpdateLogData struct {
 	ChatOutput            *schemas.ChatMessage
 	ResponsesOutput       []schemas.ResponsesMessage
 	EmbeddingOutput       []schemas.EmbeddingData
+	RerankOutput          []schemas.RerankResult
 	ErrorDetails          *schemas.BifrostError
 	SpeechOutput          *schemas.BifrostSpeechResponse          // For non-streaming speech responses
 	TranscriptionOutput   *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
@@ -337,6 +338,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.Tools = tools
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
+		case schemas.RerankRequest:
+			initialData.Params = req.RerankRequest.Params
 		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 			initialData.Params = req.SpeechRequest.Params
 			initialData.SpeechInput = req.SpeechRequest.Input
@@ -638,6 +641,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
 				case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 					usage = result.EmbeddingResponse.Usage
+				case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+					usage = result.RerankResponse.Usage
 				case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
 					usage = &schemas.BifrostLLMUsage{}
 					if result.TranscriptionResponse.Usage.InputTokens != nil {
@@ -702,6 +707,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					}
 					if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
 						updateData.EmbeddingOutput = result.EmbeddingResponse.Data
+					}
+					if result.RerankResponse != nil {
+						updateData.RerankOutput = result.RerankResponse.Results
 					}
 					// Handle speech and transcription outputs for NON-streaming responses
 					if result.SpeechResponse != nil {

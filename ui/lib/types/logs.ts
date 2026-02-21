@@ -198,6 +198,18 @@ export interface BifrostEmbedding {
 	embedding: string | number[] | number[][];
 }
 
+export interface RerankDocument {
+	text: string;
+	id?: string;
+	meta?: Record<string, unknown>;
+}
+
+export interface RerankResult {
+	index: number;
+	relevance_score: number;
+	document?: RerankDocument;
+}
+
 export interface BifrostImageGenerationData {
 	url?: string;
 	b64_json?: string;
@@ -367,6 +379,7 @@ export interface LogEntry {
 	output_message?: ChatMessage;
 	responses_output?: ResponsesMessage[];
 	embedding_output?: BifrostEmbedding[];
+	rerank_output?: RerankResult[];
 	image_generation_output?: BifrostImageGenerationOutput;
 	params?: ModelParameters;
 	speech_input?: SpeechInput;

@@ -1,13 +1,13 @@
 ---
 title: "vLLM"
-description: "vLLM API guide - OpenAI-compatible self-hosted inference, chat, text, embeddings, and streaming"
+description: "vLLM API guide - OpenAI-compatible self-hosted inference, chat, text, embeddings, rerank, and streaming"
 icon: "v"
 ---
 
 ## Overview
 
 vLLM is an **OpenAI-compatible provider** for self-hosted inference. Bifrost delegates to the shared OpenAI provider implementation. Key characteristics:
-- **OpenAI compatibility** - Chat, text completions, embeddings, and streaming
+- **OpenAI compatibility** - Chat, text completions, embeddings, rerank, and streaming
 - **Self-hosted** - Typically runs at `http://localhost:8000` or your own server
 - **Optional authentication** - API key often omitted for local instances
 - **Responses API** - Supported via chat completion fallback
@@ -20,6 +20,7 @@ vLLM is an **OpenAI-compatible provider** for self-hosted inference. Bifrost del
 | Responses API | ✅ | ✅ | `/v1/chat/completions` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Embeddings | ✅ | - | `/v1/embeddings` |
+| Rerank | ✅ | - | `/v1/rerank` (fallback: `/rerank`) |
 | List Models | ✅ | - | `/v1/models` |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -135,6 +136,33 @@ vLLM supports `/v1/embeddings`. Use model IDs exposed by your vLLM server (e.g. 
 # 5. List Models
 
 Lists models from your vLLM instance via `/v1/models`. Available models depend on what is loaded on the server.
+
+---
+
+# 6. Rerank
+
+vLLM supports reranking for pooling/cross-encoder reranker models. Bifrost sends requests to `/v1/rerank` and automatically falls back to `/rerank` when required by your vLLM deployment.
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vllm/BAAI/bge-reranker-v2-m3",
+    "query": "What is machine learning?",
+    "documents": [
+      {"text": "Machine learning is a subset of AI."},
+      {"text": "Python is a programming language."},
+      {"text": "Deep learning uses neural networks."}
+    ],
+    "params": {
+      "return_documents": true
+    }
+  }'
+```
+
+<Note>
+Your upstream vLLM server must be started with a rerank-capable model (pooling/cross-encoder task support).
+</Note>
 
 ---
 
