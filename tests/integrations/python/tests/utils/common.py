@@ -1016,6 +1016,7 @@ def assert_valid_error_response(response_or_exception: Any, expected_invalid_rol
         "not supported",
         "bad request",
         "invalid_request",
+        "resource does not exist"
     ]
 
     has_role_error = any(

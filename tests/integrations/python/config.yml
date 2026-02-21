@@ -74,7 +74,15 @@ providers:
     embeddings: "text-embedding-3-small"
     image_generation: "gpt-image-1"
     thinking: "o1"
-    count_tokens: "gpt-4o-mini"
+    batch_file_upload: "gpt-4o-batch"
+    batch_list: "gpt-4o-batch"
+    batch_retrieve: "gpt-4o-batch"
+    batch_cancel: "gpt-4o-batch"
+    file_upload: "gpt-4o"
+    file_list: "gpt-4o"
+    file_retrieve: "gpt-4o"
+    file_delete: "gpt-4o"
+    file_content: "gpt-4o"
 
   xai:
     chat: "grok-4-0709"
@@ -281,19 +289,19 @@ provider_scenarios:
     langchain_structured_output: false
     pydantic_structured_output: false
     pydanticai_streaming: false
-    batch_file_upload: false
+    batch_file_upload: true
     batch_create: false
-    batch_list: false
-    batch_retrieve: false
-    batch_cancel: false
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
     batch_inline: false
     batch_s3: false
-    file_upload: false
-    file_list: false
-    file_retrieve: false
-    file_delete: false
-    file_content: false
-    count_tokens: true
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: true
+    count_tokens: false
 
   xai:
     simple_chat: true
