@@ -18,7 +18,7 @@ import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini"];
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
 
 interface Props {
 	control: Control<any>;
