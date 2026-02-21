@@ -4,3 +4,4 @@
 - feat: added required headers support — configure headers that must be present on every request
 - fix: routing rules CEL builder UI fixes
 - fix: routing rules now support case-insensitive header matching
+- fix: azure openai sdk requests handling in openai integration

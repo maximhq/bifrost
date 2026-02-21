@@ -51,11 +51,22 @@ Tests all core scenarios using AzureOpenAI SDK directly:
 36. Responses API - streaming
 37. Responses API - streaming with tools
 38. Responses API - reasoning
+41. Files API - file upload
+42. Files API - file list
+43. Files API - file retrieve
+44. Files API - file delete
+45. Files API - file content
+46. Batch API - batch create with Files API
+47. Batch API - batch list
+48. Batch API - batch retrieve
+49. Batch API - batch cancel
+50. Batch API - end-to-end with Files API
 51. Count tokens (Cross-Provider)
 52. Image Generation - simple prompt
 """
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -98,10 +109,15 @@ from .utils.common import (
     Config,
     assert_error_propagation,
     assert_has_tool_calls,
+    assert_valid_batch_list_response,
+    assert_valid_batch_response,
     assert_valid_chat_response,
     assert_valid_embedding_response,
     assert_valid_embeddings_batch_response,
     assert_valid_error_response,
+    assert_valid_file_delete_response,
+    assert_valid_file_list_response,
+    assert_valid_file_response,
     assert_valid_image_generation_response,
     assert_valid_image_response,
     assert_valid_input_tokens_response,
@@ -113,6 +129,7 @@ from .utils.common import (
     collect_streaming_content,
     collect_streaming_transcription_content,
     convert_to_responses_tools,
+    create_batch_jsonl_content,
     extract_tool_calls,
     generate_test_audio,
     get_api_key,
@@ -890,7 +907,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("embeddings", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("embeddings"),
     )
     def test_21_single_text_embedding(self, provider, model, vk_enabled):
         """Test Case 21: Single text embedding generation using AzureOpenAI SDK"""
@@ -898,7 +915,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.embeddings.create(
-            model=model, input=EMBEDDINGS_SINGLE_TEXT, dimensions=1536
+            model=format_provider_model(provider, model), input=EMBEDDINGS_SINGLE_TEXT, dimensions=1536
         )
 
         assert_valid_embedding_response(response, expected_dimensions=1536)
@@ -913,7 +930,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("embeddings", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("embeddings"),
     )
     def test_22_batch_text_embeddings(self, provider, model, vk_enabled):
         """Test Case 22: Batch text embedding generation using AzureOpenAI SDK"""
@@ -921,7 +938,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.embeddings.create(
-            model=model, input=EMBEDDINGS_MULTIPLE_TEXTS, dimensions=1536
+            model=format_provider_model(provider, model), input=EMBEDDINGS_MULTIPLE_TEXTS, dimensions=1536
         )
 
         expected_count = len(EMBEDDINGS_MULTIPLE_TEXTS)
@@ -936,7 +953,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("embeddings", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("embeddings"),
     )
     def test_23_embedding_similarity_analysis(self, provider, model, vk_enabled):
         """Test Case 23: Embedding similarity analysis with similar texts using AzureOpenAI SDK"""
@@ -944,7 +961,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.embeddings.create(
-            model=model, input=EMBEDDINGS_SIMILAR_TEXTS, dimensions=1536
+            model=format_provider_model(provider, model), input=EMBEDDINGS_SIMILAR_TEXTS, dimensions=1536
         )
 
         assert_valid_embeddings_batch_response(
@@ -971,7 +988,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("embeddings", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("embeddings"),
     )
     def test_24_embedding_dissimilarity_analysis(self, provider, model, vk_enabled):
         """Test Case 24: Embedding dissimilarity analysis with different texts using AzureOpenAI SDK"""
@@ -979,7 +996,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.embeddings.create(
-            model=model, input=EMBEDDINGS_DIFFERENT_TEXTS, dimensions=1536
+            model=format_provider_model(provider, model), input=EMBEDDINGS_DIFFERENT_TEXTS, dimensions=1536
         )
 
         assert_valid_embeddings_batch_response(
@@ -1016,14 +1033,14 @@ class TestAzureIntegration:
 
         # Test with text-embedding-3-small (default)
         response_small = azure_client.embeddings.create(
-            model="text-embedding-3-small", input=test_text
+            model=format_provider_model("azure", "text-embedding-3-small"), input=test_text
         )
         assert_valid_embedding_response(response_small, expected_dimensions=1536)
 
         # Test with text-embedding-3-large if available
         try:
             response_large = azure_client.embeddings.create(
-                model="text-embedding-3-large", input=test_text
+                model=format_provider_model("azure", "text-embedding-3-large"), input=test_text
             )
             assert_valid_embedding_response(response_large, expected_dimensions=3072)
 
@@ -1042,7 +1059,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("embeddings", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("embeddings"),
     )
     def test_26_embedding_long_text(self, provider, model, vk_enabled):
         """Test Case 26: Embedding generation with longer text using AzureOpenAI SDK"""
@@ -1050,7 +1067,7 @@ class TestAzureIntegration:
             pytest.skip("No providers configured for this scenario")
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.embeddings.create(
-            model=model, input=EMBEDDINGS_LONG_TEXT, dimensions=1536
+            model=format_provider_model(provider, model), input=EMBEDDINGS_LONG_TEXT, dimensions=1536
         )
 
         assert_valid_embedding_response(response, expected_dimensions=1536)
@@ -1446,7 +1463,7 @@ class TestAzureIntegration:
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
-        get_cross_provider_params_with_vk_for_scenario("responses", include_providers=["azure"]),
+        get_cross_provider_params_with_vk_for_scenario("responses"),
     )
     def test_37_responses_streaming_with_tools(self, provider, model, vk_enabled):
         """Test Case 37: Responses API streaming with tools using AzureOpenAI SDK"""
@@ -1638,13 +1655,613 @@ class TestAzureIntegration:
                 raise
 
     # =========================================================================
+    # FILES API TEST CASES (AZURE-ONLY)
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("batch_file_upload")
+    )
+    def test_41_file_upload(self, test_config, provider, model, vk_enabled):
+        """Test Case 41: Upload a file for batch processing via Azure"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for batch_file_upload scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+
+        client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
+        response = client.files.create(
+            file=("batch_input.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        assert_valid_file_response(response, expected_purpose="batch")
+
+        print(f"Success: Uploaded file with ID: {response.id}")
+
+        try:
+            list_response = client.files.list(
+                extra_query={
+                    "provider": provider,
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                }
+            )
+            assert_valid_file_list_response(list_response, min_count=1)
+
+            file_ids = [f.id for f in list_response.data]
+            assert response.id in file_ids, f"Uploaded file {response.id} should be in file list"
+
+            print(f"Success: Verified file {response.id} exists in file list")
+
+        finally:
+            try:
+                client.files.delete(response.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("file_list")
+    )
+    def test_42_file_list(self, test_config, provider, model, vk_enabled):
+        """Test Case 42: List uploaded files via Azure"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_list scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+
+        client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
+        uploaded_file = client.files.create(
+            file=("test_list.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        try:
+            response = client.files.list(
+                extra_query={
+                    "provider": provider,
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                }
+            )
+
+            assert_valid_file_list_response(response, min_count=1)
+
+            file_ids = [f.id for f in response.data]
+            assert (
+                uploaded_file.id in file_ids
+            ), f"Uploaded file {uploaded_file.id} should be in file list"
+
+            print(f"Success: Listed {len(response.data)} files")
+
+        finally:
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("file_retrieve")
+    )
+    def test_43_file_retrieve(self, test_config, provider, model, vk_enabled):
+        """Test Case 43: Retrieve file metadata by ID via Azure"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_retrieve scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+
+        client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
+        uploaded_file = client.files.create(
+            file=("test_retrieve.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        try:
+            response = client.files.retrieve(uploaded_file.id, extra_query={"provider": provider})
+
+            assert_valid_file_response(response, expected_purpose="batch")
+            assert (
+                response.id == uploaded_file.id
+            ), f"Retrieved file ID should match: expected {uploaded_file.id}, got {response.id}"
+            assert (
+                response.filename == "test_retrieve.jsonl"
+            ), f"Filename should match: expected 'test_retrieve.jsonl', got {response.filename}"
+
+            print(f"Success: Retrieved file metadata for {response.id}")
+
+        finally:
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("file_delete")
+    )
+    def test_44_file_delete(self, test_config, provider, model, vk_enabled):
+        """Test Case 44: Delete an uploaded file via Azure"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_delete scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1, provider=provider)
+
+        client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
+        uploaded_file = client.files.create(
+            file=("test_delete.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        response = client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+
+        assert_valid_file_delete_response(response, expected_id=uploaded_file.id)
+
+        print(f"Success: Deleted file {response.id}")
+
+        with pytest.raises(Exception):
+            client.files.retrieve(uploaded_file.id, extra_query={"provider": provider})
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("file_content")
+    )
+    def test_45_file_content(self, test_config, provider, model, vk_enabled):
+        """Test Case 45: Download file content via Azure"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for file_content scenario")
+
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2, provider=provider)
+
+        uploaded_file = client.files.create(
+            file=("test_content.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "provider": provider,
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        print(f"Success: Uploaded file with ID: {uploaded_file.id}")
+
+        try:
+            response = client.files.content(uploaded_file.id, extra_query={"provider": provider})
+
+            assert response is not None, "File content should not be None"
+
+            if hasattr(response, "read"):
+                content = response.read()
+            elif hasattr(response, "content"):
+                content = response.content
+            else:
+                content = response
+
+            if isinstance(content, bytes):
+                content = content.decode("utf-8")
+
+            assert "custom_id" in content, "Content should contain 'custom_id'"
+            assert "request-1" in content, "Content should contain 'request-1'"
+
+            print(f"Success: Downloaded file content ({len(content)} bytes)")
+
+        finally:
+            try:
+                client.files.delete(uploaded_file.id, extra_query={"provider": provider})
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    # =========================================================================
+    # BATCH API TEST CASES (AZURE-ONLY)
+    # =========================================================================
+
+    @skip_if_no_api_key("azure")
+    def test_46_batch_create_with_file(self, azure_client):
+        """Test Case 46: Create a batch job using Files API via Azure"""
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+        model = get_model("azure", "batch_file_upload")
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2)
+
+        uploaded_file = azure_client.files.create(
+            file=("batch_create_file_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+
+        batch = None
+        try:
+            batch = azure_client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body={
+                    "model": model,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+
+            assert_valid_batch_response(batch)
+            assert (
+                batch.input_file_id == uploaded_file.id
+            ), f"Input file ID should match: expected {uploaded_file.id}, got {batch.input_file_id}"
+
+            print(
+                f"Success: Created batch with ID: {batch.id}, status: {batch.status}"
+            )
+
+        finally:
+            if batch:
+                try:
+                    azure_client.batches.cancel(batch.id)
+                except Exception as e:
+                    print(f"Info: Could not cancel batch (may already be processed): {e}")
+
+            try:
+                azure_client.files.delete(uploaded_file.id)
+            except Exception as e:
+                print(f"Warning: Failed to clean up file: {e}")
+
+    @skip_if_no_api_key("azure")
+    def test_47_batch_list(self, azure_client):
+        """Test Case 47: List batch jobs via Azure"""
+        response = azure_client.batches.list(limit=10)
+        assert_valid_batch_list_response(response, min_count=0)
+
+        print(f"Success: Listed {len(response.data)} batches")
+
+    @skip_if_no_api_key("azure")
+    def test_48_batch_retrieve(self, azure_client):
+        """Test Case 48: Retrieve batch status by ID via Azure"""
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+        model = get_model("azure", "batch_retrieve")
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1)
+
+        batch_id = None
+        uploaded_file = None
+
+        try:
+            uploaded_file = azure_client.files.create(
+                file=("batch_retrieve_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                },
+            )
+
+            batch = azure_client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body={
+                    "model": model,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+            batch_id = batch.id
+
+            retrieved_batch = azure_client.batches.retrieve(batch_id)
+            assert_valid_batch_response(retrieved_batch)
+            assert retrieved_batch.id == batch_id
+
+            print(
+                f"Success: Retrieved batch {batch_id}, status: {retrieved_batch.status}"
+            )
+
+        finally:
+            if batch_id:
+                try:
+                    azure_client.batches.cancel(batch_id)
+                except Exception:
+                    pass
+            if uploaded_file:
+                try:
+                    azure_client.files.delete(uploaded_file.id)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("azure")
+    def test_49_batch_cancel(self, azure_client):
+        """Test Case 49: Cancel a batch job via Azure"""
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+        model = get_model("azure", "batch_cancel")
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=1)
+
+        batch_id = None
+        uploaded_file = None
+
+        try:
+            uploaded_file = azure_client.files.create(
+                file=("batch_cancel_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+                purpose="batch",
+                extra_body={
+                    "storage_config": {
+                        "s3": {
+                            "bucket": s3_bucket,
+                            "region": s3_region,
+                            "prefix": s3_prefix,
+                        },
+                    },
+                },
+            )
+
+            batch = azure_client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body={
+                    "model": model,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+            batch_id = batch.id
+
+            cancelled_batch = azure_client.batches.cancel(batch_id)
+            assert cancelled_batch is not None
+            assert cancelled_batch.id == batch_id
+            assert cancelled_batch.status in ["cancelling", "cancelled"]
+
+            print(
+                f"Success: Cancelled batch {batch_id}, status: {cancelled_batch.status}"
+            )
+
+        finally:
+            if uploaded_file:
+                try:
+                    azure_client.files.delete(uploaded_file.id)
+                except Exception:
+                    pass
+
+    @skip_if_no_api_key("azure")
+    def test_50_batch_e2e(self, azure_client):
+        """Test Case 50: End-to-end batch workflow via Azure
+
+        Complete workflow: upload file -> create batch -> poll status -> verify in list.
+        """
+        config = get_config()
+        integration_settings = config.get_integration_settings("bedrock")
+        s3_bucket = integration_settings.get("s3_bucket")
+        s3_region = integration_settings.get("region", "us-west-2")
+        s3_prefix = integration_settings.get("output_s3_prefix", "bifrost-batch-output")
+
+        if not s3_bucket:
+            pytest.skip("S3 bucket not configured for file tests")
+
+        output_s3_uri = f"s3://{s3_bucket}/{s3_prefix}"
+        model = get_model("azure", "batch_file_upload")
+        jsonl_content = create_batch_jsonl_content(model=model, num_requests=2)
+
+        # Step 1: Upload batch input file
+        print("Step 1: Uploading batch input file...")
+        uploaded_file = azure_client.files.create(
+            file=("batch_e2e_test.jsonl", jsonl_content.encode(), "application/jsonl"),
+            purpose="batch",
+            extra_body={
+                "storage_config": {
+                    "s3": {
+                        "bucket": s3_bucket,
+                        "region": s3_region,
+                        "prefix": s3_prefix,
+                    },
+                },
+            },
+        )
+        assert_valid_file_response(uploaded_file, expected_purpose="batch")
+        print(f"  Uploaded file: {uploaded_file.id}")
+
+        batch = None
+        try:
+            # Step 2: Create batch job
+            print("Step 2: Creating batch job...")
+            batch = azure_client.batches.create(
+                input_file_id=uploaded_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                extra_body={
+                    "model": model,
+                    "output_s3_uri": output_s3_uri,
+                },
+            )
+            assert_valid_batch_response(batch)
+            print(f"  Created batch: {batch.id}, status: {batch.status}")
+
+            # Step 3: Poll batch status
+            print("Step 3: Polling batch status...")
+            max_polls = 5
+            poll_interval = 2  # seconds
+
+            for i in range(max_polls):
+                retrieved_batch = azure_client.batches.retrieve(batch.id)
+                print(f"  Poll {i+1}: status = {retrieved_batch.status}")
+
+                if retrieved_batch.status in [
+                    "completed",
+                    "failed",
+                    "expired",
+                    "cancelled",
+                ]:
+                    print(f"  Batch reached terminal state: {retrieved_batch.status}")
+                    break
+
+                if (
+                    hasattr(retrieved_batch, "request_counts")
+                    and retrieved_batch.request_counts
+                ):
+                    counts = retrieved_batch.request_counts
+                    print(
+                        f"    Request counts - total: {counts.total}, completed: {counts.completed}, failed: {counts.failed}"
+                    )
+
+                time.sleep(poll_interval)
+
+            # Step 4: Verify batch is in the list
+            print("Step 4: Verifying batch in list...")
+            batch_list = azure_client.batches.list(limit=20)
+            batch_ids = [b.id for b in batch_list.data]
+            assert batch.id in batch_ids, f"Batch {batch.id} should be in the batch list"
+            print(f"  Verified batch {batch.id} is in list")
+
+            print(f"Success: Batch E2E completed for batch {batch.id}")
+
+        finally:
+            if batch:
+                try:
+                    azure_client.batches.cancel(batch.id)
+                    print(f"Cleanup: Cancelled batch {batch.id}")
+                except Exception as e:
+                    print(f"Cleanup info: Could not cancel batch: {e}")
+
+            try:
+                azure_client.files.delete(uploaded_file.id)
+                print(f"Cleanup: Deleted file {uploaded_file.id}")
+            except Exception as e:
+                print(f"Cleanup warning: Failed to delete file: {e}")
+
+    # =========================================================================
     # INPUT TOKENS / TOKEN COUNTING TEST CASES (cross-provider, azure only)
     # =========================================================================
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "count_tokens", include_providers=["azure"]
+            "count_tokens"
         ),
     )
     def test_51a_input_tokens_simple_text(self, provider, model, vk_enabled):
@@ -1654,7 +2271,7 @@ class TestAzureIntegration:
 
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.input_tokens.count(
-            model=model,
+            model=format_provider_model(provider, model),
             input=INPUT_TOKENS_SIMPLE_TEXT,
         )
 
@@ -1669,7 +2286,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "count_tokens", include_providers=["azure"]
+            "count_tokens"
         ),
     )
     def test_51b_input_tokens_with_system_message(self, provider, model, vk_enabled):
@@ -1679,7 +2296,7 @@ class TestAzureIntegration:
 
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.input_tokens.count(
-            model=model,
+            model=format_provider_model(provider, model),
             input=INPUT_TOKENS_WITH_SYSTEM,
         )
 
@@ -1694,7 +2311,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "count_tokens", include_providers=["azure"]
+            "count_tokens"
         ),
     )
     def test_51c_input_tokens_long_text(self, provider, model, vk_enabled):
@@ -1704,7 +2321,7 @@ class TestAzureIntegration:
 
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.responses.input_tokens.count(
-            model=model,
+            model=format_provider_model(provider, model),
             input=INPUT_TOKENS_LONG_TEXT,
         )
 
@@ -1723,7 +2340,7 @@ class TestAzureIntegration:
     @pytest.mark.parametrize(
         "provider,model,vk_enabled",
         get_cross_provider_params_with_vk_for_scenario(
-            "image_generation", include_providers=["azure"]
+            "image_generation"
         ),
     )
     def test_52a_image_generation_simple(self, provider, model, vk_enabled):
@@ -1733,7 +2350,7 @@ class TestAzureIntegration:
 
         client = get_provider_azure_client(provider, vk_enabled=vk_enabled)
         response = client.images.generate(
-            model=model,
+            model=format_provider_model(provider, model),
             prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
             n=1,
             size="1024x1024",
