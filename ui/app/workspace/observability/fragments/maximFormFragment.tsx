@@ -8,7 +8,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { maximFormSchema, type MaximFormSchema } from "@/lib/types/schemas";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm, type Resolver } from "react-hook-form";
 
@@ -19,10 +19,13 @@ interface MaximFormFragmentProps {
 		log_repo_id?: string;
 	};
 	onSave: (config: MaximFormSchema) => Promise<void>;
+	onDelete?: () => void;
+	isDeleting?: boolean;
 	isLoading?: boolean;
+	enableToggle?: { enabled: boolean; onToggle: () => void; disabled?: boolean };
 }
 
-export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: MaximFormFragmentProps) {
+export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting = false, isLoading = false, enableToggle }: MaximFormFragmentProps) {
 	const hasMaximAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
@@ -105,17 +108,31 @@ export function MaximFormFragment({ initialConfig, onSave, isLoading = false }: 
 
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center">
-					<FormField
-						control={form.control}
-						name="enabled"
-						render={({ field }) => (
-							<FormItem className="flex flex-row items-center gap-2">
-								<FormLabel>Enabled</FormLabel>
-								<Switch checked={form.watch("enabled")} onCheckedChange={field.onChange} disabled={!hasMaximAccess || isLoading || !form.formState.isValid} />
-							</FormItem>
-						)}
-					/>
+					{enableToggle && (
+						<div className="flex items-center gap-2 py-2">
+							<span className="text-muted-foreground text-sm font-medium">Enabled</span>
+							<Switch
+								checked={enableToggle.enabled}
+								onCheckedChange={enableToggle.onToggle}
+								disabled={enableToggle.disabled}
+								title={enableToggle.enabled ? "Enabled" : "Disabled"}
+								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
+							/>
+						</div>
+					)}
 					<div className="ml-auto flex justify-end space-x-2 py-2">
+						{onDelete && (
+							<Button
+								type="button"
+								variant="outline"
+								onClick={onDelete}
+								disabled={isDeleting}
+								title="Delete connector"
+								aria-label="Delete connector"
+							>
+								<Trash2 className="size-4" />
+							</Button>
+						)}
 						<Button
 							type="button"
 							variant="outline"

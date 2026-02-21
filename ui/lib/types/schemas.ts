@@ -512,7 +512,7 @@ export const networkOnlyFormSchema = z.object({
 	network_config: networkFormConfigSchema.optional(),
 });
 
-// Performance form schema for the PerformanceFormFragment
+// Performance form schema for the PerformanceFormFragment (concurrency/buffer only; raw request/response are in Debugging tab)
 export const performanceFormSchema = z.object({
 	concurrency_and_buffer_size: z
 		.object({
@@ -529,9 +529,15 @@ export const performanceFormSchema = z.object({
 			message: "Concurrency must be less than or equal to buffer size",
 			path: ["concurrency"],
 		}),
+});
+
+// Debugging tab (raw request/response toggles)
+export const debuggingFormSchema = z.object({
 	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
 });
+
+export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
 
 // OTEL Configuration Schema
 export const otelConfigSchema = z

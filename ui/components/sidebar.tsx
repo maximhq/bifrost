@@ -6,21 +6,15 @@ import {
 	Boxes,
 	BoxIcon,
 	BugIcon,
-	ChartColumnBig,
-	ChevronsLeftRightEllipsis,
-	CircleDollarSign,
-	Cog,
 	Construction,
+	DatabaseZap,
 	FlaskConical,
 	FolderGit,
-	Gauge,
 	Globe,
 	KeyRound,
 	Landmark,
 	Layers,
-	LayoutGrid,
 	LogOut,
-	Logs,
 	Network,
 	PanelLeftClose,
 	Puzzle,
@@ -29,13 +23,12 @@ import {
 	Settings,
 	Settings2Icon,
 	Shield,
-	ShieldUser,
+	ShieldCheck,
 	Shuffle,
 	Telescope,
-	ToolCase,
+	TrendingUp,
 	User,
-	UserRoundCheck,
-	Users,
+	Wrench,
 	Zap,
 } from "lucide-react";
 
@@ -400,74 +393,14 @@ export default function AppSidebar() {
 				url: "/workspace/logs",
 				icon: Telescope,
 				description: "Request logs & monitoring",
-				hasAccess: hasLogsAccess,
-				subItems: [
-					{
-						title: "Dashboard",
-						url: "/workspace/dashboard",
-						icon: ChartColumnBig,
-						description: "Dashboard",
-						hasAccess: hasObservabilityAccess,
-					},
-					{
-						title: "LLM Logs",
-						url: "/workspace/logs",
-						icon: Logs,
-						description: "LLM request logs & monitoring",
-						hasAccess: hasLogsAccess,
-					},
-					{
-						title: "MCP Logs",
-						url: "/workspace/mcp-logs",
-						icon: MCPIcon,
-						description: "MCP tool execution logs",
-						hasAccess: hasLogsAccess,
-					},
-					{
-						title: "Connectors",
-						url: "/workspace/observability",
-						icon: ChevronsLeftRightEllipsis,
-						description: "Log connectors",
-						hasAccess: hasObservabilityAccess,
-					},
-				],
+				hasAccess: hasLogsAccess || hasObservabilityAccess,
 			},
 			{
-				title: "Prompt Repository",
-				url: "/workspace/prompt-repo",
-				icon: FolderGit,
-				description: "Prompt repository",
-				hasAccess: true,
-			},
-			{
-				title: "Model Providers",
+				title: "Models",
 				url: "/workspace/providers",
 				icon: BoxIcon,
 				description: "Configure models",
-				hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess || hasGovernanceAccess,
-				subItems: [
-					{
-						title: "Configurations",
-						url: "/workspace/providers",
-						icon: Cog,
-						description: "Configure models",
-						hasAccess: hasModelProvidersAccess,
-					},
-					{
-						title: "Budgets & Limits",
-						url: "/workspace/model-limits",
-						icon: Gauge,
-						description: "Model limits",
-						hasAccess: hasGovernanceAccess,
-					},
-					{
-						title: "Routing Rules",
-						url: "/workspace/routing-rules",
-						icon: Network,
-						description: "Intelligent routing rules",
-						hasAccess: hasRoutingRulesAccess,
-					},
-				],
+				hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess || hasGovernanceAccess || hasSettingsAccess,
 			},
 			{
 				title: "MCP Gateway",
@@ -475,29 +408,6 @@ export default function AppSidebar() {
 				description: "MCP configuration",
 				url: "/workspace/mcp-gateway",
 				hasAccess: hasMCPGatewayAccess,
-				subItems: [
-					{
-						title: "MCP Catalog",
-						url: "/workspace/mcp-registry",
-						icon: LayoutGrid,
-						description: "MCP tool catalog",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Tool groups",
-						url: "/workspace/mcp-tool-groups",
-						icon: ToolCase,
-						description: "MCP tool groups",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Auth Config",
-						url: "/workspace/mcp-auth-config",
-						icon: ShieldUser,
-						description: "MCP auth config",
-						hasAccess: hasMCPGatewayAccess,
-					},
-				],
 			},
 			{
 				title: "Plugins",
@@ -511,88 +421,26 @@ export default function AppSidebar() {
 				title: "Governance",
 				url: "/workspace/governance",
 				icon: Landmark,
-				description: "Govern access",
+				description: "Virtual keys, users, teams, customers & roles",
 				hasAccess:
 					hasGovernanceAccess ||
 					hasVirtualKeysAccess ||
 					hasCustomersAccess ||
 					hasTeamsAccess ||
-					hasUserProvisioningAccess ||
 					hasRbacAccess ||
-					hasAuditLogsAccess,
-				subItems: [
-					{
-						title: "Virtual Keys",
-						url: "/workspace/virtual-keys",
-						icon: KeyRound,
-						description: "Manage virtual keys & access",
-						hasAccess: hasVirtualKeysAccess,
-					},
-					{
-						title: "Users & Groups",
-						url: "/workspace/user-groups",
-						icon: Users,
-						description: "Manage users & groups",
-						hasAccess: hasCustomersAccess || hasTeamsAccess,
-					},
-					{
-						title: "User Provisioning",
-						url: "/workspace/scim",
-						icon: BookUser,
-						description: "User management and provisioning",
-						hasAccess: hasUserProvisioningAccess,
-					},
-					{
-						title: "Roles & Permissions",
-						url: "/workspace/rbac",
-						icon: UserRoundCheck,
-						description: "User roles and permissions",
-						hasAccess: hasRbacAccess,
-					},
-					{
-						title: "Audit Logs",
-						url: "/workspace/audit-logs",
-						icon: ScrollText,
-						description: "Audit logs and compliance",
-						hasAccess: hasAuditLogsAccess,
-					},
-				],
+					hasSettingsAccess,
 			},
 			{
 				title: "Guardrails",
 				url: "/workspace/guardrails",
 				icon: Construction,
 				description: "Guardrails configuration",
-				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
-				subItems: [
-					{
-						title: "Configuration",
-						url: "/workspace/guardrails/configuration",
-						icon: Cog,
-						description: "Guardrail configuration",
-						hasAccess: hasGuardrailsConfigAccess,
-					},
-					{
-						title: "Providers",
-						url: "/workspace/guardrails/providers",
-						icon: Boxes,
-						description: "Guardrail providers configuration",
-						hasAccess: hasGuardrailsProvidersAccess,
-					},
-				],
-			},
-			{
-				title: "Evals",
-				url: "https://www.getmaxim.ai",
-				icon: FlaskConical,
-				isExternal: true,
-				description: "Evaluations",
-				hasAccess: true,
+				hasAccess: !IS_ENTERPRISE || hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 			},
 			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
-				icon: Layers,
+				icon: Network,
 				description: "Manage Bifrost cluster",
 				hasAccess: hasClusterConfigAccess,
 			},
@@ -604,11 +452,26 @@ export default function AppSidebar() {
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
 			{
-				title: "Config",
+				title: "Prompt Repository",
+				url: "/workspace/prompt-repo",
+				icon: FolderGit,
+				description: "Prompt repository",
+				hasAccess: true,
+			},
+			{
+				title: "Evals",
+				url: "https://www.getmaxim.ai",
+				icon: FlaskConical,
+				isExternal: true,
+				description: "Evaluations",
+				hasAccess: true,
+			},
+			{
+				title: "Settings",
 				url: "/workspace/config",
 				icon: Settings2Icon,
 				description: "Bifrost settings",
-				hasAccess: hasSettingsAccess,
+				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
 				subItems: [
 					{
 						title: "Client Settings",
@@ -618,51 +481,16 @@ export default function AppSidebar() {
 						hasAccess: hasSettingsAccess,
 					},
 					{
-						title: "MCP Gateway",
-						url: "/workspace/config/mcp-gateway",
-						icon: MCPIcon,
-						description: "MCP gateway configuration",
-						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						title: "Pricing Config",
-						url: "/workspace/config/pricing-config",
-						icon: CircleDollarSign,
-						description: "Pricing configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Logging",
-						url: "/workspace/config/logging",
-						icon: Logs,
-						description: "Logging configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Governance",
-						url: "/workspace/config/governance",
-						icon: Landmark,
-						description: "Governance settings",
-						hasAccess: hasSettingsAccess,
-					},
-					{
 						title: "Caching",
 						url: "/workspace/config/caching",
-						icon: Zap,
+						icon: DatabaseZap,
 						description: "Caching configuration",
-						hasAccess: hasSettingsAccess,
-					},
-					{
-						title: "Observability",
-						url: "/workspace/config/observability",
-						icon: Gauge,
-						description: "Observability settings",
 						hasAccess: hasSettingsAccess,
 					},
 					{
 						title: "Security",
 						url: "/workspace/config/security",
-						icon: Shield,
+						icon: ShieldCheck,
 						description: "Security settings",
 						hasAccess: hasSettingsAccess,
 					},
@@ -674,6 +502,13 @@ export default function AppSidebar() {
 									icon: Globe,
 									description: "Proxy configuration",
 									hasAccess: hasSettingsAccess,
+								},
+								{
+									title: "Guardrails Providers",
+									url: "/workspace/guardrails/providers",
+									icon: Boxes,
+									description: "Guardrail providers configuration",
+									hasAccess: hasGuardrailsProvidersAccess,
 								},
 							]
 						: []),
@@ -687,9 +522,23 @@ export default function AppSidebar() {
 					{
 						title: "Performance Tuning",
 						url: "/workspace/config/performance-tuning",
-						icon: Zap,
+						icon: TrendingUp,
 						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "User Provisioning",
+						url: "/workspace/scim",
+						icon: BookUser,
+						description: "User management and provisioning",
+						hasAccess: hasUserProvisioningAccess,
+					},
+					{
+						title: "Audit Logs",
+						url: "/workspace/audit-logs",
+						icon: ScrollText,
+						description: "Audit logs and compliance",
+						hasAccess: hasAuditLogsAccess,
 					},
 				],
 			},
@@ -832,7 +681,7 @@ export default function AppSidebar() {
 						result.push({ title: sub.title, url: sub.url, queryParam: sub.queryParam });
 					}
 				} else {
-					// Parent is collapsed — include parent as a toggle target
+					// Parent is collapsed - include parent as a toggle target
 					if (item.hasAccess) result.push({ title: item.title, url: item.url });
 				}
 			} else {
@@ -896,6 +745,19 @@ export default function AppSidebar() {
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
+		const path = pathname.replace(/\/$/, "") || "/";
+		// Logging config is reached from Observability → highlight Observability, not Settings
+		const isLoggingConfig = path === "/workspace/config/logging" || path.startsWith("/workspace/config/logging/");
+		if (isLoggingConfig && url === "/workspace/logs") return true;
+		if (isLoggingConfig && url === "/workspace/config") return false;
+		// MCP Gateway config is reached from MCP Gateway → highlight MCP Gateway, not Settings
+		const isMCPGatewayConfig = path === "/workspace/config/mcp-gateway" || path.startsWith("/workspace/config/mcp-gateway/");
+		if (isMCPGatewayConfig && url === "/workspace/mcp-gateway") return true;
+		if (isMCPGatewayConfig && url === "/workspace/config") return false;
+		// Audit Logs is under Settings → highlight Settings when on audit-logs
+		if (path === "/workspace/audit-logs" && url === "/workspace/config") return true;
+		// User Provisioning is under Settings → highlight Settings when on scim
+		if ((path === "/workspace/scim" || path.startsWith("/workspace/scim/")) && url === "/workspace/config") return true;
 		if (url !== "/" && pathname.startsWith(url)) return true;
 		return false;
 	};

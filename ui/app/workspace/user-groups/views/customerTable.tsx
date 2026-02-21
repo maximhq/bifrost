@@ -26,6 +26,7 @@ import { Edit, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import CustomerDialog from "./customerDialog";
+import { CustomersEmptyState } from "./customersEmptyState";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -80,6 +81,20 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 		return virtualKeys.filter((vk) => vk.customer_id === customerId);
 	};
 
+	// Empty state when user has no customers (same pattern as Virtual Keys)
+	if (customers?.length === 0) {
+		return (
+			<>
+				<TooltipProvider>
+					{showCustomerDialog && (
+						<CustomerDialog customer={editingCustomer} onSave={handleCustomerSaved} onCancel={() => setShowCustomerDialog(false)} />
+					)}
+					<CustomersEmptyState onAddClick={handleAddCustomer} canCreate={hasCreateAccess} />
+				</TooltipProvider>
+			</>
+		);
+	}
+
 	return (
 		<>
 			<TooltipProvider>
@@ -90,6 +105,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 				<div className="space-y-4">
 					<div className="flex items-center justify-between">
 						<div>
+							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
 						</div>
 						<Button data-testid="create-customer-btn" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
@@ -111,14 +127,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 								</TableRow>
 							</TableHeader>
 							<TableBody>
-								{customers?.length === 0 ? (
-									<TableRow>
-										<TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
-											No customers found. Create your first customer to get started.
-										</TableCell>
-									</TableRow>
-								) : (
-									customers?.map((customer) => {
+								{customers?.map((customer) => {
 										const customerTeams = getTeamsForCustomer(customer.id);
 										const vks = getVirtualKeysForCustomer(customer.id);
 
@@ -176,7 +185,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 															</Tooltip>
 														</div>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
@@ -213,7 +222,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 															</TooltipContent>
 														</Tooltip>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell className="min-w-[180px]">
@@ -289,7 +298,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 															)}
 														</div>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell>
@@ -305,41 +314,31 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 															</Tooltip>
 														</div>
 													) : (
-														<span className="text-muted-foreground text-sm">—</span>
+														<span className="text-muted-foreground text-sm">-</span>
 													)}
 												</TableCell>
 												<TableCell className="text-right">
 													<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-														<Tooltip>
-															<TooltipTrigger asChild>
+														<Button
+															variant="ghost"
+															size="icon"
+															className="h-8 w-8"
+															onClick={() => handleEditCustomer(customer)}
+															disabled={!hasUpdateAccess}
+														>
+															<Edit className="h-4 w-4" />
+														</Button>
+														<AlertDialog>
+															<AlertDialogTrigger asChild>
 																<Button
 																	variant="ghost"
 																	size="icon"
-																	className="h-8 w-8"
-																	onClick={() => handleEditCustomer(customer)}
-																	disabled={!hasUpdateAccess}
+																	className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+																	disabled={!hasDeleteAccess}
 																>
-																	<Edit className="h-4 w-4" />
+																	<Trash2 className="h-4 w-4" />
 																</Button>
-															</TooltipTrigger>
-															<TooltipContent>Edit</TooltipContent>
-														</Tooltip>
-														<AlertDialog>
-															<Tooltip>
-																<AlertDialogTrigger asChild>
-																	<TooltipTrigger asChild>
-																		<Button
-																			variant="ghost"
-																			size="icon"
-																			className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																			disabled={!hasDeleteAccess}
-																		>
-																			<Trash2 className="h-4 w-4" />
-																		</Button>
-																	</TooltipTrigger>
-																</AlertDialogTrigger>
-																<TooltipContent>Delete</TooltipContent>
-															</Tooltip>
+															</AlertDialogTrigger>
 															<AlertDialogContent>
 																<AlertDialogHeader>
 																	<AlertDialogTitle>Delete Customer</AlertDialogTitle>
@@ -364,8 +363,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 												</TableCell>
 											</TableRow>
 										);
-									})
-								)}
+									})}
 							</TableBody>
 						</Table>
 					</div>

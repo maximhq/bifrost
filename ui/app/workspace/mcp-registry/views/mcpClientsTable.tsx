@@ -23,6 +23,7 @@ import { MCPClient } from "@/lib/types/mcp";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Loader2, Plus, RefreshCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { MCPServersEmptyState } from "./mcpServersEmptyState";
 import MCPClientSheet from "./mcpClientSheet";
 
 interface MCPClientsTableProps {
@@ -126,6 +127,16 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 		}
 	};
 
+	// Empty state when user has no MCP servers (same pattern as Virtual Keys, Plugins)
+	if (mcpClients.length === 0) {
+		return (
+			<>
+				{formOpen && <ClientForm open={formOpen} onClose={() => setFormOpen(false)} onSaved={handleSaved} />}
+				<MCPServersEmptyState onAddClick={handleCreate} canCreate={hasCreateMCPClientAccess} />
+			</>
+		);
+	}
+
 	return (
 		<div className="space-y-4">
 			{showDetailSheet && selectedMCPClient && (
@@ -156,13 +167,6 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 						</TableRow>
 					</TableHeader>
 					<TableBody>
-						{mcpClients.length === 0 && (
-							<TableRow>
-								<TableCell colSpan={8} className="py-6 text-center">
-									No clients found.
-								</TableCell>
-							</TableRow>
-						)}
 						{mcpClients.map((c: MCPClient) => {
 							const enabledToolsCount =
 								c.state == "connected"
