@@ -5,3 +5,4 @@
 - fix: routing rules CEL builder UI fixes
 - fix: routing rules now support case-insensitive header matching
 - fix: azure openai sdk requests handling in openai integration
+- feat: support multiple credential types in vertex auth credentials
