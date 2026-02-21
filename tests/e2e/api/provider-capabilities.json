@@ -1,0 +1,161 @@
+{
+  "description": "Provider capability matrix for integration tests. Lists operation categories unsupported per provider. Derived from core/providers/* NewUnsupportedOperationError. Used to skip requests when running with all provider envs.",
+  "operation_categories": [
+    "batch",
+    "file",
+    "container",
+    "embedding",
+    "speech",
+    "transcription",
+    "image"
+  ],
+  "providers": {
+    "openai": {
+      "unsupported": []
+    },
+    "anthropic": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "image",
+        "container"
+      ]
+    },
+    "azure": {
+      "unsupported": [
+        "container"
+      ]
+    },
+    "bedrock": {
+      "unsupported": [
+        "speech",
+        "transcription",
+        "container"
+      ]
+    },
+    "cerebras": {
+      "unsupported": [
+        "batch",
+        "file",
+        "container",
+        "embedding",
+        "speech",
+        "transcription",
+        "image"
+      ]
+    },
+    "cohere": {
+      "unsupported": [
+        "speech",
+        "transcription",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "elevenlabs": {
+      "unsupported": [
+        "batch",
+        "file",
+        "container",
+        "embedding",
+        "image"
+      ]
+    },
+    "gemini": {
+      "unsupported": [
+        "container"
+      ]
+    },
+    "groq": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "huggingface": {
+      "unsupported": [
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "mistral": {
+      "unsupported": [
+        "speech",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "nebius": {
+      "unsupported": [
+        "speech",
+        "transcription",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "openrouter": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "parasail": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "perplexity": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "image",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "vertex": {
+      "unsupported": [
+        "speech",
+        "transcription",
+        "batch",
+        "file",
+        "container"
+      ]
+    },
+    "xai": {
+      "unsupported": [
+        "embedding",
+        "speech",
+        "transcription",
+        "batch",
+        "file",
+        "container"
+      ]
+    }
+  }
+}
