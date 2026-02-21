@@ -1,0 +1,1 @@
+- fix: invalid providers which do not support embedding requests are rejected during initialization

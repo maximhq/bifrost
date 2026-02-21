@@ -114,6 +114,12 @@
             }
           },
           "additionalProperties": false
+        },
+        "async_job_result_ttl": {
+          "type": "integer",
+          "description": "Default TTL for async job results in seconds (default: 3600 = 1 hour)",
+          "default": 3600,
+          "minimum": 1
         }
       },
       "additionalProperties": false

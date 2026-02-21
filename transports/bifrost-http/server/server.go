@@ -102,9 +102,10 @@ type BifrostHTTPServer struct {
 	Host   string
 	AppDir string
 
-	LogLevel       string
-	LogOutputStyle string
-	LogsCleaner    *logstore.LogsCleaner
+	LogLevel        string
+	LogOutputStyle  string
+	LogsCleaner     *logstore.LogsCleaner
+	AsyncJobCleaner *logstore.AsyncJobCleaner
 
 	Client *bifrost.Bifrost
 	Config *lib.Config
@@ -879,9 +880,13 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 		return fmt.Errorf("failed to initialize mcp server handler: %v", err)
 	}
 	s.MCPServerHandler = mcpServerHandler
-
+	asyncHandler, err := handlers.NewAsyncHandler(s.Client, s.Config)
+	if err != nil {
+		return fmt.Errorf("failed to initialize async handler: %v", err)
+	}
 	integrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
+	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
 	return nil
@@ -1108,6 +1113,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			}
 		}
 	}
+	// Initialize async job cleaner if log store is configured
+	if s.Config.LogsStore != nil {
+		s.AsyncJobCleaner = logstore.NewAsyncJobCleaner(s.Config.LogsStore, logger)
+		s.AsyncJobCleaner.StartCleanupRoutine()
+	}
 	// Load all plugins
 	if err := s.LoadPlugins(ctx); err != nil {
 		return fmt.Errorf("failed to instantiate plugins: %v", err)
@@ -1289,6 +1299,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.LogsCleaner != nil {
 				logger.Info("stopping log retention cleaner...")
 				s.LogsCleaner.StopCleanupRoutine()
+			}
+			if s.AsyncJobCleaner != nil {
+				logger.Info("stopping async job cleaner...")
+				s.AsyncJobCleaner.StopCleanupRoutine()
 			}
 			if s.Config != nil && s.Config.TokenRefreshWorker != nil {
 				logger.Info("stopping token refresh worker...")

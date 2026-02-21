@@ -401,6 +401,7 @@ export interface CoreConfig {
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
 	mcp_tool_sync_interval: number;
+	async_job_result_ttl: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -422,6 +423,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
 	mcp_tool_sync_interval: 10,
+	async_job_result_ttl: 3600,
 	allowed_headers: [],
 };
 

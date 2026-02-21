@@ -1,0 +1,1 @@
+- feat: add asynchronous inference support

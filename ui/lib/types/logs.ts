@@ -387,6 +387,7 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	metadata?: Record<string, unknown>; // JSON metadata (e.g., isAsyncRequest)
 }
 
 export interface LogFilters {

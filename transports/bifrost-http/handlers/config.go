@@ -382,6 +382,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.MCPCodeModeBindingLevel = payload.ClientConfig.MCPCodeModeBindingLevel
 	}
 
+	// Only update AsyncJobResultTTL if explicitly provided (> 0) to avoid clearing stored value
+	if payload.ClientConfig.AsyncJobResultTTL > 0 {
+		updatedConfig.AsyncJobResultTTL = payload.ClientConfig.AsyncJobResultTTL
+	}
+
 	// Handle HeaderFilterConfig changes
 	if !headerFilterConfigEqual(payload.ClientConfig.HeaderFilterConfig, currentConfig.HeaderFilterConfig) {
 		// Validate that no security headers are in the allowlist or denylist

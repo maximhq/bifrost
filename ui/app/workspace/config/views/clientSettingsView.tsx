@@ -77,6 +77,7 @@ export default function ClientSettingsView() {
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
 			localConfig.enable_litellm_fallbacks !== config.enable_litellm_fallbacks ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
+			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
 	}, [config, localConfig]);
@@ -281,6 +282,27 @@ export default function ClientSettingsView() {
 						checked={localConfig.disable_db_pings_in_health}
 						onCheckedChange={(checked) => handleConfigChange("disable_db_pings_in_health", checked)}
 						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+				{/* Async Job Result TTL */}
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
+							Async Job Result TTL (seconds)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.
+						</p>
+					</div>
+					<Input
+						id="async-job-result-ttl"
+						type="number"
+						min={1}
+						className="w-32"
+						value={localConfig.async_job_result_ttl}
+						onChange={(e) => handleConfigChange("async_job_result_ttl", parseInt(e.target.value) || 0)}
+						disabled={!hasSettingsUpdateAccess}
+						data-testid="client-settings-async-job-result-ttl-input"
 					/>
 				</div>
 			</div>

@@ -99,6 +99,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
 								{log.status}
 							</Badge>
+							{log.metadata?.isAsyncRequest && (
+								<Badge variant="outline" className="bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-200 uppercase">
+									Async
+								</Badge>
+							)}
 						</SheetTitle>
 					</div>
 					<AlertDialog>
