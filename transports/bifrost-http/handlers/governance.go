@@ -226,6 +226,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.getVirtualKey, middlewares...))
 	r.PUT("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.updateVirtualKey, middlewares...))
 	r.DELETE("/api/governance/virtual-keys/{vk_id}", lib.ChainMiddlewares(h.deleteVirtualKey, middlewares...))
+	r.DELETE("/api/governance/virtual-keys", lib.ChainMiddlewares(h.bulkDeleteVirtualKeys, middlewares...))
 
 	// Team CRUD operations
 	r.GET("/api/governance/teams", lib.ChainMiddlewares(h.getTeams, middlewares...))
@@ -993,7 +994,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a virtual key
+// deleteVirtualKey handles DELETE /api/governance/virtual-keys/{vk_id} - Delete a single virtual key
 func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	vkID := ctx.UserValue("vk_id").(string)
 	// Fetch the virtual key from the database to get the budget and rate limit
@@ -1024,6 +1025,62 @@ func (h *GovernanceHandler) deleteVirtualKey(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Virtual key deleted successfully",
+	})
+}
+
+// bulkDeleteVirtualKeys handles DELETE /api/governance/virtual-keys with body { ids: [...] } - Delete multiple virtual keys
+func (h *GovernanceHandler) bulkDeleteVirtualKeys(ctx *fasthttp.RequestCtx) {
+	var payload struct {
+		IDs []string `json:"ids"`
+	}
+
+	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
+		SendError(ctx, 400, "Invalid request body")
+		return
+	}
+
+	if len(payload.IDs) == 0 {
+		SendError(ctx, 400, "No IDs provided")
+		return
+	}
+
+	deletedCount := 0
+	failedIDs := []string{}
+
+	for _, vkID := range payload.IDs {
+		// Fetch the virtual key from the database
+		vk, err := h.configStore.GetVirtualKey(ctx, vkID)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				failedIDs = append(failedIDs, vkID)
+				continue
+			}
+			logger.Error("failed to retrieve virtual key %s: %v", vkID, err)
+			failedIDs = append(failedIDs, vkID)
+			continue
+		}
+
+		// Remove key from in-memory store
+		err = h.governanceManager.RemoveVirtualKey(ctx, vk.ID)
+		if err != nil {
+			logger.Error("failed to remove virtual key from memory: %v", err)
+		}
+
+		// Delete key from database
+		if err := h.configStore.DeleteVirtualKey(ctx, vkID); err != nil {
+			logger.Error("failed to delete virtual key %s: %v", vkID, err)
+			failedIDs = append(failedIDs, vkID)
+			continue
+		}
+
+		deletedCount++
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message":       fmt.Sprintf("Deleted %d virtual key(s)", deletedCount),
+		"deleted_count": deletedCount,
+		"failed_ids":    failedIDs,
+		"total":         len(payload.IDs),
 	})
 }
 
