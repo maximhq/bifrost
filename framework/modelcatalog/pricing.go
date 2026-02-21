@@ -41,6 +41,8 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		}
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		usage = result.EmbeddingResponse.Usage
+	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+		usage = result.RerankResponse.Usage
 	case result.SpeechResponse != nil:
 		if result.SpeechResponse.Usage != nil {
 			usage = &schemas.BifrostLLMUsage{
