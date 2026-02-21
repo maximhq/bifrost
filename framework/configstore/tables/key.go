@@ -60,6 +60,8 @@ type TableKey struct {
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Models             []string                    `gorm:"-" json:"models"`
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`

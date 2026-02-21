@@ -271,6 +271,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3703,6 +3706,99 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running enforce auth on inference column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_encryption_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+
+			type encryptionTable struct {
+				table   interface{}
+				columns []string
+			}
+
+			targets := []encryptionTable{
+				{&tables.TableKey{}, []string{"encryption_status"}},
+				{&tables.TableVirtualKey{}, []string{"encryption_status", "value_hash"}},
+				{&tables.SessionsTable{}, []string{"encryption_status", "token_hash"}},
+				{&tables.TableOauthConfig{}, []string{"encryption_status"}},
+				{&tables.TableOauthToken{}, []string{"encryption_status"}},
+				{&tables.TableMCPClient{}, []string{"encryption_status"}},
+				{&tables.TableProvider{}, []string{"encryption_status"}},
+				{&tables.TableVectorStoreConfig{}, []string{"encryption_status"}},
+				{&tables.TablePlugin{}, []string{"encryption_status"}},
+			}
+
+			for _, t := range targets {
+				for _, col := range t.columns {
+					if !mgr.HasColumn(t.table, col) {
+						if err := mgr.AddColumn(t.table, col); err != nil {
+							return fmt.Errorf("failed to add column %s: %w", col, err)
+						}
+					}
+				}
+			}
+
+			// Backfill value_hash for existing virtual keys
+			if err := tx.Exec(`
+				UPDATE governance_virtual_keys
+				SET value_hash = ''
+				WHERE value_hash IS NULL OR value_hash = ''
+			`).Error; err != nil {
+				return fmt.Errorf("failed to initialize value_hash: %w", err)
+			}
+
+			// Backfill token_hash for existing sessions
+			if err := tx.Exec(`
+				UPDATE sessions
+				SET token_hash = ''
+				WHERE token_hash IS NULL OR token_hash = ''
+			`).Error; err != nil {
+				return fmt.Errorf("failed to initialize token_hash: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+
+			type dropInfo struct {
+				table   interface{}
+				columns []string
+			}
+
+			drops := []dropInfo{
+				{&tables.TableKey{}, []string{"encryption_status"}},
+				{&tables.TableVirtualKey{}, []string{"encryption_status", "value_hash"}},
+				{&tables.SessionsTable{}, []string{"encryption_status", "token_hash"}},
+				{&tables.TableOauthConfig{}, []string{"encryption_status"}},
+				{&tables.TableOauthToken{}, []string{"encryption_status"}},
+				{&tables.TableMCPClient{}, []string{"encryption_status"}},
+				{&tables.TableProvider{}, []string{"encryption_status"}},
+				{&tables.TableVectorStoreConfig{}, []string{"encryption_status"}},
+				{&tables.TablePlugin{}, []string{"encryption_status"}},
+			}
+
+			for _, d := range drops {
+				for _, col := range d.columns {
+					if mgr.HasColumn(d.table, col) {
+						if err := mgr.DropColumn(d.table, col); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running encryption columns migration: %s", err.Error())
 	}
 	return nil
 }

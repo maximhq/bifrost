@@ -2,8 +2,10 @@ package tables
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -24,6 +26,8 @@ type TablePlugin struct {
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
 
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Config any `gorm:"-" json:"config,omitempty"`
 }
@@ -43,11 +47,27 @@ func (p *TablePlugin) BeforeSave(tx *gorm.DB) error {
 		p.ConfigJSON = "{}"
 	}
 
+	if encrypt.IsEnabled() && p.ConfigJSON != "" && p.ConfigJSON != "{}" {
+		encrypted, err := encrypt.Encrypt(p.ConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt plugin config: %w", err)
+		}
+		p.ConfigJSON = encrypted
+		p.EncryptionStatus = "encrypted"
+	}
+
 	return nil
 }
 
 // AfterFind hooks for deserialization
 func (p *TablePlugin) AfterFind(tx *gorm.DB) error {
+	if p.EncryptionStatus == "encrypted" && p.ConfigJSON != "" {
+		decrypted, err := encrypt.Decrypt(p.ConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt plugin config: %w", err)
+		}
+		p.ConfigJSON = decrypted
+	}
 	if p.ConfigJSON != "" {
 		if err := json.Unmarshal([]byte(p.ConfigJSON), &p.Config); err != nil {
 			return err

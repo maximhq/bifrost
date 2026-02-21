@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -54,6 +55,8 @@ type TableProvider struct {
 	// Model discovery status tracking for keyless providers
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
+
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 }
 
 // TableName represents a provider configuration in the database
@@ -101,6 +104,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("rate_limit_id cannot be an empty string")
 	}
 
+	if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
+		encrypted, err := encrypt.Encrypt(p.ProxyConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt proxy config: %w", err)
+		}
+		p.ProxyConfigJSON = encrypted
+		p.EncryptionStatus = "encrypted"
+	}
+
 	return nil
 }
 
@@ -122,6 +134,13 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.ConcurrencyAndBufferSize = &config
 	}
 
+	if p.EncryptionStatus == "encrypted" && p.ProxyConfigJSON != "" {
+		decrypted, err := encrypt.Decrypt(p.ProxyConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt proxy config: %w", err)
+		}
+		p.ProxyConfigJSON = decrypted
+	}
 	if p.ProxyConfigJSON != "" {
 		var proxyConfig schemas.ProxyConfig
 		if err := json.Unmarshal([]byte(p.ProxyConfigJSON), &proxyConfig); err != nil {
