@@ -577,13 +577,12 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								/>
 							</>
 						)}
-						{log.rerank_output && !log.error_details?.error.message && (
-							<>
-								<div className="mt-4 w-full text-left text-sm font-medium">Rerank Output</div>
-								<CollapsibleBox
-									title={`Rerank Output (${log.rerank_output.length})`}
-									onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
-								>
+							{log.rerank_output && !log.error_details?.error.message && (
+								<>
+									<CollapsibleBox
+										title={`Rerank Output (${log.rerank_output.length})`}
+										onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
+									>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
