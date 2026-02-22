@@ -741,10 +741,6 @@ export default function AppSidebar() {
 		if (isAuditLogs && url === "/workspace/config") return true;
 		// User Provisioning is under Settings → highlight Settings when on scim
 		if ((path === "/workspace/scim" || path.startsWith("/workspace/scim/")) && url === "/workspace/config") return true;
-		// Guardrails Providers is accessed via Settings → highlight Settings, not Guardrails
-		const isGuardrailsProviders = path === "/workspace/guardrails/providers" || path.startsWith("/workspace/guardrails/providers/");
-		if (isGuardrailsProviders && url === "/workspace/config") return true;
-		if (isGuardrailsProviders && url === "/workspace/guardrails") return false;
 		if (url !== "/" && pathname.startsWith(url)) return true;
 		return false;
 	};
