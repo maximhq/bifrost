@@ -123,7 +123,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 
 	// Validate headers format
 	const validateHeaders = (): string | null => {
-		if ((form.connection_type === "http" || form.connection_type === "sse") && form.headers) {
+		if ((form.connection_type === "http" || form.connection_type === "sse") && form.auth_type === "headers" && form.headers) {
 			// Ensure all EnvVar values have either a value or env_var
 			for (const [key, envVar] of Object.entries(form.headers)) {
 				if (!envVar.value && !envVar.env_var) {
@@ -236,7 +236,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 						server_url: form.connection_string?.value || undefined, // Set server_url from connection_string
 					}
 					: undefined,
-			headers: form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
+			headers: form.auth_type === "headers" && form.headers && Object.keys(form.headers).length > 0 ? form.headers : undefined,
 			tools_to_execute: ["*"],
 		};
 

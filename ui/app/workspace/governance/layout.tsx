@@ -11,11 +11,11 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 
 const allTabs = [
-  { label: "Virtual Keys", href: "/workspace/governance/virtual-keys", icon: KeyRound },
-  { label: "Users", href: "/workspace/governance/users", icon: Users },
-  { label: "Teams", href: "/workspace/governance/teams", icon: Building },
-  { label: "Customers", href: "/workspace/governance/customers", icon: WalletCards },
-  { label: "Roles & Permissions", href: "/workspace/governance/rbac", icon: UserRoundCheck },
+  { label: "Virtual Keys", href: "/workspace/governance/virtual-keys", icon: KeyRound, testId: "governance-tab-virtual-keys" },
+  { label: "Users", href: "/workspace/governance/users", icon: Users, testId: "governance-tab-users" },
+  { label: "Teams", href: "/workspace/governance/teams", icon: Building, testId: "governance-tab-teams" },
+  { label: "Customers", href: "/workspace/governance/customers", icon: WalletCards, testId: "governance-tab-customers" },
+  { label: "Roles & Permissions", href: "/workspace/governance/rbac", icon: UserRoundCheck, testId: "governance-tab-rbac" },
 ]
 
 export default function GovernanceLayout({ children }: { children: React.ReactNode }) {
@@ -83,6 +83,7 @@ export default function GovernanceLayout({ children }: { children: React.ReactNo
                   key={tab.href}
                   ref={(el) => { tabRefs.current[i] = el }}
                   href={tab.href}
+                  data-testid={tab.testId}
                   className={cn(
                     "inline-flex cursor-pointer items-center justify-center gap-1.5 px-5 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
                     isActive ? "text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",

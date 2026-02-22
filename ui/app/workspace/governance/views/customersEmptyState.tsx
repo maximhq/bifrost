@@ -26,6 +26,7 @@ export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersE
 					<Button
 						variant="outline"
 						aria-label="Read more about customers (opens in new tab)"
+						data-testid="customer-button-read-more"
 						onClick={() => {
 							window.open(`${CUSTOMERS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
@@ -36,7 +37,7 @@ export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersE
 						aria-label="Add your first customer"
 						onClick={onAddClick}
 						disabled={!canCreate}
-						data-testid="create-customer-btn"
+						data-testid="customer-button-create"
 					>
 						Add Customer
 					</Button>
