@@ -284,12 +284,12 @@ export default function DashboardPage() {
 				<div className="flex items-center gap-2">
 					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
 					<DateTimePickerWithRange
-						triggerTestId="filter-date-range"
 						dateTime={dateRange}
 						onDateTimeUpdate={handleDateRangeChange}
 						preDefinedPeriods={TIME_PERIODS}
 						predefinedPeriod={urlState.period || undefined}
 						onPredefinedPeriodChange={handlePeriodChange}
+						triggerTestId="dashboard-filter-daterange"
 						popupAlignment="end"
 					/>
 				</div>
@@ -314,7 +314,11 @@ export default function DashboardPage() {
 									<span className="text-muted-foreground">Error</span>
 								</span>
 							</div>
-							<ChartTypeToggle chartType={toChartType(urlState.volume_chart)} onToggle={handleVolumeChartToggle} />
+							<ChartTypeToggle
+								chartType={toChartType(urlState.volume_chart)}
+								onToggle={handleVolumeChartToggle}
+								data-testid="dashboard-volume-chart-toggle"
+							/>
 						</div>
 					}
 				>
@@ -343,7 +347,11 @@ export default function DashboardPage() {
 									<span className="text-muted-foreground">Output</span>
 								</span>
 							</div>
-							<ChartTypeToggle chartType={toChartType(urlState.token_chart)} onToggle={handleTokenChartToggle} />
+							<ChartTypeToggle
+								chartType={toChartType(urlState.token_chart)}
+								onToggle={handleTokenChartToggle}
+								data-testid="dashboard-token-chart-toggle"
+							/>
 						</div>
 					}
 				>
@@ -409,8 +417,17 @@ export default function DashboardPage() {
 									</Tooltip>
 								)}
 							</div>
-							<ModelFilterSelect models={availableModels} selectedModel={urlState.cost_model} onModelChange={handleCostModelChange} />
-							<ChartTypeToggle chartType={toChartType(urlState.cost_chart)} onToggle={handleCostChartToggle} />
+							<ModelFilterSelect
+								models={availableModels}
+								selectedModel={urlState.cost_model}
+								onModelChange={handleCostModelChange}
+								data-testid="dashboard-cost-model-filter"
+							/>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.cost_chart)}
+								onToggle={handleCostChartToggle}
+								data-testid="dashboard-cost-chart-toggle"
+							/>
 						</div>
 					}
 				>
@@ -475,8 +492,17 @@ export default function DashboardPage() {
 									</>
 								)}
 							</div>
-							<ModelFilterSelect models={availableModels} selectedModel={urlState.usage_model} onModelChange={handleUsageModelChange} />
-							<ChartTypeToggle chartType={toChartType(urlState.model_chart)} onToggle={handleModelChartToggle} />
+							<ModelFilterSelect
+								models={availableModels}
+								selectedModel={urlState.usage_model}
+								onModelChange={handleUsageModelChange}
+								data-testid="dashboard-usage-model-filter"
+							/>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.model_chart)}
+								onToggle={handleModelChartToggle}
+								data-testid="dashboard-usage-chart-toggle"
+							/>
 						</div>
 					}
 				>

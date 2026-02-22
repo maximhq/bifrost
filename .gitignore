@@ -52,8 +52,8 @@ test-reports
 settings.local.json
 .codex/
 .cursor/
-!.claude/agents
-!.claude/skills
+.claude/
+!.claude/skills/
 
 # Python specific
 **/__pycache__/**

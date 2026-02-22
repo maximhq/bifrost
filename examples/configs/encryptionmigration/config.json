@@ -1,6 +1,6 @@
 {
     "$schema": "https://www.getbifrost.ai/schema",
-    "encryption_key": "v97L5JKG8J78l+Vb7XyPIX9i3lRLnVrf/YYWaL2j/gU=",
+    "encryption_key": "<REPLACE_WITH_BASE64_KEY>",
     "config_store": {
         "enabled": true,
         "type": "sqlite",
