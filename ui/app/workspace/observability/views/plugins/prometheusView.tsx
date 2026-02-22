@@ -21,7 +21,19 @@ interface TelemetryConfig {
 	push_gateway?: PushGatewayConfig;
 }
 
-export default function PrometheusView() {
+interface EnableToggleProps {
+	enabled: boolean;
+	onToggle: () => void;
+	disabled?: boolean;
+}
+
+interface PrometheusViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+	enableToggle?: EnableToggleProps;
+}
+
+export default function PrometheusView({ onDelete, isDeleting, enableToggle }: PrometheusViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(() => {
 		const telemetryConfig = (selectedPlugin?.config as TelemetryConfig) ?? {};
@@ -80,7 +92,7 @@ export default function PrometheusView() {
 	return (
 		<div className="flex w-full flex-col gap-4">
 			<div className="flex w-full flex-col gap-3">
-				<PrometheusFormFragment onSave={handlePrometheusConfigSave} currentConfig={currentConfig} metricsEndpoint={metricsEndpoint} />
+				<PrometheusFormFragment onSave={handlePrometheusConfigSave} currentConfig={currentConfig} metricsEndpoint={metricsEndpoint} onDelete={onDelete} isDeleting={isDeleting} enableToggle={enableToggle} />
 			</div>
 		</div>
 	);

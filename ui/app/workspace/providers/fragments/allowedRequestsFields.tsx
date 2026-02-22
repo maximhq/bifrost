@@ -14,6 +14,7 @@ import { Control, useFormContext } from "react-hook-form";
 interface AllowedRequestsFieldsProps {
 	control: Control<any>;
 	namePrefix?: string;
+	pathOverridesPrefix?: string;
 	providerType?: BaseProvider;
 	disabled?: boolean;
 }
@@ -84,9 +85,15 @@ const REQUEST_TYPES: Array<{ key: RequestType; label: string }> = [
 	{ key: "count_tokens", label: "Count Tokens" },
 ];
 
-export function AllowedRequestsFields({ control, namePrefix = "allowed_requests", providerType, disabled = false }: AllowedRequestsFieldsProps) {
-	const leftColumn = REQUEST_TYPES.slice(0, 6);
-	const rightColumn = REQUEST_TYPES.slice(6);
+export function AllowedRequestsFields({
+	control,
+	namePrefix = "allowed_requests",
+	pathOverridesPrefix = "request_path_overrides",
+	providerType,
+	disabled = false,
+}: AllowedRequestsFieldsProps) {
+	const leftColumn = REQUEST_TYPES.slice(0, REQUEST_TYPES.length / 2);
+	const rightColumn = REQUEST_TYPES.slice(REQUEST_TYPES.length / 2);
 	const { getValues, setValue } = useFormContext();
 
 	// Reset disabled fields when providerType changes
@@ -120,7 +127,7 @@ export function AllowedRequestsFields({ control, namePrefix = "allowed_requests"
 							{allowedField.value && !isDisabled && !isPathOverrideDisabled && !disabled && (
 								<FormField
 									control={control}
-									name={`request_path_overrides.${requestType.key}`}
+									name={`${pathOverridesPrefix}.${requestType.key}`}
 									render={({ field: pathField }) => (
 										<Popover>
 											<PopoverTrigger asChild>

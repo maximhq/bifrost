@@ -47,14 +47,9 @@ export default function GovernanceView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Governance</h2>
-					<p className="text-muted-foreground text-sm">Configure governance settings for requests.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Governance</h2>
+				<p className="text-muted-foreground text-sm">Configure governance settings for requests.</p>
 			</div>
 
 			<div className="space-y-4">
@@ -78,6 +73,11 @@ export default function GovernanceView() {
 					</div>
 					{needsRestart && <RestartWarning />}
 				</div>
+			</div>
+			<div className="flex justify-end pt-2">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);

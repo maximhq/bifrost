@@ -189,27 +189,9 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
-				</div>
-				{hasSecurityHeaderError ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<span>
-								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
-							</span>
-						</TooltipTrigger>
-						<TooltipContent>
-							Remove security header{invalidSecurityHeaders.length > 1 ? "s" : ""}: {invalidSecurityHeaders.join(", ")}
-						</TooltipContent>
-					</Tooltip>
-				) : (
-					<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-						{isLoading ? "Saving..." : "Save Changes"}
-					</Button>
-				)}
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Client Settings</h2>
+				<p className="text-muted-foreground text-sm">Configure client behavior and request handling.</p>
 			</div>
 
 			<div className="space-y-4">
@@ -478,6 +460,24 @@ export default function ClientSettingsView() {
 						</Button>
 					</div>
 				</div>
+			</div>
+			<div className="flex justify-end pt-2">
+				{hasSecurityHeaderError ? (
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<span>
+								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
+							</span>
+						</TooltipTrigger>
+						<TooltipContent>
+							Remove security header{invalidSecurityHeaders.length > 1 ? "s" : ""}: {invalidSecurityHeaders.join(", ")}
+						</TooltipContent>
+					</Tooltip>
+				) : (
+					<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+						{isLoading ? "Saving..." : "Save Changes"}
+					</Button>
+				)}
 			</div>
 		</div>
 	);

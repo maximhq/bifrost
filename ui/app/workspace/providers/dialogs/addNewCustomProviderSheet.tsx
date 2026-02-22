@@ -9,7 +9,7 @@ import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -26,13 +26,17 @@ const formSchema = z.object({
 
 type FormData = z.infer<typeof formSchema>;
 
-interface Props {
-	show: boolean;
+export interface AddCustomProviderSheetContentProps {
+	show?: boolean;
 	onSave: (id: string) => void;
 	onClose: () => void;
 }
 
-export default function AddCustomProviderSheet({ show, onClose, onSave }: Props) {
+interface Props extends AddCustomProviderSheetContentProps {
+	show: boolean;
+}
+
+export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: AddCustomProviderSheetContentProps) {
 	const [addProvider, { isLoading: isAddingProvider }] = useCreateProviderMutation();
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
@@ -100,18 +104,18 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 			});
 	};
 
-	const isKeyLessDisabled = useMemo(() => (form.watch("baseFormat") as BaseProvider) === "bedrock", [form.watch("baseFormat")]);
+	const baseFormat = form.watch("baseFormat") as BaseProvider;
+	const isKeyLessDisabled = baseFormat === "bedrock";
 
 	return (
-		<Sheet open={show} onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8" data-testid="custom-provider-sheet">
-				<SheetHeader className="flex flex-col items-start">
-					<SheetTitle>Add Custom Provider</SheetTitle>
-					<SheetDescription>Enter the details of your custom provider.</SheetDescription>
-				</SheetHeader>
-				<Form {...form}>
-					<form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-1 flex-col overflow-hidden">
-						<div className="custom-scrollbar flex-1 space-y-4 overflow-y-auto">
+		<>
+			<SheetHeader className="flex shrink-0 flex-col items-start">
+				<SheetTitle>Add Custom Provider</SheetTitle>
+				<SheetDescription>Enter the details of your custom provider.</SheetDescription>
+			</SheetHeader>
+			<Form {...form}>
+				<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+					<div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto">
 							<FormField
 								control={form.control}
 								name="name"
@@ -190,8 +194,8 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 							)}
 							{/* Allowed Requests Configuration */}
 							<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
-						</div>
-						<SheetFooter className="mt-4 flex flex-row gap-2 pt-4">
+					</div>
+					<SheetFooter className="mt-4 flex shrink-0 flex-row gap-2 pt-4">
 							<div className="ml-auto flex flex-row gap-2">
 								<Button type="button" variant="outline" onClick={onClose} data-testid="custom-provider-cancel-btn">
 									Cancel
@@ -200,9 +204,18 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 									Add
 								</Button>
 							</div>
-						</SheetFooter>
-					</form>
-				</Form>
+					</SheetFooter>
+				</form>
+			</Form>
+		</>
+	);
+}
+
+export default function AddCustomProviderSheet(props: Props) {
+	return (
+		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
+			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8 sm:max-w-lg" data-testid="custom-provider-sheet">
+				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>
 	);
