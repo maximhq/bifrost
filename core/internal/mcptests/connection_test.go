@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -205,7 +206,7 @@ func TestInProcessConnection(t *testing.T) {
 	err := manager.RegisterTool(
 		"test_inprocess_tool",
 		"A test tool for in-process execution",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", assert.AnError
@@ -255,7 +256,7 @@ func TestInProcessToolExecution(t *testing.T) {
 	err := manager.RegisterTool(
 		"echo_inprocess",
 		"Echoes the input",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", assert.AnError

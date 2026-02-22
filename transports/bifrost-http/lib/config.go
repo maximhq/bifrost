@@ -345,10 +345,11 @@ func (c *Config) initializeEncryption(configKey string) error {
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
-	// Initialize separate database connections for optimal performance at scale
+	// Single database file for all stores (config, logs, etc.)
 	configFilePath := filepath.Join(configDirPath, "config.json")
-	configDBPath := filepath.Join(configDirPath, "config.db")
-	logsDBPath := filepath.Join(configDirPath, "logs.db")
+	dbPath := filepath.Join(configDirPath, "store.db")
+	configDBPath := dbPath
+	logsDBPath := dbPath
 	// Initialize config
 	config := &Config{
 		configPath: configFilePath,

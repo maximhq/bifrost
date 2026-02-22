@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -24,7 +25,7 @@ func TestToolResult_ComplexNestedStructures(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Create tool that returns deeply nested structure
-	nestedHandler := func(args any) (string, error) {
+	nestedHandler := func(ctx context.Context, args any) (string, error) {
 		// 5 levels deep nested structure
 		result := map[string]interface{}{
 			"level1": map[string]interface{}{
@@ -81,7 +82,7 @@ func TestToolResult_MultiPartContent(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Tool that returns content with multiple sections
-	multiPartHandler := func(args any) (string, error) {
+	multiPartHandler := func(ctx context.Context, args any) (string, error) {
 		result := map[string]interface{}{
 			"text_part": "This is the text section",
 			"data_part": map[string]interface{}{
@@ -153,7 +154,7 @@ func TestToolResult_LargePayload(t *testing.T) {
 			toolName := "large_tool_" + st.name
 			targetSize := st.sizeKB
 
-			largeHandler := func(args any) (string, error) {
+			largeHandler := func(ctx context.Context, args any) (string, error) {
 				// Generate payload of target size
 				sizeBytes := targetSize * 1024
 				data := strings.Repeat("x", sizeBytes)
@@ -229,7 +230,7 @@ func TestToolResult_SpecialCharactersAndUnicode(t *testing.T) {
 			toolName := "special_" + tc.name
 			testContent := tc.content
 
-			specialHandler := func(args any) (string, error) {
+			specialHandler := func(ctx context.Context, args any) (string, error) {
 				result := map[string]interface{}{
 					"content": testContent,
 					"type":    tc.name,
@@ -289,7 +290,7 @@ func TestToolResult_EmptyAndNullContent(t *testing.T) {
 			toolName := "empty_" + tc.name
 			responseStr := tc.response
 
-			emptyHandler := func(args any) (string, error) {
+			emptyHandler := func(ctx context.Context, args any) (string, error) {
 				return responseStr, nil
 			}
 
@@ -330,7 +331,7 @@ func TestToolResult_ArrayResults(t *testing.T) {
 	// Test tool results that return arrays
 	manager := setupMCPManager(t)
 
-	arrayHandler := func(args any) (string, error) {
+	arrayHandler := func(ctx context.Context, args any) (string, error) {
 		result := []interface{}{
 			map[string]interface{}{"id": 1, "name": "Item 1"},
 			map[string]interface{}{"id": 2, "name": "Item 2"},
@@ -377,7 +378,7 @@ func TestToolResult_MixedDataTypes(t *testing.T) {
 	// Test tool results with mixed data types
 	manager := setupMCPManager(t)
 
-	mixedHandler := func(args any) (string, error) {
+	mixedHandler := func(ctx context.Context, args any) (string, error) {
 		result := map[string]interface{}{
 			"string":  "text value",
 			"integer": 42,
@@ -435,7 +436,7 @@ func TestToolResult_BothFormats_ComplexStructure(t *testing.T) {
 	// Test complex structures in both Chat and Responses formats
 	manager := setupMCPManager(t)
 
-	complexHandler := func(args any) (string, error) {
+	complexHandler := func(ctx context.Context, args any) (string, error) {
 		result := map[string]interface{}{
 			"status": "success",
 			"data": map[string]interface{}{
@@ -509,7 +510,7 @@ func TestToolResult_ContentEncoding(t *testing.T) {
 			toolName := "encoding_" + tc.name
 			testContent := tc.content
 
-			encodingHandler := func(args any) (string, error) {
+			encodingHandler := func(ctx context.Context, args any) (string, error) {
 				result := map[string]interface{}{
 					"encoded": testContent,
 				}

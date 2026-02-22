@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -315,7 +316,7 @@ func TestGetMCPClientsMultiple(t *testing.T) {
 	manager := setupMCPManager(t, httpConfig)
 
 	// Register a tool to create the InProcess client automatically
-	testToolHandler := func(args any) (string, error) {
+	testToolHandler := func(ctx context.Context, args any) (string, error) {
 		return "test response", nil
 	}
 	testTool := GetSampleEchoTool()

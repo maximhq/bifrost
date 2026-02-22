@@ -425,7 +425,7 @@ func (m *MCPManager) RegisterTool(name, description string, toolFunction MCPTool
 	mcpHandler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Extract arguments from the request using the request's methods
 		args := request.GetArguments()
-		result, err := toolFunction(args)
+		result, err := toolFunction(ctx, args)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Error: %s", err.Error())), nil
 		}

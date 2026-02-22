@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -27,7 +28,7 @@ func TestContext_ParentChildRequestIDs(t *testing.T) {
 	var capturedParentID string
 	var capturedRequestID string
 
-	inspectHandler := func(args any) (string, error) {
+	inspectHandler := func(ctx context.Context, args any) (string, error) {
 		// In real implementation, context would be accessible here
 		// This is a simplified test
 		return `{"result": "context captured"}`, nil
@@ -80,7 +81,7 @@ func TestContext_CancellationPropagation(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Register long-running tool
-	longRunningHandler := func(args any) (string, error) {
+	longRunningHandler := func(ctx context.Context, args any) (string, error) {
 		// Simulate long operation
 		time.Sleep(3 * time.Second)
 		return `{"result": "should not reach here"}`, nil
@@ -136,7 +137,7 @@ func TestContext_DeadlineInheritance(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Register tool that checks deadline
-	deadlineHandler := func(args any) (string, error) {
+	deadlineHandler := func(ctx context.Context, args any) (string, error) {
 		// In real implementation, would check context deadline
 		return `{"result": "deadline checked"}`, nil
 	}
@@ -183,7 +184,7 @@ func TestContext_ValueIsolation(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Register tool that sets/gets context values
-	valueHandler := func(args any) (string, error) {
+	valueHandler := func(ctx context.Context, args any) (string, error) {
 		argsMap, ok := args.(map[string]interface{})
 		if !ok {
 			return "", fmt.Errorf("invalid args")
@@ -280,7 +281,7 @@ func TestContext_NestedToolCalls(t *testing.T) {
 	err := RegisterEchoTool(manager)
 	require.NoError(t, err)
 
-	outerHandler := func(args any) (string, error) {
+	outerHandler := func(ctx context.Context, args any) (string, error) {
 		// In real implementation, this would make nested tool call
 		return `{"result": "outer completed", "nested": true}`, nil
 	}
@@ -332,7 +333,7 @@ func TestContext_TimeoutPropagation(t *testing.T) {
 		toolName := fmt.Sprintf("delay_tool_%d", i)
 		delay := time.Duration(delayMs) * time.Millisecond
 
-		delayHandler := func(args any) (string, error) {
+		delayHandler := func(ctx context.Context, args any) (string, error) {
 			time.Sleep(delay)
 			return fmt.Sprintf(`{"delay_ms": %d}`, delayMs), nil
 		}
@@ -423,7 +424,7 @@ func TestContext_RequestIDGeneration(t *testing.T) {
 	// Register tool
 	requestIDs := []string{}
 
-	idHandler := func(args any) (string, error) {
+	idHandler := func(ctx context.Context, args any) (string, error) {
 		// In real implementation, would capture request ID from context
 		requestID := fmt.Sprintf("req_%d", len(requestIDs))
 		requestIDs = append(requestIDs, requestID)
@@ -514,7 +515,7 @@ func TestContext_CleanupOnCompletion(t *testing.T) {
 
 	cleanupCount := 0
 
-	cleanupHandler := func(args any) (string, error) {
+	cleanupHandler := func(ctx context.Context, args any) (string, error) {
 		cleanupCount++
 		// Simulate resource usage
 		return fmt.Sprintf(`{"execution": %d}`, cleanupCount), nil
@@ -564,7 +565,7 @@ func TestContext_ConcurrentAccess(t *testing.T) {
 	// Test concurrent access to context values
 	manager := setupMCPManager(t)
 
-	concurrentHandler := func(args any) (string, error) {
+	concurrentHandler := func(ctx context.Context, args any) (string, error) {
 		// Simulate concurrent access
 		time.Sleep(10 * time.Millisecond)
 		return `{"result": "concurrent access"}`, nil

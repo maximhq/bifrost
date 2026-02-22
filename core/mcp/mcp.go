@@ -52,7 +52,9 @@ type MCPManager struct {
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
 // T represents the expected argument structure for the tool.
-type MCPToolFunction[T any] func(args T) (string, error)
+// The context.Context carries the BifrostContext from the request, allowing tools to
+// access request-scoped metadata (e.g., conversation ID via ctx.Value).
+type MCPToolFunction[T any] func(ctx context.Context, args T) (string, error)
 
 // ============================================================================
 // CONSTRUCTOR AND INITIALIZATION

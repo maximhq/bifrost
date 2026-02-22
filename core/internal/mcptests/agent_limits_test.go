@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -236,14 +237,14 @@ func TestAgent_MaxDepthReached_ResponsesFormat(t *testing.T) {
 			CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{
 				{
 					CallID:    schemas.Ptr("call-1"),
-					Name: schemas.Ptr("bifrostInternal-echo"),
+					Name:      schemas.Ptr("bifrostInternal-echo"),
 					Arguments: schemas.Ptr(`{"message": "first"}`),
 				},
 			}),
 			CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{
 				{
 					CallID:    schemas.Ptr("call-2"),
-					Name: schemas.Ptr("bifrostInternal-echo"),
+					Name:      schemas.Ptr("bifrostInternal-echo"),
 					Arguments: schemas.Ptr(`{"message": "second"}`),
 				},
 			}),
@@ -544,7 +545,7 @@ func TestAgent_Timeout(t *testing.T) {
 	err := manager.RegisterTool(
 		"slow_tool",
 		"A tool that takes a long time",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			// This will definitely exceed the 200ms timeout
 			time.Sleep(500 * time.Millisecond)
 			return `{"result": "should not reach here"}`, nil
@@ -621,7 +622,7 @@ func TestAgent_TimeoutDuringExecution(t *testing.T) {
 	err := manager.RegisterTool(
 		"very_slow_tool",
 		"A tool that takes 1 full second",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			// This takes 1 second - much longer than 150ms timeout
 			time.Sleep(1 * time.Second)
 			return `{"result": "should never complete"}`, nil
@@ -680,7 +681,7 @@ func TestAgent_Timeout_ChatFormat(t *testing.T) {
 	}
 
 	err := manager.RegisterTool("slow_chat_tool", "Tool for timeout test",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			time.Sleep(400 * time.Millisecond) // Longer than 150ms timeout
 			return `{"status": "should not complete"}`, nil
 		}, slowToolSchema)
@@ -728,7 +729,7 @@ func TestAgent_Timeout_ResponsesFormat(t *testing.T) {
 	}
 
 	err := manager.RegisterTool("slow_responses_tool", "Tool for timeout test",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			time.Sleep(400 * time.Millisecond) // Longer than 150ms timeout
 			return `{"status": "should not complete"}`, nil
 		}, slowToolSchema)
@@ -784,7 +785,7 @@ func TestAgent_ErrorPropagation(t *testing.T) {
 					ID:   schemas.Ptr("call-error"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-nonexistent_tool"),
+						Name:      schemas.Ptr("bifrostInternal-nonexistent_tool"),
 						Arguments: `{}`,
 					},
 				},
@@ -851,7 +852,7 @@ func TestAgent_ErrorInMiddleOfLoop(t *testing.T) {
 					ID:   schemas.Ptr("call-2"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-nonexistent"),
+						Name:      schemas.Ptr("bifrostInternal-nonexistent"),
 						Arguments: `{}`,
 					},
 				},

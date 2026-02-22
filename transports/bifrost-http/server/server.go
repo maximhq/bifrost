@@ -3,8 +3,8 @@ package server
 
 import (
 	"context"
-	"embed"
 	"errors"
+	"io/fs"
 	"fmt"
 	"net"
 	"os"
@@ -96,7 +96,7 @@ type BifrostHTTPServer struct {
 	cancel context.CancelFunc
 
 	Version   string
-	UIContent embed.FS
+	UIContent fs.FS
 
 	Port   string
 	Host   string
@@ -119,6 +119,11 @@ type BifrostHTTPServer struct {
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
+
+	// ExternalInferenceMiddlewares allows external code to inject middlewares
+	// into the inference route chain. These run as the outermost layer
+	// (before tracing, auth, etc.) on all inference endpoints.
+	ExternalInferenceMiddlewares []schemas.BifrostHTTPMiddleware
 }
 
 var logger schemas.Logger
@@ -129,7 +134,7 @@ func SetLogger(l schemas.Logger) {
 }
 
 // NewBifrostHTTPServer creates a new instance of BifrostHTTPServer.
-func NewBifrostHTTPServer(version string, uiContent embed.FS) *BifrostHTTPServer {
+func NewBifrostHTTPServer(version string, uiContent fs.FS) *BifrostHTTPServer {
 	return &BifrostHTTPServer{
 		Version:        version,
 		UIContent:      uiContent,
@@ -987,8 +992,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	return nil
 }
 
-// RegisterUIRoutes registers the UI handler with the specified router
+// RegisterUIRoutes registers the UI handler with the specified router.
+// Skips registration if no UI content was provided.
 func (s *BifrostHTTPServer) RegisterUIRoutes(middlewares ...schemas.BifrostHTTPMiddleware) {
+	if s.UIContent == nil {
+		return
+	}
 	// WARNING: This UI handler needs to be registered after all the other handlers
 	handlers.NewUIHandler(s.UIContent).RegisterRoutes(s.Router, middlewares...)
 }
@@ -1057,7 +1066,7 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 //   - POST /v1/text/completions: For text completion requests
 //   - POST /v1/chat/completions: For chat completion requests
 //   - GET /metrics: For Prometheus metrics
-func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
+func (s *BifrostHTTPServer) Bootstrap(ctx context.Context, r *router.Router) error {
 	var err error
 	s.Ctx, s.cancel = schemas.NewBifrostContextWithCancel(ctx)
 	handlers.SetVersion(s.Version)
@@ -1194,7 +1203,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Info("models added to catalog")
 	s.Config.SetBifrostClient(s.Client)
 	// Initialize routes
-	s.Router = router.New()
+	if r == nil {
+		s.Router = router.New()
+	} else {
+		s.Router = r
+	}
 	commonMiddlewares := s.PrepareCommonMiddlewares()
 	apiMiddlewares := commonMiddlewares
 	inferenceMiddlewares := commonMiddlewares
@@ -1220,6 +1233,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	}
 	// Registering inference middlewares
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{handlers.TransportInterceptorMiddleware(s.Config)}, inferenceMiddlewares...)
+	// Inject external inference middlewares (outermost layer)
+	if len(s.ExternalInferenceMiddlewares) > 0 {
+		inferenceMiddlewares = append(s.ExternalInferenceMiddlewares, inferenceMiddlewares...)
+	}
 	// Curating observability plugins
 	observabilityPlugins := s.CollectObservabilityPlugins()
 	// This enables the central streaming accumulator for both use cases

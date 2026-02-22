@@ -17,39 +17,18 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var loggingSkipPaths = []string{"/health", "/_next","/api/dev"}
+var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			startTime := time.Now()
 			// skip logging if it's a /health check request
 			if slices.IndexFunc(loggingSkipPaths, func(path string) bool {
 				return strings.HasPrefix(string(ctx.RequestURI()), path)
 			}) != -1 {
 				goto corsFlow
 			}
-			defer func() {
-				statusCode := ctx.Response.Header.StatusCode()
-				level := schemas.LogLevelInfo
-				if statusCode >= 500 {
-					level = schemas.LogLevelError
-				} else if statusCode >= 400 {
-					level = schemas.LogLevelWarn
-				}
-				logBuilder := logger.LogHTTPRequest(level, "request completed").
-					Str("http.method", string(ctx.Method())).
-					Str("http.target", string(ctx.RequestURI())).
-					Int("http.status_code", statusCode).
-					Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
-					Str("http.remote_addr", ctx.RemoteAddr().String()).
-					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-					logBuilder = logBuilder.Str("trace_id", traceID)
-				}
-				logBuilder.Send()
-			}()
 		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)

@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"embed"
+	"io/fs"
 	"mime"
 	"path"
 	"path/filepath"
@@ -15,11 +15,11 @@ import (
 
 // UIHandler handles UI routes.
 type UIHandler struct {
-	uiContent embed.FS
+	uiContent fs.FS
 }
 
 // NewUIHandler creates a new UIHandler instance.
-func NewUIHandler(uiContent embed.FS) *UIHandler {
+func NewUIHandler(uiContent fs.FS) *UIHandler {
 	return &UIHandler{
 		uiContent: uiContent,
 	}
@@ -49,18 +49,18 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		cleanPath = basePath + "/index.txt"
 	}
 
-	// Remove leading slash and add ui prefix
+	// Remove leading slash for fs.FS (which uses relative paths)
 	if cleanPath == "/" {
-		cleanPath = "ui/index.html"
+		cleanPath = "index.html"
 	} else {
-		cleanPath = "ui" + cleanPath
+		cleanPath = strings.TrimPrefix(cleanPath, "/")
 	}
 
 	// Check if this is a static asset request (has file extension)
 	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
 
-	// Try to read the file from embedded filesystem
-	data, err := h.uiContent.ReadFile(cleanPath)
+	// Try to read the file from filesystem
+	data, err := fs.ReadFile(h.uiContent, cleanPath)
 	if err != nil {
 
 		// If it's a static asset (has extension) and not found, return 404
@@ -73,18 +73,18 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		// For routes without extensions (SPA routing), try {path}/index.html first
 		if !hasExtension {
 			indexPath := cleanPath + "/index.html"
-			data, err = h.uiContent.ReadFile(indexPath)
+			data, err = fs.ReadFile(h.uiContent, indexPath)
 			if err == nil {
 				cleanPath = indexPath
 			} else {
 				// If that fails, serve root index.html as fallback
-				data, err = h.uiContent.ReadFile("ui/index.html")
+				data, err = fs.ReadFile(h.uiContent, "index.html")
 				if err != nil {
 					ctx.SetStatusCode(fasthttp.StatusNotFound)
 					ctx.SetBodyString("404 - File not found")
 					return
 				}
-				cleanPath = "ui/index.html"
+				cleanPath = "index.html"
 			}
 		} else {
 			ctx.SetStatusCode(fasthttp.StatusNotFound)
@@ -102,7 +102,7 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType(contentType)
 
 	// Set cache headers for static assets
-	if strings.HasPrefix(cleanPath, "ui/_next/static/") {
+	if strings.HasPrefix(cleanPath, "_next/static/") {
 		ctx.Response.Header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else if ext == ".html" {
 		ctx.Response.Header.Set("Cache-Control", "no-cache")

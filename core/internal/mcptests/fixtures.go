@@ -334,7 +334,7 @@ func RegisterEchoTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"echo",
 		"Echoes back the input message",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -385,7 +385,7 @@ func RegisterCalculatorTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"calculator",
 		"Performs basic arithmetic operations",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -461,7 +461,7 @@ func RegisterWeatherTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"get_weather",
 		"Gets the current weather for a location",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -518,7 +518,7 @@ func RegisterSearchTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"search",
 		"Searches for information on a topic",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -570,7 +570,7 @@ func RegisterGetTemperatureTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"get_temperature",
 		"Get the current temperature for a popular city",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -618,7 +618,7 @@ func RegisterGetTimeTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"get_time",
 		"Gets the current date and time",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			timezone := "UTC"
 			if ok {
@@ -663,7 +663,7 @@ func RegisterReadFileTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"read_file",
 		"Reads the contents of a file",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -710,7 +710,7 @@ func RegisterDelayTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"delay",
 		"Delays execution for specified seconds",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")
@@ -758,7 +758,7 @@ func RegisterThrowErrorTool(manager *mcp.MCPManager) error {
 	return manager.RegisterTool(
 		"throw_error",
 		"Throws an error with specified message",
-		func(args any) (string, error) {
+		func(ctx context.Context, args any) (string, error) {
 			argsMap, ok := args.(map[string]interface{})
 			if !ok {
 				return "", fmt.Errorf("invalid arguments type")

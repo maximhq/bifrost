@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,7 +32,7 @@ func TestAgent_ParallelExecution_ResultOrdering(t *testing.T) {
 		toolName := fmt.Sprintf("tool_%d", i)
 		toolIndex := i // Capture for closure
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			// Small delay to ensure parallel execution
 			time.Sleep(10 * time.Millisecond)
 			return fmt.Sprintf(`{"tool": "tool_%d", "result": %d}`, toolIndex, toolIndex), nil
@@ -118,7 +119,7 @@ func TestAgent_ParallelExecution_PartialFailures(t *testing.T) {
 		toolName := fmt.Sprintf("tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			time.Sleep(10 * time.Millisecond)
 
 			// Tools 1 and 3 fail
@@ -208,7 +209,7 @@ func TestAgent_ParallelExecution_RaceConditions(t *testing.T) {
 		toolName := fmt.Sprintf("tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			// Increment shared counter atomically
 			count := sharedCounter.Add(1)
 
@@ -309,7 +310,7 @@ func TestAgent_ParallelExecution_LargeBatch(t *testing.T) {
 		toolName := fmt.Sprintf("tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			// Variable delays to simulate real-world conditions
 			delay := time.Duration(toolIndex%5+1) * 10 * time.Millisecond
 			time.Sleep(delay)
@@ -394,7 +395,7 @@ func TestAgent_ParallelExecution_MixedOutcomes(t *testing.T) {
 		outcomeType := outcome
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			switch outcomeType {
 			case "success":
 				return fmt.Sprintf(`{"tool": "tool_%d", "outcome": "success"}`, toolIndex), nil
@@ -497,7 +498,7 @@ func TestAgent_ParallelExecution_ResultCollectionOrder(t *testing.T) {
 		toolIndex := i
 		delay := time.Duration(delayMs) * time.Millisecond
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			time.Sleep(delay)
 			return fmt.Sprintf(`{"tool": "tool_%d", "delay_ms": %d, "order": %d}`, toolIndex, delayMs, toolIndex), nil
 		}

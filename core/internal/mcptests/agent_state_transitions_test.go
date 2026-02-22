@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -28,7 +29,7 @@ func TestAgent_StateTransition_LargeMixedToolBatch(t *testing.T) {
 		autoTools = append(autoTools, toolName)
 
 		toolIndex := i
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			return fmt.Sprintf(`{"tool": "auto_tool_%d", "auto": true}`, toolIndex), nil
 		}
 
@@ -40,7 +41,9 @@ func TestAgent_StateTransition_LargeMixedToolBatch(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Auto tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Auto tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -49,7 +52,7 @@ func TestAgent_StateTransition_LargeMixedToolBatch(t *testing.T) {
 		toolName := fmt.Sprintf("manual_tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			return fmt.Sprintf(`{"tool": "manual_tool_%d", "auto": false}`, toolIndex), nil
 		}
 
@@ -61,7 +64,9 @@ func TestAgent_StateTransition_LargeMixedToolBatch(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Manual tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Manual tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -220,7 +225,7 @@ func TestAgent_StateTransition_AlternatingAutoNonAuto(t *testing.T) {
 	err := RegisterEchoTool(manager) // Will be auto
 	require.NoError(t, err)
 
-	manualHandler := func(args any) (string, error) {
+	manualHandler := func(ctx context.Context, args any) (string, error) {
 		return `{"result": "manual execution"}`, nil
 	}
 	manualSchema := schemas.ChatTool{
@@ -230,7 +235,9 @@ func TestAgent_StateTransition_AlternatingAutoNonAuto(t *testing.T) {
 			Description: schemas.Ptr("Requires approval"),
 		},
 	}
-	err = manager.RegisterTool("manual_tool", "Requires approval", manualHandler, manualSchema)
+	err = manager.RegisterTool("manual_tool", "Requires approval", func(ctx context.Context, args any) (string, error) {
+		return manualHandler(ctx, args)
+	}, manualSchema)
 	require.NoError(t, err)
 
 	// Only echo is auto-executable
@@ -254,7 +261,7 @@ func TestAgent_StateTransition_AlternatingAutoNonAuto(t *testing.T) {
 					ID:   schemas.Ptr("call-manual-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-manual_tool"),
+						Name:      schemas.Ptr("bifrostInternal-manual_tool"),
 						Arguments: "{}",
 					},
 				},
@@ -390,7 +397,7 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 		toolName := fmt.Sprintf("tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			return fmt.Sprintf(`{"tool": "tool_%d"}`, toolIndex), nil
 		}
 
@@ -402,7 +409,9 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -418,7 +427,7 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 			ID:   schemas.Ptr("call-0"),
 			Type: schemas.Ptr("function"),
 			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name: schemas.Ptr("bifrostInternal-tool_0"),
+				Name:      schemas.Ptr("bifrostInternal-tool_0"),
 				Arguments: "{}",
 			},
 		},
@@ -426,7 +435,7 @@ func TestAgent_StateTransition_AllToolsFilteredOut(t *testing.T) {
 			ID:   schemas.Ptr("call-1"),
 			Type: schemas.Ptr("function"),
 			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name: schemas.Ptr("bifrostInternal-tool_1"),
+				Name:      schemas.Ptr("bifrostInternal-tool_1"),
 				Arguments: "{}",
 			},
 		},
@@ -491,7 +500,7 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 		toolName := fmt.Sprintf("stateful_tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			executionOrder = append(executionOrder, fmt.Sprintf("tool_%d", toolIndex))
 			return fmt.Sprintf(`{"tool": "tool_%d", "order": %d}`, toolIndex, len(executionOrder)), nil
 		}
@@ -504,7 +513,9 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Stateful tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Stateful tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -521,7 +532,7 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 					ID:   schemas.Ptr("call-0"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-stateful_tool_0"),
+						Name:      schemas.Ptr("bifrostInternal-stateful_tool_0"),
 						Arguments: "{}",
 					},
 				},
@@ -531,7 +542,7 @@ func TestAgent_StateTransition_StateConsistency(t *testing.T) {
 					ID:   schemas.Ptr("call-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-stateful_tool_1"),
+						Name:      schemas.Ptr("bifrostInternal-stateful_tool_1"),
 						Arguments: "{}",
 					},
 				},

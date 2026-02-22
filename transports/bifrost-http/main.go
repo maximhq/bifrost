@@ -143,7 +143,7 @@ func main() {
 	handlers.SetLogger(logger)
 
 	ctx := context.Background()
-	err := server.Bootstrap(ctx)
+	err := server.Bootstrap(ctx, nil)
 	if err != nil {
 		logger.Error("failed to bootstrap server: %v", err)
 		os.Exit(1)

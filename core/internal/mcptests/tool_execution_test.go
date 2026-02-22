@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -558,7 +559,7 @@ func TestToolExecutionMultipleClients(t *testing.T) {
 	require.Nil(t, err)
 
 	// Register second tool (simulating second client)
-	localToolHandler := func(args any) (string, error) {
+	localToolHandler := func(ctx context.Context, args any) (string, error) {
 		return `{"result": "local execution"}`, nil
 	}
 	localToolSchema := schemas.ChatTool{

@@ -2851,9 +2851,28 @@ func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *syn
 //	    func(args EchoArgs) (string, error) {
 //	        return args.Message, nil
 //	    }, toolSchema)
-func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(args any) (string, error), toolSchema schemas.ChatTool) error {
+func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(ctx context.Context, args any) (string, error), toolSchema schemas.ChatTool) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		// Lazily initialize MCP manager (same pattern as AddMCPClient)
+		bifrost.mcpInitOnce.Do(func() {
+			mcpConfig := schemas.MCPConfig{
+				ClientConfigs: []*schemas.MCPClientConfig{},
+			}
+			mcpConfig.PluginPipelineProvider = func() interface{} {
+				return bifrost.getPluginPipeline()
+			}
+			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
+				if pp, ok := pipeline.(*PluginPipeline); ok {
+					bifrost.releasePluginPipeline(pp)
+				}
+			}
+			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.oauth2Provider, bifrost.logger, codeMode)
+		})
+	}
+
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("failed to initialize MCP manager")
 	}
 
 	return bifrost.MCPManager.RegisterTool(name, description, handler, toolSchema)

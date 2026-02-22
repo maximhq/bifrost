@@ -390,7 +390,7 @@ func TestConcurrent_ToolRegistration(t *testing.T) {
 			err := manager.RegisterTool(
 				toolName,
 				fmt.Sprintf("Test tool %d", id),
-				func(args any) (string, error) {
+				func(ctx context.Context, args any) (string, error) {
 					return fmt.Sprintf("Result from tool %d", id), nil
 				},
 				toolSchema,

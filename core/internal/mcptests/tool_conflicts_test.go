@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -144,7 +145,7 @@ func TestToolNameConflict_LocalVsExternal(t *testing.T) {
 
 	// Register "echo" tool in InProcess client
 	echoTool := GetSampleEchoTool()
-	echoToolHandler := func(args any) (string, error) {
+	echoToolHandler := func(ctx context.Context, args any) (string, error) {
 		argsMap, ok := args.(map[string]interface{})
 		if !ok {
 			return "", fmt.Errorf("invalid arguments type")
@@ -238,7 +239,7 @@ func TestMultipleSameNameTools_DifferentImplementations(t *testing.T) {
 			},
 		},
 	}
-	processToolHandler := func(args any) (string, error) {
+	processToolHandler := func(ctx context.Context, args any) (string, error) {
 		argsMap, ok := args.(map[string]interface{})
 		if !ok {
 			return "", fmt.Errorf("invalid arguments type")

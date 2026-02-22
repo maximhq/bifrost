@@ -1,6 +1,7 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
@@ -28,7 +29,7 @@ func TestAgent_ErrorHandling_AllToolsFail(t *testing.T) {
 		toolName := fmt.Sprintf("failing_tool_%d", i)
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			return "", fmt.Errorf("failing_tool_%d: intentional failure", toolIndex)
 		}
 
@@ -40,7 +41,9 @@ func TestAgent_ErrorHandling_AllToolsFail(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Failing tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Failing tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -111,7 +114,7 @@ func TestAgent_ErrorHandling_TimeoutInLoop(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Register tool that takes too long
-	toolHandler := func(args any) (string, error) {
+	toolHandler := func(ctx context.Context, args any) (string, error) {
 		time.Sleep(5 * time.Second) // Longer than context timeout
 		return `{"result": "completed"}`, nil
 	}
@@ -124,7 +127,9 @@ func TestAgent_ErrorHandling_TimeoutInLoop(t *testing.T) {
 		},
 	}
 
-	err := manager.RegisterTool("slow_tool", "A tool that times out", toolHandler, toolSchema)
+	err := manager.RegisterTool("slow_tool", "A tool that times out", func(ctx context.Context, args any) (string, error) {
+		return toolHandler(ctx, args)
+	}, toolSchema)
 	require.NoError(t, err)
 
 	err = SetInternalClientAutoExecute(manager, []string{"*"})
@@ -139,7 +144,7 @@ func TestAgent_ErrorHandling_TimeoutInLoop(t *testing.T) {
 			ID:   schemas.Ptr("call-timeout"),
 			Type: schemas.Ptr("function"),
 			Function: schemas.ChatAssistantMessageToolCallFunction{
-				Name: schemas.Ptr("bifrostInternal-slow_tool"),
+				Name:      schemas.Ptr("bifrostInternal-slow_tool"),
 				Arguments: "{}",
 			},
 		},
@@ -211,7 +216,7 @@ func TestAgent_ErrorHandling_MalformedResponse(t *testing.T) {
 		toolName := "malformed_" + tc.name
 		responseStr := tc.response
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			return responseStr, nil
 		}
 
@@ -223,7 +228,9 @@ func TestAgent_ErrorHandling_MalformedResponse(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, tc.desc, toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, tc.desc, func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -275,7 +282,7 @@ func TestAgent_ErrorHandling_PartialBatchFailure(t *testing.T) {
 		success := shouldSucceed
 		toolIndex := i
 
-		toolHandler := func(args any) (string, error) {
+		toolHandler := func(ctx context.Context, args any) (string, error) {
 			if success {
 				return fmt.Sprintf(`{"tool": "tool_%d", "success": true}`, toolIndex), nil
 			}
@@ -290,7 +297,9 @@ func TestAgent_ErrorHandling_PartialBatchFailure(t *testing.T) {
 			},
 		}
 
-		err := manager.RegisterTool(toolName, fmt.Sprintf("Tool %d", i), toolHandler, toolSchema)
+		err := manager.RegisterTool(toolName, fmt.Sprintf("Tool %d", i), func(ctx context.Context, args any) (string, error) {
+			return toolHandler(ctx, args)
+		}, toolSchema)
 		require.NoError(t, err)
 	}
 
@@ -371,7 +380,7 @@ func TestAgent_ErrorHandling_RecoveryAndContinuation(t *testing.T) {
 	err := RegisterEchoTool(manager)
 	require.NoError(t, err)
 
-	failHandler := func(args any) (string, error) {
+	failHandler := func(ctx context.Context, args any) (string, error) {
 		return "", fmt.Errorf("temporary failure")
 	}
 	failSchema := schemas.ChatTool{
@@ -381,7 +390,9 @@ func TestAgent_ErrorHandling_RecoveryAndContinuation(t *testing.T) {
 			Description: schemas.Ptr("A tool that fails"),
 		},
 	}
-	err = manager.RegisterTool("fail_tool", "A tool that fails", failHandler, failSchema)
+	err = manager.RegisterTool("fail_tool", "A tool that fails", func(ctx context.Context, args any) (string, error) {
+		return failHandler(ctx, args)
+	}, failSchema)
 	require.NoError(t, err)
 
 	err = SetInternalClientAutoExecute(manager, []string{"*"})
@@ -398,7 +409,7 @@ func TestAgent_ErrorHandling_RecoveryAndContinuation(t *testing.T) {
 					ID:   schemas.Ptr("call-fail"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-fail_tool"),
+						Name:      schemas.Ptr("bifrostInternal-fail_tool"),
 						Arguments: "{}",
 					},
 				},
@@ -480,7 +491,7 @@ func TestAgent_ErrorHandling_ErrorInToolArguments(t *testing.T) {
 				ID:   schemas.Ptr("call-" + tc.name),
 				Type: schemas.Ptr("function"),
 				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name: schemas.Ptr("bifrostInternal-calculator"),
+					Name:      schemas.Ptr("bifrostInternal-calculator"),
 					Arguments: tc.arguments,
 				},
 			}
@@ -506,7 +517,7 @@ func TestAgent_ErrorHandling_MultipleErrorsInSequence(t *testing.T) {
 	manager := setupMCPManager(t)
 
 	// Register failing tool
-	failHandler := func(args any) (string, error) {
+	failHandler := func(ctx context.Context, args any) (string, error) {
 		return "", fmt.Errorf("consistent failure")
 	}
 	failSchema := schemas.ChatTool{
@@ -516,7 +527,9 @@ func TestAgent_ErrorHandling_MultipleErrorsInSequence(t *testing.T) {
 			Description: schemas.Ptr("Consistently fails"),
 		},
 	}
-	err := manager.RegisterTool("fail_tool", "Consistently fails", failHandler, failSchema)
+	err := manager.RegisterTool("fail_tool", "Consistently fails", func(ctx context.Context, args any) (string, error) {
+		return failHandler(ctx, args)
+	}, failSchema)
 	require.NoError(t, err)
 
 	err = SetInternalClientAutoExecute(manager, []string{"*"})
@@ -533,7 +546,7 @@ func TestAgent_ErrorHandling_MultipleErrorsInSequence(t *testing.T) {
 					ID:   schemas.Ptr("call-fail-1"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-fail_tool"),
+						Name:      schemas.Ptr("bifrostInternal-fail_tool"),
 						Arguments: "{}",
 					},
 				},
@@ -544,7 +557,7 @@ func TestAgent_ErrorHandling_MultipleErrorsInSequence(t *testing.T) {
 					ID:   schemas.Ptr("call-fail-2"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-fail_tool"),
+						Name:      schemas.Ptr("bifrostInternal-fail_tool"),
 						Arguments: "{}",
 					},
 				},
@@ -594,7 +607,7 @@ func TestAgent_ErrorHandling_ErrorMessagePreservation(t *testing.T) {
 
 	expectedErrorMsg := "This is a very specific error message that should be preserved"
 
-	errorHandler := func(args any) (string, error) {
+	errorHandler := func(ctx context.Context, args any) (string, error) {
 		return "", fmt.Errorf("%s", expectedErrorMsg)
 	}
 	errorSchema := schemas.ChatTool{
@@ -604,7 +617,9 @@ func TestAgent_ErrorHandling_ErrorMessagePreservation(t *testing.T) {
 			Description: schemas.Ptr("Returns specific error"),
 		},
 	}
-	err := manager.RegisterTool("error_tool", "Returns specific error", errorHandler, errorSchema)
+	err := manager.RegisterTool("error_tool", "Returns specific error", func(ctx context.Context, args any) (string, error) {
+		return errorHandler(ctx, args)
+	}, errorSchema)
 	require.NoError(t, err)
 
 	err = SetInternalClientAutoExecute(manager, []string{"*"})
@@ -619,7 +634,7 @@ func TestAgent_ErrorHandling_ErrorMessagePreservation(t *testing.T) {
 					ID:   schemas.Ptr("call-error"),
 					Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name: schemas.Ptr("bifrostInternal-error_tool"),
+						Name:      schemas.Ptr("bifrostInternal-error_tool"),
 						Arguments: "{}",
 					},
 				},

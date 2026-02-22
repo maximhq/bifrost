@@ -257,7 +257,7 @@ func TestConcurrent_AddClientDuringExecution(t *testing.T) {
 			err := manager.RegisterTool(
 				toolName,
 				fmt.Sprintf("Tool %d", i),
-				func(args any) (string, error) {
+				func(ctx context.Context, args any) (string, error) {
 					return fmt.Sprintf(`{"result": "tool %d"}`, i), nil
 				},
 				GetSampleEchoTool(), // Use sample schema
@@ -744,7 +744,7 @@ func TestConcurrent_GetClientsWhileModifying(t *testing.T) {
 				err := manager.RegisterTool(
 					toolName,
 					fmt.Sprintf("Temporary tool %d", i),
-					func(args any) (string, error) {
+					func(ctx context.Context, args any) (string, error) {
 						return `{"result": "temp"}`, nil
 					},
 					GetSampleEchoTool(),
