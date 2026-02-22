@@ -2,22 +2,31 @@
 
 import FullPageLoader from "@/components/fullPageLoader";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { getErrorMessage, setSelectedPlugin, useAppDispatch, useAppSelector, useCreatePluginMutation, useDeletePluginMutation, useGetPluginsQuery, useUpdatePluginMutation } from "@/lib/store";
+import {
+	getErrorMessage,
+	setSelectedPlugin,
+	useAppDispatch,
+	useAppSelector,
+	useCreatePluginMutation,
+	useDeletePluginMutation,
+	useGetPluginsQuery,
+	useUpdatePluginMutation,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
+import { ArrowUpRight, LineChart, Plus, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
 import Image from "next/image";
-import { Plus, Settings } from "lucide-react";
 import { useQueryState } from "nuqs";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { toast } from "sonner";
-import { AddConnectorDialog } from "../dialogs/addConnectorDialog";
-import { ConnectorsEmptyState } from "./connectorsEmptyState";
 import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
-import NewrelicView from "./plugins/newRelicView";
 import OtelView from "./plugins/otelView";
 import PrometheusView from "./plugins/prometheusView";
+
+const OBSERVABILITY_CONNECTORS_DOCS_URL = "https://docs.getbifrost.ai/features/observability/default";
 
 type SupportedPlatform = {
 	id: string;
@@ -58,6 +67,8 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "datadog",
 		name: "Datadog",
 		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} className="-ml-0.5" />,
+		disabled: !IS_ENTERPRISE,
+		tag: IS_ENTERPRISE ? undefined : "Enterprise only",
 	},
 	{
 		id: "newrelic",
@@ -69,8 +80,43 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 				<path d="M256.2 572.3L0 424.6V239.9l416.4 240v479.9l-160.2-92.2z" fill="#1d252c" />
 			</svg>
 		),
+		disabled: true,
+		tag: "Coming soon",
 	},
 ];
+
+interface AddConnectorDropdownProps {
+	items: SupportedPlatform[];
+	onAdd: (id: string) => void;
+	isAdding: boolean;
+	children: React.ReactNode;
+}
+
+function AddConnectorDropdown({ items, onAdd, isAdding, children }: AddConnectorDropdownProps) {
+	return (
+		<DropdownMenu>
+			<DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
+			<DropdownMenuContent
+				align="end"
+				className="custom-scrollbar max-h-[min(70vh,24rem)] overflow-y-auto"
+				data-testid="add-connector-dropdown"
+			>
+				{items.map((platform) => (
+					<DropdownMenuItem
+						key={platform.id}
+						disabled={platform.disabled || isAdding}
+						onSelect={() => onAdd(platform.id)}
+						data-testid={`add-connector-option-${platform.id}`}
+					>
+						<div className="flex shrink-0 items-center">{platform.icon}</div>
+						<span>{platform.name}</span>
+						{platform.tag && <span className="text-muted-foreground ml-auto text-xs">{platform.tag}</span>}
+					</DropdownMenuItem>
+				))}
+			</DropdownMenuContent>
+		</DropdownMenu>
+	);
+}
 
 interface ObservabilityViewProps {
 	/** When set, a Settings button is shown next to Add New that opens config/observability in the sidepane */
@@ -85,7 +131,6 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 	const [updatePlugin, { isLoading: isUpdating }] = useUpdatePluginMutation();
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
-	const [showAddConnectorDialog, setShowAddConnectorDialog] = useState(false);
 
 	const { resolvedTheme } = useTheme();
 
@@ -108,10 +153,10 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 			.filter((c): c is NonNullable<typeof c> => c !== null);
 	}, [plugins, supportedPlatforms]);
 
-	// Connector types that can be added (not yet configured)
-	const availableToAdd = useMemo(() => {
+	// Platforms available for the "Add" dropdown (excludes already-configured; includes disabled with tags)
+	const dropdownItems = useMemo(() => {
 		const configuredIds = new Set(configuredConnectors.map((c) => c.id));
-		return supportedPlatforms.filter((p) => !p.disabled && !configuredIds.has(p.id));
+		return supportedPlatforms.filter((p) => !configuredIds.has(p.id));
 	}, [supportedPlatforms, configuredConnectors]);
 
 	const handleAddConnector = async (tabId: string) => {
@@ -129,10 +174,6 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 			toast.error(getErrorMessage(err));
 			throw err;
 		}
-	};
-
-	const handleAddConnectorFromDialog = async (tabId: string) => {
-		await handleAddConnector(tabId);
 	};
 
 	const handleDeleteConnectorById = async (tabId: string) => {
@@ -201,7 +242,7 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 	const currentId = selectedPluginId ?? configuredConnectors[0]?.id ?? "";
 
 	return (
-		<div className="flex flex-col gap-6 -mt-5">
+		<div className="-mt-5 flex flex-col gap-6">
 			<div className="flex w-full flex-col gap-3">
 				{configuredConnectors.length > 0 && (
 					<div className="flex w-full items-center justify-between gap-2">
@@ -213,56 +254,73 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 									Settings
 								</Button>
 							)}
-							{availableToAdd.length > 0 && (
-								<Button
-									variant="outline"
-									size="sm"
-									disabled={isCreating}
-									onClick={() => setShowAddConnectorDialog(true)}
-								>
-									<Plus className="size-4" />
-									Add new
-								</Button>
+							{dropdownItems.length > 0 && (
+								<AddConnectorDropdown items={dropdownItems} onAdd={handleAddConnector} isAdding={isCreating}>
+									<Button variant="outline" size="sm" disabled={isCreating} data-testid="add-connector-btn-toolbar">
+										<Plus className="size-4" />
+										Add new
+									</Button>
+								</AddConnectorDropdown>
 							)}
 						</div>
 					</div>
 				)}
 				{configuredConnectors.length === 0 ? (
-					<ConnectorsEmptyState onOpenAddConnector={() => setShowAddConnectorDialog(true)} />
+					<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
+						<div className="text-muted-foreground">
+							<LineChart className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
+						</div>
+						<div className="flex flex-col gap-1">
+							<h1 className="text-muted-foreground text-xl font-medium">Connect Bifrost to your observability stack</h1>
+							<div className="text-muted-foreground mx-auto mt-2 max-w-[600px] text-sm font-normal">
+								Add OpenTelemetry, Prometheus, Maxim, or other connectors to send metrics and traces from Bifrost to your preferred
+								platform.
+							</div>
+							<div className="mx-auto mt-6 flex flex-row flex-wrap items-center justify-center gap-2">
+								<Button
+									variant="outline"
+									aria-label="Read more about observability connectors (opens in new tab)"
+									data-testid="observability-read-more-btn"
+									onClick={() => {
+										window.open(`${OBSERVABILITY_CONNECTORS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
+									}}
+								>
+									Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
+								</Button>
+								<AddConnectorDropdown items={dropdownItems} onAdd={handleAddConnector} isAdding={isCreating}>
+									<Button aria-label="Add connector" data-testid="add-connector-btn-empty">
+										Add connector
+									</Button>
+								</AddConnectorDropdown>
+							</div>
+						</div>
+					</div>
 				) : (
 					<div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-						{configuredConnectors.map((connector) => {
-							const isDatadogOssOnly = connector.id === "datadog" && !IS_ENTERPRISE;
-							const isUnclickable = connector.id === "newrelic" || isDatadogOssOnly;
-							return (
+						{configuredConnectors.map((connector) => (
 							<div
 								key={connector.id}
-								{...(isUnclickable ? {} : { role: "button" as const, tabIndex: 0, onClick: () => setSelectedPluginId(connector.id), onKeyDown: (e: React.KeyboardEvent) => {
+								role="button"
+								tabIndex={0}
+								onClick={() => setSelectedPluginId(connector.id)}
+								onKeyDown={(e) => {
 									if (e.key === "Enter" || e.key === " ") {
 										e.preventDefault();
 										setSelectedPluginId(connector.id);
 									}
-								} })}
+								}}
+								data-testid={`observability-connector-card-${connector.id}`}
 								className={cn(
-									"group flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors",
-									isUnclickable ? "cursor-default opacity-90" : "cursor-pointer hover:bg-muted/50",
-									currentId === connector.id && !isUnclickable && "border-primary ring-1 ring-primary",
+									"group bg-card hover:bg-muted/50 flex cursor-pointer items-center gap-3 rounded-lg border px-4 py-3 text-left transition-colors",
+									currentId === connector.id && "border-primary ring-primary ring-1",
 								)}
 							>
 								<div className="flex min-w-0 flex-1 items-center gap-3">
-									<div className="flex shrink-0 items-center [&>svg]:size-5 [&>img]:size-5">
-										{connector.icon}
-									</div>
+									<div className="flex shrink-0 items-center">{connector.icon}</div>
 									<span className="min-w-0 truncate text-sm font-medium">{connector.name}</span>
 								</div>
-								{connector.id === "newrelic" ? (
-									<span className="text-muted-foreground text-sm">Coming soon</span>
-								) : isDatadogOssOnly ? (
-									<span className="text-muted-foreground text-sm">Enterprise Exclusive</span>
-								) : null}
 							</div>
-							);
-						})}
+						))}
 					</div>
 				)}
 			</div>
@@ -270,16 +328,13 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 				<div className="min-h-0 flex-1">
 					{(() => {
 						const currentConnector = configuredConnectors.find((c) => c.id === currentId);
-						const enableToggle =
-							currentConnector &&
-							currentConnector.id !== "newrelic" &&
-							!(currentConnector.id === "datadog" && !IS_ENTERPRISE)
-								? {
-										enabled: currentConnector.enabled,
-										onToggle: () => handleToggleEnabled(currentConnector),
-										disabled: isUpdating,
-									}
-								: undefined;
+						const enableToggle = currentConnector
+							? {
+									enabled: currentConnector.enabled,
+									onToggle: () => handleToggleEnabled(currentConnector),
+									disabled: isUpdating,
+								}
+							: undefined;
 						return (
 							<>
 								{currentId === "prometheus" && (
@@ -290,33 +345,17 @@ export default function ObservabilityView({ onOpenObservabilityConfig }: Observa
 									/>
 								)}
 								{currentId === "otel" && (
-									<OtelView
-										onDelete={() => handleDeleteConnectorById("otel")}
-										isDeleting={isDeleting}
-										enableToggle={enableToggle}
-									/>
+									<OtelView onDelete={() => handleDeleteConnectorById("otel")} isDeleting={isDeleting} enableToggle={enableToggle} />
 								)}
 								{currentId === "maxim" && (
-									<MaximView
-										onDelete={() => handleDeleteConnectorById("maxim")}
-										isDeleting={isDeleting}
-										enableToggle={enableToggle}
-									/>
+									<MaximView onDelete={() => handleDeleteConnectorById("maxim")} isDeleting={isDeleting} enableToggle={enableToggle} />
 								)}
-								{currentId === "datadog" && <DatadogView onDelete={() => handleDeleteConnectorById("datadog")} isDeleting={isDeleting} enableToggle={enableToggle} />}
-								{currentId === "newrelic" && <NewrelicView />}
+								{currentId === "datadog" && <DatadogView onDelete={() => handleDeleteConnectorById("datadog")} isDeleting={isDeleting} />}
 							</>
 						);
 					})()}
 				</div>
 			)}
-			<AddConnectorDialog
-				open={showAddConnectorDialog}
-				onOpenChange={setShowAddConnectorDialog}
-				availableToAdd={availableToAdd}
-				onAdd={handleAddConnectorFromDialog}
-				isAdding={isCreating}
-			/>
 		</div>
 	);
 }

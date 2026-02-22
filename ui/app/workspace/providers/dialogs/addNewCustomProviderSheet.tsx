@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
@@ -116,48 +116,48 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col overflow-hidden">
 					<div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto">
-							<FormField
-								control={form.control}
-								name="name"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel className="text-right">Name</FormLabel>
-										<div className="col-span-3">
-											<FormControl>
-												<Input placeholder="Name" data-testid="custom-provider-name" {...field} />
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="baseFormat"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel>Base Format</FormLabel>
-										<div>
-											<FormControl>
-												<Select onValueChange={field.onChange} defaultValue={field.value}>
-													<SelectTrigger className="w-full" data-testid="base-provider-select">
-														<SelectValue placeholder="Select base format" />
-													</SelectTrigger>
-													<SelectContent>
-														<SelectItem value="openai">OpenAI</SelectItem>
-														<SelectItem value="anthropic">Anthropic</SelectItem>
-														<SelectItem value="gemini">Gemini</SelectItem>
-														<SelectItem value="cohere">Cohere</SelectItem>
-														<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-														<SelectItem value="replicate">Replicate</SelectItem>
-													</SelectContent>
-												</Select>
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
+						<FormField
+							control={form.control}
+							name="name"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel className="text-right">Name</FormLabel>
+									<div className="col-span-3">
+										<FormControl>
+											<Input placeholder="Name" data-testid="custom-provider-name" {...field} />
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="baseFormat"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel>Base Format</FormLabel>
+									<div>
+										<FormControl>
+											<Select onValueChange={field.onChange} value={field.value}>
+												<SelectTrigger className="w-full" data-testid="base-provider-select">
+													<SelectValue placeholder="Select base format" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="openai">OpenAI</SelectItem>
+													<SelectItem value="anthropic">Anthropic</SelectItem>
+													<SelectItem value="gemini">Gemini</SelectItem>
+													<SelectItem value="cohere">Cohere</SelectItem>
+													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+													<SelectItem value="replicate">Replicate</SelectItem>
+												</SelectContent>
+											</Select>
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
 						<FormField
 							control={form.control}
 							name="base_url"
@@ -166,45 +166,48 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel>Base URL</FormLabel>
 									<div>
 										<FormControl>
-											<Input placeholder={"https://api.your-provider.com"} data-testid="base-url-input" {...field} value={field.value || ""} />
+											<Input
+												placeholder={"https://api.your-provider.com"}
+												data-testid="base-url-input"
+												{...field}
+												value={field.value || ""}
+											/>
 										</FormControl>
 										<FormMessage />
 									</div>
 								</FormItem>
 							)}
 						/>
-							{!isKeyLessDisabled && (
-								<FormField
-									control={form.control}
-									name="is_key_less"
-									render={({ field }) => (
-										<FormItem>
-											<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
-												<div className="space-y-0.5">
-													<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-														Is Keyless?
-													</label>
-													<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
-												</div>
-												<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} />
+						{!isKeyLessDisabled && (
+							<FormField
+								control={form.control}
+								name="is_key_less"
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="drop-excess-requests" className="text-sm font-medium">
+													Is Keyless?
+												</label>
+												<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
 											</div>
-										</FormItem>
-									)}
-								/>
-							)}
-							{/* Allowed Requests Configuration */}
-							<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
+											<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} data-testid="custom-provider-keyless-switch" />
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{/* Allowed Requests Configuration */}
+						<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
+						<div className="align-end mt-10 ml-auto flex flex-row gap-2 border-t pt-4">
+							<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
+								Cancel
+							</Button>
+							<Button type="submit" isLoading={isAddingProvider} data-testid="custom-provider-save-btn">
+								Add
+							</Button>
+						</div>
 					</div>
-					<SheetFooter className="mt-4 flex shrink-0 flex-row gap-2 pt-4">
-							<div className="ml-auto flex flex-row gap-2">
-								<Button type="button" variant="outline" onClick={onClose} data-testid="custom-provider-cancel-btn">
-									Cancel
-								</Button>
-								<Button type="submit" isLoading={isAddingProvider} data-testid="custom-provider-save-btn">
-									Add
-								</Button>
-							</div>
-					</SheetFooter>
 				</form>
 			</Form>
 		</>
@@ -214,7 +217,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 export default function AddCustomProviderSheet(props: Props) {
 	return (
 		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
-			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8 sm:max-w-lg" data-testid="custom-provider-sheet">
+			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8 sm:max-w-3xl" data-testid="custom-provider-sheet">
 				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>
