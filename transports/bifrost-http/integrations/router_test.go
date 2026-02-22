@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -109,7 +110,7 @@ func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
 	}`)
 
 	t.Run("extra_params NOT extracted without passthrough header", func(t *testing.T) {
-		req := chatRoute.GetRequestTypeInstance()
+		req := chatRoute.GetRequestTypeInstance(context.Background())
 		err := sonic.Unmarshal(rawBody, req)
 		require.NoError(t, err)
 
@@ -134,7 +135,7 @@ func TestExtraParamsRequiresPassthroughHeader(t *testing.T) {
 	})
 
 	t.Run("extra_params extracted with passthrough header", func(t *testing.T) {
-		req := chatRoute.GetRequestTypeInstance()
+		req := chatRoute.GetRequestTypeInstance(context.Background())
 		err := sonic.Unmarshal(rawBody, req)
 		require.NoError(t, err)
 
@@ -321,7 +322,7 @@ func TestExtraParamsSetViaInterfaceMutatesOriginalReq(t *testing.T) {
 	// 2. JSON is unmarshalled into req
 	// 3. rws type assertion is used to call SetExtraParams
 	// 4. req (not rws) is passed to RequestConverter downstream
-	req := chatRoute.GetRequestTypeInstance() // returns interface{}
+	req := chatRoute.GetRequestTypeInstance(context.Background()) // returns interface{}
 	err := sonic.Unmarshal(rawBody, req)
 	require.NoError(t, err)
 
