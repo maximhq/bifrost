@@ -103,7 +103,7 @@ import (
 )
 
 // Configure semantic cache plugin
-cacheConfig := semanticcache.Config{
+cacheConfig := &semanticcache.Config{
     // Embedding model configuration (Required)
     Provider:       schemas.OpenAI,
     Keys:          []schemas.Key{{Value: "sk-..."}},
@@ -197,6 +197,143 @@ bifrostConfig := schemas.BifrostConfig{
 </Tab>
 
 </Tabs>
+
+---
+
+## Direct Hash Mode (Embedding-Free)
+
+Direct hash mode provides exact-match caching without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
+
+**When to use direct hash mode:**
+- You only need exact-match deduplication (no fuzzy/semantic matching)
+- You cannot or do not want to call an external embedding API
+- You want the lowest possible latency with zero embedding overhead
+- Cost-sensitive environments where embedding API calls add up
+
+### Setup
+
+To enable direct-only mode globally, omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
+
+<Warning>
+A vector store is still required as the storage backend, even in direct hash mode. See [Recommended Vector Store](#recommended-vector-store) below for the best choice.
+</Warning>
+
+<Tabs group="direct-hash-setup">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/plugins/semanticcache"
+)
+
+cacheConfig := &semanticcache.Config{
+    // No Provider, Keys, or EmbeddingModel -- direct hash mode only
+    Dimension: 1, // Placeholder; entries are stored as metadata-only (no embedding vectors). Change dimension before switching to dual-layer mode to avoid mixed-dimension issues.
+
+    TTL:               5 * time.Minute,
+    CleanUpOnShutdown: true,
+    CacheByModel:      bifrost.Ptr(true),
+    CacheByProvider:   bifrost.Ptr(true),
+}
+
+plugin, err := semanticcache.Init(ctx, cacheConfig, logger, store)
+```
+
+</Tab>
+
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1
+        ttl: "5m"
+        cleanup_on_shutdown: true
+        cache_by_model: true
+        cache_by_provider: true
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {
+        "dimension": 1,
+        "ttl": "5m",
+        "cleanup_on_shutdown": true,
+        "cache_by_model": true,
+        "cache_by_provider": true
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+</Tabs>
+
+When initialized this way, all requests automatically use direct hash matching regardless of the `x-bf-cache-type` header. No embeddings are generated, and no embedding provider credentials are needed.
+
+### Recommended Vector Store
+
+**Redis** is recommended for direct hash mode. It does not require vectors for metadata-only entries, and all cache fields are indexed as RediSearch TAG fields for fast exact-match lookups.
+
+<Warning>
+Redis requires the [RediSearch](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/) module. The Helm chart's built-in Redis subchart (`redis:7-alpine`) does **not** include RediSearch and will fail at startup. Use an external Redis Stack instance or override the image to one that includes the module (e.g., `redis/redis-stack-server` or Redis 8+).
+</Warning>
+
+<Tabs group="direct-hash-redis">
+
+<Tab title="Helm">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    external:
+      enabled: true
+      host: "redis-stack.example.com"
+      port: 6379
+      password: "your-redis-password"
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379"
+    }
+  }
+}
+```
+
+</Tab>
+
+</Tabs>
+
+### Per-Request Cache Type Override
+
+When the plugin is initialized **without** an embedding provider (direct-only mode), all requests use direct hash matching automatically. The `x-bf-cache-type` header has no effect.
+
+When the plugin is initialized **with** an embedding provider (dual-layer mode), you can force direct-only matching on specific requests using the `x-bf-cache-type: direct` header. See [Cache Type Control](#cache-type-control) for details.
 
 ---
 
