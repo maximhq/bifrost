@@ -663,7 +663,7 @@
                     "description": "Database host"
                   },
                   "port": {
-                    "type": "integer",
+                    "type": "string",
                     "description": "Database port"
                   },
                   "user": {
