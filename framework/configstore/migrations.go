@@ -271,6 +271,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3703,6 +3706,36 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running enforce auth on inference column migration: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_provider_pricing_overrides_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
+					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
+				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
+					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
 	}
 	return nil
 }

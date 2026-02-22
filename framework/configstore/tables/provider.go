@@ -20,6 +20,7 @@ type TableProvider struct {
 	ConcurrencyBufferJSON    string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ConcurrencyAndBufferSize
 	ProxyConfigJSON          string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.ProxyConfig
 	CustomProviderConfigJSON string    `gorm:"type:text" json:"-"`                                // JSON serialized schemas.CustomProviderConfig
+	PricingOverridesJSON     string    `gorm:"type:text" json:"-"`                                // JSON serialized []schemas.ProviderPricingOverride
 	SendBackRawRequest       bool      `json:"send_back_raw_request"`
 	SendBackRawResponse      bool      `json:"send_back_raw_response"`
 	CreatedAt                time.Time `gorm:"index;not null" json:"created_at"`
@@ -34,7 +35,8 @@ type TableProvider struct {
 	ProxyConfig              *schemas.ProxyConfig              `gorm:"-" json:"proxy_config,omitempty"`
 
 	// Custom provider fields
-	CustomProviderConfig *schemas.CustomProviderConfig `gorm:"-" json:"custom_provider_config,omitempty"`
+	CustomProviderConfig *schemas.CustomProviderConfig     `gorm:"-" json:"custom_provider_config,omitempty"`
+	PricingOverrides     []schemas.ProviderPricingOverride `gorm:"-" json:"pricing_overrides,omitempty"`
 
 	// Foreign keys
 	Models []TableModel `gorm:"foreignKey:ProviderID;constraint:OnDelete:CASCADE" json:"models"`
@@ -92,6 +94,15 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		}
 		p.CustomProviderConfigJSON = string(data)
 	}
+	if p.PricingOverrides != nil {
+		data, err := json.Marshal(p.PricingOverrides)
+		if err != nil {
+			return err
+		}
+		p.PricingOverridesJSON = string(data)
+	} else {
+		p.PricingOverridesJSON = ""
+	}
 
 	// Validate governance fields
 	if p.BudgetID != nil && strings.TrimSpace(*p.BudgetID) == "" {
@@ -136,6 +147,14 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 			return err
 		}
 		p.CustomProviderConfig = &customConfig
+	}
+
+	if p.PricingOverridesJSON != "" {
+		var overrides []schemas.ProviderPricingOverride
+		if err := json.Unmarshal([]byte(p.PricingOverridesJSON), &overrides); err != nil {
+			return err
+		}
+		p.PricingOverrides = overrides
 	}
 
 	return nil

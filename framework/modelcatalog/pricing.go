@@ -451,7 +451,7 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
 		if pricing.CacheCreationInputTokenCost != nil {
 			outputCost += float64(cachedCompletionTokens) * *pricing.CacheCreationInputTokenCost
-		}
+		} 
 	}
 
 	totalCost := inputCost + outputCost
@@ -462,79 +462,93 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 // getPricing returns pricing information for a model (thread-safe)
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-
-	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	pricing, ok := mc.resolvePricingEntryLocked(model, provider, requestType)
+	mc.mu.RUnlock()
 	if !ok {
-		// Lookup in vertex if gemini not found
-		if provider == string(schemas.Gemini) {
-			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
+		return nil, false
+	}
+
+	patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), model, requestType, pricing)
+	return &patched, true
+}
+
+// resolvePricingEntryLocked resolves pricing data from the base catalog including all existing fallback logic.
+// Caller must hold mc.mu read lock.
+func (mc *ModelCatalog) resolvePricingEntryLocked(model, provider string, requestType schemas.RequestType) (configstoreTables.TableModelPricing, bool) {
+	mode := normalizeRequestType(requestType)
+
+	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
+	if ok {
+		return pricing, true
+	}
+
+	// Lookup in vertex if gemini not found
+	if provider == string(schemas.Gemini) {
+		mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
+		pricing, ok = mc.pricingData[makeKey(model, "vertex", mode)]
+		if ok {
+			return pricing, true
+		}
+
+		// Lookup in chat if responses not found
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
-				return &pricing, true
+				return pricing, true
+			}
+		}
+	}
+
+	if provider == string(schemas.Vertex) {
+		// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
+		if strings.Contains(model, "/") {
+			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
+			pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
+			if ok {
+				return pricing, true
 			}
 
 			// Lookup in chat if responses not found
 			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-				pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return pricing, true
 				}
 			}
 		}
-
-		if provider == string(schemas.Vertex) {
-			// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
-			if strings.Contains(model, "/") {
-				modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
-				mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(requestType))]
-				if ok {
-					return &pricing, true
-				}
-
-				// Lookup in chat if responses not found
-				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-					mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-					pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
-					if ok {
-						return &pricing, true
-					}
-				}
-			}
-		}
-
-		if provider == string(schemas.Bedrock) {
-			// If model is claude without "anthropic." prefix, try with "anthropic." prefix
-			if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
-				mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
-				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(requestType))]
-				if ok {
-					return &pricing, true
-				}
-
-				// Lookup in chat if responses not found
-				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-					mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-					pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
-					if ok {
-						return &pricing, true
-					}
-				}
-			}
-		}
-
-		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-			mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
-			pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
-			if ok {
-				return &pricing, true
-			}
-		}
-
-		return nil, false
 	}
-	return &pricing, true
+
+	if provider == string(schemas.Bedrock) {
+		// If model is claude without "anthropic." prefix, try with "anthropic." prefix
+		if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
+			mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
+			pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, mode)]
+			if ok {
+				return pricing, true
+			}
+
+			// Lookup in chat if responses not found
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
+				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+				if ok {
+					return pricing, true
+				}
+			}
+		}
+	}
+
+	// Lookup in chat if responses not found
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
+		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		if ok {
+			return pricing, true
+		}
+	}
+
+	return configstoreTables.TableModelPricing{}, false
 }

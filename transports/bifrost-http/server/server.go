@@ -437,6 +437,16 @@ func (s *BifrostHTTPServer) RemoveModelConfig(ctx context.Context, id string) er
 }
 
 func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
+	if s.Config == nil || s.Config.ConfigStore == nil {
+		return nil, fmt.Errorf("config store not found")
+	}
+	if s.Config.ModelCatalog == nil {
+		return nil, fmt.Errorf("pricing manager not found")
+	}
+	if s.Client == nil {
+		return nil, fmt.Errorf("bifrost client not found")
+	}
+
 	// Load provider from DB
 	providerInfo, err := s.Config.ConfigStore.GetProvider(ctx, provider)
 	if err != nil {
@@ -480,11 +490,8 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	}
 
 	// Syncing models (this part always runs regardless of governance)
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return nil, fmt.Errorf("pricing manager not found")
-	}
-	if s.Client == nil {
-		return nil, fmt.Errorf("bifrost client not found")
+	if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerInfo.PricingOverrides); err != nil {
+		logger.Warn("failed to refresh pricing overrides for provider %s: %v", provider, err)
 	}
 
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
@@ -546,6 +553,7 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		return fmt.Errorf("pricing manager not found")
 	}
 	s.Config.ModelCatalog.DeleteModelDataForProvider(provider)
+	s.Config.ModelCatalog.DeleteProviderPricingOverrides(provider)
 
 	return nil
 }
@@ -713,6 +721,11 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize new model catalog: %w", err)
 		}
 		s.Config.ModelCatalog = modelCatalog
+		for provider, providerConfig := range s.Config.Providers {
+			if err := s.Config.ModelCatalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
+				logger.Warn("failed to seed pricing overrides for provider %s: %v", provider, err)
+			}
+		}
 	} else {
 		if err := s.Config.ModelCatalog.ForceReloadPricing(ctx); err != nil {
 			return fmt.Errorf("failed to force reload pricing: %w", err)
