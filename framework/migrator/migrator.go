@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -50,6 +51,12 @@ type Options struct {
 	IDColumnName string
 	// IDColumnSize is the length of the migration id column
 	IDColumnSize int
+	// SequenceColumnName is the name of the auto-incrementing numeric column.
+	SequenceColumnName string
+	// AppliedAtColumnName is the name of the column storing when the migration was applied.
+	AppliedAtColumnName string
+	// StatusColumnName is the name of the column storing the migration status (success/failure).
+	StatusColumnName string
 	// UseTransaction makes Gormigrate execute migrations inside a single transaction.
 	// Keep in mind that not all databases support DDL commands inside transactions.
 	UseTransaction bool
@@ -101,6 +108,9 @@ var (
 		TableName:                 "migrations",
 		IDColumnName:              "id",
 		IDColumnSize:              255,
+		SequenceColumnName:        "sequence",
+		AppliedAtColumnName:       "applied_at",
+		StatusColumnName:          "status",
 		UseTransaction:            true,
 		ValidateUnknownMigrations: false,
 	}
@@ -140,6 +150,15 @@ func New(db *gorm.DB, options *Options, migrations []*Migration) *Gormigrate {
 	}
 	if options.IDColumnSize == 0 {
 		options.IDColumnSize = DefaultOptions.IDColumnSize
+	}
+	if options.SequenceColumnName == "" {
+		options.SequenceColumnName = DefaultOptions.SequenceColumnName
+	}
+	if options.AppliedAtColumnName == "" {
+		options.AppliedAtColumnName = DefaultOptions.AppliedAtColumnName
+	}
+	if options.StatusColumnName == "" {
+		options.StatusColumnName = DefaultOptions.StatusColumnName
 	}
 	return &Gormigrate{
 		db:         db,
@@ -398,30 +417,97 @@ func (g *Gormigrate) runMigration(migration *Migration) error {
 }
 
 // model returns pointer to dynamically created gorm migration model struct value
-//
-//	struct defined as {
-//	  ID string `gorm:"primaryKey;column:<Options.IDColumnName>;size:<Options.IDColumnSize>"`
-//	}
 func (g *Gormigrate) model() any {
-	f := reflect.StructField{
-		Name: reflect.ValueOf("ID").Interface().(string),
-		Type: reflect.TypeOf(""),
-		Tag: reflect.StructTag(fmt.Sprintf(
-			`gorm:"primaryKey;column:%s;size:%d"`,
-			g.options.IDColumnName,
-			g.options.IDColumnSize,
-		)),
+	fields := []reflect.StructField{
+		{
+			Name: "ID",
+			Type: reflect.TypeOf(""),
+			Tag: reflect.StructTag(fmt.Sprintf(
+				`gorm:"primaryKey;column:%s;size:%d"`,
+				g.options.IDColumnName,
+				g.options.IDColumnSize,
+			)),
+		},
+		{
+			Name: "Sequence",
+			Type: reflect.TypeOf(int64(0)),
+			Tag:  reflect.StructTag(fmt.Sprintf(`gorm:"column:%s"`, g.options.SequenceColumnName)),
+		},
+		{
+			Name: "AppliedAt",
+			Type: reflect.TypeOf(time.Time{}),
+			Tag:  reflect.StructTag(fmt.Sprintf(`gorm:"column:%s"`, g.options.AppliedAtColumnName)),
+		},
+		{
+			Name: "Status",
+			Type: reflect.TypeOf(""),
+			Tag:  reflect.StructTag(fmt.Sprintf(`gorm:"column:%s;size:20"`, g.options.StatusColumnName)),
+		},
 	}
-	structType := reflect.StructOf([]reflect.StructField{f})
+	structType := reflect.StructOf(fields)
 	structValue := reflect.New(structType).Elem()
 	return structValue.Addr().Interface()
 }
 
 func (g *Gormigrate) createMigrationTableIfNotExists() error {
-	if g.tx.Migrator().HasTable(g.options.TableName) {
+	if err := g.tx.Table(g.options.TableName).AutoMigrate(g.model()); err != nil {
+		return err
+	}
+	return g.backfillMigrationMetadata()
+}
+
+// backfillMigrationMetadata populates sequence, applied_at, and status for
+// rows that predate the addition of these columns (all marked as success
+// with the same timestamp). Rows are sequenced by their natural insertion
+// order (rowid for SQLite, ctid for PostgreSQL) so that the sequence column
+// reflects the actual order migrations were originally applied.
+func (g *Gormigrate) backfillMigrationMetadata() error {
+	var orderCol string
+	switch g.tx.Dialector.Name() {
+	case "sqlite":
+		orderCol = "rowid"
+	case "postgres":
+		orderCol = "ctid"
+	default:
+		orderCol = g.options.IDColumnName
+	}
+
+	var ids []string
+	err := g.tx.Table(g.options.TableName).
+		Where(fmt.Sprintf("%s IS NULL OR %s = ''", g.options.StatusColumnName, g.options.StatusColumnName)).
+		Order(orderCol).
+		Pluck(g.options.IDColumnName, &ids).Error
+	if err != nil {
+		return err
+	}
+
+	if len(ids) == 0 {
 		return nil
 	}
-	return g.tx.Table(g.options.TableName).AutoMigrate(g.model())
+
+	now := time.Now()
+
+	var maxSeq int64
+	if err := g.tx.Table(g.options.TableName).
+		Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", g.options.SequenceColumnName)).
+		Scan(&maxSeq).Error; err != nil {
+		return err
+	}
+
+	for i, id := range ids {
+		err := g.tx.Table(g.options.TableName).
+			Where(fmt.Sprintf("%s = ?", g.options.IDColumnName), id).
+			Updates(map[string]interface{}{
+				g.options.SequenceColumnName:  maxSeq + int64(i) + 1,
+				g.options.AppliedAtColumnName: now,
+				g.options.StatusColumnName:    "success",
+			}).Error
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (g *Gormigrate) migrationRan(m *Migration) (bool, error) {
@@ -484,9 +570,29 @@ func (g *Gormigrate) unknownMigrationsHaveHappened() (bool, error) {
 	return false, nil
 }
 
+func (g *Gormigrate) nextSequence() (int64, error) {
+	var maxSeq int64
+	err := g.tx.Table(g.options.TableName).
+		Select(fmt.Sprintf("COALESCE(MAX(%s), 0)", g.options.SequenceColumnName)).
+		Scan(&maxSeq).Error
+	if err != nil {
+		return 0, err
+	}
+	return maxSeq + 1, nil
+}
+
 func (g *Gormigrate) insertMigration(id string) error {
+	seq, err := g.nextSequence()
+	if err != nil {
+		return err
+	}
+
 	record := g.model()
-	reflect.ValueOf(record).Elem().FieldByName("ID").SetString(id)
+	v := reflect.ValueOf(record).Elem()
+	v.FieldByName("ID").SetString(id)
+	v.FieldByName("Sequence").SetInt(seq)
+	v.FieldByName("AppliedAt").Set(reflect.ValueOf(time.Now()))
+	v.FieldByName("Status").SetString("success")
 	return g.tx.Table(g.options.TableName).Create(record).Error
 }
 

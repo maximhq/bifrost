@@ -2,10 +2,12 @@ package tables
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -60,6 +62,8 @@ type TableKey struct {
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
 
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+
 	// Virtual fields for runtime use (not stored in DB)
 	Models             []string                    `gorm:"-" json:"models"`
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
@@ -71,9 +75,12 @@ type TableKey struct {
 // TableName sets the table name for each model
 func (TableKey) TableName() string { return "config_keys" }
 
-// BeforeSave is called before saving the key to the database
+// BeforeSave is a GORM hook that serializes runtime config structs into JSON columns and
+// encrypts sensitive fields (API key value, Azure endpoint/client ID/secret/tenant ID/API version,
+// Vertex project ID/project number/region/credentials, Bedrock keys/region/ARN/deployments/
+// batch S3 config) before writing to the database. Encryption runs last to ensure it
+// operates on the final serialized values.
 func (k *TableKey) BeforeSave(tx *gorm.DB) error {
-	// BeforeSave is called before saving the key to the database
 	if k.Models != nil {
 		data, err := json.Marshal(k.Models)
 		if err != nil {
@@ -83,7 +90,6 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	} else {
 		k.ModelsJSON = "[]"
 	}
-	// BeforeSave is called before saving the key to the database
 	if k.Enabled == nil {
 		enabled := true // DB default
 		k.Enabled = &enabled
@@ -92,17 +98,42 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		useForBatchAPI := false // DB default
 		k.UseForBatchAPI = &useForBatchAPI
 	}
-	// BeforeSave is called before saving the key to the database
+	// IMPORTANT: All *EnvVar fields assigned from provider config structs (AzureKeyConfig,
+	// VertexKeyConfig, BedrockKeyConfig) MUST be value-copied before assignment. The caller
+	// may retain the config struct pointer; if BeforeSave (or future encryption) mutates a
+	// shared pointer, the caller's in-memory config is silently corrupted.
+	// See: TestBeforeSave_DoesNotMutateSharedProviderConfigs
 	if k.AzureKeyConfig != nil {
 		if k.AzureKeyConfig.Endpoint.GetValue() != "" {
-			k.AzureEndpoint = &k.AzureKeyConfig.Endpoint
+			ep := k.AzureKeyConfig.Endpoint
+			k.AzureEndpoint = &ep
 		} else {
 			k.AzureEndpoint = nil
 		}
-		k.AzureAPIVersion = k.AzureKeyConfig.APIVersion
-		k.AzureClientID = k.AzureKeyConfig.ClientID
-		k.AzureClientSecret = k.AzureKeyConfig.ClientSecret
-		k.AzureTenantID = k.AzureKeyConfig.TenantID
+		if k.AzureKeyConfig.APIVersion != nil {
+			av := *k.AzureKeyConfig.APIVersion
+			k.AzureAPIVersion = &av
+		} else {
+			k.AzureAPIVersion = nil
+		}
+		if k.AzureKeyConfig.ClientID != nil {
+			cid := *k.AzureKeyConfig.ClientID
+			k.AzureClientID = &cid
+		} else {
+			k.AzureClientID = nil
+		}
+		if k.AzureKeyConfig.ClientSecret != nil {
+			cs := *k.AzureKeyConfig.ClientSecret
+			k.AzureClientSecret = &cs
+		} else {
+			k.AzureClientSecret = nil
+		}
+		if k.AzureKeyConfig.TenantID != nil {
+			tid := *k.AzureKeyConfig.TenantID
+			k.AzureTenantID = &tid
+		} else {
+			k.AzureTenantID = nil
+		}
 		if len(k.AzureKeyConfig.Scopes) > 0 {
 			data, err := json.Marshal(k.AzureKeyConfig.Scopes)
 			if err != nil {
@@ -132,25 +163,28 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.AzureTenantID = nil
 		k.AzureScopesJSON = nil
 	}
-	// BeforeSave is called before saving the key to the database
 	if k.VertexKeyConfig != nil {
 		if k.VertexKeyConfig.ProjectID.GetValue() != "" {
-			k.VertexProjectID = &k.VertexKeyConfig.ProjectID
+			pid := k.VertexKeyConfig.ProjectID
+			k.VertexProjectID = &pid
 		} else {
 			k.VertexProjectID = nil
 		}
 		if k.VertexKeyConfig.ProjectNumber.GetValue() != "" {
-			k.VertexProjectNumber = &k.VertexKeyConfig.ProjectNumber
+			pn := k.VertexKeyConfig.ProjectNumber
+			k.VertexProjectNumber = &pn
 		} else {
 			k.VertexProjectNumber = nil
 		}
 		if k.VertexKeyConfig.Region.GetValue() != "" {
-			k.VertexRegion = &k.VertexKeyConfig.Region
+			vr := k.VertexKeyConfig.Region
+			k.VertexRegion = &vr
 		} else {
 			k.VertexRegion = nil
 		}
 		if k.VertexKeyConfig.AuthCredentials.GetValue() != "" {
-			k.VertexAuthCredentials = &k.VertexKeyConfig.AuthCredentials
+			ac := k.VertexKeyConfig.AuthCredentials
+			k.VertexAuthCredentials = &ac
 		} else {
 			k.VertexAuthCredentials = nil
 		}
@@ -171,21 +205,40 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexAuthCredentials = nil
 		k.VertexDeploymentsJSON = nil
 	}
-	// BeforeSave is called before saving the key to the database
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.GetValue() != "" {
-			k.BedrockAccessKey = &k.BedrockKeyConfig.AccessKey
+			// Copy to avoid encrypting the shared BedrockKeyConfig through the pointer
+			ak := k.BedrockKeyConfig.AccessKey
+			k.BedrockAccessKey = &ak
 		} else {
 			k.BedrockAccessKey = nil
 		}
 		if k.BedrockKeyConfig.SecretKey.GetValue() != "" {
-			k.BedrockSecretKey = &k.BedrockKeyConfig.SecretKey
+			// Copy to avoid encrypting the shared BedrockKeyConfig through the pointer
+			sk := k.BedrockKeyConfig.SecretKey
+			k.BedrockSecretKey = &sk
 		} else {
 			k.BedrockSecretKey = nil
 		}
-		k.BedrockSessionToken = k.BedrockKeyConfig.SessionToken
-		k.BedrockRegion = k.BedrockKeyConfig.Region
-		k.BedrockARN = k.BedrockKeyConfig.ARN
+		// Copy to avoid encrypting the shared BedrockKeyConfig through the pointer
+		if k.BedrockKeyConfig.SessionToken != nil {
+			st := *k.BedrockKeyConfig.SessionToken
+			k.BedrockSessionToken = &st
+		} else {
+			k.BedrockSessionToken = nil
+		}
+		if k.BedrockKeyConfig.Region != nil {
+			br := *k.BedrockKeyConfig.Region
+			k.BedrockRegion = &br
+		} else {
+			k.BedrockRegion = nil
+		}
+		if k.BedrockKeyConfig.ARN != nil {
+			ba := *k.BedrockKeyConfig.ARN
+			k.BedrockARN = &ba
+		} else {
+			k.BedrockARN = nil
+		}
 		if k.BedrockKeyConfig.Deployments != nil {
 			data, err := sonic.Marshal(k.BedrockKeyConfig.Deployments)
 			if err != nil {
@@ -230,10 +283,130 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	} else {
 		k.ReplicateDeploymentsJSON = nil
 	}
+
+	// Encrypt sensitive fields after serialization
+	if encrypt.IsEnabled() {
+		if err := encryptEnvVar(&k.Value); err != nil {
+			return fmt.Errorf("failed to encrypt key value: %w", err)
+		}
+		// Azure
+		if err := encryptEnvVarPtr(&k.AzureEndpoint); err != nil {
+			return fmt.Errorf("failed to encrypt azure endpoint: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.AzureClientID); err != nil {
+			return fmt.Errorf("failed to encrypt azure client id: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.AzureClientSecret); err != nil {
+			return fmt.Errorf("failed to encrypt azure client secret: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.AzureTenantID); err != nil {
+			return fmt.Errorf("failed to encrypt azure tenant id: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.AzureAPIVersion); err != nil {
+			return fmt.Errorf("failed to encrypt azure api version: %w", err)
+		}
+		// Vertex
+		if err := encryptEnvVarPtr(&k.VertexProjectID); err != nil {
+			return fmt.Errorf("failed to encrypt vertex project id: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.VertexProjectNumber); err != nil {
+			return fmt.Errorf("failed to encrypt vertex project number: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.VertexRegion); err != nil {
+			return fmt.Errorf("failed to encrypt vertex region: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.VertexAuthCredentials); err != nil {
+			return fmt.Errorf("failed to encrypt vertex auth credentials: %w", err)
+		}
+		// Bedrock
+		if err := encryptEnvVarPtr(&k.BedrockAccessKey); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock access key: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockSecretKey); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock secret key: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockSessionToken); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock session token: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockRegion); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock region: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockARN); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock arn: %w", err)
+		}
+		if err := encryptString(k.BedrockDeploymentsJSON); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock deployments: %w", err)
+		}
+		if err := encryptString(k.BedrockBatchS3ConfigJSON); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock batch s3 config: %w", err)
+		}
+		k.EncryptionStatus = EncryptionStatusEncrypted
+	}
 	return nil
 }
 
+// AfterFind is a GORM hook that decrypts sensitive fields and reconstructs runtime config
+// structs after reading from the database. Decryption runs first so that value copies into
+// AzureKeyConfig, VertexKeyConfig, etc. receive plaintext data.
 func (k *TableKey) AfterFind(tx *gorm.DB) error {
+	// Decrypt sensitive fields before deserialization/reconstruction
+	if k.EncryptionStatus == EncryptionStatusEncrypted {
+		if err := decryptEnvVar(&k.Value); err != nil {
+			return fmt.Errorf("failed to decrypt key value: %w", err)
+		}
+		// Azure
+		if err := decryptEnvVarPtr(&k.AzureEndpoint); err != nil {
+			return fmt.Errorf("failed to decrypt azure endpoint: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.AzureClientID); err != nil {
+			return fmt.Errorf("failed to decrypt azure client id: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.AzureClientSecret); err != nil {
+			return fmt.Errorf("failed to decrypt azure client secret: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.AzureTenantID); err != nil {
+			return fmt.Errorf("failed to decrypt azure tenant id: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.AzureAPIVersion); err != nil {
+			return fmt.Errorf("failed to decrypt azure api version: %w", err)
+		}
+		// Vertex
+		if err := decryptEnvVarPtr(&k.VertexProjectID); err != nil {
+			return fmt.Errorf("failed to decrypt vertex project id: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.VertexProjectNumber); err != nil {
+			return fmt.Errorf("failed to decrypt vertex project number: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.VertexRegion); err != nil {
+			return fmt.Errorf("failed to decrypt vertex region: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.VertexAuthCredentials); err != nil {
+			return fmt.Errorf("failed to decrypt vertex auth credentials: %w", err)
+		}
+		// Bedrock
+		if err := decryptEnvVarPtr(&k.BedrockAccessKey); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock access key: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockSecretKey); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock secret key: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockSessionToken); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock session token: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockRegion); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock region: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockARN); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock arn: %w", err)
+		}
+		if err := decryptString(k.BedrockDeploymentsJSON); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock deployments: %w", err)
+		}
+		if err := decryptString(k.BedrockBatchS3ConfigJSON); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock batch s3 config: %w", err)
+		}
+	}
+
 	if k.ModelsJSON != "" {
 		if err := json.Unmarshal([]byte(k.ModelsJSON), &k.Models); err != nil {
 			return err

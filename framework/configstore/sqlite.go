@@ -45,5 +45,9 @@ func newSqliteConfigStore(ctx context.Context, config *SQLiteConfig, logger sche
 	if err := triggerMigrations(ctx, db); err != nil {
 		return nil, err
 	}
+	// Encrypt any plaintext rows if encryption is enabled
+	if err := s.EncryptPlaintextRows(ctx); err != nil {
+		return nil, fmt.Errorf("failed to encrypt plaintext rows: %w", err)
+	}
 	return s, nil
 }

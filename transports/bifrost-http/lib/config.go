@@ -91,7 +91,7 @@ func getWeight(w *float64) float64 {
 // vector store configuration, config store configuration, and logs store configuration.
 type ConfigData struct {
 	Client        *configstore.ClientConfig `json:"client"`
-	EncryptionKey string                    `json:"encryption_key"`
+	EncryptionKey *schemas.EnvVar           `json:"encryption_key"`
 	// Deprecated: Use GovernanceConfig.AuthConfig instead
 	AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 	Providers         map[string]configstore.ProviderConfig `json:"providers"`
@@ -112,7 +112,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	type TempConfigData struct {
 		FrameworkConfig   json.RawMessage                       `json:"framework,omitempty"`
 		Client            *configstore.ClientConfig             `json:"client"`
-		EncryptionKey     string                                `json:"encryption_key"`
+		EncryptionKey     *schemas.EnvVar                       `json:"encryption_key"`
 		AuthConfig        *configstore.AuthConfig               `json:"auth_config,omitempty"`
 		Providers         map[string]configstore.ProviderConfig `json:"providers"`
 		MCP               *schemas.MCPConfig                    `json:"mcp,omitempty"`
@@ -307,29 +307,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 	EnableLiteLLMFallbacks:  false,
 }
 
-// initializeEncryption initializes the encryption key
-func (c *Config) initializeEncryption(configKey string) error {
-	encryptionKey := ""
-	if configKey != "" {
-		if strings.HasPrefix(configKey, "env.") {
-			var err error
-			if encryptionKey, _, err = c.processEnvValue(configKey); err != nil {
-				return fmt.Errorf("failed to process encryption key: %w", err)
-			}
-		} else {
-			logger.Warn("encryption_key should reference an environment variable (env.VAR_NAME) rather than storing the key directly in the config file")
-			encryptionKey = configKey
-		}
-	}
-	if encryptionKey == "" {
-		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
-			encryptionKey = os.Getenv("BIFROST_ENCRYPTION_KEY")
-		}
-	}
-	encrypt.Init(encryptionKey, logger)
-	return nil
-}
-
 // LoadConfig loads initial configuration from a JSON config file into memory
 // with full preprocessing including environment variable resolution and key config parsing.
 // All processing is done upfront to ensure zero latency when retrieving data.
@@ -437,6 +414,10 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 	var err error
+	// Initialize encryption before stores so BeforeSave hooks and EncryptPlaintextRows work correctly
+	if err = initEncryptionFromFile(&configData); err != nil {
+		return nil, err
+	}
 	// Initialize stores from config file
 	if err = initStoresFromFile(ctx, config, &configData); err != nil {
 		return nil, err
@@ -460,10 +441,8 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	loadPluginsFromFile(ctx, config, &configData)
 	// Initialize framework config and pricing manager
 	initFrameworkConfigFromFile(ctx, config, &configData)
-	// Initialize encryption
-	if err = initEncryptionFromFile(config, &configData); err != nil {
-		return nil, err
-	}
+	// Sync encryption: encrypt any plaintext rows written during config loading
+	syncEncryption(ctx, config)
 	return config, nil
 }
 
@@ -1818,35 +1797,40 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 }
 
 // initEncryptionFromFile initializes encryption from config file
-func initEncryptionFromFile(config *Config, configData *ConfigData) error {
-	var encryptionKey string
-	var err error
-
-	if configData.EncryptionKey != "" {
-		if strings.HasPrefix(configData.EncryptionKey, "env.") {
-			if encryptionKey, _, err = config.processEnvValue(configData.EncryptionKey); err != nil {
-				return fmt.Errorf("failed to process encryption key: %w", err)
-			}
-		} else {
-			logger.Warn("encryption_key should reference an environment variable (env.VAR_NAME) rather than storing the key directly in the config file")
-			encryptionKey = configData.EncryptionKey
-		}
-	}
-	if encryptionKey == "" {
+func initEncryptionFromFile(configData *ConfigData) error {
+	if configData.EncryptionKey == nil || configData.EncryptionKey.GetValue() == "" {
+		// Checking if BIFROST_ENCRYPTION_KEY environment variable is set
 		if os.Getenv("BIFROST_ENCRYPTION_KEY") != "" {
-			encryptionKey = os.Getenv("BIFROST_ENCRYPTION_KEY")
+			configData.EncryptionKey = schemas.NewEnvVar("env.BIFROST_ENCRYPTION_KEY")
 		}
 	}
-	if err = config.initializeEncryption(encryptionKey); err != nil {
-		return fmt.Errorf("failed to initialize encryption: %w", err)
+	// Checking if encryption key is set
+	if configData.EncryptionKey != nil && configData.EncryptionKey.GetValue() != "" {
+		encrypt.Init(configData.EncryptionKey.GetValue(), logger)
 	}
 	return nil
+}
+
+// syncEncryption encrypts all plaintext rows in the config store if encryption is enabled.
+// Called during bootup after encryption key is initialized and all config data has been loaded.
+func syncEncryption(ctx context.Context, config *Config) {
+	if !encrypt.IsEnabled() || config.ConfigStore == nil {
+		return
+	}
+	if err := config.ConfigStore.EncryptPlaintextRows(ctx); err != nil {
+		logger.Error("failed to sync encryption for plaintext rows: %v", err)
+	}
 }
 
 // loadConfigFromDefaults initializes configuration when no config file exists.
 // It creates a default SQLite config store and loads/creates default configurations.
 func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, logsDBPath string) (*Config, error) {
 	var err error
+	// Initialize encryption before stores so BeforeSave hooks and EncryptPlaintextRows work correctly
+	encryptionKey := schemas.NewEnvVar("env.BIFROST_ENCRYPTION_KEY")
+	if encryptionKey != nil && encryptionKey.GetValue() != "" {
+		encrypt.Init(encryptionKey.GetValue(), logger)
+	}
 	// Initialize default config store
 	if err = initDefaultConfigStore(ctx, config, configDBPath); err != nil {
 		return nil, err
@@ -1881,11 +1865,8 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	if err = initDefaultFrameworkConfig(ctx, config); err != nil {
 		return nil, err
 	}
-	// Initialize encryption
-	encryptionKey := os.Getenv("BIFROST_ENCRYPTION_KEY")
-	if err = config.initializeEncryption(encryptionKey); err != nil {
-		return nil, fmt.Errorf("failed to initialize encryption: %w", err)
-	}
+	// Sync encryption: encrypt any plaintext rows written during config loading
+	syncEncryption(ctx, config)
 	return config, nil
 }
 
@@ -2555,7 +2536,7 @@ func (c *Config) IsPluginLoaded(name string) bool {
 	return false
 }
 
-// UpdatePluginStatus updates the status of a plugin
+// UpdatePluginOverallStatus updates the overall status of a plugin
 func (c *Config) UpdatePluginOverallStatus(name string, displayName string, status string, logs []string, types []schemas.PluginType) {
 	c.pluginStatusMu.Lock()
 	defer c.pluginStatusMu.Unlock()

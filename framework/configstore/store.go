@@ -19,6 +19,9 @@ type ConfigStore interface {
 	// Health check
 	Ping(ctx context.Context) error
 
+	// Encryption
+	EncryptPlaintextRows(ctx context.Context) error
+
 	// Client config CRUD
 	UpdateClientConfig(ctx context.Context, config *ClientConfig) error
 	GetClientConfig(ctx context.Context) (*ClientConfig, error)
