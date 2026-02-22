@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -206,6 +207,9 @@ type TableVirtualKey struct {
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
 
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
@@ -213,11 +217,34 @@ type TableVirtualKey struct {
 // TableName sets the table name for each model
 func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
 
-// BeforeSave hook for VirtualKey to enforce mutual exclusion
+// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
+// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
+// value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
 	if vk.TeamID != nil && vk.CustomerID != nil {
 		return fmt.Errorf("virtual key cannot belong to both team and customer")
+	}
+
+	// Hash must be computed before encryption (from plaintext value)
+	if vk.Value != "" {
+		vk.ValueHash = encrypt.HashSHA256(vk.Value)
+	}
+	if encrypt.IsEnabled() && vk.Value != "" {
+		if err := encryptString(&vk.Value); err != nil {
+			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
+		}
+		vk.EncryptionStatus = EncryptionStatusEncrypted
+	}
+	return nil
+}
+
+// AfterFind is a GORM hook that decrypts the virtual key value after reading from the database.
+func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
+	if vk.EncryptionStatus == EncryptionStatusEncrypted {
+		if err := decryptString(&vk.Value); err != nil {
+			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
+		}
 	}
 	return nil
 }

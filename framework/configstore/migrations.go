@@ -274,6 +274,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3676,6 +3679,7 @@ func migrationAddEnforceSCIMAuthColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationAddEnforceAuthOnInferenceColumn adds the enforce_auth_on_inference column to the config_client table
 func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_enforce_auth_on_inference_column",
@@ -3710,6 +3714,7 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
+// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
 func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_provider_pricing_overrides_column",
@@ -3736,6 +3741,121 @@ func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddEncryptionColumns adds the encryption_status column to the config_keys, governance_virtual_keys, sessions, oauth_configs, oauth_tokens, config_mcp_clients, config_providers, config_vector_store, and config_plugins tables
+func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_encryption_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+
+			type encryptionTable struct {
+				table   interface{}
+				columns []string
+			}
+
+			targets := []encryptionTable{
+				{&tables.TableKey{}, []string{"encryption_status"}},
+				{&tables.TableVirtualKey{}, []string{"encryption_status", "value_hash"}},
+				{&tables.SessionsTable{}, []string{"encryption_status", "token_hash"}},
+				{&tables.TableOauthConfig{}, []string{"encryption_status"}},
+				{&tables.TableOauthToken{}, []string{"encryption_status"}},
+				{&tables.TableMCPClient{}, []string{"encryption_status"}},
+				{&tables.TableProvider{}, []string{"encryption_status"}},
+				{&tables.TableVectorStoreConfig{}, []string{"encryption_status"}},
+				{&tables.TablePlugin{}, []string{"encryption_status"}},
+			}
+
+			for _, t := range targets {
+				for _, col := range t.columns {
+					if !mgr.HasColumn(t.table, col) {
+						if err := mgr.AddColumn(t.table, col); err != nil {
+							return fmt.Errorf("failed to add column %s: %w", col, err)
+						}
+					}
+				}
+			}
+
+			// Backfill encryption_status for all tables that have the column
+			backfillTables := []string{
+				"config_keys",
+				"governance_virtual_keys",
+				"sessions",
+				"oauth_configs",
+				"oauth_tokens",
+				"config_mcp_clients",
+				"config_providers",
+				"config_vector_store",
+				"config_plugins",
+			}
+			for _, table := range backfillTables {
+				if err := tx.Exec(fmt.Sprintf(
+					"UPDATE %s SET encryption_status = 'plain_text' WHERE encryption_status IS NULL OR encryption_status = ''",
+					table,
+				)).Error; err != nil {
+					return fmt.Errorf("failed to backfill encryption_status in %s: %w", table, err)
+				}
+			}
+
+			// Backfill value_hash for existing virtual keys
+			if err := tx.Exec(`
+				UPDATE governance_virtual_keys
+				SET value_hash = ''
+				WHERE value_hash IS NULL OR value_hash = ''
+			`).Error; err != nil {
+				return fmt.Errorf("failed to initialize value_hash: %w", err)
+			}
+
+			// Backfill token_hash for existing sessions
+			if err := tx.Exec(`
+				UPDATE sessions
+				SET token_hash = ''
+				WHERE token_hash IS NULL OR token_hash = ''
+			`).Error; err != nil {
+				return fmt.Errorf("failed to initialize token_hash: %w", err)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+
+			type dropInfo struct {
+				table   interface{}
+				columns []string
+			}
+
+			drops := []dropInfo{
+				{&tables.TableKey{}, []string{"encryption_status"}},
+				{&tables.TableVirtualKey{}, []string{"encryption_status", "value_hash"}},
+				{&tables.SessionsTable{}, []string{"encryption_status", "token_hash"}},
+				{&tables.TableOauthConfig{}, []string{"encryption_status"}},
+				{&tables.TableOauthToken{}, []string{"encryption_status"}},
+				{&tables.TableMCPClient{}, []string{"encryption_status"}},
+				{&tables.TableProvider{}, []string{"encryption_status"}},
+				{&tables.TableVectorStoreConfig{}, []string{"encryption_status"}},
+				{&tables.TablePlugin{}, []string{"encryption_status"}},
+			}
+
+			for _, d := range drops {
+				for _, col := range d.columns {
+					if mgr.HasColumn(d.table, col) {
+						if err := mgr.DropColumn(d.table, col); err != nil {
+							return err
+						}
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running encryption columns rollback: %s", err.Error())
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -56,12 +57,16 @@ type TableProvider struct {
 	// Model discovery status tracking for keyless providers
 	Status      string `gorm:"type:varchar(50);default:'unknown'" json:"status"`
 	Description string `gorm:"type:text" json:"description,omitempty"`
+
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 }
 
 // TableName represents a provider configuration in the database
 func (TableProvider) TableName() string { return "config_providers" }
 
-// BeforeSave hooks for serialization
+// BeforeSave is a GORM hook that serializes runtime config structs into JSON columns,
+// validates governance fields, and encrypts the proxy configuration before writing
+// to the database.
 func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	if p.NetworkConfig != nil {
 		data, err := json.Marshal(p.NetworkConfig)
@@ -112,10 +117,21 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("rate_limit_id cannot be an empty string")
 	}
 
+	// Encrypt proxy config after serialization
+	if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
+		encrypted, err := encrypt.Encrypt(p.ProxyConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt proxy config: %w", err)
+		}
+		p.ProxyConfigJSON = encrypted
+		p.EncryptionStatus = EncryptionStatusEncrypted
+	}
+
 	return nil
 }
 
-// AfterFind hooks for deserialization
+// AfterFind is a GORM hook that decrypts the proxy configuration (if encrypted) and
+// deserializes JSON columns back into runtime config structs after reading from the database.
 func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 	if p.NetworkConfigJSON != "" {
 		var config schemas.NetworkConfig
@@ -133,6 +149,13 @@ func (p *TableProvider) AfterFind(tx *gorm.DB) error {
 		p.ConcurrencyAndBufferSize = &config
 	}
 
+	if p.EncryptionStatus == "encrypted" && p.ProxyConfigJSON != "" {
+		decrypted, err := encrypt.Decrypt(p.ProxyConfigJSON)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt proxy config: %w", err)
+		}
+		p.ProxyConfigJSON = decrypted
+	}
 	if p.ProxyConfigJSON != "" {
 		var proxyConfig schemas.ProxyConfig
 		if err := json.Unmarshal([]byte(p.ProxyConfigJSON), &proxyConfig); err != nil {
