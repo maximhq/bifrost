@@ -1993,7 +1993,7 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							EnableLogging:           cc.EnableLogging,
 							DisableContentLogging:   cc.DisableContentLogging,
 							LogRetentionDays:        cc.LogRetentionDays,
-							EnableGovernance:        cc.EnableGovernance,
+							EnableGovernance:        true,
 							EnforceGovernanceHeader: cc.EnforceGovernanceHeader,
 							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
