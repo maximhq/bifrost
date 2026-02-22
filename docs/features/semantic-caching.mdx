@@ -229,7 +229,7 @@ import (
 
 cacheConfig := &semanticcache.Config{
     // No Provider, Keys, or EmbeddingModel -- direct hash mode only
-    Dimension: 1, // Minimal value; no real vectors are stored
+    Dimension: 1, // Placeholder; entries are stored as metadata-only (no embedding vectors). Change dimension before switching to dual-layer mode to avoid mixed-dimension issues.
 
     TTL:               5 * time.Minute,
     CleanUpOnShutdown: true,
