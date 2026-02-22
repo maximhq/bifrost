@@ -1043,6 +1043,10 @@
                       "description": "Dimension for vector store embeddings",
                       "minimum": 1
                     },
+                    "default_cache_key": {
+                      "type": "string",
+                      "description": "Default cache key used when no per-request key is provided. When set, all requests without an explicit x-bf-cache-key header will use this value and be cached automatically."
+                    },
                     "conversation_history_threshold": {
                       "type": "integer",
                       "description": "Skip caching for requests with more than this number of messages in conversation history (default: 3)",
