@@ -103,7 +103,7 @@ import (
 )
 
 // Configure semantic cache plugin
-cacheConfig := semanticcache.Config{
+cacheConfig := &semanticcache.Config{
     // Embedding model configuration (Required)
     Provider:       schemas.OpenAI,
     Keys:          []schemas.Key{{Value: "sk-..."}},
@@ -212,7 +212,7 @@ Direct hash mode provides exact-match caching without requiring an embedding pro
 
 ### Setup
 
-To enable direct-only mode globally, omit the `provider`, `keys`, and `embedding_model` fields from the plugin config. The plugin will automatically fall back to direct search only.
+To enable direct-only mode globally, omit the `provider` and `keys` fields from the plugin config. The plugin will automatically fall back to direct search only.
 
 <Warning>
 A vector store is still required as the storage backend, even in direct hash mode. See [Recommended Vector Store](#recommended-vector-store) below for the best choice.
@@ -288,10 +288,6 @@ When initialized this way, all requests automatically use direct hash matching r
 ### Recommended Vector Store
 
 **Redis** is recommended for direct hash mode. It does not require vectors for metadata-only entries, and all cache fields are indexed as RediSearch TAG fields for fast exact-match lookups.
-
-<Warning>
-Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require vectors for all entries, and without an embedding provider, no vectors are generated, causing storage to fail. Weaviate may work but is not recommended for this use case.
-</Warning>
 
 <Tabs group="direct-hash-redis">
 
