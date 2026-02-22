@@ -26,6 +26,7 @@ func TestVLLM(t *testing.T) {
 	textModel := getEnvWithDefault("VLLM_TEXT_MODEL", "Qwen/Qwen3-0.6B")
 	reasoningModel := getEnvWithDefault("VLLM_REASONING_MODEL", "Qwen/Qwen3-0.6B")
 	embeddingModel := getEnvWithDefault("VLLM_EMBEDDING_MODEL", "Qwen3-Embedding-0.6B")
+	rerankModel := strings.TrimSpace(os.Getenv("VLLM_RERANK_MODEL"))
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:       schemas.VLLM,
@@ -33,6 +34,7 @@ func TestVLLM(t *testing.T) {
 		TextModel:      textModel,
 		ReasoningModel: reasoningModel,
 		EmbeddingModel: embeddingModel,
+		RerankModel:    rerankModel,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
 			TextCompletionStream:  true,
@@ -49,6 +51,7 @@ func TestVLLM(t *testing.T) {
 			MultipleImages:        false,
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Rerank:                rerankModel != "",
 			ListModels:            true,
 			Reasoning:             true,
 			SpeechSynthesis:       false,

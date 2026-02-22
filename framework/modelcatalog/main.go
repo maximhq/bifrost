@@ -249,6 +249,7 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		schemas.ChatCompletionRequest,
 		schemas.ResponsesRequest,
 		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
 		schemas.SpeechRequest,
 		schemas.TranscriptionRequest,
 	} {

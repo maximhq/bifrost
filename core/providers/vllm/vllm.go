@@ -200,9 +200,126 @@ func (provider *VLLMProvider) Speech(ctx *schemas.BifrostContext, key schemas.Ke
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
-// Rerank is not supported by the vLLM provider.
+func isRerankFallbackStatus(statusCode int) bool {
+	// vLLM deployments may return 501 for unimplemented routes.
+	// We fallback on 501 in addition to 404/405 for compatibility.
+	return statusCode == fasthttp.StatusNotFound ||
+		statusCode == fasthttp.StatusMethodNotAllowed ||
+		statusCode == fasthttp.StatusNotImplemented
+}
+
+func (provider *VLLMProvider) callVLLMRerankEndpoint(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostRerankRequest,
+	endpointPath string,
+	jsonData []byte,
+) (map[string]interface{}, interface{}, interface{}, []byte, int, time.Duration, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + endpointPath)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	req.SetBody(jsonData)
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, nil, nil, nil, 0, latency, bifrostErr
+	}
+
+	statusCode := resp.StatusCode()
+	if statusCode != fasthttp.StatusOK {
+		return nil, nil, nil, nil, statusCode, latency, openai.ParseOpenAIError(resp, schemas.RerankRequest, provider.GetProviderKey(), request.Model)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, nil, nil, nil, statusCode, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	responsePayload := make(map[string]interface{})
+	rawRequest, rawResponse, bifrostErr := HandleVLLMResponse(body, &responsePayload, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, nil, nil, body, statusCode, latency, bifrostErr
+	}
+
+	return responsePayload, rawRequest, rawResponse, body, statusCode, latency, nil
+}
+
+// Rerank performs a rerank request to vLLM's API.
 func (provider *VLLMProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+	providerName := provider.GetProviderKey()
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToVLLMRerankRequest(request), nil
+		},
+		providerName,
+	)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	resolvedPath := providerUtils.GetPathFromContext(ctx, "")
+	hasPathOverride := resolvedPath != ""
+	if !hasPathOverride {
+		resolvedPath = "/v1/rerank"
+	} else if !strings.HasPrefix(resolvedPath, "/") {
+		resolvedPath = "/" + resolvedPath
+	}
+
+	responsePayload, rawRequest, rawResponse, responseBody, statusCode, latency, bifrostErr := provider.callVLLMRerankEndpoint(ctx, key, request, resolvedPath, jsonData)
+	if bifrostErr != nil && !hasPathOverride && isRerankFallbackStatus(statusCode) {
+		var fallbackLatency time.Duration
+		responsePayload, rawRequest, rawResponse, responseBody, statusCode, fallbackLatency, bifrostErr = provider.callVLLMRerankEndpoint(ctx, key, request, "/rerank", jsonData)
+		latency += fallbackLatency
+	}
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	returnDocuments := request.Params != nil && request.Params.ReturnDocuments != nil && *request.Params.ReturnDocuments
+	bifrostResponse, err := ToBifrostRerankResponse(responsePayload, request.Documents, returnDocuments)
+	if err != nil {
+		return nil, providerUtils.EnrichError(
+			ctx,
+			providerUtils.NewBifrostOperationError("error converting rerank response", err, providerName),
+			jsonData,
+			responseBody,
+			provider.sendBackRawRequest,
+			provider.sendBackRawResponse,
+		)
+	}
+
+	// Keep requested model as the canonical model in Bifrost response.
+	bifrostResponse.Model = request.Model
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.RerankRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
 }
 
 // SpeechStream is not supported by the vLLM provider.
