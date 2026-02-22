@@ -108,7 +108,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 							<h2 className="text-lg font-semibold">Customers</h2>
 							<p className="text-muted-foreground text-sm">Manage customer accounts with their own teams, budgets, and access controls.</p>
 						</div>
-						<Button data-testid="create-customer-btn" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
+						<Button data-testid="customer-button-create" onClick={handleAddCustomer} disabled={!hasCreateAccess}>
 							<Plus className="h-4 w-4" />
 							Add Customer
 						</Button>

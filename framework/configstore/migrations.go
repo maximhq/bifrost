@@ -3802,18 +3802,21 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 			}
 
 			// Backfill value_hash for existing virtual keys
+			// Use NULL instead of '' to avoid unique constraint violations
+			// (multiple rows with '' would violate the unique index, but NULLs are excluded)
 			if err := tx.Exec(`
 				UPDATE governance_virtual_keys
-				SET value_hash = ''
+				SET value_hash = NULL
 				WHERE value_hash IS NULL OR value_hash = ''
 			`).Error; err != nil {
 				return fmt.Errorf("failed to initialize value_hash: %w", err)
 			}
 
 			// Backfill token_hash for existing sessions
+			// Use NULL instead of '' to avoid unique constraint violations
 			if err := tx.Exec(`
 				UPDATE sessions
-				SET token_hash = ''
+				SET token_hash = NULL
 				WHERE token_hash IS NULL OR token_hash = ''
 			`).Error; err != nil {
 				return fmt.Errorf("failed to initialize token_hash: %w", err)

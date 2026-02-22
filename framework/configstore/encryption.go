@@ -132,7 +132,7 @@ func (s *RDBConfigStore) encryptPlaintextVirtualKeys(ctx context.Context) (int, 
 	for {
 		var vks []tables.TableVirtualKey
 		if err := s.db.WithContext(ctx).
-			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND value != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&vks).Error; err != nil {
 			return count, err
@@ -162,7 +162,7 @@ func (s *RDBConfigStore) encryptPlaintextSessions(ctx context.Context) (int, err
 	for {
 		var sessions []tables.SessionsTable
 		if err := s.db.WithContext(ctx).
-			Where("encryption_status = ? OR encryption_status IS NULL OR encryption_status = ''", encryptionStatusPlainText).
+			Where("(encryption_status = ? OR encryption_status IS NULL OR encryption_status = '') AND token != ''", encryptionStatusPlainText).
 			Limit(encryptionBatchSize).
 			Find(&sessions).Error; err != nil {
 			return count, err

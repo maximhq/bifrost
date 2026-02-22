@@ -26,6 +26,7 @@ export function VirtualKeysEmptyState({ onAddClick, canCreate = true }: VirtualK
 					<Button
 						variant="outline"
 						aria-label="Read more about virtual keys (opens in new tab)"
+						data-testid="virtual-keys-button-read-more"
 						onClick={() => {
 							window.open(`${VIRTUAL_KEYS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
