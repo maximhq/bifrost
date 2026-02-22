@@ -728,6 +728,9 @@ false
 {{- if $inputConfig.vector_store_namespace }}
 {{- $_ := set $scConfig "vector_store_namespace" $inputConfig.vector_store_namespace }}
 {{- end }}
+{{- if $inputConfig.default_cache_key }}
+{{- $_ := set $scConfig "default_cache_key" $inputConfig.default_cache_key }}
+{{- end }}
 {{- if hasKey $inputConfig "conversation_history_threshold" }}
 {{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
 {{- end }}

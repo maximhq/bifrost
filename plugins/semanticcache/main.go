@@ -36,10 +36,11 @@ type Config struct {
 	Dimension            int           `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
-	ConversationHistoryThreshold int   `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
-	CacheByProvider              *bool `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
+	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
+	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
+	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -391,8 +392,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 
 	cacheKey, ok = ctx.Value(CacheKey).(string)
 	if !ok || cacheKey == "" {
-		plugin.logger.Debug(PluginLoggerPrefix + " No cache key found in context, continuing without caching")
-		return req, nil, nil
+		if plugin.config.DefaultCacheKey != "" {
+			cacheKey = plugin.config.DefaultCacheKey
+			plugin.logger.Debug(PluginLoggerPrefix + " Using default cache key: " + cacheKey)
+		} else {
+			plugin.logger.Debug(PluginLoggerPrefix + " No cache key found in context, continuing without caching")
+			return req, nil, nil
+		}
 	}
 
 	if plugin.isConversationHistoryThresholdExceeded(req) {
@@ -529,8 +535,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 
 	// Get the cache key from context
 	cacheKey, ok := ctx.Value(CacheKey).(string)
-	if !ok {
-		return res, nil, nil
+	if !ok || cacheKey == "" {
+		if plugin.config.DefaultCacheKey != "" {
+			cacheKey = plugin.config.DefaultCacheKey
+		} else {
+			return res, nil, nil
+		}
 	}
 
 	// Get the request ID from context
