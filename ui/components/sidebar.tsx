@@ -3,7 +3,6 @@
 import {
 	ArrowUpRight,
 	BookUser,
-	Boxes,
 	BoxIcon,
 	BugIcon,
 	Construction,
@@ -13,7 +12,6 @@ import {
 	Globe,
 	KeyRound,
 	Landmark,
-	Layers,
 	LogOut,
 	Network,
 	PanelLeftClose,
@@ -22,14 +20,11 @@ import {
 	Search,
 	Settings,
 	Settings2Icon,
-	Shield,
 	ShieldCheck,
 	Shuffle,
 	Telescope,
 	TrendingUp,
 	User,
-	Wrench,
-	Zap,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -422,12 +417,7 @@ export default function AppSidebar() {
 				url: "/workspace/governance",
 				icon: Landmark,
 				description: "Virtual keys, users, teams, customers & roles",
-				hasAccess:
-					hasGovernanceAccess ||
-					hasVirtualKeysAccess ||
-					hasCustomersAccess ||
-					hasTeamsAccess ||
-					hasRbacAccess,
+				hasAccess: hasGovernanceAccess || hasVirtualKeysAccess || hasCustomersAccess || hasTeamsAccess || hasRbacAccess,
 			},
 			{
 				title: "Guardrails",
@@ -501,13 +491,6 @@ export default function AppSidebar() {
 									icon: Globe,
 									description: "Proxy configuration",
 									hasAccess: hasSettingsAccess,
-								},
-								{
-									title: "Guardrails Providers",
-									url: "/workspace/guardrails/providers",
-									icon: Boxes,
-									description: "Guardrail providers configuration",
-									hasAccess: hasGuardrailsProvidersAccess,
 								},
 							]
 						: []),
