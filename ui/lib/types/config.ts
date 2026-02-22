@@ -232,6 +232,40 @@ export interface CustomProviderConfig {
 	request_path_overrides?: Record<string, string>;
 }
 
+export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
+
+export interface ProviderPricingOverride {
+	model_pattern: string;
+	match_type: PricingOverrideMatchType;
+	request_types?: string[];
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	input_cost_per_video_per_second?: number;
+	input_cost_per_audio_per_second?: number;
+	input_cost_per_character?: number;
+	output_cost_per_character?: number;
+	input_cost_per_token_above_128k_tokens?: number;
+	input_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_image_above_128k_tokens?: number;
+	input_cost_per_video_per_second_above_128k_tokens?: number;
+	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
+	output_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost?: number;
+	cache_creation_input_token_cost?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
+	input_cost_per_image_token?: number;
+	output_cost_per_image_token?: number;
+	input_cost_per_image?: number;
+	output_cost_per_image?: number;
+	cache_read_input_image_token_cost?: number;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	keys: ModelProviderKey[];
@@ -241,6 +275,7 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -268,6 +303,7 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -279,6 +315,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError

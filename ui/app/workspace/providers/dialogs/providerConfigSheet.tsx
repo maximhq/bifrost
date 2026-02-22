@@ -5,9 +5,14 @@ import { useGetCoreConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
-import { NetworkFormFragment } from "../fragments/networkFormFragment";
-import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
+import {
+	ApiStructureFormFragment,
+	GovernanceFormFragment,
+	NetworkFormFragment,
+	PerformanceFormFragment,
+	PricingOverridesFormFragment,
+	ProxyFormFragment,
+} from "../fragments";
 
 interface Props {
 	show: boolean;
@@ -34,6 +39,10 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 	tabs.push({
 		id: "performance",
 		label: "Performance tuning",
+	});
+	tabs.push({
+		id: "pricing-overrides",
+		label: "Pricing Overrides",
 	});
 	if (hasGovernanceAccess && isGovernanceEnabled) {
 		tabs.push({
@@ -83,7 +92,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 							className="mb-4 grid h-10 w-full rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none"
 						>
 							{tabs.map((tab) => (
-								<TabsTrigger key={tab.id} value={tab.id} className="flex items-center gap-2">
+								<TabsTrigger key={tab.id} value={tab.id} data-testid={`provider-tab-${tab.id}`} className="flex items-center gap-2">
 									{tab.label}
 								</TabsTrigger>
 							))}
@@ -99,6 +108,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="performance">
 							<PerformanceFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="pricing-overrides">
+							<PricingOverridesFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />

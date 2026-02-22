@@ -295,8 +295,8 @@ var DefaultClientConfig = configstore.ClientConfig{
 	InitialPoolSize:         schemas.DefaultInitialPoolSize,
 	EnableLogging:           true,
 	DisableContentLogging:   false,
-	EnableGovernance:       true,
-	EnforceAuthOnInference: false,
+	EnableGovernance:        true,
+	EnforceAuthOnInference:  false,
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},
 	AllowedHeaders:          []string{},
@@ -1804,6 +1804,7 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 		logger.Error("failed to initialize pricing manager: %v", err)
 	} else {
 		config.ModelCatalog = pricingManager
+		applyProviderPricingOverrides(config.ModelCatalog, config.Providers)
 	}
 
 	// Initialize MCP catalog
@@ -1997,20 +1998,20 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 			keys := make([]schemas.Key, len(dbProvider.Keys))
 			for i, dbKey := range dbProvider.Keys {
 				keys[i] = schemas.Key{
-					ID:               dbKey.ID,
-					Name:             dbKey.Name,
-					Value:            dbKey.Value,
-					Models:           dbKey.Models,
-					Weight:           dbKey.Weight,
-					Enabled:          dbKey.Enabled,
-					UseForBatchAPI:   dbKey.UseForBatchAPI,
-					AzureKeyConfig:   dbKey.AzureKeyConfig,
-					VertexKeyConfig:  dbKey.VertexKeyConfig,
-					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					ID:                 dbKey.ID,
+					Name:               dbKey.Name,
+					Value:              dbKey.Value,
+					Models:             dbKey.Models,
+					Weight:             dbKey.Weight,
+					Enabled:            dbKey.Enabled,
+					UseForBatchAPI:     dbKey.UseForBatchAPI,
+					AzureKeyConfig:     dbKey.AzureKeyConfig,
+					VertexKeyConfig:    dbKey.VertexKeyConfig,
+					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
-					ConfigHash:       dbKey.ConfigHash,
-					Status:           dbKey.Status,
-					Description:      dbKey.Description,
+					ConfigHash:         dbKey.ConfigHash,
+					Status:             dbKey.Status,
+					Description:        dbKey.Description,
 				}
 			}
 			providerConfig := configstore.ProviderConfig{
@@ -2021,6 +2022,7 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 				SendBackRawRequest:       dbProvider.SendBackRawRequest,
 				SendBackRawResponse:      dbProvider.SendBackRawResponse,
 				CustomProviderConfig:     dbProvider.CustomProviderConfig,
+				PricingOverrides:         dbProvider.PricingOverrides,
 				ConfigHash:               dbProvider.ConfigHash,
 			}
 			if err := ValidateCustomProvider(providerConfig, provider); err != nil {
@@ -2166,6 +2168,7 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 		logger.Error("failed to initialize model catalog: %v", err)
 	} else {
 		config.ModelCatalog = modelCatalog
+		applyProviderPricingOverrides(config.ModelCatalog, config.Providers)
 	}
 
 	// Initialize MCP catalog
@@ -3480,4 +3483,15 @@ func DeepCopy[T any](in T) (T, error) {
 	}
 	err = sonic.Unmarshal(b, &out)
 	return out, err
+}
+
+func applyProviderPricingOverrides(catalog *modelcatalog.ModelCatalog, providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+	if catalog == nil {
+		return
+	}
+	for provider, providerConfig := range providers {
+		if err := catalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
+			logger.Warn("failed to load pricing overrides for provider %s: %v", provider, err)
+		}
+	}
 }
