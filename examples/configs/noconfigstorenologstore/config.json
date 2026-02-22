@@ -1,4 +1,5 @@
 {
+  "$schema": "https://www.getbifrost.ai/schema",
   "config_store": {
     "enabled": false
   },
