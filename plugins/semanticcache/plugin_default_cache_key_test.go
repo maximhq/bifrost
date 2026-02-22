@@ -24,7 +24,7 @@ func TestDefaultCacheKey_CachesWithoutPerRequestKey(t *testing.T) {
 	t.Log("Making first request without per-request cache key (should use default and be cached)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	if err1 != nil {
-		return
+		return // Test will be skipped by retry function
 	}
 
 	if response1 == nil || len(response1.Choices) == 0 || response1.Choices[0].Message.Content.ContentStr == nil {
@@ -65,10 +65,21 @@ func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
 	ctx1 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	_, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {
-		return
+		return // Test will be skipped by retry function
 	}
 
 	WaitForCache()
+
+	// Verify the cache was actually populated with the default key
+	ctxDefault2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	responseDefault2, errDefault2 := setup.Client.ChatCompletionRequest(ctxDefault2, testRequest)
+	if errDefault2 != nil {
+		if errDefault2.Error != nil {
+			t.Fatalf("Default-key verification request failed: %v", errDefault2.Error.Message)
+		}
+		t.Fatalf("Default-key verification request failed: %v", errDefault2)
+	}
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: responseDefault2}, string(CacheTypeDirect))
 
 	// Same request but with a DIFFERENT per-request key — should miss
 	ctx2 := CreateContextWithCacheKey("override-key")
@@ -100,7 +111,7 @@ func TestDefaultCacheKey_EmptyDefault_NoCaching(t *testing.T) {
 	t.Log("Making first request without any cache key and no default (should not cache)...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 	if err1 != nil {
-		return
+		return // Test will be skipped by retry function
 	}
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
