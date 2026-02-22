@@ -266,7 +266,7 @@ bifrost:
   "plugins": [
     {
       "enabled": true,
-      "name": "semanticcache",
+      "name": "semantic_cache",
       "config": {
         "dimension": 1,
         "ttl": "5m",
@@ -289,6 +289,10 @@ When initialized this way, all requests automatically use direct hash matching r
 
 **Redis** is recommended for direct hash mode. It does not require vectors for metadata-only entries, and all cache fields are indexed as RediSearch TAG fields for fast exact-match lookups.
 
+<Warning>
+Redis requires the [RediSearch](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/) module. The Helm chart's built-in Redis subchart (`redis:7-alpine`) does **not** include RediSearch and will fail at startup. Use an external Redis Stack instance or override the image to one that includes the module (e.g., `redis/redis-stack-server` or Redis 8+).
+</Warning>
+
 <Tabs group="direct-hash-redis">
 
 <Tab title="Helm">
@@ -298,16 +302,11 @@ vectorStore:
   enabled: true
   type: redis
   redis:
-    enabled: true
-    auth:
+    external:
       enabled: true
+      host: "redis-stack.example.com"
+      port: 6379
       password: "your-redis-password"
-    # Or use an external Redis instance:
-    # external:
-    #   enabled: true
-    #   host: "redis.example.com"
-    #   port: 6379
-    #   password: "your-redis-password"
 ```
 
 </Tab>
