@@ -242,6 +242,23 @@ plugin, err := semanticcache.Init(ctx, cacheConfig, logger, store)
 
 </Tab>
 
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1
+        ttl: "5m"
+        cleanup_on_shutdown: true
+        cache_by_model: true
+        cache_by_provider: true
+```
+
+</Tab>
+
 <Tab title="config.json">
 
 ```json
@@ -249,7 +266,7 @@ plugin, err := semanticcache.Init(ctx, cacheConfig, logger, store)
   "plugins": [
     {
       "enabled": true,
-      "name": "semantic_cache",
+      "name": "semanticcache",
       "config": {
         "dimension": 1,
         "ttl": "5m",
@@ -276,6 +293,31 @@ When initialized this way, all requests automatically use direct hash matching r
 Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require vectors for all entries, and without an embedding provider, no vectors are generated, causing storage to fail. Weaviate may work but is not recommended for this use case.
 </Warning>
 
+<Tabs group="direct-hash-redis">
+
+<Tab title="Helm">
+
+```yaml
+vectorStore:
+  enabled: true
+  type: redis
+  redis:
+    enabled: true
+    auth:
+      enabled: true
+      password: "your-redis-password"
+    # Or use an external Redis instance:
+    # external:
+    #   enabled: true
+    #   host: "redis.example.com"
+    #   port: 6379
+    #   password: "your-redis-password"
+```
+
+</Tab>
+
+<Tab title="config.json">
+
 ```json
 {
   "vector_store": {
@@ -288,9 +330,9 @@ Qdrant and Pinecone are not compatible with direct hash mode when no embedding p
 }
 ```
 
-<Info>
-Redis requires the RediSearch module (included in [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/)). Without it, the plugin will return an error on startup.
-</Info>
+</Tab>
+
+</Tabs>
 
 ### Per-Request Cache Type Override
 
