@@ -200,6 +200,113 @@ bifrostConfig := schemas.BifrostConfig{
 
 ---
 
+## Direct Hash Mode (Embedding-Free)
+
+Direct hash mode provides exact-match caching using [xxhash](https://github.com/cespare/xxhash) without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
+
+**When to use direct hash mode:**
+- You only need exact-match deduplication (no fuzzy/semantic matching)
+- You cannot or do not want to call an external embedding API
+- You want the lowest possible latency with zero embedding overhead
+- Cost-sensitive environments where embedding API calls add up
+
+### Setup
+
+To enable direct-only mode globally, omit the `provider`, `keys`, and `embedding_model` fields from the plugin config. The plugin will automatically fall back to direct search only.
+
+<Warning>
+A vector store is still required as the storage backend, even in direct hash mode. See [Recommended Vector Store](#recommended-vector-store) below for the best choice.
+</Warning>
+
+<Tabs group="direct-hash-setup">
+
+<Tab title="Go SDK">
+
+```go
+import (
+    "github.com/maximhq/bifrost/plugins/semanticcache"
+)
+
+cacheConfig := &semanticcache.Config{
+    // No Provider, Keys, or EmbeddingModel -- direct hash mode only
+    Dimension: 1, // Minimal value; no real vectors are stored
+
+    TTL:               5 * time.Minute,
+    CleanUpOnShutdown: true,
+    CacheByModel:      bifrost.Ptr(true),
+    CacheByProvider:   bifrost.Ptr(true),
+}
+
+plugin, err := semanticcache.Init(ctx, cacheConfig, logger, store)
+```
+
+</Tab>
+
+<Tab title="config.json">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "semantic_cache",
+      "config": {
+        "dimension": 1,
+        "ttl": "5m",
+        "cleanup_on_shutdown": true,
+        "cache_by_model": true,
+        "cache_by_provider": true
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+
+</Tabs>
+
+When initialized this way, all requests automatically use direct hash matching regardless of the `x-bf-cache-type` header. No embeddings are generated, and no embedding provider credentials are needed.
+
+### Recommended Vector Store
+
+**Redis is the recommended vector store for direct hash mode.** Here's why:
+
+| Vector Store | Requires Vectors? | Index Type | Direct Hash Performance |
+|---|---|---|---|
+| **Redis** | No | RediSearch TAG (inverted index) | **Best** -- O(1) exact-match lookups, no vector overhead |
+| Weaviate | Yes | Built-in inverted index | Usable, but stores zero-vector placeholders and maintains an HNSW index unnecessarily |
+| Qdrant | Yes | Payload index | Requires vectors for all entries -- not ideal |
+| Pinecone | Yes | Metadata filtering | Requires vectors for all entries -- not ideal |
+
+Redis stores all metadata fields (`request_hash`, `cache_key`, `params_hash`, `provider`, `model`) as RediSearch TAG fields with inverted indices. Direct hash lookups execute as `FT.SEARCH` queries against these indices, providing O(1) exact-match performance with no vector storage overhead.
+
+**Minimal Redis setup for direct hash mode:**
+
+```json
+{
+  "vector_store": {
+    "enabled": true,
+    "type": "redis",
+    "config": {
+      "addr": "localhost:6379"
+    }
+  }
+}
+```
+
+<Info>
+Redis requires the [RediSearch module](https://redis.io/docs/stack/search/) (included in Redis Stack). Without it, the plugin will return an error on startup.
+</Info>
+
+### Per-Request Cache Type Override
+
+When the plugin is initialized **without** an embedding provider (direct-only mode), all requests use direct hash matching automatically. The `x-bf-cache-type` header has no effect.
+
+When the plugin is initialized **with** an embedding provider (dual-layer mode), you can force direct-only matching on specific requests using the `x-bf-cache-type: direct` header. See [Cache Type Control](#cache-type-control) for details.
+
+---
+
 ## Cache Triggering
 
 <Warning>
