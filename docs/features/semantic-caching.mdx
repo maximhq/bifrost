@@ -202,7 +202,7 @@ bifrostConfig := schemas.BifrostConfig{
 
 ## Direct Hash Mode (Embedding-Free)
 
-Direct hash mode provides exact-match caching using [xxhash](https://github.com/cespare/xxhash) without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
+Direct hash mode provides exact-match caching without requiring an embedding provider. Each request is hashed deterministically based on its normalized input, parameters, and stream flag. Identical requests produce cache hits; different wording is a cache miss.
 
 **When to use direct hash mode:**
 - You only need exact-match deduplication (no fuzzy/semantic matching)
@@ -270,18 +270,11 @@ When initialized this way, all requests automatically use direct hash matching r
 
 ### Recommended Vector Store
 
-**Redis is the recommended vector store for direct hash mode.** Here's why:
+**Redis** is recommended for direct hash mode. It does not require vectors for metadata-only entries, and all cache fields are indexed as RediSearch TAG fields for fast exact-match lookups.
 
-| Vector Store | Requires Vectors? | Index Type | Direct Hash Performance |
-|---|---|---|---|
-| **Redis** | No | RediSearch TAG (inverted index) | **Best** -- O(1) exact-match lookups, no vector overhead |
-| Weaviate | Yes | Built-in inverted index | Usable, but stores zero-vector placeholders and maintains an HNSW index unnecessarily |
-| Qdrant | Yes | Payload index | Requires vectors for all entries -- not ideal |
-| Pinecone | Yes | Metadata filtering | Requires vectors for all entries -- not ideal |
-
-Redis stores all metadata fields (`request_hash`, `cache_key`, `params_hash`, `provider`, `model`) as RediSearch TAG fields with inverted indices. Direct hash lookups execute as `FT.SEARCH` queries against these indices, providing O(1) exact-match performance with no vector storage overhead.
-
-**Minimal Redis setup for direct hash mode:**
+<Warning>
+Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require vectors for all entries, and without an embedding provider, no vectors are generated, causing storage to fail. Weaviate may work but is not recommended for this use case.
+</Warning>
 
 ```json
 {
@@ -296,7 +289,7 @@ Redis stores all metadata fields (`request_hash`, `cache_key`, `params_hash`, `p
 ```
 
 <Info>
-Redis requires the [RediSearch module](https://redis.io/docs/stack/search/) (included in Redis Stack). Without it, the plugin will return an error on startup.
+Redis requires the RediSearch module (included in [Redis Stack](https://redis.io/docs/latest/operate/oss_and_stack/install/install-stack/)). Without it, the plugin will return an error on startup.
 </Info>
 
 ### Per-Request Cache Type Override
