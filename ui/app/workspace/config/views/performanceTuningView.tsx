@@ -89,14 +89,9 @@ export default function PerformanceTuningView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-lg font-semibold tracking-tight">Performance Tuning</h2>
-					<p className="text-muted-foreground text-sm">Configure performance-related settings.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Performance Tuning</h2>
+				<p className="text-muted-foreground text-sm">Configure performance-related settings.</p>
 			</div>
 
 			<Alert variant="destructive">
@@ -149,6 +144,11 @@ export default function PerformanceTuningView() {
 					</div>
 					{needsRestart && <RestartWarning />}
 				</div>
+			</div>
+			<div className="flex justify-end pt-2">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);

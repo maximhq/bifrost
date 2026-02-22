@@ -111,11 +111,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 			</CardHeader>
 			{isKeyless ? (
 				<div className="text-muted-foreground flex flex-col items-center justify-center gap-2 rounded-sm border py-10 text-center text-sm">
-					<p>This is a keyless provider — no API keys are required.</p>
+					<p>This is a keyless provider - no API keys are required.</p>
 					<p>You can edit the provider configuration using the button above.</p>
 				</div>
 			) : (
-				<div className="w-full rounded-sm border">
+				<div className="w-full rounded-sm border flex flex-col gap-2">
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>

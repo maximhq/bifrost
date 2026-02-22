@@ -23,6 +23,7 @@ import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
+import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
 import VirtualKeySheet from "./virtualKeySheet"
 
 interface VirtualKeysTableProps {
@@ -109,6 +110,24 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 		toast.success("Copied to clipboard");
 	};
 
+	// Empty state when user has no virtual keys (same pattern as Plugins)
+	if (virtualKeys?.length === 0) {
+		return (
+			<>
+				{showVirtualKeySheet && (
+					<VirtualKeySheet
+						virtualKey={editingVirtualKey}
+						teams={teams}
+						customers={customers}
+						onSave={handleVirtualKeySaved}
+						onCancel={() => setShowVirtualKeySheet(false)}
+					/>
+				)}
+				<VirtualKeysEmptyState onAddClick={handleAddVirtualKey} canCreate={hasCreateAccess} />
+			</>
+		);
+	}
+
 	return (
 		<>
 			{showVirtualKeySheet && (
@@ -147,14 +166,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{virtualKeys?.length === 0 ? (
-								<TableRow>
-									<TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
-										No virtual keys found. Create your first virtual key to get started.
-									</TableCell>
-								</TableRow>
-							) : (
-								virtualKeys?.map((vk) => {
+							{virtualKeys?.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
 									const isExhausted =
 										(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
@@ -253,8 +265,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 											</TableCell>
 										</TableRow>
 									);
-								})
-							)}
+								})}
 						</TableBody>
 					</Table>
 				</div>

@@ -460,7 +460,7 @@ export function RoutingRuleSheet({
 											provider={provider || undefined}
 											value={model}
 											onChange={(value) => setValue("model", value)}
-											placeholder="Select a model... (optional)"
+											placeholder="Search for a model... (optional)"
 											isSingleSelect
 											loadModelsOnEmptyProvider
 										/>

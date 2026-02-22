@@ -316,7 +316,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 													</TooltipTrigger>
 													<TooltipContent>
 														<p>Optional OAuth scopes for token requests. By default we use
-														https://cognitiveservices.azure.com/.default — add additional scopes here if your setup requires extra permissions.</p>
+														https://cognitiveservices.azure.com/.default - add additional scopes here if your setup requires extra permissions.</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
