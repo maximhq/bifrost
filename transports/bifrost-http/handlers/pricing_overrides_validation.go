@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -68,7 +69,15 @@ func isSupportedOverrideRequestType(requestType schemas.RequestType) bool {
 }
 
 func validatePricingOverrideNonNegativeFields(index int, override schemas.ProviderPricingOverride) error {
-	for fieldName, value := range pricingOverrideOptionalFieldsMap(override) {
+	optionalFields := pricingOverrideOptionalFieldsMap(override)
+	fieldNames := make([]string, 0, len(optionalFields))
+	for fieldName := range optionalFields {
+		fieldNames = append(fieldNames, fieldName)
+	}
+	sort.Strings(fieldNames)
+
+	for _, fieldName := range fieldNames {
+		value := optionalFields[fieldName]
 		if value != nil && *value < 0 {
 			return fmt.Errorf("override[%d]: %s must be non-negative", index, fieldName)
 		}

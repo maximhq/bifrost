@@ -2481,6 +2481,8 @@ func (s *RDBConfigStore) GetPricingOverridesByScope(ctx context.Context, scope s
 
 	if scope == string(tables.PricingOverrideScopeGlobal) {
 		query = query.Where("scope = ?", tables.PricingOverrideScopeGlobal)
+	} else if scope == "" && scopeID != "" {
+		return []tables.TablePricingOverride{}, nil
 	} else if scope != "" {
 		if scopeID == "" {
 			return []tables.TablePricingOverride{}, nil

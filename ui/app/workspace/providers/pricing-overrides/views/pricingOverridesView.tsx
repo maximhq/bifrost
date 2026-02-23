@@ -446,6 +446,7 @@ export function PricingOverridesView() {
 													variant="ghost"
 													size="sm"
 													onClick={() => openEditSheet(override)}
+													aria-label={`Edit pricing override ${override.name}`}
 													data-testid={`pricing-override-edit-${override.id}`}
 												>
 													<Edit className="h-4 w-4" />
@@ -456,6 +457,7 @@ export function PricingOverridesView() {
 													variant="ghost"
 													size="sm"
 													onClick={() => setOverrideToDelete(override)}
+													aria-label={`Delete pricing override ${override.name}`}
 													data-testid={`pricing-override-delete-${override.id}`}
 												>
 													<Trash2 className="h-4 w-4" />

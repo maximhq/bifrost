@@ -1081,6 +1081,19 @@ func TestGetPricingOverridesByScope_NonGlobalWithoutScopeIDReturnsEmpty(t *testi
 	assert.Empty(t, overrides)
 }
 
+func TestGetPricingOverridesByScope_EmptyScopeWithScopeIDReturnsEmpty(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providerScopeID := "openai"
+	override := newPricingOverrideForScopeTest("po-provider", "provider-rule", tables.PricingOverrideScopeProvider, &providerScopeID)
+	require.NoError(t, store.CreatePricingOverride(ctx, override))
+
+	overrides, err := store.GetPricingOverridesByScope(ctx, "", "openai")
+	require.NoError(t, err)
+	assert.Empty(t, overrides)
+}
+
 func TestGetPricingOverridesByScope_NonGlobalWithScopeID(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

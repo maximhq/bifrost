@@ -1102,6 +1102,9 @@ func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, rule *table
 	if strings.TrimSpace(rule.ID) == "" {
 		rule.ID = uuid.NewString()
 	}
+	if _, exists := m.pricingOverrides[rule.ID]; exists {
+		return configstore.ErrAlreadyExists
+	}
 
 	override := *rule
 	m.pricingOverrides[override.ID] = override

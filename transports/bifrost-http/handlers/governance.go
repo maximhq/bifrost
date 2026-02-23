@@ -3097,6 +3097,8 @@ func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
 
 	if err := h.governanceManager.RemovePricingOverride(ctx, overrideID); err != nil {
 		logger.Error("failed to remove pricing override from memory: %v", err)
+		SendError(ctx, 500, fmt.Sprintf("Failed to remove pricing override from memory: %v", err))
+		return
 	}
 
 	SendJSON(ctx, map[string]interface{}{
