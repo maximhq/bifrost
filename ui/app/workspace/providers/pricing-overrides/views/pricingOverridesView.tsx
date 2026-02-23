@@ -599,8 +599,8 @@ export function PricingOverridesView() {
 								}
 								placeholder="All request types"
 								variant="default"
-								className="w-full bg-white dark:bg-zinc-800"
-								commandClassName="w-full max-w-96 [&_[cmdk-item][data-selected=true]]:bg-muted [&_[cmdk-item][data-selected=true]]:text-foreground"
+								className="w-full !bg-white !text-foreground hover:!bg-white dark:!bg-zinc-800 dark:hover:!bg-zinc-800"
+								commandClassName="w-full max-w-96 [&_[cmdk-item][data-selected=true]]:!bg-muted [&_[cmdk-item][data-selected=true]]:!text-foreground [&_[cmdk-item]>div:first-child]:!border-border [&_[cmdk-item][aria-selected=true]>div:first-child]:!bg-muted [&_[cmdk-item][aria-selected=true]>div:first-child]:!text-foreground [&_[cmdk-item][aria-selected=true]>div:first-child_svg]:!bg-transparent [&_[cmdk-item][aria-selected=true]>div:first-child_svg]:!text-foreground"
 								animation={0}
 								data-testid="pricing-override-request-types-select"
 							/>

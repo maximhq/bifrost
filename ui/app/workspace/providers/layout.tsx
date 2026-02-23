@@ -2,7 +2,7 @@
 
 import { NoPermissionView } from "@/components/noPermissionView"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { Box, CircleDollarSign, Route, Wallet } from "lucide-react"
+import { Box, Calculator, CircleDollarSign, Route, Wallet } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
@@ -12,7 +12,7 @@ const tabs = [
   { label: "Model providers", href: "/workspace/providers", icon: Box },
   { label: "Budgets & limits", href: "/workspace/providers/model-limits", icon: Wallet },
   { label: "Routing rules", href: "/workspace/providers/routing-rules", icon: Route },
-  { label: "Pricing overrides", href: "/workspace/providers/pricing-overrides", icon: CircleDollarSign },
+  { label: "Pricing overrides", href: "/workspace/providers/pricing-overrides", icon: Calculator },
   { label: "Custom pricing", href: "/workspace/providers/custom-pricing", icon: CircleDollarSign },
 ]
 
