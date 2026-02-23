@@ -1151,11 +1151,11 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx) (*SpeechRequest, *schemas.Bi
 	if req.SpeechInput == nil || req.SpeechInput.Input == "" {
 		return nil, nil, fmt.Errorf("input is required for speech completion")
 	}
-	if req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
-		return nil, nil, fmt.Errorf("voice is required for speech completion")
-	}
 	if req.SpeechParameters == nil {
 		req.SpeechParameters = &schemas.SpeechParameters{}
+	}
+	if req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
+		return nil, nil, fmt.Errorf("voice is required for speech completion")
 	}
 	extraParams, err := extractExtraParams(ctx.PostBody(), speechParamsKnownFields)
 	if err != nil {
