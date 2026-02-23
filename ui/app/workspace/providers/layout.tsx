@@ -12,6 +12,7 @@ const tabs = [
   { label: "Model providers", href: "/workspace/providers", icon: Box },
   { label: "Budgets & limits", href: "/workspace/providers/model-limits", icon: Wallet },
   { label: "Routing rules", href: "/workspace/providers/routing-rules", icon: Route },
+  { label: "Pricing overrides", href: "/workspace/providers/pricing-overrides", icon: CircleDollarSign },
   { label: "Custom pricing", href: "/workspace/providers/custom-pricing", icon: CircleDollarSign },
 ]
 
@@ -30,6 +31,7 @@ export default function ProvidersLayout({ children }: { children: React.ReactNod
       (tab.href === "/workspace/providers" && hasProvidersAccess) ||
       (tab.href === "/workspace/providers/custom-pricing" && hasSettingsAccess) ||
       (tab.href === "/workspace/providers/routing-rules" && hasRoutingRulesAccess) ||
+      (tab.href === "/workspace/providers/pricing-overrides" && hasGovernanceAccess) ||
       (tab.href === "/workspace/providers/model-limits" && hasGovernanceAccess),
   )
 

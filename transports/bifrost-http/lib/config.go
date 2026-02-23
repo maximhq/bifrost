@@ -1160,6 +1160,37 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			routingRulesToAdd = append(routingRulesToAdd, configData.Governance.RoutingRules[i])
 		}
 	}
+	// Merge PricingOverrides by ID with hash comparison
+	pricingOverridesToAdd := make([]configstoreTables.TablePricingOverride, 0)
+	pricingOverridesToUpdate := make([]configstoreTables.TablePricingOverride, 0)
+	for i, newPricingOverride := range configData.Governance.PricingOverrides {
+		filePricingOverrideHash, err := configstore.GeneratePricingOverrideHash(newPricingOverride)
+		if err != nil {
+			logger.Warn("failed to generate pricing override hash for %s: %v", newPricingOverride.ID, err)
+			continue
+		}
+		configData.Governance.PricingOverrides[i].ConfigHash = filePricingOverrideHash
+
+		found := false
+		for j, existingPricingOverride := range governanceConfig.PricingOverrides {
+			if existingPricingOverride.ID == newPricingOverride.ID {
+				found = true
+				if existingPricingOverride.ConfigHash != filePricingOverrideHash {
+					logger.Debug("config hash mismatch for pricing override %s, syncing from config file", newPricingOverride.ID)
+					configData.Governance.PricingOverrides[i].ConfigHash = filePricingOverrideHash
+					pricingOverridesToUpdate = append(pricingOverridesToUpdate, configData.Governance.PricingOverrides[i])
+					governanceConfig.PricingOverrides[j] = configData.Governance.PricingOverrides[i]
+				} else {
+					logger.Debug("config hash matches for pricing override %s, keeping DB config", newPricingOverride.ID)
+				}
+				break
+			}
+		}
+		if !found {
+			configData.Governance.PricingOverrides[i].ConfigHash = filePricingOverrideHash
+			pricingOverridesToAdd = append(pricingOverridesToAdd, configData.Governance.PricingOverrides[i])
+		}
+	}
 	// Add merged items to config
 	config.GovernanceConfig.Budgets = append(governanceConfig.Budgets, budgetsToAdd...)
 	config.GovernanceConfig.RateLimits = append(governanceConfig.RateLimits, rateLimitsToAdd...)
@@ -1167,13 +1198,15 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	config.GovernanceConfig.Teams = append(governanceConfig.Teams, teamsToAdd...)
 	config.GovernanceConfig.VirtualKeys = append(governanceConfig.VirtualKeys, virtualKeysToAdd...)
 	config.GovernanceConfig.RoutingRules = append(governanceConfig.RoutingRules, routingRulesToAdd...)
+	config.GovernanceConfig.PricingOverrides = append(governanceConfig.PricingOverrides, pricingOverridesToAdd...)
 	// Update store with merged config items
 	hasChanges := len(budgetsToAdd) > 0 || len(budgetsToUpdate) > 0 ||
 		len(rateLimitsToAdd) > 0 || len(rateLimitsToUpdate) > 0 ||
 		len(customersToAdd) > 0 || len(customersToUpdate) > 0 ||
 		len(teamsToAdd) > 0 || len(teamsToUpdate) > 0 ||
 		len(virtualKeysToAdd) > 0 || len(virtualKeysToUpdate) > 0 ||
-		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0
+		len(routingRulesToAdd) > 0 || len(routingRulesToUpdate) > 0 ||
+		len(pricingOverridesToAdd) > 0 || len(pricingOverridesToUpdate) > 0
 	if config.ConfigStore != nil && hasChanges {
 		err := updateGovernanceConfigInStore(ctx, config,
 			budgetsToAdd, budgetsToUpdate,
@@ -1181,7 +1214,8 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 			customersToAdd, customersToUpdate,
 			teamsToAdd, teamsToUpdate,
 			virtualKeysToAdd, virtualKeysToUpdate,
-			routingRulesToAdd, routingRulesToUpdate)
+			routingRulesToAdd, routingRulesToUpdate,
+			pricingOverridesToAdd, pricingOverridesToUpdate)
 		if err != nil {
 			logger.Fatal("failed to sync governance config: %v", err)
 		}
@@ -1204,6 +1238,8 @@ func updateGovernanceConfigInStore(
 	virtualKeysToUpdate []configstoreTables.TableVirtualKey,
 	routingRulesToAdd []configstoreTables.TableRoutingRule,
 	routingRulesToUpdate []configstoreTables.TableRoutingRule,
+	pricingOverridesToAdd []configstoreTables.TablePricingOverride,
+	pricingOverridesToUpdate []configstoreTables.TablePricingOverride,
 ) error {
 	logger.Debug("updating governance config in store with merged items")
 	return config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -1315,6 +1351,20 @@ func updateGovernanceConfigInStore(
 			}
 		}
 
+		// Create pricing overrides (new from config.json)
+		for _, pricingOverride := range pricingOverridesToAdd {
+			if err := config.ConfigStore.CreatePricingOverride(ctx, &pricingOverride, tx); err != nil {
+				return fmt.Errorf("failed to create pricing override %s: %w", pricingOverride.ID, err)
+			}
+		}
+
+		// Update pricing overrides (config.json changed)
+		for _, pricingOverride := range pricingOverridesToUpdate {
+			if err := config.ConfigStore.UpdatePricingOverride(ctx, &pricingOverride, tx); err != nil {
+				return fmt.Errorf("failed to update pricing override %s: %w", pricingOverride.ID, err)
+			}
+		}
+
 		return nil
 	})
 }
@@ -1325,11 +1375,12 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 		logger.Debug("createGovernanceConfigInStore: ConfigStore is nil, skipping")
 		return
 	}
-	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys, %d routing_rules",
+	logger.Debug("createGovernanceConfigInStore: creating %d budgets, %d rate_limits, %d virtual_keys, %d routing_rules, %d pricing_overrides",
 		len(config.GovernanceConfig.Budgets),
 		len(config.GovernanceConfig.RateLimits),
 		len(config.GovernanceConfig.VirtualKeys),
-		len(config.GovernanceConfig.RoutingRules))
+		len(config.GovernanceConfig.RoutingRules),
+		len(config.GovernanceConfig.PricingOverrides))
 	if err := config.ConfigStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		for i := range config.GovernanceConfig.Budgets {
 			budget := &config.GovernanceConfig.Budgets[i]
@@ -1393,6 +1444,19 @@ func createGovernanceConfigInStore(ctx context.Context, config *Config) {
 			}
 			if err := config.ConfigStore.CreateRoutingRule(ctx, rule, tx); err != nil {
 				return fmt.Errorf("failed to create routing rule %s: %w", rule.ID, err)
+			}
+		}
+
+		for i := range config.GovernanceConfig.PricingOverrides {
+			override := &config.GovernanceConfig.PricingOverrides[i]
+			overrideHash, err := configstore.GeneratePricingOverrideHash(*override)
+			if err != nil {
+				logger.Warn("failed to generate pricing override hash for %s: %v", override.ID, err)
+			} else {
+				override.ConfigHash = overrideHash
+			}
+			if err := config.ConfigStore.CreatePricingOverride(ctx, override, tx); err != nil {
+				return fmt.Errorf("failed to create pricing override %s: %w", override.ID, err)
 			}
 		}
 
@@ -1783,7 +1847,7 @@ func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData
 		logger.Error("failed to initialize pricing manager: %v", err)
 	} else {
 		config.ModelCatalog = pricingManager
-		applyProviderPricingOverrides(config.ModelCatalog, config.Providers)
+		applyGovernancePricingOverrides(config.ModelCatalog, config.GovernanceConfig)
 	}
 
 	// Initialize MCP catalog
@@ -2003,7 +2067,6 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 				SendBackRawRequest:       dbProvider.SendBackRawRequest,
 				SendBackRawResponse:      dbProvider.SendBackRawResponse,
 				CustomProviderConfig:     dbProvider.CustomProviderConfig,
-				PricingOverrides:         dbProvider.PricingOverrides,
 				ConfigHash:               dbProvider.ConfigHash,
 			}
 			if err := ValidateCustomProvider(providerConfig, provider); err != nil {
@@ -2149,7 +2212,7 @@ func initDefaultFrameworkConfig(ctx context.Context, config *Config) error {
 		logger.Error("failed to initialize model catalog: %v", err)
 	} else {
 		config.ModelCatalog = modelCatalog
-		applyProviderPricingOverrides(config.ModelCatalog, config.Providers)
+		applyGovernancePricingOverrides(config.ModelCatalog, config.GovernanceConfig)
 	}
 
 	// Initialize MCP catalog
@@ -3466,13 +3529,17 @@ func DeepCopy[T any](in T) (T, error) {
 	return out, err
 }
 
-func applyProviderPricingOverrides(catalog *modelcatalog.ModelCatalog, providers map[schemas.ModelProvider]configstore.ProviderConfig) {
+func applyGovernancePricingOverrides(catalog *modelcatalog.ModelCatalog, governanceConfig *configstore.GovernanceConfig) {
 	if catalog == nil {
 		return
 	}
-	for provider, providerConfig := range providers {
-		if err := catalog.SetProviderPricingOverrides(provider, providerConfig.PricingOverrides); err != nil {
-			logger.Warn("failed to load pricing overrides for provider %s: %v", provider, err)
+	if governanceConfig == nil {
+		if err := catalog.SetPricingOverrides(nil); err != nil {
+			logger.Warn("failed to clear pricing overrides from model catalog: %v", err)
 		}
+		return
+	}
+	if err := catalog.SetPricingOverrides(governanceConfig.PricingOverrides); err != nil {
+		logger.Warn("failed to load scoped pricing overrides into model catalog: %v", err)
 	}
 }

@@ -1,14 +1,30 @@
 package modelcatalog
 
 import (
+	"context"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// PricingScopeIDsFromContext extracts selected key and virtual key IDs used for scoped pricing overrides.
+func PricingScopeIDsFromContext(ctx context.Context) (string, string) {
+	if ctx == nil {
+		return "", ""
+	}
+	selectedKeyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
+	virtualKeyID, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string)
+	return strings.TrimSpace(selectedKeyID), strings.TrimSpace(virtualKeyID)
+}
+
 // CalculateCost calculates the cost of a Bifrost response
 func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
+	return mc.CalculateCostWithScopes(result, "", "")
+}
+
+// CalculateCostWithScopes calculates the cost of a Bifrost response with scoped pricing context.
+func (mc *ModelCatalog) CalculateCostWithScopes(result *schemas.BifrostResponse, selectedKeyID string, virtualKeyID string) float64 {
 	if result == nil {
 		return 0.0
 	}
@@ -119,7 +135,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		if imageUsage != nil && requestType == schemas.ImageGenerationStreamRequest {
 			requestType = schemas.ImageGenerationRequest
 		}
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage)
+		cost = mc.CalculateCostFromUsageWithScopes(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage, selectedKeyID, virtualKeyID)
 	}
 
 	return cost
@@ -127,6 +143,12 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 
 // CalculateCostWithCacheDebug calculates the cost of a Bifrost response with cache debug information
 func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostResponse) float64 {
+	return mc.CalculateCostWithCacheDebugWithScopes(result, "", "")
+}
+
+// CalculateCostWithCacheDebugWithScopes calculates the cost of a Bifrost response with cache
+// debug information and scoped pricing context.
+func (mc *ModelCatalog) CalculateCostWithCacheDebugWithScopes(result *schemas.BifrostResponse, selectedKeyID string, virtualKeyID string) float64 {
 	if result == nil {
 		return 0.0
 	}
@@ -136,35 +158,40 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 			if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
 				return 0
 			} else if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				return mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
+				return mc.CalculateCostFromUsageWithScopes(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, selectedKeyID, virtualKeyID)
 			}
 
 			// Don't over-bill cache hits if fields are missing.
 			return 0
 		} else {
-			baseCost := mc.CalculateCost(result)
+			baseCost := mc.CalculateCostWithScopes(result, selectedKeyID, virtualKeyID)
 			var semanticCacheCost float64
 			if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-				semanticCacheCost = mc.CalculateCostFromUsage(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
+				semanticCacheCost = mc.CalculateCostFromUsageWithScopes(*cacheDebug.ProviderUsed, *cacheDebug.ModelUsed, "", &schemas.BifrostLLMUsage{
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, selectedKeyID, virtualKeyID)
 			}
 
 			return baseCost + semanticCacheCost
 		}
 	}
 
-	return mc.CalculateCost(result)
+	return mc.CalculateCostWithScopes(result, selectedKeyID, virtualKeyID)
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
 func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage) float64 {
+	return mc.CalculateCostFromUsageWithScopes(provider, model, deployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage, "", "")
+}
+
+// CalculateCostFromUsageWithScopes calculates usage cost with scoped pricing override context.
+func (mc *ModelCatalog) CalculateCostFromUsageWithScopes(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage, selectedKeyID string, virtualKeyID string) float64 {
 	// Allow audio-only and image-only flows by only returning early if we have no usage data at all
 	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil {
 		return 0.0
@@ -176,11 +203,11 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 	// Get pricing for the model
-	pricing, exists := mc.getPricing(model, provider, requestType)
+	pricing, exists := mc.getPricing(model, provider, requestType, selectedKeyID, virtualKeyID)
 	if !exists {
 		if deployment != "" {
 			mc.logger.Debug("pricing not found for model %s and provider %s of request type %s, trying with deployment %s", model, provider, normalizeRequestType(requestType), deployment)
-			pricing, exists = mc.getPricing(deployment, provider, requestType)
+			pricing, exists = mc.getPricing(deployment, provider, requestType, selectedKeyID, virtualKeyID)
 			if !exists {
 				mc.logger.Debug("pricing not found for deployment %s and provider %s of request type %s, skipping cost calculation", deployment, provider, normalizeRequestType(requestType))
 				return 0.0
@@ -451,7 +478,7 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
 		if pricing.CacheCreationInputTokenCost != nil {
 			outputCost += float64(cachedCompletionTokens) * *pricing.CacheCreationInputTokenCost
-		} 
+		}
 	}
 
 	totalCost := inputCost + outputCost
@@ -460,7 +487,7 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 }
 
 // getPricing returns pricing information for a model (thread-safe)
-func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
+func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType, selectedKeyID string, virtualKeyID string) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	pricing, ok := mc.resolvePricingEntryLocked(model, provider, requestType)
 	mc.mu.RUnlock()
@@ -468,7 +495,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		return nil, false
 	}
 
-	patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), model, requestType, pricing)
+	patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), selectedKeyID, virtualKeyID, model, requestType, pricing)
 	return &patched, true
 }
 

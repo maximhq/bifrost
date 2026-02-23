@@ -6,5 +6,4 @@ export { GovernanceFormFragment } from "./governanceFormFragment";
 export { NetworkFormFragment } from "./networkFormFragment";
 export { PerformanceFormFragment } from "./performanceFormFragment";
 export { PerformanceFormFragment as PerformanceTab } from "./performanceFormFragment";
-export { PricingOverridesFormFragment } from "./pricingOverridesFormFragment";
 export { ProxyFormFragment } from "./proxyFormFragment";

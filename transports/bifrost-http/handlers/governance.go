@@ -38,6 +38,8 @@ type GovernanceManager interface {
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	ReloadRoutingRule(ctx context.Context, id string) error
 	RemoveRoutingRule(ctx context.Context, id string) error
+	ReloadPricingOverride(ctx context.Context, id string) (*configstoreTables.TablePricingOverride, error)
+	RemovePricingOverride(ctx context.Context, id string) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -150,6 +152,51 @@ type UpdateRoutingRuleRequest struct {
 	ScopeID       *string        `json:"scope_id,omitempty"`
 }
 
+type CreatePricingOverrideRequest struct {
+	Name    string  `json:"name" validate:"required"`
+	Enabled *bool   `json:"enabled,omitempty"`
+	Scope   string  `json:"scope,omitempty"`
+	ScopeID *string `json:"scope_id,omitempty"`
+	schemas.ProviderPricingOverride
+}
+
+type UpdatePricingOverrideRequest struct {
+	Name         *string                           `json:"name,omitempty"`
+	Enabled      *bool                             `json:"enabled,omitempty"`
+	Scope        *string                           `json:"scope,omitempty"`
+	ScopeID      *string                           `json:"scope_id,omitempty"`
+	ModelPattern *string                           `json:"model_pattern,omitempty"`
+	MatchType    *schemas.PricingOverrideMatchType `json:"match_type,omitempty"`
+	RequestTypes *[]schemas.RequestType            `json:"request_types,omitempty"`
+
+	InputCostPerToken                          *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken                         *float64 `json:"output_cost_per_token,omitempty"`
+	InputCostPerVideoPerSecond                 *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	InputCostPerAudioPerSecond                 *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerCharacter                      *float64 `json:"input_cost_per_character,omitempty"`
+	OutputCostPerCharacter                     *float64 `json:"output_cost_per_character,omitempty"`
+	InputCostPerTokenAbove128kTokens           *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerCharacterAbove128kTokens       *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens           *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens  *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens  *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens          *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	OutputCostPerCharacterAbove128kTokens      *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCost                    *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost                *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches                   *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches                  *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerImageToken                     *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken                    *float64 `json:"output_cost_per_image_token,omitempty"`
+	InputCostPerImage                          *float64 `json:"input_cost_per_image,omitempty"`
+	OutputCostPerImage                         *float64 `json:"output_cost_per_image,omitempty"`
+	CacheReadInputImageTokenCost               *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+}
+
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
 type CreateRateLimitRequest struct {
 	TokenMaxLimit        *int64  `json:"token_max_limit,omitempty"`        // Maximum tokens allowed
@@ -251,6 +298,13 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.getRoutingRule, middlewares...))
 	r.PUT("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRule, middlewares...))
 	r.DELETE("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRule, middlewares...))
+
+	// Pricing Overrides CRUD operations
+	r.GET("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.getPricingOverrides, middlewares...))
+	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
+	r.GET("/api/governance/pricing-overrides/{override_id}", lib.ChainMiddlewares(h.getPricingOverride, middlewares...))
+	r.PUT("/api/governance/pricing-overrides/{override_id}", lib.ChainMiddlewares(h.updatePricingOverride, middlewares...))
+	r.DELETE("/api/governance/pricing-overrides/{override_id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 
 	// Model Config CRUD operations
 	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
@@ -2794,4 +2848,363 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// Pricing Overrides CRUD Operations
+
+func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
+	scope := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope")))
+	scopeID := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_id")))
+
+	var (
+		overrides []configstoreTables.TablePricingOverride
+		err       error
+	)
+	if scope != "" || scopeID != "" {
+		overrides, err = h.configStore.GetPricingOverridesByScope(ctx, scope, scopeID)
+	} else {
+		overrides, err = h.configStore.GetPricingOverrides(ctx)
+	}
+	if err != nil {
+		SendError(ctx, 500, "Failed to retrieve pricing overrides")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"pricing_overrides": overrides,
+		"count":             len(overrides),
+	})
+}
+
+func (h *GovernanceHandler) getPricingOverride(ctx *fasthttp.RequestCtx) {
+	overrideID := ctx.UserValue("override_id").(string)
+	override, err := h.configStore.GetPricingOverride(ctx, overrideID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Pricing override not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve pricing override")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"pricing_override": override,
+	})
+}
+
+func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
+	var req CreatePricingOverrideRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	if strings.TrimSpace(req.Name) == "" {
+		SendError(ctx, 400, "name field is required")
+		return
+	}
+	if strings.TrimSpace(req.ModelPattern) == "" {
+		SendError(ctx, 400, "model_pattern field is required")
+		return
+	}
+
+	scope, scopeID, err := normalizePricingOverrideScope(req.Scope, req.ScopeID)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
+	overridePatch := req.ProviderPricingOverride
+	if err := validatePricingOverrides([]schemas.ProviderPricingOverride{overridePatch}); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid pricing override: %v", err))
+		return
+	}
+	if !hasPricingOverridePatchFields(overridePatch) {
+		SendError(ctx, 400, "pricing patch must include at least one pricing field")
+		return
+	}
+	if err := h.validatePricingOverrideScopeReference(ctx, scope, scopeID); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	override := tablePricingOverrideFromPatch(
+		uuid.NewString(),
+		req.Name,
+		enabled,
+		scope,
+		scopeID,
+		overridePatch,
+	)
+	hash, hashErr := configstore.GeneratePricingOverrideHash(override)
+	if hashErr == nil {
+		override.ConfigHash = hash
+	}
+
+	if err := h.configStore.CreatePricingOverride(ctx, &override); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to create pricing override: %v", err))
+		return
+	}
+
+	reloaded, reloadErr := h.governanceManager.ReloadPricingOverride(ctx, override.ID)
+	if reloadErr != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload pricing override in memory: %v, please restart bifrost to sync with the database", reloadErr))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "Pricing override created successfully",
+		"pricing_override": reloaded,
+	})
+}
+
+func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
+	overrideID := ctx.UserValue("override_id").(string)
+
+	var req UpdatePricingOverrideRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	override, err := h.configStore.GetPricingOverride(ctx, overrideID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Pricing override not found")
+			return
+		}
+		SendError(ctx, 500, "Failed to retrieve pricing override")
+		return
+	}
+
+	if req.Name != nil {
+		override.Name = *req.Name
+	}
+	if req.Enabled != nil {
+		override.Enabled = *req.Enabled
+	}
+	if req.Scope != nil {
+		override.Scope = configstoreTables.PricingOverrideScope(strings.TrimSpace(*req.Scope))
+	}
+	if req.ScopeID != nil {
+		scopeID := strings.TrimSpace(*req.ScopeID)
+		override.ScopeID = &scopeID
+	}
+	if req.ModelPattern != nil {
+		override.ModelPattern = *req.ModelPattern
+	}
+	if req.MatchType != nil {
+		override.MatchType = *req.MatchType
+	}
+	if req.RequestTypes != nil {
+		override.RequestTypes = *req.RequestTypes
+	}
+
+	override.InputCostPerToken = applyOptionalFloatPatch(override.InputCostPerToken, req.InputCostPerToken)
+	override.OutputCostPerToken = applyOptionalFloatPatch(override.OutputCostPerToken, req.OutputCostPerToken)
+	override.InputCostPerVideoPerSecond = applyOptionalFloatPatch(override.InputCostPerVideoPerSecond, req.InputCostPerVideoPerSecond)
+	override.InputCostPerAudioPerSecond = applyOptionalFloatPatch(override.InputCostPerAudioPerSecond, req.InputCostPerAudioPerSecond)
+	override.InputCostPerCharacter = applyOptionalFloatPatch(override.InputCostPerCharacter, req.InputCostPerCharacter)
+	override.OutputCostPerCharacter = applyOptionalFloatPatch(override.OutputCostPerCharacter, req.OutputCostPerCharacter)
+	override.InputCostPerTokenAbove128kTokens = applyOptionalFloatPatch(override.InputCostPerTokenAbove128kTokens, req.InputCostPerTokenAbove128kTokens)
+	override.InputCostPerCharacterAbove128kTokens = applyOptionalFloatPatch(override.InputCostPerCharacterAbove128kTokens, req.InputCostPerCharacterAbove128kTokens)
+	override.InputCostPerImageAbove128kTokens = applyOptionalFloatPatch(override.InputCostPerImageAbove128kTokens, req.InputCostPerImageAbove128kTokens)
+	override.InputCostPerVideoPerSecondAbove128kTokens = applyOptionalFloatPatch(override.InputCostPerVideoPerSecondAbove128kTokens, req.InputCostPerVideoPerSecondAbove128kTokens)
+	override.InputCostPerAudioPerSecondAbove128kTokens = applyOptionalFloatPatch(override.InputCostPerAudioPerSecondAbove128kTokens, req.InputCostPerAudioPerSecondAbove128kTokens)
+	override.OutputCostPerTokenAbove128kTokens = applyOptionalFloatPatch(override.OutputCostPerTokenAbove128kTokens, req.OutputCostPerTokenAbove128kTokens)
+	override.OutputCostPerCharacterAbove128kTokens = applyOptionalFloatPatch(override.OutputCostPerCharacterAbove128kTokens, req.OutputCostPerCharacterAbove128kTokens)
+	override.InputCostPerTokenAbove200kTokens = applyOptionalFloatPatch(override.InputCostPerTokenAbove200kTokens, req.InputCostPerTokenAbove200kTokens)
+	override.OutputCostPerTokenAbove200kTokens = applyOptionalFloatPatch(override.OutputCostPerTokenAbove200kTokens, req.OutputCostPerTokenAbove200kTokens)
+	override.CacheCreationInputTokenCostAbove200kTokens = applyOptionalFloatPatch(override.CacheCreationInputTokenCostAbove200kTokens, req.CacheCreationInputTokenCostAbove200kTokens)
+	override.CacheReadInputTokenCostAbove200kTokens = applyOptionalFloatPatch(override.CacheReadInputTokenCostAbove200kTokens, req.CacheReadInputTokenCostAbove200kTokens)
+	override.CacheReadInputTokenCost = applyOptionalFloatPatch(override.CacheReadInputTokenCost, req.CacheReadInputTokenCost)
+	override.CacheCreationInputTokenCost = applyOptionalFloatPatch(override.CacheCreationInputTokenCost, req.CacheCreationInputTokenCost)
+	override.InputCostPerTokenBatches = applyOptionalFloatPatch(override.InputCostPerTokenBatches, req.InputCostPerTokenBatches)
+	override.OutputCostPerTokenBatches = applyOptionalFloatPatch(override.OutputCostPerTokenBatches, req.OutputCostPerTokenBatches)
+	override.InputCostPerImageToken = applyOptionalFloatPatch(override.InputCostPerImageToken, req.InputCostPerImageToken)
+	override.OutputCostPerImageToken = applyOptionalFloatPatch(override.OutputCostPerImageToken, req.OutputCostPerImageToken)
+	override.InputCostPerImage = applyOptionalFloatPatch(override.InputCostPerImage, req.InputCostPerImage)
+	override.OutputCostPerImage = applyOptionalFloatPatch(override.OutputCostPerImage, req.OutputCostPerImage)
+	override.CacheReadInputImageTokenCost = applyOptionalFloatPatch(override.CacheReadInputImageTokenCost, req.CacheReadInputImageTokenCost)
+
+	scope, scopeID, scopeErr := normalizePricingOverrideScope(string(override.Scope), override.ScopeID)
+	if scopeErr != nil {
+		SendError(ctx, 400, scopeErr.Error())
+		return
+	}
+	override.Scope = scope
+	override.ScopeID = scopeID
+	if err := h.validatePricingOverrideScopeReference(ctx, scope, scopeID); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
+	if err := validatePricingOverrides([]schemas.ProviderPricingOverride{override.ToProviderPricingOverride()}); err != nil {
+		SendError(ctx, 400, fmt.Sprintf("invalid pricing override: %v", err))
+		return
+	}
+	if !hasPricingOverridePatchFields(override.ToProviderPricingOverride()) {
+		SendError(ctx, 400, "pricing patch must include at least one pricing field")
+		return
+	}
+
+	hash, hashErr := configstore.GeneratePricingOverrideHash(*override)
+	if hashErr == nil {
+		override.ConfigHash = hash
+	}
+
+	if err := h.configStore.UpdatePricingOverride(ctx, override); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to update pricing override in database: %v", err))
+		return
+	}
+
+	reloaded, reloadErr := h.governanceManager.ReloadPricingOverride(ctx, override.ID)
+	if reloadErr != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload pricing override in memory: %v, please restart bifrost to sync with the database", reloadErr))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "Pricing override updated successfully",
+		"pricing_override": reloaded,
+	})
+}
+
+func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
+	overrideID := ctx.UserValue("override_id").(string)
+	if err := h.configStore.DeletePricingOverride(ctx, overrideID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Pricing override not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("Failed to delete pricing override from database: %v", err))
+		return
+	}
+
+	if err := h.governanceManager.RemovePricingOverride(ctx, overrideID); err != nil {
+		logger.Error("failed to remove pricing override from memory: %v", err)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Pricing override deleted successfully",
+	})
+}
+
+func normalizePricingOverrideScope(scopeRaw string, scopeID *string) (configstoreTables.PricingOverrideScope, *string, error) {
+	scope := configstoreTables.PricingOverrideScope(strings.TrimSpace(scopeRaw))
+	if scope == "" {
+		scope = configstoreTables.PricingOverrideScopeGlobal
+	}
+
+	switch scope {
+	case configstoreTables.PricingOverrideScopeGlobal:
+		if scopeID != nil && strings.TrimSpace(*scopeID) != "" {
+			return "", nil, fmt.Errorf("scope_id must not be provided when scope is %q", scope)
+		}
+		return scope, nil, nil
+	case configstoreTables.PricingOverrideScopeProvider, configstoreTables.PricingOverrideScopeProviderKey, configstoreTables.PricingOverrideScopeVirtualKey:
+		if scopeID == nil || strings.TrimSpace(*scopeID) == "" {
+			return "", nil, fmt.Errorf("scope_id field is required when scope is %q", scope)
+		}
+		trimmed := strings.TrimSpace(*scopeID)
+		return scope, &trimmed, nil
+	default:
+		return "", nil, fmt.Errorf("unsupported scope %q", scopeRaw)
+	}
+}
+
+func (h *GovernanceHandler) validatePricingOverrideScopeReference(ctx context.Context, scope configstoreTables.PricingOverrideScope, scopeID *string) error {
+	switch scope {
+	case configstoreTables.PricingOverrideScopeGlobal:
+		return nil
+	case configstoreTables.PricingOverrideScopeProvider:
+		_, err := h.configStore.GetProviderConfig(ctx, schemas.ModelProvider(*scopeID))
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("provider %q not found for provider-scoped override", *scopeID)
+			}
+			return fmt.Errorf("failed to validate provider scope reference: %w", err)
+		}
+		return nil
+	case configstoreTables.PricingOverrideScopeProviderKey:
+		keys, err := h.configStore.GetKeysByIDs(ctx, []string{*scopeID})
+		if err != nil {
+			return fmt.Errorf("failed to validate provider key scope reference: %w", err)
+		}
+		if len(keys) == 0 {
+			return fmt.Errorf("provider key %q not found for provider_key scoped override", *scopeID)
+		}
+		return nil
+	case configstoreTables.PricingOverrideScopeVirtualKey:
+		_, err := h.configStore.GetVirtualKey(ctx, *scopeID)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				return fmt.Errorf("virtual key %q not found for virtual_key scoped override", *scopeID)
+			}
+			return fmt.Errorf("failed to validate virtual key scope reference: %w", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported scope %q", scope)
+	}
+}
+
+func tablePricingOverrideFromPatch(
+	id string,
+	name string,
+	enabled bool,
+	scope configstoreTables.PricingOverrideScope,
+	scopeID *string,
+	patch schemas.ProviderPricingOverride,
+) configstoreTables.TablePricingOverride {
+	return configstoreTables.TablePricingOverride{
+		ID:      id,
+		Name:    name,
+		Enabled: enabled,
+		Scope:   scope,
+		ScopeID: scopeID,
+
+		ModelPattern: patch.ModelPattern,
+		MatchType:    patch.MatchType,
+		RequestTypes: patch.RequestTypes,
+
+		InputCostPerToken:                          patch.InputCostPerToken,
+		OutputCostPerToken:                         patch.OutputCostPerToken,
+		InputCostPerVideoPerSecond:                 patch.InputCostPerVideoPerSecond,
+		InputCostPerAudioPerSecond:                 patch.InputCostPerAudioPerSecond,
+		InputCostPerCharacter:                      patch.InputCostPerCharacter,
+		OutputCostPerCharacter:                     patch.OutputCostPerCharacter,
+		InputCostPerTokenAbove128kTokens:           patch.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:       patch.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:           patch.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens:  patch.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens:  patch.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:          patch.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:      patch.OutputCostPerCharacterAbove128kTokens,
+		InputCostPerTokenAbove200kTokens:           patch.InputCostPerTokenAbove200kTokens,
+		OutputCostPerTokenAbove200kTokens:          patch.OutputCostPerTokenAbove200kTokens,
+		CacheCreationInputTokenCostAbove200kTokens: patch.CacheCreationInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCostAbove200kTokens:     patch.CacheReadInputTokenCostAbove200kTokens,
+		CacheReadInputTokenCost:                    patch.CacheReadInputTokenCost,
+		CacheCreationInputTokenCost:                patch.CacheCreationInputTokenCost,
+		InputCostPerTokenBatches:                   patch.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                  patch.OutputCostPerTokenBatches,
+		InputCostPerImageToken:                     patch.InputCostPerImageToken,
+		OutputCostPerImageToken:                    patch.OutputCostPerImageToken,
+		InputCostPerImage:                          patch.InputCostPerImage,
+		OutputCostPerImage:                         patch.OutputCostPerImage,
+		CacheReadInputImageTokenCost:               patch.CacheReadInputImageTokenCost,
+	}
+}
+
+func applyOptionalFloatPatch(current *float64, incoming *float64) *float64 {
+	if incoming != nil {
+		return incoming
+	}
+	return current
 }

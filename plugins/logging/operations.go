@@ -681,8 +681,12 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)
 	}
+	virtualKeyID := ""
+	if logEntry.VirtualKeyID != nil {
+		virtualKeyID = *logEntry.VirtualKeyID
+	}
 
-	baseCost := p.pricingManager.CalculateCostFromUsage(
+	baseCost := p.pricingManager.CalculateCostFromUsageWithScopes(
 		logEntry.Provider,
 		logEntry.Model,
 		"",
@@ -692,6 +696,8 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		nil,
 		nil,
 		nil,
+		logEntry.SelectedKeyID,
+		virtualKeyID,
 	)
 
 	// For cache misses, combine base cost with embedding cost if available
@@ -722,7 +728,7 @@ func (p *LoggerPlugin) calculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCa
 		return 0
 	}
 
-	return p.pricingManager.CalculateCostFromUsage(
+	return p.pricingManager.CalculateCostFromUsageWithScopes(
 		*cacheDebug.ProviderUsed,
 		*cacheDebug.ModelUsed,
 		"",
@@ -736,5 +742,7 @@ func (p *LoggerPlugin) calculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCa
 		nil,
 		nil,
 		nil,
+		"",
+		"",
 	)
 }

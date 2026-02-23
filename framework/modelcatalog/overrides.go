@@ -3,14 +3,18 @@ package modelcatalog
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-type compiledProviderPricingOverride struct {
+type compiledPricingOverride struct {
 	override         schemas.ProviderPricingOverride
+	scope            configstoreTables.PricingOverrideScope
+	scopeID          string
+	id               string
 	regex            *regexp.Regexp
 	requestModes     map[string]struct{}
 	hasRequestFilter bool
@@ -18,60 +22,178 @@ type compiledProviderPricingOverride struct {
 	order            int
 }
 
-func (mc *ModelCatalog) SetProviderPricingOverrides(provider schemas.ModelProvider, overrides []schemas.ProviderPricingOverride) error {
-	compiled := make([]compiledProviderPricingOverride, 0, len(overrides))
+func scopeKey(scope configstoreTables.PricingOverrideScope, scopeID string) string {
+	return string(scope) + ":" + scopeID
+}
+
+func normalizeScopeID(scope configstoreTables.PricingOverrideScope, scopeID *string) string {
+	if scope == configstoreTables.PricingOverrideScopeGlobal || scopeID == nil {
+		return ""
+	}
+	return strings.TrimSpace(*scopeID)
+}
+
+func (mc *ModelCatalog) SetPricingOverrides(overrides []configstoreTables.TablePricingOverride) error {
+	raw := make(map[string]configstoreTables.TablePricingOverride, len(overrides))
 	for i := range overrides {
-		item, err := compileProviderPricingOverride(i, overrides[i])
-		if err != nil {
-			return fmt.Errorf("invalid pricing override for provider %s at index %d: %w", provider, i, err)
-		}
-		compiled = append(compiled, item)
+		raw[overrides[i].ID] = overrides[i]
+	}
+	compiled, err := compilePricingOverrides(raw)
+	if err != nil {
+		return err
 	}
 
 	mc.overridesMu.Lock()
-	defer mc.overridesMu.Unlock()
-	if len(compiled) == 0 {
-		delete(mc.compiledOverrides, provider)
-		return nil
-	}
-	mc.compiledOverrides[provider] = compiled
+	mc.rawPricingOverrides = raw
+	mc.compiledPricingOverrides = compiled
+	mc.overridesMu.Unlock()
 	return nil
 }
 
-func (mc *ModelCatalog) DeleteProviderPricingOverrides(provider schemas.ModelProvider) {
+func (mc *ModelCatalog) UpsertPricingOverride(override configstoreTables.TablePricingOverride) error {
 	mc.overridesMu.Lock()
 	defer mc.overridesMu.Unlock()
-	delete(mc.compiledOverrides, provider)
+
+	raw := make(map[string]configstoreTables.TablePricingOverride, len(mc.rawPricingOverrides)+1)
+	for id, value := range mc.rawPricingOverrides {
+		raw[id] = value
+	}
+	raw[override.ID] = override
+
+	compiled, err := compilePricingOverrides(raw)
+	if err != nil {
+		return err
+	}
+	mc.rawPricingOverrides = raw
+	mc.compiledPricingOverrides = compiled
+	return nil
 }
 
-func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) configstoreTables.TableModelPricing {
+func (mc *ModelCatalog) DeletePricingOverride(id string) {
+	mc.overridesMu.Lock()
+	defer mc.overridesMu.Unlock()
+	if len(mc.rawPricingOverrides) == 0 {
+		return
+	}
+	raw := make(map[string]configstoreTables.TablePricingOverride, len(mc.rawPricingOverrides))
+	for key, value := range mc.rawPricingOverrides {
+		if key == id {
+			continue
+		}
+		raw[key] = value
+	}
+	compiled, err := compilePricingOverrides(raw)
+	if err != nil {
+		// Best effort delete: keep existing cache untouched on compilation errors.
+		return
+	}
+	mc.rawPricingOverrides = raw
+	mc.compiledPricingOverrides = compiled
+}
+
+func (mc *ModelCatalog) GetPricingOverridesSnapshot() []configstoreTables.TablePricingOverride {
 	mc.overridesMu.RLock()
-	overrides := mc.compiledOverrides[provider]
+	defer mc.overridesMu.RUnlock()
+	if len(mc.rawPricingOverrides) == 0 {
+		return nil
+	}
+	result := make([]configstoreTables.TablePricingOverride, 0, len(mc.rawPricingOverrides))
+	for _, item := range mc.rawPricingOverrides {
+		result = append(result, item)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result
+}
+
+func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverride) (map[string][]compiledPricingOverride, error) {
+	compiledByScope := make(map[string][]compiledPricingOverride)
+	if len(raw) == 0 {
+		return compiledByScope, nil
+	}
+
+	overrides := make([]configstoreTables.TablePricingOverride, 0, len(raw))
+	for _, item := range raw {
+		if !item.Enabled {
+			continue
+		}
+		overrides = append(overrides, item)
+	}
+
+	sort.SliceStable(overrides, func(i, j int) bool {
+		if overrides[i].CreatedAt.Equal(overrides[j].CreatedAt) {
+			return overrides[i].ID < overrides[j].ID
+		}
+		return overrides[i].CreatedAt.Before(overrides[j].CreatedAt)
+	})
+
+	scopeOrder := make(map[string]int)
+	for i := range overrides {
+		item := overrides[i]
+		compiled, err := compilePricingOverride(item)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pricing override %s: %w", item.ID, err)
+		}
+		key := scopeKey(compiled.scope, compiled.scopeID)
+		compiled.order = scopeOrder[key]
+		scopeOrder[key]++
+		compiledByScope[key] = append(compiledByScope[key], compiled)
+	}
+	return compiledByScope, nil
+}
+
+func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, selectedKeyID string, virtualKeyID string, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) configstoreTables.TableModelPricing {
+	mc.overridesMu.RLock()
+	overridesByScope := mc.compiledPricingOverrides
 	mc.overridesMu.RUnlock()
-	if len(overrides) == 0 {
+	if len(overridesByScope) == 0 {
 		return pricing
 	}
 
 	modelCandidates := []string{model}
 	mode := normalizeRequestType(requestType)
-	best := selectBestOverride(overrides, modelCandidates, mode)
-	if best == nil {
-		return pricing
+	scopeKeys := []string{
+		scopeKey(configstoreTables.PricingOverrideScopeProvider, string(provider)),
+		scopeKey(configstoreTables.PricingOverrideScopeGlobal, ""),
+	}
+	if selectedKeyID != "" {
+		scopeKeys = append([]string{scopeKey(configstoreTables.PricingOverrideScopeProviderKey, selectedKeyID)}, scopeKeys...)
+	}
+	if virtualKeyID != "" {
+		scopeKeys = append([]string{scopeKey(configstoreTables.PricingOverrideScopeVirtualKey, virtualKeyID)}, scopeKeys...)
 	}
 
-	return patchPricing(pricing, best.override)
+	for _, key := range scopeKeys {
+		overrides := overridesByScope[key]
+		if len(overrides) == 0 {
+			continue
+		}
+		best := selectBestOverride(overrides, modelCandidates, mode)
+		if best != nil {
+			return patchPricing(pricing, best.override)
+		}
+	}
+
+	return pricing
 }
 
-func compileProviderPricingOverride(order int, override schemas.ProviderPricingOverride) (compiledProviderPricingOverride, error) {
+func compilePricingOverride(override configstoreTables.TablePricingOverride) (compiledPricingOverride, error) {
 	pattern := strings.TrimSpace(override.ModelPattern)
 	if pattern == "" {
-		return compiledProviderPricingOverride{}, fmt.Errorf("model_pattern cannot be empty")
+		return compiledPricingOverride{}, fmt.Errorf("model_pattern cannot be empty")
 	}
 
-	result := compiledProviderPricingOverride{
-		override:     override,
-		requestModes: make(map[string]struct{}),
-		order:        order,
+	result := compiledPricingOverride{
+		id:               override.ID,
+		scope:            override.Scope,
+		scopeID:          normalizeScopeID(override.Scope, override.ScopeID),
+		override:         override.ToProviderPricingOverride(),
+		requestModes:     make(map[string]struct{}),
+		hasRequestFilter: false,
 	}
 	result.override.ModelPattern = pattern
 
@@ -80,18 +202,18 @@ func compileProviderPricingOverride(order int, override schemas.ProviderPricingO
 		result.literalChars = len(pattern)
 	case schemas.PricingOverrideMatchWildcard:
 		if !strings.Contains(pattern, "*") {
-			return compiledProviderPricingOverride{}, fmt.Errorf("wildcard model_pattern must contain '*'")
+			return compiledPricingOverride{}, fmt.Errorf("wildcard model_pattern must contain '*'")
 		}
 		result.literalChars = len(strings.ReplaceAll(pattern, "*", ""))
 	case schemas.PricingOverrideMatchRegex:
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			return compiledProviderPricingOverride{}, fmt.Errorf("invalid regex model_pattern: %w", err)
+			return compiledPricingOverride{}, fmt.Errorf("invalid regex model_pattern: %w", err)
 		}
 		result.regex = re
 		result.literalChars = len(pattern)
 	default:
-		return compiledProviderPricingOverride{}, fmt.Errorf("unsupported match_type: %s", override.MatchType)
+		return compiledPricingOverride{}, fmt.Errorf("unsupported match_type: %s", override.MatchType)
 	}
 
 	if len(override.RequestTypes) > 0 {
@@ -99,7 +221,7 @@ func compileProviderPricingOverride(order int, override schemas.ProviderPricingO
 		for _, requestType := range override.RequestTypes {
 			mode := normalizeRequestType(requestType)
 			if mode == "unknown" {
-				return compiledProviderPricingOverride{}, fmt.Errorf("unsupported request_type: %s", requestType)
+				return compiledPricingOverride{}, fmt.Errorf("unsupported request_type: %s", requestType)
 			}
 			result.requestModes[mode] = struct{}{}
 		}
@@ -108,8 +230,8 @@ func compileProviderPricingOverride(order int, override schemas.ProviderPricingO
 	return result, nil
 }
 
-func selectBestOverride(overrides []compiledProviderPricingOverride, modelCandidates []string, mode string) *compiledProviderPricingOverride {
-	var best *compiledProviderPricingOverride
+func selectBestOverride(overrides []compiledPricingOverride, modelCandidates []string, mode string) *compiledPricingOverride {
+	var best *compiledPricingOverride
 	for i := range overrides {
 		candidate := &overrides[i]
 		if candidate.hasRequestFilter {
@@ -127,7 +249,7 @@ func selectBestOverride(overrides []compiledProviderPricingOverride, modelCandid
 	return best
 }
 
-func matchesAnyModel(override *compiledProviderPricingOverride, modelCandidates []string) bool {
+func matchesAnyModel(override *compiledPricingOverride, modelCandidates []string) bool {
 	for _, model := range modelCandidates {
 		if matchesModel(override, model) {
 			return true
@@ -136,7 +258,7 @@ func matchesAnyModel(override *compiledProviderPricingOverride, modelCandidates 
 	return false
 }
 
-func matchesModel(override *compiledProviderPricingOverride, model string) bool {
+func matchesModel(override *compiledPricingOverride, model string) bool {
 	switch override.override.MatchType {
 	case schemas.PricingOverrideMatchExact:
 		return model == override.override.ModelPattern
@@ -162,7 +284,7 @@ func overridePriority(matchType schemas.PricingOverrideMatchType) int {
 	}
 }
 
-func isBetterOverride(candidate, best *compiledProviderPricingOverride) bool {
+func isBetterOverride(candidate, best *compiledPricingOverride) bool {
 	if best == nil {
 		return true
 	}

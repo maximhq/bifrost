@@ -131,6 +131,14 @@ type ConfigStore interface {
 	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
+	// Pricing Overrides CRUD
+	GetPricingOverrides(ctx context.Context) ([]tables.TablePricingOverride, error)
+	GetPricingOverridesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TablePricingOverride, error)
+	GetPricingOverride(ctx context.Context, id string) (*tables.TablePricingOverride, error)
+	CreatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error
+	UpdatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error
+	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
+
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)

@@ -1022,6 +1022,30 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+func (m *MockConfigStore) GetPricingOverrides(ctx context.Context) ([]tables.TablePricingOverride, error) {
+	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverridesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TablePricingOverride, error) {
+	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverride(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Helper functions for tests
 
 // createTempDir creates a temporary directory for test files
@@ -11849,18 +11873,18 @@ func TestGenerateClientConfigHash(t *testing.T) {
 	initTestLogger()
 
 	cc1 := configstore.ClientConfig{
-		DropExcessRequests:      true,
-		InitialPoolSize:         300,
-		PrometheusLabels:        []string{"label1", "label2"},
-		EnableLogging:           true,
-		DisableContentLogging:   false,
-		LogRetentionDays:        30,
-		EnableGovernance:        true,
+		DropExcessRequests:     true,
+		InitialPoolSize:        300,
+		PrometheusLabels:       []string{"label1", "label2"},
+		EnableLogging:          true,
+		DisableContentLogging:  false,
+		LogRetentionDays:       30,
+		EnableGovernance:       true,
 		EnforceAuthOnInference: false,
 		AllowDirectKeys:        true,
-		AllowedOrigins:          []string{"http://localhost:3000"},
-		MaxRequestBodySizeMB:    100,
-		EnableLiteLLMFallbacks:  false,
+		AllowedOrigins:         []string{"http://localhost:3000"},
+		MaxRequestBodySizeMB:   100,
+		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -12907,32 +12931,32 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		labels := []string{"provider", "model", "status"}
 
 		ccToSave := tables.TableClientConfig{
-			DropExcessRequests:      true,
-			InitialPoolSize:         300,
-			PrometheusLabels:        labels,
-			EnableLogging:           true,
-			DisableContentLogging:   false,
-			LogRetentionDays:        30,
-			EnableGovernance:        true,
+			DropExcessRequests:     true,
+			InitialPoolSize:        300,
+			PrometheusLabels:       labels,
+			EnableLogging:          true,
+			DisableContentLogging:  false,
+			LogRetentionDays:       30,
+			EnableGovernance:       true,
 			EnforceAuthOnInference: false,
-			AllowDirectKeys:         true,
-			MaxRequestBodySizeMB:    100,
-			EnableLiteLLMFallbacks:  false,
+			AllowDirectKeys:        true,
+			MaxRequestBodySizeMB:   100,
+			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
 		clientConfig := configstore.ClientConfig{
-			DropExcessRequests:      ccToSave.DropExcessRequests,
-			InitialPoolSize:         ccToSave.InitialPoolSize,
-			PrometheusLabels:        ccToSave.PrometheusLabels,
-			EnableLogging:           ccToSave.EnableLogging,
-			DisableContentLogging:   ccToSave.DisableContentLogging,
-			LogRetentionDays:        ccToSave.LogRetentionDays,
-			EnableGovernance:        ccToSave.EnableGovernance,
+			DropExcessRequests:     ccToSave.DropExcessRequests,
+			InitialPoolSize:        ccToSave.InitialPoolSize,
+			PrometheusLabels:       ccToSave.PrometheusLabels,
+			EnableLogging:          ccToSave.EnableLogging,
+			DisableContentLogging:  ccToSave.DisableContentLogging,
+			LogRetentionDays:       ccToSave.LogRetentionDays,
+			EnableGovernance:       ccToSave.EnableGovernance,
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
-			AllowDirectKeys:         ccToSave.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccToSave.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccToSave.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -12942,17 +12966,17 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Where("id = ?", ccToSave.ID).First(&ccFromDB)
 
 		clientConfigFromDB := configstore.ClientConfig{
-			DropExcessRequests:      ccFromDB.DropExcessRequests,
-			InitialPoolSize:         ccFromDB.InitialPoolSize,
-			PrometheusLabels:        ccFromDB.PrometheusLabels,
-			EnableLogging:           ccFromDB.EnableLogging,
-			DisableContentLogging:   ccFromDB.DisableContentLogging,
-			LogRetentionDays:        ccFromDB.LogRetentionDays,
-			EnableGovernance:        ccFromDB.EnableGovernance,
+			DropExcessRequests:     ccFromDB.DropExcessRequests,
+			InitialPoolSize:        ccFromDB.InitialPoolSize,
+			PrometheusLabels:       ccFromDB.PrometheusLabels,
+			EnableLogging:          ccFromDB.EnableLogging,
+			DisableContentLogging:  ccFromDB.DisableContentLogging,
+			LogRetentionDays:       ccFromDB.LogRetentionDays,
+			EnableGovernance:       ccFromDB.EnableGovernance,
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
-			AllowDirectKeys:         ccFromDB.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccFromDB.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 

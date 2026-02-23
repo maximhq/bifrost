@@ -238,6 +238,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRoutingRulesTable(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPricingOverridesTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddBaseModelPricingColumn(ctx, db); err != nil {
 		return err
 	}
@@ -269,9 +272,6 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
@@ -3153,6 +3153,37 @@ func migrationAddRoutingRulesTable(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+func migrationAddPricingOverridesTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_pricing_overrides_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing_overrides table migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddOAuthTables creates the oauth_configs and oauth_tokens tables
 func migrationAddOAuthTables(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
@@ -3713,38 +3744,6 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	}
 	return nil
 }
-
-// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
-func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
-	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_pricing_overrides_column",
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
-					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
-				}
-			}
-			return nil
-		},
-		Rollback: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
-					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
-				}
-			}
-			return nil
-		},
-	}})
-	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
-	}
-	return nil
-}
-
 // migrationAddEncryptionColumns adds the encryption_status column to the config_keys, governance_virtual_keys, sessions, oauth_configs, oauth_tokens, config_mcp_clients, config_providers, config_vector_store, and config_plugins tables
 func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{

@@ -249,7 +249,6 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
-			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -413,7 +412,6 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
-	dbProvider.PricingOverrides = configCopy.PricingOverrides
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -546,7 +544,6 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
-		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -698,7 +695,6 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawRequest:       dbProvider.SendBackRawRequest,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
-			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -745,7 +741,6 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawRequest:       dbProvider.SendBackRawRequest,
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
-		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -2468,6 +2463,84 @@ func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ..
 	return nil
 }
 
+// GetPricingOverrides retrieves all pricing overrides from the database.
+func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context) ([]tables.TablePricingOverride, error) {
+	var overrides []tables.TablePricingOverride
+	if err := s.db.WithContext(ctx).Order("created_at ASC").Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+	return overrides, nil
+}
+
+// GetPricingOverridesByScope retrieves pricing overrides filtered by scope and scope ID.
+func (s *RDBConfigStore) GetPricingOverridesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TablePricingOverride, error) {
+	var overrides []tables.TablePricingOverride
+	query := s.db.WithContext(ctx)
+
+	if scope == string(tables.PricingOverrideScopeGlobal) {
+		query = query.Where("scope = ?", tables.PricingOverrideScopeGlobal)
+	} else if scope != "" && scopeID != "" {
+		query = query.Where("scope = ? AND scope_id = ?", scope, scopeID)
+	}
+
+	if err := query.Order("created_at ASC").Find(&overrides).Error; err != nil {
+		return nil, err
+	}
+	return overrides, nil
+}
+
+// GetPricingOverride retrieves a specific pricing override by ID.
+func (s *RDBConfigStore) GetPricingOverride(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	var override tables.TablePricingOverride
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&override).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &override, nil
+}
+
+// CreatePricingOverride creates a new pricing override in the database.
+func (s *RDBConfigStore) CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	database := s.db
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+	if err := database.WithContext(ctx).Create(override).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// UpdatePricingOverride updates an existing pricing override in the database.
+func (s *RDBConfigStore) UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	database := s.db
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+	if err := database.WithContext(ctx).Save(override).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
+// DeletePricingOverride deletes a pricing override from the database.
+func (s *RDBConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	database := s.db
+	if len(tx) > 0 && tx[0] != nil {
+		database = tx[0]
+	}
+	result := database.WithContext(ctx).Delete(&tables.TablePricingOverride{}, "id = ?", id)
+	if result.Error != nil {
+		return s.parseGormError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // GetModelConfigs retrieves all model configs from the database.
 func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error) {
 	var modelConfigs []tables.TableModelConfig
@@ -2598,6 +2671,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	var modelConfigs []tables.TableModelConfig
 	var providers []tables.TableProvider
 	var routingRules []tables.TableRoutingRule
+	var pricingOverrides []tables.TablePricingOverride
 	var governanceConfigs []tables.TableGovernanceConfig
 
 	if err := s.db.WithContext(ctx).
@@ -2629,12 +2703,15 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if err := s.db.WithContext(ctx).Find(&routingRules).Error; err != nil {
 		return nil, err
 	}
+	if err := s.db.WithContext(ctx).Find(&pricingOverrides).Error; err != nil {
+		return nil, err
+	}
 	// Fetching governance config for username and password
 	if err := s.db.WithContext(ctx).Find(&governanceConfigs).Error; err != nil {
 		return nil, err
 	}
 	// Check if any config is present
-	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(modelConfigs) == 0 && len(providers) == 0 && len(governanceConfigs) == 0 && len(routingRules) == 0 {
+	if len(virtualKeys) == 0 && len(teams) == 0 && len(customers) == 0 && len(budgets) == 0 && len(rateLimits) == 0 && len(modelConfigs) == 0 && len(providers) == 0 && len(governanceConfigs) == 0 && len(routingRules) == 0 && len(pricingOverrides) == 0 {
 		return nil, nil
 	}
 	var authConfig *AuthConfig
@@ -2666,15 +2743,16 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 		}
 	}
 	return &GovernanceConfig{
-		VirtualKeys:  virtualKeys,
-		Teams:        teams,
-		Customers:    customers,
-		Budgets:      budgets,
-		RateLimits:   rateLimits,
-		ModelConfigs: modelConfigs,
-		Providers:    providers,
-		RoutingRules: routingRules,
-		AuthConfig:   authConfig,
+		VirtualKeys:      virtualKeys,
+		Teams:            teams,
+		Customers:        customers,
+		Budgets:          budgets,
+		RateLimits:       rateLimits,
+		ModelConfigs:     modelConfigs,
+		Providers:        providers,
+		RoutingRules:     routingRules,
+		PricingOverrides: pricingOverrides,
+		AuthConfig:       authConfig,
 	}, nil
 }
 

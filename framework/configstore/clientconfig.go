@@ -44,7 +44,7 @@ type ClientConfig struct {
 	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
 	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`           // Require auth (VK, API key, or user token) on inference endpoints
 	EnforceGovernanceHeader bool                             `json:"enforce_governance_header,omitempty"` // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth         bool                             `json:"enforce_scim_auth,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
@@ -58,8 +58,8 @@ type ClientConfig struct {
 	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL       int                              `json:"async_job_result_ttl"`                // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders         []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
-	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	RequiredHeaders         []string                         `json:"required_headers,omitempty"`          // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`           // Headers to capture in log metadata
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
@@ -256,7 +256,6 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
-	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -271,7 +270,6 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
-		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -417,15 +415,6 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash CustomProviderConfig
 	if p.CustomProviderConfig != nil {
 		data, err := sonic.Marshal(p.CustomProviderConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-	}
-
-	// Hash PricingOverrides
-	if p.PricingOverrides != nil {
-		data, err := sonic.Marshal(p.PricingOverrides)
 		if err != nil {
 			return "", err
 		}
@@ -893,6 +882,77 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GeneratePricingOverrideHash generates a SHA256 hash for a pricing override.
+// This is used to detect changes between config.json and database rows.
+// Skips: CreatedAt, UpdatedAt (dynamic fields)
+func GeneratePricingOverrideHash(o tables.TablePricingOverride) (string, error) {
+	hash := sha256.New()
+
+	hash.Write([]byte(o.ID))
+	hash.Write([]byte(o.Name))
+	hash.Write([]byte(o.Description))
+	if o.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+	hash.Write([]byte(o.Scope))
+	if o.ScopeID != nil {
+		hash.Write([]byte(*o.ScopeID))
+	}
+	hash.Write([]byte(o.ModelPattern))
+	hash.Write([]byte(o.MatchType))
+
+	if len(o.RequestTypes) > 0 {
+		sortedReqTypes := make([]string, 0, len(o.RequestTypes))
+		for _, requestType := range o.RequestTypes {
+			sortedReqTypes = append(sortedReqTypes, string(requestType))
+		}
+		sort.Strings(sortedReqTypes)
+		data, err := sonic.Marshal(sortedReqTypes)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	optionalValues := []*float64{
+		o.InputCostPerToken,
+		o.OutputCostPerToken,
+		o.InputCostPerVideoPerSecond,
+		o.InputCostPerAudioPerSecond,
+		o.InputCostPerCharacter,
+		o.OutputCostPerCharacter,
+		o.InputCostPerTokenAbove128kTokens,
+		o.InputCostPerCharacterAbove128kTokens,
+		o.InputCostPerImageAbove128kTokens,
+		o.InputCostPerVideoPerSecondAbove128kTokens,
+		o.InputCostPerAudioPerSecondAbove128kTokens,
+		o.OutputCostPerTokenAbove128kTokens,
+		o.OutputCostPerCharacterAbove128kTokens,
+		o.InputCostPerTokenAbove200kTokens,
+		o.OutputCostPerTokenAbove200kTokens,
+		o.CacheCreationInputTokenCostAbove200kTokens,
+		o.CacheReadInputTokenCostAbove200kTokens,
+		o.CacheReadInputTokenCost,
+		o.CacheCreationInputTokenCost,
+		o.InputCostPerTokenBatches,
+		o.OutputCostPerTokenBatches,
+		o.InputCostPerImageToken,
+		o.OutputCostPerImageToken,
+		o.InputCostPerImage,
+		o.OutputCostPerImage,
+		o.CacheReadInputImageTokenCost,
+	}
+	for _, value := range optionalValues {
+		if value != nil {
+			hash.Write([]byte(strconv.FormatFloat(*value, 'f', -1, 64)))
+		}
+	}
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -1017,13 +1077,14 @@ type AuthConfig struct {
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
 type GovernanceConfig struct {
-	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
-	Teams        []tables.TableTeam        `json:"teams"`
-	Customers    []tables.TableCustomer    `json:"customers"`
-	Budgets      []tables.TableBudget      `json:"budgets"`
-	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
-	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
-	Providers    []tables.TableProvider    `json:"providers"`
-	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
-	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
+	VirtualKeys      []tables.TableVirtualKey      `json:"virtual_keys"`
+	Teams            []tables.TableTeam            `json:"teams"`
+	Customers        []tables.TableCustomer        `json:"customers"`
+	Budgets          []tables.TableBudget          `json:"budgets"`
+	RateLimits       []tables.TableRateLimit       `json:"rate_limits"`
+	ModelConfigs     []tables.TableModelConfig     `json:"model_configs"`
+	Providers        []tables.TableProvider        `json:"providers"`
+	RoutingRules     []tables.TableRoutingRule     `json:"routing_rules"`
+	PricingOverrides []tables.TablePricingOverride `json:"pricing_overrides"`
+	AuthConfig       *AuthConfig                   `json:"auth_config,omitempty"`
 }

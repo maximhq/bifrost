@@ -402,85 +402,6 @@ export const formCustomProviderConfigSchema = z
 		},
 	);
 
-export const providerPricingOverrideMatchTypeSchema = z.enum(["exact", "wildcard", "regex"]);
-
-export const providerPricingOverrideRequestTypeSchema = z.enum([
-	"text_completion",
-	"text_completion_stream",
-	"chat_completion",
-	"chat_completion_stream",
-	"responses",
-	"responses_stream",
-	"embedding",
-	"rerank",
-	"speech",
-	"speech_stream",
-	"transcription",
-	"transcription_stream",
-	"image_generation",
-	"image_generation_stream",
-]);
-
-export const providerPricingOverrideSchema = z
-	.object({
-		model_pattern: z.string().min(1, "Model pattern is required"),
-		match_type: providerPricingOverrideMatchTypeSchema,
-		request_types: z.array(providerPricingOverrideRequestTypeSchema).optional(),
-		input_cost_per_token: z.number().min(0).optional(),
-		output_cost_per_token: z.number().min(0).optional(),
-		input_cost_per_video_per_second: z.number().min(0).optional(),
-		input_cost_per_audio_per_second: z.number().min(0).optional(),
-		input_cost_per_character: z.number().min(0).optional(),
-		output_cost_per_character: z.number().min(0).optional(),
-		input_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_image_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_video_per_second_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_audio_per_second_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_128k_tokens: z.number().min(0).optional(),
-		output_cost_per_character_above_128k_tokens: z.number().min(0).optional(),
-		input_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		output_cost_per_token_above_200k_tokens: z.number().min(0).optional(),
-		cache_creation_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost_above_200k_tokens: z.number().min(0).optional(),
-		cache_read_input_token_cost: z.number().min(0).optional(),
-		cache_creation_input_token_cost: z.number().min(0).optional(),
-		input_cost_per_token_batches: z.number().min(0).optional(),
-		output_cost_per_token_batches: z.number().min(0).optional(),
-		input_cost_per_image_token: z.number().min(0).optional(),
-		output_cost_per_image_token: z.number().min(0).optional(),
-		input_cost_per_image: z.number().min(0).optional(),
-		output_cost_per_image: z.number().min(0).optional(),
-		cache_read_input_image_token_cost: z.number().min(0).optional(),
-	})
-	.superRefine((data, ctx) => {
-		if (data.match_type === "exact" && data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Exact match patterns cannot include '*'",
-			});
-		}
-		if (data.match_type === "wildcard" && !data.model_pattern.includes("*")) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["model_pattern"],
-				message: "Wildcard patterns must include '*'",
-			});
-		}
-		if (data.match_type === "regex") {
-			try {
-				new RegExp(data.model_pattern);
-			} catch {
-				ctx.addIssue({
-					code: "custom",
-					path: ["model_pattern"],
-					message: "Invalid regex pattern",
-				});
-			}
-		}
-	});
-
 // Full model provider config schema
 export const modelProviderConfigSchema = z.object({
 	keys: z.array(modelProviderKeySchema).min(1, "At least one key is required"),
@@ -490,7 +411,6 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Model provider schema
@@ -507,7 +427,6 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Flexible model provider schema for form data - allows any string for name
@@ -525,7 +444,6 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Update provider request schema
@@ -537,7 +455,6 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
-	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
 
 // Cache config schema

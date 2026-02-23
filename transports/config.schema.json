@@ -81,6 +81,14 @@
           "type": "boolean",
           "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
         },
+        "enforce_auth_on_inference": {
+          "type": "boolean",
+          "description": "Enforce dashboard authentication for inference endpoints."
+        },
+        "enforce_scim_auth": {
+          "type": "boolean",
+          "description": "Enforce SCIM authentication for SCIM endpoints."
+        },
         "allow_direct_keys": {
           "type": "boolean",
           "description": "Allow provider keys"
@@ -451,6 +459,13 @@
           "description": "Routing rules for dynamic provider/model selection based on CEL expressions",
           "items": {
             "$ref": "#/$defs/routing_rule"
+          }
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "description": "Scoped pricing overrides applied globally or by provider/provider key/virtual key",
+          "items": {
+            "$ref": "#/$defs/scoped_pricing_override"
           }
         },
         "auth_config": {
@@ -1640,9 +1655,31 @@
         "image_generation_stream"
       ]
     },
-    "provider_pricing_override": {
+    "scoped_pricing_override": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique pricing override ID"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name for the pricing override"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the override is active",
+          "default": true
+        },
+        "scope": {
+          "type": "string",
+          "enum": ["global", "provider", "provider_key", "virtual_key"],
+          "description": "Scope where this override applies"
+        },
+        "scope_id": {
+          "type": "string",
+          "description": "Scope identifier: provider name, key ID, or virtual key ID (required for non-global scopes)"
+        },
         "model_pattern": {
           "type": "string",
           "minLength": 1
@@ -1684,8 +1721,69 @@
         "cache_read_input_image_token_cost": { "type": "number", "minimum": 0 }
       },
       "required": [
+        "id",
+        "name",
+        "scope",
         "model_pattern",
         "match_type"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "enum": ["global"]
+              }
+            },
+            "required": ["scope"]
+          },
+          "then": {
+            "not": {
+              "required": ["scope_id"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "enum": ["provider", "provider_key", "virtual_key"]
+              }
+            },
+            "required": ["scope"]
+          },
+          "then": {
+            "required": ["scope_id"]
+          }
+        }
+      ],
+      "anyOf": [
+        { "required": ["input_cost_per_token"] },
+        { "required": ["output_cost_per_token"] },
+        { "required": ["input_cost_per_video_per_second"] },
+        { "required": ["input_cost_per_audio_per_second"] },
+        { "required": ["input_cost_per_character"] },
+        { "required": ["output_cost_per_character"] },
+        { "required": ["input_cost_per_token_above_128k_tokens"] },
+        { "required": ["input_cost_per_character_above_128k_tokens"] },
+        { "required": ["input_cost_per_image_above_128k_tokens"] },
+        { "required": ["input_cost_per_video_per_second_above_128k_tokens"] },
+        { "required": ["input_cost_per_audio_per_second_above_128k_tokens"] },
+        { "required": ["output_cost_per_token_above_128k_tokens"] },
+        { "required": ["output_cost_per_character_above_128k_tokens"] },
+        { "required": ["input_cost_per_token_above_200k_tokens"] },
+        { "required": ["output_cost_per_token_above_200k_tokens"] },
+        { "required": ["cache_creation_input_token_cost_above_200k_tokens"] },
+        { "required": ["cache_read_input_token_cost_above_200k_tokens"] },
+        { "required": ["cache_read_input_token_cost"] },
+        { "required": ["cache_creation_input_token_cost"] },
+        { "required": ["input_cost_per_token_batches"] },
+        { "required": ["output_cost_per_token_batches"] },
+        { "required": ["input_cost_per_image_token"] },
+        { "required": ["output_cost_per_image_token"] },
+        { "required": ["input_cost_per_image"] },
+        { "required": ["output_cost_per_image"] },
+        { "required": ["cache_read_input_image_token_cost"] }
       ],
       "additionalProperties": false
     },
@@ -1933,13 +2031,6 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -1970,13 +2061,6 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2007,13 +2091,6 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [
@@ -2044,13 +2121,6 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
-        },
-        "pricing_overrides": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/provider_pricing_override"
-          },
-          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [

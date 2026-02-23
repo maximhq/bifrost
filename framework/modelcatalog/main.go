@@ -37,10 +37,11 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	// Provider-level pricing overrides are maintained separately to avoid contention
+	// Top-level scoped pricing overrides are maintained separately to avoid contention
 	// with pricing cache rebuilds.
-	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
-	overridesMu       sync.RWMutex
+	rawPricingOverrides      map[string]configstoreTables.TablePricingOverride
+	compiledPricingOverrides map[string][]compiledPricingOverride
+	overridesMu              sync.RWMutex
 
 	modelPool      map[schemas.ModelProvider][]string
 	baseModelIndex map[string]string // model string → canonical base model name
@@ -112,17 +113,18 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	}
 
 	mc := &ModelCatalog{
-		pricingURL:             pricingURL,
-		pricingSyncInterval:    pricingSyncInterval,
-		configStore:            configStore,
-		logger:                 logger,
-		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
-		modelPool:              make(map[schemas.ModelProvider][]string),
-		baseModelIndex:         make(map[string]string),
-		done:                   make(chan struct{}),
-		shouldSyncPricingFunc:  shouldSyncPricingFunc,
-		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
+		pricingURL:               pricingURL,
+		pricingSyncInterval:      pricingSyncInterval,
+		configStore:              configStore,
+		logger:                   logger,
+		pricingData:              make(map[string]configstoreTables.TableModelPricing),
+		rawPricingOverrides:      make(map[string]configstoreTables.TablePricingOverride),
+		compiledPricingOverrides: make(map[string][]compiledPricingOverride),
+		modelPool:                make(map[schemas.ModelProvider][]string),
+		baseModelIndex:           make(map[string]string),
+		done:                     make(chan struct{}),
+		shouldSyncPricingFunc:    shouldSyncPricingFunc,
+		distributedLockManager:   configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
 
 	logger.Info("initializing model catalog...")
@@ -697,10 +699,11 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:         make(map[schemas.ModelProvider][]string),
-		baseModelIndex:    baseModelIndex,
-		pricingData:       make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides: make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
-		done:              make(chan struct{}),
+		modelPool:                make(map[schemas.ModelProvider][]string),
+		baseModelIndex:           baseModelIndex,
+		pricingData:              make(map[string]configstoreTables.TableModelPricing),
+		rawPricingOverrides:      make(map[string]configstoreTables.TablePricingOverride),
+		compiledPricingOverrides: make(map[string][]compiledPricingOverride),
+		done:                     make(chan struct{}),
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // buildCompleteMessageFromAudioStreamChunks builds a complete message from accumulated audio chunks
@@ -138,7 +139,8 @@ func (a *Accumulator) processAudioStreamingResponse(ctx *schemas.BifrostContext,
 		chunk.ChunkIndex = result.SpeechStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				selectedKeyID, virtualKeyID := modelcatalog.PricingScopeIDsFromContext(ctx)
+				cost := a.pricingManager.CalculateCostWithCacheDebugWithScopes(result, selectedKeyID, virtualKeyID)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug

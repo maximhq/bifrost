@@ -7,6 +7,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // deepCopyResponsesStreamResponse creates a deep copy of BifrostResponsesStreamResponse
@@ -886,7 +887,8 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCostWithCacheDebug(result)
+				selectedKeyID, virtualKeyID := modelcatalog.PricingScopeIDsFromContext(ctx)
+				cost := a.pricingManager.CalculateCostWithCacheDebugWithScopes(result, selectedKeyID, virtualKeyID)
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
