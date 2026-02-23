@@ -13,7 +13,7 @@ interface ModelLimitsEmptyStateProps {
 
 export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLimitsEmptyStateProps) {
 	return (
-		<div className="flex min-h-[65vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
+		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
 			<div className="text-muted-foreground">
 				<Wallet className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>

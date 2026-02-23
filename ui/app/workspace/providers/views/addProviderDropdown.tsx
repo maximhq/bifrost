@@ -21,6 +21,7 @@ interface AddProviderDropdownProps {
 	knownProviders: ProviderOption[];
 	onSelectKnownProvider: (name: string) => void;
 	onAddCustomProvider: () => void;
+	disabled?: boolean;
 	/** Optional: use compact trigger for empty state */
 	variant?: "default" | "empty";
 }
@@ -30,6 +31,7 @@ export function AddProviderDropdown({
 	knownProviders,
 	onSelectKnownProvider,
 	onAddCustomProvider,
+	disabled = false,
 	variant = "default",
 }: AddProviderDropdownProps) {
 	const availableKnown = knownProviders.filter((p) => !existingInSidebar.has(p.name));
@@ -44,6 +46,7 @@ export function AddProviderDropdown({
 					data-testid="add-provider-btn"
 					className={variant === "empty" ? "" : "w-full justify-start"}
 					aria-label="Add new provider"
+					disabled={disabled}
 				>
 					<PlusIcon className="h-4 w-4" />
 					{variant === "empty" ? <span>Add provider</span> : <div className="text-xs">Add New Provider</div>}

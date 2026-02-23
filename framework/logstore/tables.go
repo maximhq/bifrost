@@ -904,6 +904,12 @@ func (l *Log) BuildContentSummary() string {
 	return strings.Join(parts, " ")
 }
 
+// KeyPairResult represents an ID-Name pair returned from DISTINCT queries
+type KeyPairResult struct {
+	ID   string `gorm:"column:id"`
+	Name string `gorm:"column:name"`
+}
+
 // HistogramBucket represents a single time bucket in the histogram
 type HistogramBucket struct {
 	Timestamp time.Time `json:"timestamp"`

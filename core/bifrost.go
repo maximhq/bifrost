@@ -3818,6 +3818,23 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			return nil, bifrostErrPtr
 		}
 		return resp, nil
+	case <-ctx.Done():
+		bifrost.releaseChannelMessage(msg)
+		provider, model, _ := req.GetRequestFields()
+		bifrostErr := &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(schemas.RequestCancelled),
+				Message: fmt.Sprintf("request timed out waiting for provider response: %v", ctx.Err()),
+				Error:   ctx.Err(),
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    req.RequestType,
+				Provider:       provider,
+				ModelRequested: model,
+			},
+		}
+		return nil, bifrostErr
 	}
 }
 
@@ -4396,6 +4413,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				RequestType:    req.RequestType,
 				RawRequest:     bifrostError.ExtraFields.RawRequest,
 				RawResponse:    bifrostError.ExtraFields.RawResponse,
+				KeyStatuses:    bifrostError.ExtraFields.KeyStatuses,
 			}
 
 			// Send error with context awareness to prevent deadlock

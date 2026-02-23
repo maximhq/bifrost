@@ -148,6 +148,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMetadataColumnToMCPToolLogs(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHistogramCompositeIndexes(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1364,6 +1367,81 @@ func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) e
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding metadata column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddHistogramCompositeIndexes adds a covering index that optimizes all 4 histogram queries.
+// Without this, even though idx_logs_status_timestamp filters the WHERE clause correctly,
+// SQLite must seek back to the main table to read aggregation columns (tokens, cost, model).
+// With large rows (~800 KB of JSON per log entry), these main-table lookups dominate query time.
+// A covering index includes all columns the histogram queries need, so SQLite resolves
+// them entirely from the compact index B-tree (~100 bytes/entry) without touching the main table.
+func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_histogram_composite_indexes",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Covering index for all 4 histogram queries with any combination of dashboard filters.
+			//
+			// Leading columns (status, timestamp) drive the range scan.
+			// Filter columns (selected_key_id, virtual_key_id, etc.) let the DB evaluate
+			// WHERE predicates directly from the index without main-table lookups.
+			// Aggregation columns (model, cost, tokens) provide data for GROUP BY / SUM.
+			//
+			// Without these filter columns in the index, the DB must seek back to the
+			// main table (~800 KB per row with JSON blobs) to check each filter,
+			// turning a 17 ms query into a 35+ second one.
+			if !migrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				dialect := tx.Dialector.Name()
+
+				var createSQL string
+				switch dialect {
+				case "mysql":
+					// MySQL/MariaDB: InnoDB has a 3072-byte composite key limit.
+					// With utf8mb4 each varchar(255) uses up to 1020 bytes, so use
+					// prefix lengths (50 chars) to keep the total well under the limit.
+					createSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
+						status(50), timestamp,
+						selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
+						model(50), cost, prompt_tokens, completion_tokens, total_tokens
+					)`
+				default:
+					// SQLite / PostgreSQL: no prefix-index limit concerns.
+					createSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
+						status, timestamp,
+						selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+						model, cost, prompt_tokens, completion_tokens, total_tokens
+					)`
+				}
+
+				if err := tx.Exec(createSQL).Error; err != nil {
+					return fmt.Errorf("failed to create covering index for histograms: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+					return fmt.Errorf("failed to drop index idx_logs_histogram_cover: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding histogram covering index: %s", err.Error())
 	}
 	return nil
 }

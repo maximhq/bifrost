@@ -73,6 +73,7 @@ export default function LoggingView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Logs Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure logging settings for requests and responses.</p>
 			</div>
 
@@ -162,9 +163,9 @@ export default function LoggingView() {
 							Logging Headers
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Comma-separated list of request headers to capture in log metadata. Values are extracted from incoming requests
-							and stored in the metadata field of log entries. Headers with the <code className="text-xs">x-bf-lh-</code>{" "}
-							prefix are always captured automatically.
+							Comma-separated list of request headers to capture in log metadata. Values are extracted from incoming requests and stored in
+							the metadata field of log entries. Headers with the <code className="text-xs">x-bf-lh-</code> prefix are always captured
+							automatically.
 						</p>
 						<Textarea
 							id="logging-headers"
@@ -178,7 +179,7 @@ export default function LoggingView() {
 				)}
 			</div>
 
-			<div className="pt-2 flex justify-end">
+			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -654,13 +655,9 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 		}
 
 		// Sort by timestamp
-		for i := 0; i < len(buckets)-1; i++ {
-			for j := i + 1; j < len(buckets); j++ {
-				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
-					buckets[i], buckets[j] = buckets[j], buckets[i]
-				}
-			}
-		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
 
 		return &CostHistogramResult{
 			Buckets:           buckets,
@@ -791,13 +788,9 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 		}
 
 		// Sort by timestamp
-		for i := 0; i < len(buckets)-1; i++ {
-			for j := i + 1; j < len(buckets); j++ {
-				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
-					buckets[i], buckets[j] = buckets[j], buckets[i]
-				}
-			}
-		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
 
 		return &ModelHistogramResult{
 			Buckets:           buckets,
@@ -870,6 +863,75 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 		return fmt.Errorf("failed to cleanup old processing logs: %w", result.Error)
 	}
 	return nil
+}
+
+// GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
+func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
+	var models []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("model IS NOT NULL AND model != ''").
+		Distinct("model").Pluck("model", &models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct models: %w", err)
+	}
+	return models, nil
+}
+
+// allowedKeyPairColumns is a whitelist of column names that can be used in GetDistinctKeyPairs
+// to prevent SQL injection from interpolated column names.
+var allowedKeyPairColumns = map[string]struct{}{
+	"selected_key_id":   {},
+	"selected_key_name": {},
+	"virtual_key_id":    {},
+	"virtual_key_name":  {},
+	"routing_rule_id":   {},
+	"routing_rule_name": {},
+}
+
+// GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
+// idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
+func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
+	if _, ok := allowedKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid id column: %s", idCol)
+	}
+	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid name column: %s", nameCol)
+	}
+	var results []KeyPairResult
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != ''", idCol, idCol, nameCol, nameCol)).
+		Find(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
+// GetDistinctRoutingEngines returns all unique routing engine values from the comma-separated column.
+func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
+	var rawValues []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("routing_engines_used IS NOT NULL AND routing_engines_used != ''").
+		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
+	}
+	// Each row may contain comma-separated values; deduplicate across all rows
+	uniqueEngines := make(map[string]struct{})
+	for _, raw := range rawValues {
+		for _, engine := range strings.Split(raw, ",") {
+			engine = strings.TrimSpace(engine)
+			if engine != "" {
+				uniqueEngines[engine] = struct{}{}
+			}
+		}
+	}
+	engines := make([]string, 0, len(uniqueEngines))
+	for engine := range uniqueEngines {
+		engines = append(engines, engine)
+	}
+	return engines, nil
 }
 
 // FindAll finds all log entries from the database.

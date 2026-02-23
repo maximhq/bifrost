@@ -40,6 +40,11 @@ type LogStore interface {
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 
+	// Distinct value methods for filter data
+	GetDistinctModels(ctx context.Context) ([]string, error)
+	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
+	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
+
 	// MCP Tool Log methods
 	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
 	FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error)

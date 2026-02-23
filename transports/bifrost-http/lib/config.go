@@ -1470,7 +1470,7 @@ func preserveEnvVar(source *schemas.EnvVar, value string) *schemas.EnvVar {
 // loadAuthConfigFromFile loads auth config from file.
 // File config (configData) always takes precedence over DB config.
 func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
-	hasFileConfig := configData != nil && configData.AuthConfig != nil
+	hasFileConfig := configData != nil && (configData.AuthConfig != nil || (configData.Governance != nil && configData.Governance.AuthConfig != nil))
 	if !hasFileConfig && (config.GovernanceConfig == nil || config.GovernanceConfig.AuthConfig == nil) {
 		return
 	}
@@ -1498,19 +1498,34 @@ func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *Con
 		}
 		return
 	}
+	var authConfig *configstore.AuthConfig
+	if configData.Governance != nil && configData.Governance.AuthConfig != nil {
+		authConfig = configData.Governance.AuthConfig
+	} else if configData.AuthConfig != nil {
+		authConfig = configData.AuthConfig
+	}
+	if authConfig == nil {
+		return
+	}
 	// File config present: validate env vars
-	if configData.AuthConfig.AdminUserName != nil && configData.AuthConfig.AdminUserName.GetValue() == "" && configData.AuthConfig.AdminUserName.IsFromEnv() {
-		logger.Fatal("username set with env var but value is empty: %s", configData.AuthConfig.AdminUserName.EnvVar)
+	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromEnv() {
+		logger.Warn("username set with env var but value is empty: %s", authConfig.AdminUserName.EnvVar)
+		return
 	}
-	if configData.AuthConfig.AdminPassword != nil && configData.AuthConfig.AdminPassword.GetValue() == "" && configData.AuthConfig.AdminPassword.IsFromEnv() {
-		logger.Fatal("password set with env var but value is empty: %s", configData.AuthConfig.AdminPassword.EnvVar)
+	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromEnv() {
+		logger.Warn("password set with env var but value is empty: %s", authConfig.AdminPassword.EnvVar)
+		return
 	}
-	filePassword := configData.AuthConfig.AdminPassword.GetValue()
+	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
+		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")
+		return
+	}
+	filePassword := authConfig.AdminPassword.GetValue()
 	// If DB already matches file config, skip hashing and DB write
 	if dbAuthConfig != nil {
-		usernameMatch := dbAuthConfig.AdminUserName.GetValue() == configData.AuthConfig.AdminUserName.GetValue()
-		boolsMatch := dbAuthConfig.IsEnabled == configData.AuthConfig.IsEnabled &&
-			dbAuthConfig.DisableAuthOnInference == configData.AuthConfig.DisableAuthOnInference
+		usernameMatch := dbAuthConfig.AdminUserName.GetValue() == authConfig.AdminUserName.GetValue()
+		boolsMatch := dbAuthConfig.IsEnabled == authConfig.IsEnabled &&
+			dbAuthConfig.DisableAuthOnInference == authConfig.DisableAuthOnInference
 		var passwordMatch bool
 		if filePassword == "" {
 			passwordMatch = dbAuthConfig.AdminPassword.GetValue() == ""
@@ -1522,10 +1537,10 @@ func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *Con
 		if usernameMatch && passwordMatch && boolsMatch {
 			// DB matches file -- use DB hash but preserve file env var references
 			config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-				AdminUserName:          configData.AuthConfig.AdminUserName,
-				AdminPassword:          preserveEnvVar(configData.AuthConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
-				IsEnabled:              configData.AuthConfig.IsEnabled,
-				DisableAuthOnInference: configData.AuthConfig.DisableAuthOnInference,
+				AdminUserName:          authConfig.AdminUserName,
+				AdminPassword:          preserveEnvVar(authConfig.AdminPassword, dbAuthConfig.AdminPassword.GetValue()),
+				IsEnabled:              authConfig.IsEnabled,
+				DisableAuthOnInference: authConfig.DisableAuthOnInference,
 			}
 			return
 		}
@@ -1552,10 +1567,10 @@ func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *Con
 	}
 	// Build auth config with hashed password but preserve env var references
 	config.GovernanceConfig.AuthConfig = &configstore.AuthConfig{
-		AdminUserName:          configData.AuthConfig.AdminUserName,
-		AdminPassword:          preserveEnvVar(configData.AuthConfig.AdminPassword, hashedPassword),
-		IsEnabled:              configData.AuthConfig.IsEnabled,
-		DisableAuthOnInference: configData.AuthConfig.DisableAuthOnInference,
+		AdminUserName:          authConfig.AdminUserName,
+		AdminPassword:          preserveEnvVar(authConfig.AdminPassword, hashedPassword),
+		IsEnabled:              authConfig.IsEnabled,
+		DisableAuthOnInference: authConfig.DisableAuthOnInference,
 	}
 	// Persist to config store
 	if err := config.ConfigStore.UpdateAuthConfig(ctx, config.GovernanceConfig.AuthConfig); err != nil {

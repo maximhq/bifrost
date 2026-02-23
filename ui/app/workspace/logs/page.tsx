@@ -388,12 +388,8 @@ export default function LogsPage() {
 
 					// Update histogram for completed requests
 					setHistogram((prevHistogram) => {
-						if (
-							!prevHistogram ||
-							typeof prevHistogram.bucket_size_seconds !== 'number' ||
-							prevHistogram.bucket_size_seconds <= 0
-						) {
-							return prevHistogram
+						if (!prevHistogram || typeof prevHistogram.bucket_size_seconds !== "number" || prevHistogram.bucket_size_seconds <= 0) {
+							return prevHistogram;
 						}
 
 						const logTime = new Date(log.timestamp).getTime();
