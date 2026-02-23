@@ -150,6 +150,10 @@ function parsePricingPatch(raw: string): { patch?: PricingPatch; error?: string 
 		patch[key as PricingPatchField] = value;
 	}
 
+	if (Object.keys(patch).length === 0) {
+		return { error: "Pricing patch must include at least one pricing field" };
+	}
+
 	return { patch };
 }
 
@@ -277,21 +281,7 @@ export function PricingOverridesView() {
 			if (!selectedScopeTarget) {
 				return "Scope target is required for non-global scope";
 			}
-			let isValidScopeTarget = false;
-			switch (formState.scope) {
-			case "provider":
-				isValidScopeTarget = providerOptions.some((option) => option.value === selectedScopeTarget);
-				break;
-			case "provider_key":
-				isValidScopeTarget = providerKeyOptions.some((option) => option.value === selectedScopeTarget);
-				break;
-			case "virtual_key":
-				isValidScopeTarget = virtualKeyOptions.some((option) => option.value === selectedScopeTarget);
-				break;
-			default:
-				isValidScopeTarget = false;
-			}
-			if (!isValidScopeTarget) {
+			if (!activeScopeOptions.some((option) => option.value === selectedScopeTarget)) {
 				return "Valid scope target is required";
 			}
 		}
