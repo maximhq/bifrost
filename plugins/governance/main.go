@@ -15,6 +15,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -329,10 +330,22 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 	var ok bool
 	var needsMarshal bool
 
-	err := sonic.Unmarshal(req.Body, &payload)
-	if err != nil {
-		p.logger.Error("failed to unmarshal request body: %v", err)
-		return nil, nil
+	contentType := req.CaseInsensitiveHeaderLookup("Content-Type")
+	isMultipart := strings.HasPrefix(strings.ToLower(contentType), "multipart/form-data")
+
+	var err error
+	if isMultipart {
+		payload, err = network.ParseMultipartFormFields(contentType, req.Body)
+		if err != nil {
+			p.logger.Warn("failed to parse multipart form in governance plugin: %v", err)
+			return nil, nil
+		}
+	} else {
+		err = sonic.Unmarshal(req.Body, &payload)
+		if err != nil {
+			p.logger.Error("failed to unmarshal request body: %v", err)
+			return nil, nil
+		}
 	}
 
 	// Process virtual key if provided
@@ -378,12 +391,10 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 
 	// Only marshal if something changed (VK processing or routing decision matched)
 	if needsMarshal {
-		body, err := sonic.Marshal(payload)
-		if err != nil {
-			p.logger.Error("failed to marshal request body: %v", err)
+		if err := network.SerializePayloadToRequest(req, payload, isMultipart, contentType); err != nil {
+			p.logger.Error("failed to serialize request body in governance plugin: %v", err)
 			return nil, nil
 		}
-		req.Body = body
 	}
 
 	return nil, nil
