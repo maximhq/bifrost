@@ -10,6 +10,8 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
+// compiledPricingOverride holds a pre-compiled representation of a single pricing
+// override rule, ready for fast matching at request time.
 type compiledPricingOverride struct {
 	override         schemas.ProviderPricingOverride
 	scope            configstoreTables.PricingOverrideScope
@@ -22,11 +24,15 @@ type compiledPricingOverride struct {
 	order            int
 }
 
+// modeBuckets groups compiled overrides by normalized request mode.
+// Overrides with a request-type filter go into byMode; those without go into generic.
 type modeBuckets struct {
 	byMode  map[string][]compiledPricingOverride // normalized mode -> candidates
 	generic []compiledPricingOverride            // no request-type filter
 }
 
+// compiledOverrides holds pre-indexed overrides organized by scope level
+// for direct O(1) lookups without string key construction at request time.
 type compiledOverrides struct {
 	virtualKey  map[string]*scopeOverrideIndex // vkID -> index
 	providerKey map[string]*scopeOverrideIndex // pkID -> index
@@ -34,16 +40,23 @@ type compiledOverrides struct {
 	global      *scopeOverrideIndex            // single global index (nil if none)
 }
 
+// scopeOverrideIndex is a per-scope index that splits overrides by match type
+// and request mode for fast lookup. Exact matches use a map keyed by model
+// pattern for O(1) access; wildcard and regex remain linear scans over their
+// (typically small) candidate lists.
 type scopeOverrideIndex struct {
 	exact    exactIndex  // model -> modeBuckets
 	wildcard modeBuckets // wildcard overrides
 	regex    modeBuckets // regex overrides
 }
 
+// exactIndex provides O(1) model lookups for exact-match overrides.
 type exactIndex struct {
 	byModel map[string]*modeBuckets
 }
 
+// addOverride routes a compiled override into the appropriate bucket of the index
+// based on its match type and request-mode filter.
 func (idx *scopeOverrideIndex) addOverride(c compiledPricingOverride) {
 	switch c.override.MatchType {
 	case schemas.PricingOverrideMatchExact:
@@ -61,6 +74,7 @@ func (idx *scopeOverrideIndex) addOverride(c compiledPricingOverride) {
 	}
 }
 
+// addToModeBuckets places an override into mode-specific or generic bucket.
 func addToModeBuckets(mb *modeBuckets, c compiledPricingOverride) {
 	if c.hasRequestFilter {
 		for mode := range c.requestModes {
@@ -71,6 +85,7 @@ func addToModeBuckets(mb *modeBuckets, c compiledPricingOverride) {
 	}
 }
 
+// newScopeOverrideIndex creates an empty scopeOverrideIndex with initialized maps.
 func newScopeOverrideIndex() *scopeOverrideIndex {
 	return &scopeOverrideIndex{
 		exact:    exactIndex{byModel: make(map[string]*modeBuckets)},
@@ -79,10 +94,12 @@ func newScopeOverrideIndex() *scopeOverrideIndex {
 	}
 }
 
+// scopeKey builds a combined scope+scopeID string used for stable order tracking at compile time.
 func scopeKey(scope configstoreTables.PricingOverrideScope, scopeID string) string {
 	return string(scope) + ":" + scopeID
 }
 
+// normalizeScopeID returns a trimmed scope ID, or empty string for global scope.
 func normalizeScopeID(scope configstoreTables.PricingOverrideScope, scopeID *string) string {
 	if scope == configstoreTables.PricingOverrideScopeGlobal || scopeID == nil {
 		return ""
@@ -90,6 +107,7 @@ func normalizeScopeID(scope configstoreTables.PricingOverrideScope, scopeID *str
 	return strings.TrimSpace(*scopeID)
 }
 
+// SetPricingOverrides replaces all pricing overrides with the given set and recompiles the index.
 func (mc *ModelCatalog) SetPricingOverrides(overrides []configstoreTables.TablePricingOverride) error {
 	raw := make(map[string]configstoreTables.TablePricingOverride, len(overrides))
 	for i := range overrides {
@@ -107,6 +125,7 @@ func (mc *ModelCatalog) SetPricingOverrides(overrides []configstoreTables.TableP
 	return nil
 }
 
+// UpsertPricingOverride adds or updates a single pricing override and recompiles the index.
 func (mc *ModelCatalog) UpsertPricingOverride(override configstoreTables.TablePricingOverride) error {
 	mc.overridesMu.Lock()
 	defer mc.overridesMu.Unlock()
@@ -126,6 +145,7 @@ func (mc *ModelCatalog) UpsertPricingOverride(override configstoreTables.TablePr
 	return nil
 }
 
+// DeletePricingOverride removes a pricing override by ID and recompiles the index.
 func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.overridesMu.Lock()
 	defer mc.overridesMu.Unlock()
@@ -148,6 +168,7 @@ func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.compiledPricingOverrides = compiled
 }
 
+// GetPricingOverridesSnapshot returns a copy of all raw pricing overrides sorted by creation time.
 func (mc *ModelCatalog) GetPricingOverridesSnapshot() []configstoreTables.TablePricingOverride {
 	mc.overridesMu.RLock()
 	defer mc.overridesMu.RUnlock()
@@ -167,6 +188,9 @@ func (mc *ModelCatalog) GetPricingOverridesSnapshot() []configstoreTables.TableP
 	return result
 }
 
+// compilePricingOverrides builds a compiledOverrides struct from the raw override set.
+// Disabled overrides are filtered out, and the remaining are sorted by creation order
+// to assign stable tie-break values. Returns nil when there are no enabled overrides.
 func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverride) (*compiledOverrides, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -239,6 +263,9 @@ func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverri
 	return result, nil
 }
 
+// applyPricingOverrides finds the best matching override across scope precedence levels
+// (virtual_key > provider_key > provider > global) and applies it to the given pricing.
+// Within each scope, match types are checked in order: exact, wildcard, regex.
 func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, selectedKeyID string, virtualKeyID string, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) configstoreTables.TableModelPricing {
 	mc.overridesMu.RLock()
 	overrides := mc.compiledPricingOverrides
@@ -277,6 +304,8 @@ func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, se
 	return pricing
 }
 
+// selectBestFromIndex finds the best override from a scope index by checking
+// exact, wildcard, and regex passes in order. The first pass that yields a match wins.
 func selectBestFromIndex(idx *scopeOverrideIndex, model string, mode string) *compiledPricingOverride {
 	if mb := idx.exact.byModel[model]; mb != nil {
 		if best := selectBestFromBuckets(mb, mode); best != nil {
@@ -295,6 +324,8 @@ func selectBestFromIndex(idx *scopeOverrideIndex, model string, mode string) *co
 	return nil
 }
 
+// selectBestFromBuckets selects the best override from mode buckets where model
+// matching has already been satisfied (used for exact matches).
 func selectBestFromBuckets(mb *modeBuckets, mode string) *compiledPricingOverride {
 	var best *compiledPricingOverride
 
@@ -315,6 +346,8 @@ func selectBestFromBuckets(mb *modeBuckets, mode string) *compiledPricingOverrid
 	return best
 }
 
+// selectBestFromBucketsMatching selects the best override from mode buckets,
+// filtering candidates by model match (used for wildcard and regex).
 func selectBestFromBucketsMatching(mb *modeBuckets, model string, mode string) *compiledPricingOverride {
 	var best *compiledPricingOverride
 
@@ -335,6 +368,8 @@ func selectBestFromBucketsMatching(mb *modeBuckets, model string, mode string) *
 	return best
 }
 
+// compilePricingOverride validates and compiles a single table override into
+// the internal representation used for fast matching.
 func compilePricingOverride(override configstoreTables.TablePricingOverride) (compiledPricingOverride, error) {
 	pattern := strings.TrimSpace(override.ModelPattern)
 	if pattern == "" {
@@ -384,6 +419,7 @@ func compilePricingOverride(override configstoreTables.TablePricingOverride) (co
 	return result, nil
 }
 
+// matchesModel reports whether the override's pattern matches the given model name.
 func matchesModel(override *compiledPricingOverride, model string) bool {
 	switch override.override.MatchType {
 	case schemas.PricingOverrideMatchExact:
@@ -397,6 +433,7 @@ func matchesModel(override *compiledPricingOverride, model string) bool {
 	}
 }
 
+// overridePriority returns a numeric priority for the match type (lower = higher priority).
 func overridePriority(matchType schemas.PricingOverrideMatchType) int {
 	switch matchType {
 	case schemas.PricingOverrideMatchExact:
@@ -410,6 +447,9 @@ func overridePriority(matchType schemas.PricingOverrideMatchType) int {
 	}
 }
 
+// isBetterOverride reports whether candidate is a better match than best.
+// Comparison criteria: match-type priority, request-type specificity,
+// literal character count, then stable creation order.
 func isBetterOverride(candidate, best *compiledPricingOverride) bool {
 	if best == nil {
 		return true
@@ -432,6 +472,8 @@ func isBetterOverride(candidate, best *compiledPricingOverride) bool {
 	return candidate.order < best.order
 }
 
+// wildcardMatch reports whether model matches the given wildcard pattern.
+// The pattern may contain one or more '*' characters, each matching zero or more characters.
 func wildcardMatch(pattern, model string) bool {
 	parts := strings.Split(pattern, "*")
 	if len(parts) == 1 {
@@ -465,6 +507,7 @@ func wildcardMatch(pattern, model string) bool {
 	return strings.HasSuffix(remaining, last)
 }
 
+// patchPricing applies non-nil fields from the override onto a copy of the base pricing entry.
 func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.ProviderPricingOverride) configstoreTables.TableModelPricing {
 	patched := pricing
 
