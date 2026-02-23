@@ -17,11 +17,10 @@ func newTestCatalog(modelPool map[schemas.ModelProvider][]string, baseModelIndex
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:                modelPool,
-		baseModelIndex:           baseModelIndex,
-		pricingData:              make(map[string]configstoreTables.TableModelPricing),
-		rawPricingOverrides:      make(map[string]configstoreTables.TablePricingOverride),
-		compiledPricingOverrides: make(map[string][]compiledPricingOverride),
+		modelPool:           modelPool,
+		baseModelIndex:      baseModelIndex,
+		pricingData:         make(map[string]configstoreTables.TableModelPricing),
+		rawPricingOverrides: make(map[string]configstoreTables.TablePricingOverride),
 	}
 }
 

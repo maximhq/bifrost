@@ -22,6 +22,63 @@ type compiledPricingOverride struct {
 	order            int
 }
 
+type modeBuckets struct {
+	byMode  map[string][]compiledPricingOverride // normalized mode -> candidates
+	generic []compiledPricingOverride            // no request-type filter
+}
+
+type compiledOverrides struct {
+	virtualKey  map[string]*scopeOverrideIndex // vkID -> index
+	providerKey map[string]*scopeOverrideIndex // pkID -> index
+	provider    map[string]*scopeOverrideIndex // provider name -> index
+	global      *scopeOverrideIndex            // single global index (nil if none)
+}
+
+type scopeOverrideIndex struct {
+	exact    exactIndex  // model -> modeBuckets
+	wildcard modeBuckets // wildcard overrides
+	regex    modeBuckets // regex overrides
+}
+
+type exactIndex struct {
+	byModel map[string]*modeBuckets
+}
+
+func (idx *scopeOverrideIndex) addOverride(c compiledPricingOverride) {
+	switch c.override.MatchType {
+	case schemas.PricingOverrideMatchExact:
+		model := c.override.ModelPattern
+		mb := idx.exact.byModel[model]
+		if mb == nil {
+			mb = &modeBuckets{byMode: make(map[string][]compiledPricingOverride)}
+			idx.exact.byModel[model] = mb
+		}
+		addToModeBuckets(mb, c)
+	case schemas.PricingOverrideMatchWildcard:
+		addToModeBuckets(&idx.wildcard, c)
+	case schemas.PricingOverrideMatchRegex:
+		addToModeBuckets(&idx.regex, c)
+	}
+}
+
+func addToModeBuckets(mb *modeBuckets, c compiledPricingOverride) {
+	if c.hasRequestFilter {
+		for mode := range c.requestModes {
+			mb.byMode[mode] = append(mb.byMode[mode], c)
+		}
+	} else {
+		mb.generic = append(mb.generic, c)
+	}
+}
+
+func newScopeOverrideIndex() *scopeOverrideIndex {
+	return &scopeOverrideIndex{
+		exact:    exactIndex{byModel: make(map[string]*modeBuckets)},
+		wildcard: modeBuckets{byMode: make(map[string][]compiledPricingOverride)},
+		regex:    modeBuckets{byMode: make(map[string][]compiledPricingOverride)},
+	}
+}
+
 func scopeKey(scope configstoreTables.PricingOverrideScope, scopeID string) string {
 	return string(scope) + ":" + scopeID
 }
@@ -110,10 +167,9 @@ func (mc *ModelCatalog) GetPricingOverridesSnapshot() []configstoreTables.TableP
 	return result
 }
 
-func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverride) (map[string][]compiledPricingOverride, error) {
-	compiledByScope := make(map[string][]compiledPricingOverride)
+func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverride) (*compiledOverrides, error) {
 	if len(raw) == 0 {
-		return compiledByScope, nil
+		return nil, nil
 	}
 
 	overrides := make([]configstoreTables.TablePricingOverride, 0, len(raw))
@@ -123,6 +179,9 @@ func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverri
 		}
 		overrides = append(overrides, item)
 	}
+	if len(overrides) == 0 {
+		return nil, nil
+	}
 
 	sort.SliceStable(overrides, func(i, j int) bool {
 		if overrides[i].CreatedAt.Equal(overrides[j].CreatedAt) {
@@ -130,6 +189,12 @@ func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverri
 		}
 		return overrides[i].CreatedAt.Before(overrides[j].CreatedAt)
 	})
+
+	result := &compiledOverrides{
+		virtualKey:  make(map[string]*scopeOverrideIndex),
+		providerKey: make(map[string]*scopeOverrideIndex),
+		provider:    make(map[string]*scopeOverrideIndex),
+	}
 
 	scopeOrder := make(map[string]int)
 	for i := range overrides {
@@ -141,44 +206,133 @@ func compilePricingOverrides(raw map[string]configstoreTables.TablePricingOverri
 		key := scopeKey(compiled.scope, compiled.scopeID)
 		compiled.order = scopeOrder[key]
 		scopeOrder[key]++
-		compiledByScope[key] = append(compiledByScope[key], compiled)
+
+		switch compiled.scope {
+		case configstoreTables.PricingOverrideScopeGlobal:
+			if result.global == nil {
+				result.global = newScopeOverrideIndex()
+			}
+			result.global.addOverride(compiled)
+		case configstoreTables.PricingOverrideScopeProvider:
+			idx := result.provider[compiled.scopeID]
+			if idx == nil {
+				idx = newScopeOverrideIndex()
+				result.provider[compiled.scopeID] = idx
+			}
+			idx.addOverride(compiled)
+		case configstoreTables.PricingOverrideScopeProviderKey:
+			idx := result.providerKey[compiled.scopeID]
+			if idx == nil {
+				idx = newScopeOverrideIndex()
+				result.providerKey[compiled.scopeID] = idx
+			}
+			idx.addOverride(compiled)
+		case configstoreTables.PricingOverrideScopeVirtualKey:
+			idx := result.virtualKey[compiled.scopeID]
+			if idx == nil {
+				idx = newScopeOverrideIndex()
+				result.virtualKey[compiled.scopeID] = idx
+			}
+			idx.addOverride(compiled)
+		}
 	}
-	return compiledByScope, nil
+	return result, nil
 }
 
 func (mc *ModelCatalog) applyPricingOverrides(provider schemas.ModelProvider, selectedKeyID string, virtualKeyID string, model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing) configstoreTables.TableModelPricing {
 	mc.overridesMu.RLock()
-	overridesByScope := mc.compiledPricingOverrides
+	overrides := mc.compiledPricingOverrides
 	mc.overridesMu.RUnlock()
-	if len(overridesByScope) == 0 {
+	if overrides == nil {
 		return pricing
 	}
 
-	modelCandidates := []string{model}
 	mode := normalizeRequestType(requestType)
-	scopeKeys := []string{
-		scopeKey(configstoreTables.PricingOverrideScopeProvider, string(provider)),
-		scopeKey(configstoreTables.PricingOverrideScopeGlobal, ""),
+
+	if virtualKeyID != "" {
+		if idx := overrides.virtualKey[virtualKeyID]; idx != nil {
+			if best := selectBestFromIndex(idx, model, mode); best != nil {
+				return patchPricing(pricing, best.override)
+			}
+		}
 	}
 	if selectedKeyID != "" {
-		scopeKeys = append([]string{scopeKey(configstoreTables.PricingOverrideScopeProviderKey, selectedKeyID)}, scopeKeys...)
-	}
-	if virtualKeyID != "" {
-		scopeKeys = append([]string{scopeKey(configstoreTables.PricingOverrideScopeVirtualKey, virtualKeyID)}, scopeKeys...)
-	}
-
-	for _, key := range scopeKeys {
-		overrides := overridesByScope[key]
-		if len(overrides) == 0 {
-			continue
+		if idx := overrides.providerKey[selectedKeyID]; idx != nil {
+			if best := selectBestFromIndex(idx, model, mode); best != nil {
+				return patchPricing(pricing, best.override)
+			}
 		}
-		best := selectBestOverride(overrides, modelCandidates, mode)
-		if best != nil {
+	}
+	if idx := overrides.provider[string(provider)]; idx != nil {
+		if best := selectBestFromIndex(idx, model, mode); best != nil {
+			return patchPricing(pricing, best.override)
+		}
+	}
+	if overrides.global != nil {
+		if best := selectBestFromIndex(overrides.global, model, mode); best != nil {
 			return patchPricing(pricing, best.override)
 		}
 	}
 
 	return pricing
+}
+
+func selectBestFromIndex(idx *scopeOverrideIndex, model string, mode string) *compiledPricingOverride {
+	if mb := idx.exact.byModel[model]; mb != nil {
+		if best := selectBestFromBuckets(mb, mode); best != nil {
+			return best
+		}
+	}
+
+	if best := selectBestFromBucketsMatching(&idx.wildcard, model, mode); best != nil {
+		return best
+	}
+
+	if best := selectBestFromBucketsMatching(&idx.regex, model, mode); best != nil {
+		return best
+	}
+
+	return nil
+}
+
+func selectBestFromBuckets(mb *modeBuckets, mode string) *compiledPricingOverride {
+	var best *compiledPricingOverride
+
+	if candidates, ok := mb.byMode[mode]; ok {
+		for i := range candidates {
+			if isBetterOverride(&candidates[i], best) {
+				best = &candidates[i]
+			}
+		}
+	}
+
+	for i := range mb.generic {
+		if isBetterOverride(&mb.generic[i], best) {
+			best = &mb.generic[i]
+		}
+	}
+
+	return best
+}
+
+func selectBestFromBucketsMatching(mb *modeBuckets, model string, mode string) *compiledPricingOverride {
+	var best *compiledPricingOverride
+
+	if candidates, ok := mb.byMode[mode]; ok {
+		for i := range candidates {
+			if matchesModel(&candidates[i], model) && isBetterOverride(&candidates[i], best) {
+				best = &candidates[i]
+			}
+		}
+	}
+
+	for i := range mb.generic {
+		if matchesModel(&mb.generic[i], model) && isBetterOverride(&mb.generic[i], best) {
+			best = &mb.generic[i]
+		}
+	}
+
+	return best
 }
 
 func compilePricingOverride(override configstoreTables.TablePricingOverride) (compiledPricingOverride, error) {
@@ -228,34 +382,6 @@ func compilePricingOverride(override configstoreTables.TablePricingOverride) (co
 	}
 
 	return result, nil
-}
-
-func selectBestOverride(overrides []compiledPricingOverride, modelCandidates []string, mode string) *compiledPricingOverride {
-	var best *compiledPricingOverride
-	for i := range overrides {
-		candidate := &overrides[i]
-		if candidate.hasRequestFilter {
-			if _, ok := candidate.requestModes[mode]; !ok {
-				continue
-			}
-		}
-		if !matchesAnyModel(candidate, modelCandidates) {
-			continue
-		}
-		if isBetterOverride(candidate, best) {
-			best = candidate
-		}
-	}
-	return best
-}
-
-func matchesAnyModel(override *compiledPricingOverride, modelCandidates []string) bool {
-	for _, model := range modelCandidates {
-		if matchesModel(override, model) {
-			return true
-		}
-	}
-	return false
 }
 
 func matchesModel(override *compiledPricingOverride, model string) bool {
