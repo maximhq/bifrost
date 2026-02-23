@@ -2476,10 +2476,15 @@ func (s *RDBConfigStore) GetPricingOverrides(ctx context.Context) ([]tables.Tabl
 func (s *RDBConfigStore) GetPricingOverridesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TablePricingOverride, error) {
 	var overrides []tables.TablePricingOverride
 	query := s.db.WithContext(ctx)
+	scope = strings.TrimSpace(scope)
+	scopeID = strings.TrimSpace(scopeID)
 
 	if scope == string(tables.PricingOverrideScopeGlobal) {
 		query = query.Where("scope = ?", tables.PricingOverrideScopeGlobal)
-	} else if scope != "" && scopeID != "" {
+	} else if scope != "" {
+		if scopeID == "" {
+			return []tables.TablePricingOverride{}, nil
+		}
 		query = query.Where("scope = ? AND scope_id = ?", scope, scopeID)
 	}
 

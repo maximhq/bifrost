@@ -888,20 +888,29 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 func GeneratePricingOverrideHash(o tables.TablePricingOverride) (string, error) {
 	hash := sha256.New()
 
-	hash.Write([]byte(o.ID))
-	hash.Write([]byte(o.Name))
-	hash.Write([]byte(o.Description))
+	writeField := func(key, value string) {
+		hash.Write([]byte(key))
+		hash.Write([]byte("="))
+		hash.Write([]byte(value))
+		hash.Write([]byte(";"))
+	}
+
+	writeField("id", o.ID)
+	writeField("name", o.Name)
+	writeField("description", o.Description)
 	if o.Enabled {
-		hash.Write([]byte("enabled:true"))
+		writeField("enabled", "true")
 	} else {
-		hash.Write([]byte("enabled:false"))
+		writeField("enabled", "false")
 	}
-	hash.Write([]byte(o.Scope))
+	writeField("scope", string(o.Scope))
 	if o.ScopeID != nil {
-		hash.Write([]byte(*o.ScopeID))
+		writeField("scope_id", *o.ScopeID)
+	} else {
+		writeField("scope_id", "")
 	}
-	hash.Write([]byte(o.ModelPattern))
-	hash.Write([]byte(o.MatchType))
+	writeField("model_pattern", o.ModelPattern)
+	writeField("match_type", string(o.MatchType))
 
 	if len(o.RequestTypes) > 0 {
 		sortedReqTypes := make([]string, 0, len(o.RequestTypes))
@@ -913,40 +922,45 @@ func GeneratePricingOverrideHash(o tables.TablePricingOverride) (string, error) 
 		if err != nil {
 			return "", err
 		}
-		hash.Write(data)
+		writeField("request_types", string(data))
+	} else {
+		writeField("request_types", "")
 	}
 
-	optionalValues := []*float64{
-		o.InputCostPerToken,
-		o.OutputCostPerToken,
-		o.InputCostPerVideoPerSecond,
-		o.InputCostPerAudioPerSecond,
-		o.InputCostPerCharacter,
-		o.OutputCostPerCharacter,
-		o.InputCostPerTokenAbove128kTokens,
-		o.InputCostPerCharacterAbove128kTokens,
-		o.InputCostPerImageAbove128kTokens,
-		o.InputCostPerVideoPerSecondAbove128kTokens,
-		o.InputCostPerAudioPerSecondAbove128kTokens,
-		o.OutputCostPerTokenAbove128kTokens,
-		o.OutputCostPerCharacterAbove128kTokens,
-		o.InputCostPerTokenAbove200kTokens,
-		o.OutputCostPerTokenAbove200kTokens,
-		o.CacheCreationInputTokenCostAbove200kTokens,
-		o.CacheReadInputTokenCostAbove200kTokens,
-		o.CacheReadInputTokenCost,
-		o.CacheCreationInputTokenCost,
-		o.InputCostPerTokenBatches,
-		o.OutputCostPerTokenBatches,
-		o.InputCostPerImageToken,
-		o.OutputCostPerImageToken,
-		o.InputCostPerImage,
-		o.OutputCostPerImage,
-		o.CacheReadInputImageTokenCost,
+	optionalValues := []struct {
+		field string
+		value *float64
+	}{
+		{field: "input_cost_per_token", value: o.InputCostPerToken},
+		{field: "output_cost_per_token", value: o.OutputCostPerToken},
+		{field: "input_cost_per_video_per_second", value: o.InputCostPerVideoPerSecond},
+		{field: "input_cost_per_audio_per_second", value: o.InputCostPerAudioPerSecond},
+		{field: "input_cost_per_character", value: o.InputCostPerCharacter},
+		{field: "output_cost_per_character", value: o.OutputCostPerCharacter},
+		{field: "input_cost_per_token_above_128k_tokens", value: o.InputCostPerTokenAbove128kTokens},
+		{field: "input_cost_per_character_above_128k_tokens", value: o.InputCostPerCharacterAbove128kTokens},
+		{field: "input_cost_per_image_above_128k_tokens", value: o.InputCostPerImageAbove128kTokens},
+		{field: "input_cost_per_video_per_second_above_128k_tokens", value: o.InputCostPerVideoPerSecondAbove128kTokens},
+		{field: "input_cost_per_audio_per_second_above_128k_tokens", value: o.InputCostPerAudioPerSecondAbove128kTokens},
+		{field: "output_cost_per_token_above_128k_tokens", value: o.OutputCostPerTokenAbove128kTokens},
+		{field: "output_cost_per_character_above_128k_tokens", value: o.OutputCostPerCharacterAbove128kTokens},
+		{field: "input_cost_per_token_above_200k_tokens", value: o.InputCostPerTokenAbove200kTokens},
+		{field: "output_cost_per_token_above_200k_tokens", value: o.OutputCostPerTokenAbove200kTokens},
+		{field: "cache_creation_input_token_cost_above_200k_tokens", value: o.CacheCreationInputTokenCostAbove200kTokens},
+		{field: "cache_read_input_token_cost_above_200k_tokens", value: o.CacheReadInputTokenCostAbove200kTokens},
+		{field: "cache_read_input_token_cost", value: o.CacheReadInputTokenCost},
+		{field: "cache_creation_input_token_cost", value: o.CacheCreationInputTokenCost},
+		{field: "input_cost_per_token_batches", value: o.InputCostPerTokenBatches},
+		{field: "output_cost_per_token_batches", value: o.OutputCostPerTokenBatches},
+		{field: "input_cost_per_image_token", value: o.InputCostPerImageToken},
+		{field: "output_cost_per_image_token", value: o.OutputCostPerImageToken},
+		{field: "input_cost_per_image", value: o.InputCostPerImage},
+		{field: "output_cost_per_image", value: o.OutputCostPerImage},
+		{field: "cache_read_input_image_token_cost", value: o.CacheReadInputImageTokenCost},
 	}
-	for _, value := range optionalValues {
-		if value != nil {
-			hash.Write([]byte(strconv.FormatFloat(*value, 'f', -1, 64)))
+	for _, field := range optionalValues {
+		if field.value != nil {
+			writeField(field.field, strconv.FormatFloat(*field.value, 'f', -1, 64))
 		}
 	}
 

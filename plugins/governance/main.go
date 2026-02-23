@@ -1128,7 +1128,10 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID, selectedKeyID, virtualKeyID string, _, _, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID, selectedKeyID, virtualKeyID string, isCacheRead, isBatch, isFinalChunk bool) {
+	_ = isCacheRead
+	_ = isBatch
+
 	// Determine if request was successful
 	success := (result != nil)
 

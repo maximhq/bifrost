@@ -68,7 +68,26 @@ func isSupportedOverrideRequestType(requestType schemas.RequestType) bool {
 }
 
 func validatePricingOverrideNonNegativeFields(index int, override schemas.ProviderPricingOverride) error {
-	optionalValues := map[string]*float64{
+	for fieldName, value := range pricingOverrideOptionalFieldsMap(override) {
+		if value != nil && *value < 0 {
+			return fmt.Errorf("override[%d]: %s must be non-negative", index, fieldName)
+		}
+	}
+
+	return nil
+}
+
+func hasPricingOverridePatchFields(override schemas.ProviderPricingOverride) bool {
+	for _, value := range pricingOverrideOptionalFieldsMap(override) {
+		if value != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func pricingOverrideOptionalFieldsMap(override schemas.ProviderPricingOverride) map[string]*float64 {
+	return map[string]*float64{
 		"input_cost_per_token":                              override.InputCostPerToken,
 		"output_cost_per_token":                             override.OutputCostPerToken,
 		"input_cost_per_video_per_second":                   override.InputCostPerVideoPerSecond,
@@ -96,50 +115,4 @@ func validatePricingOverrideNonNegativeFields(index int, override schemas.Provid
 		"output_cost_per_image":                             override.OutputCostPerImage,
 		"cache_read_input_image_token_cost":                 override.CacheReadInputImageTokenCost,
 	}
-
-	for fieldName, value := range optionalValues {
-		if value != nil && *value < 0 {
-			return fmt.Errorf("override[%d]: %s must be non-negative", index, fieldName)
-		}
-	}
-
-	return nil
-}
-
-func hasPricingOverridePatchFields(override schemas.ProviderPricingOverride) bool {
-	optionalValues := []*float64{
-		override.InputCostPerToken,
-		override.OutputCostPerToken,
-		override.InputCostPerVideoPerSecond,
-		override.InputCostPerAudioPerSecond,
-		override.InputCostPerCharacter,
-		override.OutputCostPerCharacter,
-		override.InputCostPerTokenAbove128kTokens,
-		override.InputCostPerCharacterAbove128kTokens,
-		override.InputCostPerImageAbove128kTokens,
-		override.InputCostPerVideoPerSecondAbove128kTokens,
-		override.InputCostPerAudioPerSecondAbove128kTokens,
-		override.OutputCostPerTokenAbove128kTokens,
-		override.OutputCostPerCharacterAbove128kTokens,
-		override.InputCostPerTokenAbove200kTokens,
-		override.OutputCostPerTokenAbove200kTokens,
-		override.CacheCreationInputTokenCostAbove200kTokens,
-		override.CacheReadInputTokenCostAbove200kTokens,
-		override.CacheReadInputTokenCost,
-		override.CacheCreationInputTokenCost,
-		override.InputCostPerTokenBatches,
-		override.OutputCostPerTokenBatches,
-		override.InputCostPerImageToken,
-		override.OutputCostPerImageToken,
-		override.InputCostPerImage,
-		override.OutputCostPerImage,
-		override.CacheReadInputImageTokenCost,
-	}
-
-	for _, value := range optionalValues {
-		if value != nil {
-			return true
-		}
-	}
-	return false
 }

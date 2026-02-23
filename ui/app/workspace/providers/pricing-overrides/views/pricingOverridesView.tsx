@@ -498,6 +498,7 @@ export function PricingOverridesView() {
 										id="pricing-override-enabled"
 										checked={formState.enabled}
 										onCheckedChange={(checked) => setFormState((prev) => ({ ...prev, enabled: checked }))}
+										data-testid="pricing-override-enabled-switch"
 									/>
 								</div>
 							</div>
@@ -582,7 +583,7 @@ export function PricingOverridesView() {
 							</div>
 						</div>
 
-						<div className="space-y-2">
+						<div className="space-y-2" data-testid="pricing-override-request-types-field">
 							<Label>Request Types (optional)</Label>
 							<MultiSelect
 								key={`${editingOverride?.id ?? "new"}-request-types`}
@@ -623,7 +624,7 @@ export function PricingOverridesView() {
 						</div>
 
 						<div className="flex justify-end gap-2 pt-2">
-							<Button variant="outline" onClick={() => setEditorOpen(false)} disabled={isSaving}>
+							<Button variant="outline" onClick={() => setEditorOpen(false)} disabled={isSaving} data-testid="pricing-override-cancel-button">
 								Cancel
 							</Button>
 							<Button onClick={handleSave} disabled={isSaving || (!editingOverride && !canCreate) || (!!editingOverride && !canUpdate)} data-testid="pricing-override-save-button">
@@ -643,8 +644,10 @@ export function PricingOverridesView() {
 						</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-						<AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90">
+						<AlertDialogCancel disabled={isDeleting} data-testid="pricing-override-delete-cancel-button">
+							Cancel
+						</AlertDialogCancel>
+						<AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90" data-testid="pricing-override-delete-confirm-button">
 							{isDeleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					</AlertDialogFooter>

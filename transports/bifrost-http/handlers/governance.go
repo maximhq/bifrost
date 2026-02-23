@@ -169,6 +169,8 @@ type UpdatePricingOverrideRequest struct {
 	MatchType    *schemas.PricingOverrideMatchType `json:"match_type,omitempty"`
 	RequestTypes *[]schemas.RequestType            `json:"request_types,omitempty"`
 
+	// NOTE: Keep this list in sync with schemas.ProviderPricingOverride.
+	// A drift here can make update semantics differ from create semantics.
 	InputCostPerToken                          *float64 `json:"input_cost_per_token,omitempty"`
 	OutputCostPerToken                         *float64 `json:"output_cost_per_token,omitempty"`
 	InputCostPerVideoPerSecond                 *float64 `json:"input_cost_per_video_per_second,omitempty"`
@@ -2942,9 +2944,11 @@ func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
 		overridePatch,
 	)
 	hash, hashErr := configstore.GeneratePricingOverrideHash(override)
-	if hashErr == nil {
-		override.ConfigHash = hash
+	if hashErr != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to generate pricing override config hash: %v", hashErr))
+		return
 	}
+	override.ConfigHash = hash
 
 	if err := h.configStore.CreatePricingOverride(ctx, &override); err != nil {
 		SendError(ctx, 500, fmt.Sprintf("Failed to create pricing override: %v", err))
@@ -2994,6 +2998,9 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 	if req.ScopeID != nil {
 		scopeID := strings.TrimSpace(*req.ScopeID)
 		override.ScopeID = &scopeID
+	}
+	if req.Scope != nil && req.ScopeID == nil && strings.TrimSpace(*req.Scope) == string(configstoreTables.PricingOverrideScopeGlobal) {
+		override.ScopeID = nil
 	}
 	if req.ModelPattern != nil {
 		override.ModelPattern = *req.ModelPattern
@@ -3054,9 +3061,11 @@ func (h *GovernanceHandler) updatePricingOverride(ctx *fasthttp.RequestCtx) {
 	}
 
 	hash, hashErr := configstore.GeneratePricingOverrideHash(*override)
-	if hashErr == nil {
-		override.ConfigHash = hash
+	if hashErr != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to generate pricing override config hash: %v", hashErr))
+		return
 	}
+	override.ConfigHash = hash
 
 	if err := h.configStore.UpdatePricingOverride(ctx, override); err != nil {
 		SendError(ctx, 500, fmt.Sprintf("Failed to update pricing override in database: %v", err))

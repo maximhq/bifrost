@@ -338,6 +338,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,6 +359,8 @@ import (
 
 // MockConfigStore implements the ConfigStore interface for testing
 type MockConfigStore struct {
+	mu sync.RWMutex
+
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
 	mcpConfig        *schemas.MCPConfig
@@ -367,6 +370,7 @@ type MockConfigStore struct {
 	vectorConfig     *vectorstore.Config
 	logsConfig       *logstore.Config
 	plugins          []*tables.TablePlugin
+	pricingOverrides map[string]tables.TablePricingOverride
 
 	// Track update calls for verification
 	clientConfigUpdated    bool
@@ -389,7 +393,8 @@ type MockConfigStore struct {
 // NewMockConfigStore creates a new mock config store
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
-		providers: make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providers:        make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		pricingOverrides: make(map[string]tables.TablePricingOverride),
 	}
 }
 
@@ -397,7 +402,7 @@ func NewMockConfigStore() *MockConfigStore {
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -1023,26 +1028,137 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 }
 
 func (m *MockConfigStore) GetPricingOverrides(ctx context.Context) ([]tables.TablePricingOverride, error) {
-	return []tables.TablePricingOverride{}, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	overrides := make([]tables.TablePricingOverride, 0, len(m.pricingOverrides))
+	for _, override := range m.pricingOverrides {
+		overrides = append(overrides, override)
+	}
+
+	sort.Slice(overrides, func(i, j int) bool {
+		return overrides[i].ID < overrides[j].ID
+	})
+
+	return overrides, nil
 }
 
 func (m *MockConfigStore) GetPricingOverridesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TablePricingOverride, error) {
-	return []tables.TablePricingOverride{}, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	trimmedScope := strings.TrimSpace(scope)
+	trimmedScopeID := strings.TrimSpace(scopeID)
+
+	overrides := make([]tables.TablePricingOverride, 0, len(m.pricingOverrides))
+	for _, override := range m.pricingOverrides {
+		if trimmedScope == "" {
+			overrides = append(overrides, override)
+			continue
+		}
+
+		if trimmedScope == string(tables.PricingOverrideScopeGlobal) {
+			if override.Scope == tables.PricingOverrideScopeGlobal {
+				overrides = append(overrides, override)
+			}
+			continue
+		}
+
+		if trimmedScopeID == "" {
+			continue
+		}
+
+		if string(override.Scope) == trimmedScope && override.ScopeID != nil && strings.TrimSpace(*override.ScopeID) == trimmedScopeID {
+			overrides = append(overrides, override)
+		}
+	}
+
+	sort.Slice(overrides, func(i, j int) bool {
+		return overrides[i].ID < overrides[j].ID
+	})
+
+	return overrides, nil
 }
 
 func (m *MockConfigStore) GetPricingOverride(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
-	return nil, configstore.ErrNotFound
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	override, ok := m.pricingOverrides[id]
+	if !ok {
+		return nil, configstore.ErrNotFound
+	}
+	result := override
+	return &result, nil
 }
 
 func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.pricingOverrides == nil {
+		m.pricingOverrides = make(map[string]tables.TablePricingOverride)
+	}
+	if strings.TrimSpace(rule.ID) == "" {
+		rule.ID = uuid.NewString()
+	}
+
+	override := *rule
+	m.pricingOverrides[override.ID] = override
+
+	if m.governanceConfig == nil {
+		m.governanceConfig = &configstore.GovernanceConfig{}
+	}
+	m.governanceConfig.PricingOverrides = append(m.governanceConfig.PricingOverrides, override)
+
 	return nil
 }
 
 func (m *MockConfigStore) UpdatePricingOverride(ctx context.Context, rule *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if strings.TrimSpace(rule.ID) == "" {
+		return configstore.ErrNotFound
+	}
+	if _, ok := m.pricingOverrides[rule.ID]; !ok {
+		return configstore.ErrNotFound
+	}
+
+	override := *rule
+	m.pricingOverrides[override.ID] = override
+
+	if m.governanceConfig != nil {
+		for i := range m.governanceConfig.PricingOverrides {
+			if m.governanceConfig.PricingOverrides[i].ID == override.ID {
+				m.governanceConfig.PricingOverrides[i] = override
+				break
+			}
+		}
+	}
+
 	return nil
 }
 
 func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.pricingOverrides[id]; !ok {
+		return configstore.ErrNotFound
+	}
+	delete(m.pricingOverrides, id)
+
+	if m.governanceConfig != nil {
+		filtered := make([]tables.TablePricingOverride, 0, len(m.governanceConfig.PricingOverrides))
+		for _, override := range m.governanceConfig.PricingOverrides {
+			if override.ID != id {
+				filtered = append(filtered, override)
+			}
+		}
+		m.governanceConfig.PricingOverrides = filtered
+	}
+
 	return nil
 }
 

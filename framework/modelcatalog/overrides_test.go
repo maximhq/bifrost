@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -33,8 +34,7 @@ func makeScopedOverride(
 ) configstoreTables.TablePricingOverride {
 	var scopeIDPtr *string
 	if scope != configstoreTables.PricingOverrideScopeGlobal {
-		scopeIDCopy := scopeID
-		scopeIDPtr = &scopeIDCopy
+		scopeIDPtr = bifrost.Ptr(scopeID)
 	}
 
 	return configstoreTables.TablePricingOverride{

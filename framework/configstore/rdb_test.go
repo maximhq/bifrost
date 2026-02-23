@@ -26,6 +26,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableKey{},
 		&tables.TableBudget{},
 		&tables.TableRateLimit{},
+		&tables.TablePricingOverride{},
 		&tables.TableVirtualKey{},
 		&tables.TableVirtualKeyProviderConfig{},
 		&tables.TableVirtualKeyProviderConfigKey{},
@@ -1042,5 +1043,72 @@ func TestRateLimitDurationFormats(t *testing.T) {
 		}
 		err := store.CreateRateLimit(ctx, rateLimit)
 		assert.NoError(t, err, "Duration %s should be valid", duration)
+	}
+}
+
+// =============================================================================
+// Pricing Override Tests
+// =============================================================================
+
+func TestGetPricingOverridesByScope_GlobalOnly(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providerScopeID := "openai"
+	globalOverride := newPricingOverrideForScopeTest("po-global", "global-rule", tables.PricingOverrideScopeGlobal, nil)
+	providerOverride := newPricingOverrideForScopeTest("po-provider", "provider-rule", tables.PricingOverrideScopeProvider, &providerScopeID)
+
+	require.NoError(t, store.CreatePricingOverride(ctx, globalOverride))
+	require.NoError(t, store.CreatePricingOverride(ctx, providerOverride))
+
+	overrides, err := store.GetPricingOverridesByScope(ctx, string(tables.PricingOverrideScopeGlobal), "")
+	require.NoError(t, err)
+	require.Len(t, overrides, 1)
+	assert.Equal(t, globalOverride.ID, overrides[0].ID)
+	assert.Equal(t, tables.PricingOverrideScopeGlobal, overrides[0].Scope)
+}
+
+func TestGetPricingOverridesByScope_NonGlobalWithoutScopeIDReturnsEmpty(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	providerScopeID := "openai"
+	override := newPricingOverrideForScopeTest("po-provider", "provider-rule", tables.PricingOverrideScopeProvider, &providerScopeID)
+	require.NoError(t, store.CreatePricingOverride(ctx, override))
+
+	overrides, err := store.GetPricingOverridesByScope(ctx, string(tables.PricingOverrideScopeProvider), "")
+	require.NoError(t, err)
+	assert.Empty(t, overrides)
+}
+
+func TestGetPricingOverridesByScope_NonGlobalWithScopeID(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	openAIScopeID := "openai"
+	anthropicScopeID := "anthropic"
+	openAIOverride := newPricingOverrideForScopeTest("po-openai", "provider-openai", tables.PricingOverrideScopeProvider, &openAIScopeID)
+	anthropicOverride := newPricingOverrideForScopeTest("po-anthropic", "provider-anthropic", tables.PricingOverrideScopeProvider, &anthropicScopeID)
+
+	require.NoError(t, store.CreatePricingOverride(ctx, openAIOverride))
+	require.NoError(t, store.CreatePricingOverride(ctx, anthropicOverride))
+
+	overrides, err := store.GetPricingOverridesByScope(ctx, string(tables.PricingOverrideScopeProvider), "openai")
+	require.NoError(t, err)
+	require.Len(t, overrides, 1)
+	assert.Equal(t, openAIOverride.ID, overrides[0].ID)
+}
+
+func newPricingOverrideForScopeTest(id string, name string, scope tables.PricingOverrideScope, scopeID *string) *tables.TablePricingOverride {
+	cost := 0.001
+	return &tables.TablePricingOverride{
+		ID:                id,
+		Name:              name,
+		Enabled:           true,
+		Scope:             scope,
+		ScopeID:           scopeID,
+		ModelPattern:      "gpt-4.1",
+		MatchType:         schemas.PricingOverrideMatchExact,
+		InputCostPerToken: &cost,
 	}
 }
