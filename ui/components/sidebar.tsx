@@ -445,6 +445,7 @@ export default function AppSidebar() {
 				url: "/workspace/prompt-repo",
 				icon: FolderGit,
 				description: "Prompt repository",
+				// Public access intentional — feature is "coming soon" with no sensitive data; RBAC will be added at GA
 				hasAccess: true,
 			},
 			{

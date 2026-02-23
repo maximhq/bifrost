@@ -312,6 +312,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 											href="https://docs.getbifrost.ai/mcp/code-mode"
 											target="_blank"
 											rel="noopener noreferrer"
+											data-testid="code-mode-link-help"
 											className="text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
 											aria-label="Learn more about Code Mode"
 										>
