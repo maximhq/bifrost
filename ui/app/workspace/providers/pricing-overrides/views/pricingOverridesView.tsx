@@ -408,7 +408,7 @@ export function PricingOverridesView() {
 							sortedOverrides.map((override) => (
 								<TableRow key={override.id} data-testid={`pricing-override-row-${override.id}`}>
 									<TableCell className="font-medium">
-										<span className="truncate max-w-[240px]">{override.name}</span>
+										<span className="truncate max-w-[240px] inline-block align-bottom">{override.name}</span>
 									</TableCell>
 									<TableCell>
 										<div className="flex flex-col gap-1">
