@@ -78,7 +78,7 @@ export const Selectors = {
     teamsTable: '[data-testid="teams-table"]',
     customersTable: '[data-testid="customers-table"]',
     createTeamBtn: '[data-testid="create-team-btn"]',
-    createCustomerBtn: '[data-testid="create-customer-btn"]',
+    createCustomerBtn: '[data-testid="customer-button-create"]',
   },
 
   // Common form elements
