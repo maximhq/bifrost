@@ -505,3 +505,66 @@ func TestGetRequestPath(t *testing.T) {
 		})
 	}
 }
+
+// TestMarshalSorted_Deterministic verifies that MarshalSorted produces identical
+// output across multiple calls with the same map, despite Go's randomized map iteration.
+func TestMarshalSorted_Deterministic(t *testing.T) {
+	// Build a map with enough keys to make random ordering statistically certain
+	m := map[string]interface{}{
+		"zulu":    1,
+		"alpha":   2,
+		"mike":    3,
+		"bravo":   4,
+		"yankee":  5,
+		"charlie": 6,
+		"nested": map[string]interface{}{
+			"zebra":   "z",
+			"apple":   "a",
+			"mango":   "m",
+			"banana":  "b",
+			"cherry":  "c",
+			"date":    "d",
+			"fig":     "f",
+			"grape":   "g",
+			"kiwi":    "k",
+			"lemon":   "l",
+			"orange":  "o",
+			"papaya":  "p",
+			"quince":  "q",
+			"raisin":  "r",
+			"satsuma": "s",
+		},
+	}
+
+	first, err := MarshalSorted(m)
+	if err != nil {
+		t.Fatalf("MarshalSorted() error: %v", err)
+	}
+
+	// Run 50 iterations to be confident about determinism
+	for i := 0; i < 50; i++ {
+		got, err := MarshalSorted(m)
+		if err != nil {
+			t.Fatalf("MarshalSorted() iteration %d error: %v", i, err)
+		}
+		if string(got) != string(first) {
+			t.Fatalf("MarshalSorted() produced different output on iteration %d:\nfirst: %s\ngot:   %s", i, first, got)
+		}
+	}
+
+	// Also verify MarshalSortedIndent
+	firstIndent, err := MarshalSortedIndent(m, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalSortedIndent() error: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		got, err := MarshalSortedIndent(m, "", "  ")
+		if err != nil {
+			t.Fatalf("MarshalSortedIndent() iteration %d error: %v", i, err)
+		}
+		if string(got) != string(firstIndent) {
+			t.Fatalf("MarshalSortedIndent() produced different output on iteration %d:\nfirst: %s\ngot:   %s", i, firstIndent, got)
+		}
+	}
+}

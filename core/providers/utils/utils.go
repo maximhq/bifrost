@@ -29,6 +29,21 @@ import (
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
+// sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
+// This ensures deterministic JSON output for map[string]interface{} values,
+// which is critical for LLM prompt caching (e.g., Anthropic cache keying).
+var sortedAPI = sonic.Config{SortMapKeys: true}.Froze()
+
+// MarshalSorted marshals v to JSON with map keys sorted alphabetically.
+func MarshalSorted(v interface{}) ([]byte, error) {
+	return sortedAPI.Marshal(v)
+}
+
+// MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
+func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
 var logger atomic.Pointer[schemas.Logger]
 
@@ -469,7 +484,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 				MergeExtraParams(jsonMap, extraParams)
 
 				// Re-marshal the merged map
-				jsonBody, err = sonic.MarshalIndent(jsonMap, "", "  ")
+				jsonBody, err = MarshalSortedIndent(jsonMap, "", "  ")
 				if err != nil {
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 				}

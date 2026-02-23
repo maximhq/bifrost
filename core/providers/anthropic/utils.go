@@ -137,7 +137,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				// Merge ExtraParams recursively (handles nested maps)
 				providerUtils.MergeExtraParams(jsonMap, extraParams)
 				// Re-marshal the merged map
-				jsonBody, err = sonic.Marshal(jsonMap)
+				jsonBody, err = providerUtils.MarshalSorted(jsonMap)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
