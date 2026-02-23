@@ -13,7 +13,16 @@ func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	defaultProvider := schemas.OpenAI
+
+	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
+	if ctx != nil {
+		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
+			defaultProvider = schemas.Azure
+		}
+	}
+
+	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
 
 	input := request.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
@@ -54,12 +63,12 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 					break
 				}
 			}
-			
+
 			if hasCompaction {
 				// Create a new message with converted content blocks
 				newMessage := message
 				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
-				
+
 				for _, block := range message.Content.ContentBlocks {
 					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
 						// Convert compaction block to text block
@@ -75,7 +84,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 						newContentBlocks = append(newContentBlocks, block)
 					}
 				}
-				
+
 				// Only update if we have blocks remaining after conversion
 				if len(newContentBlocks) > 0 {
 					newMessage.Content = &schemas.ResponsesMessageContent{
@@ -88,7 +97,7 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				}
 			}
 		}
-		
+
 		if message.ResponsesReasoning != nil {
 			// According to OpenAI's Responses API format specification, for non-gpt-oss models, a message
 			// with ResponsesReasoning != nil and non-empty Content.ContentBlocks but empty Summary and
