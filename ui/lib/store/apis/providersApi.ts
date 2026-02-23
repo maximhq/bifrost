@@ -2,6 +2,13 @@ import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProvider
 import { DBKey } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
+function sortProviders (a: ModelProvider, b: ModelProvider) {
+	const aIsCustom = !!a.custom_provider_config
+	const bIsCustom = !!b.custom_provider_config
+	if (aIsCustom !== bIsCustom) return aIsCustom ? 1 : -1
+	return a.name.localeCompare(b.name)
+}
+
 // Types for models API
 export interface ModelResponse {
 	name: string;
@@ -36,7 +43,7 @@ export const providersApi = baseApi.injectEndpoints({
 		// Get all providers
 		getProviders: builder.query<ModelProvider[], void>({
 			query: () => "/providers",
-			transformResponse: (response: ListProvidersResponse): ModelProvider[] => response.providers ?? [],
+			transformResponse: (response: ListProvidersResponse): ModelProvider[] => (response.providers ?? []).sort(sortProviders),
 			providesTags: ["Providers"],
 		}),
 
@@ -59,6 +66,7 @@ export const providersApi = baseApi.injectEndpoints({
 					dispatch(
 						providersApi.util.updateQueryData("getProviders", undefined, (draft) => {
 							draft.push(newProvider);
+							draft.sort(sortProviders);
 						})
 					);
 				} catch {}

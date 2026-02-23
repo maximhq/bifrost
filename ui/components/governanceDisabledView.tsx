@@ -30,7 +30,7 @@ export function GovernanceDisabledView() {
   return (
     <div
       className={cn(
-        "flex flex-col items-center justify-center gap-4 text-center mx-auto w-full max-w-7xl min-h-[calc(100vh-130px)]"
+        "flex flex-col items-center justify-center gap-4 text-center mx-auto w-full max-w-7xl min-h-[80vh]"
       )}
     >
       <div className="text-muted-foreground">

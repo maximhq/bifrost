@@ -494,7 +494,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		logger.Warn("failed to refresh pricing overrides for provider %s: %v", provider, err)
 	}
 
-	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	defer bfCtx.Cancel()
 
@@ -733,7 +733,7 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
 				Provider: provider,
@@ -1176,7 +1176,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 
 			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{

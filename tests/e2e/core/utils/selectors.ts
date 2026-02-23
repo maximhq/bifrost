@@ -12,7 +12,7 @@ export const Selectors = {
   providers: {
     // Sidebar list
     providerList: '[data-testid="provider-list"]',
-    providerItem: (name: string) => `[data-testid="provider-${name}"]`,
+    providerItem: (name: string) => `[data-testid="provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}"]`,
     addProviderBtn: '[data-testid="add-provider-btn"]',
     
     // Provider config

@@ -66,7 +66,7 @@ export class ProvidersPage extends BasePage {
    * Select a provider from the sidebar list
    */
   async selectProvider(name: string): Promise<void> {
-    const providerItem = this.page.getByTestId(`provider-${name}`)
+    const providerItem = this.page.getByTestId(`provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`)
     await providerItem.click()
     await waitForNetworkIdle(this.page)
   }
@@ -75,7 +75,7 @@ export class ProvidersPage extends BasePage {
    * Get provider item locator
    */
   getProviderItem(name: string): Locator {
-    return this.page.getByTestId(`provider-${name}`)
+    return this.page.getByTestId(`provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`)
   }
 
   /**

@@ -3,7 +3,6 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
@@ -13,6 +12,7 @@ import {
 	setSelectedProvider,
 	useAppDispatch,
 	useAppSelector,
+	useCreateProviderMutation,
 	useGetProvidersQuery,
 	useLazyGetProviderQuery,
 } from "@/lib/store";
@@ -22,7 +22,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useQueryState } from "nuqs";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
@@ -35,6 +35,8 @@ export default function Providers() {
 	const router = useRouter();
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
+	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
+	
 
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
@@ -45,8 +47,6 @@ export default function Providers() {
 
 	const selectedProvider = useAppSelector((state) => state.provider.selectedProvider);
 	const providerFormIsDirty = useAppSelector((state) => state.provider.isDirty);
-	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
-	const hasProviderDeleteAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 
 	const [showRedirectionDialog, setShowRedirectionDialog] = useState(false);
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
@@ -57,20 +57,15 @@ export default function Providers() {
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
+	const [createProvider] = useCreateProviderMutation();
 
 	const allProviders = ProviderNames.map(
 		(p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [], provider_status: "active" as ProviderStatus },
 	).sort((a, b) => a.name.localeCompare(b.name));
 
-	const popularProviderNames = ["openai", "bedrock", "azure", "gemini", "xai", "anthropic"] as const;
-	const popularProviders = allProviders.filter((p) => popularProviderNames.includes(p.name as (typeof popularProviderNames)[number]));
-	const standardProviders = allProviders.filter((p) => !popularProviderNames.includes(p.name as (typeof popularProviderNames)[number]));
-
 	const isProviderConfigured = (p: (typeof allProviders)[number]) =>
 		(p.keys?.length ?? 0) > 0 || (p.network_config?.base_url ?? "").trim() !== "";
 	const configuredStandardProviders = allProviders.filter(isProviderConfigured);
-	const unconfiguredPopular = popularProviders.filter((p) => !isProviderConfigured(p));
-	const unconfiguredStandard = standardProviders.filter((p) => !isProviderConfigured(p));
 
 	const customProviders =
 		savedProviders
@@ -78,10 +73,10 @@ export default function Providers() {
 			.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
 
 	// Providers added from dropdown but not yet configured (keys/base_url); show in sidebar so user can configure
-	const addedOnly = allProviders.filter(
-		(p) => addedProviderNames.has(p.name) && !isProviderConfigured(p),
+	const addedOnly = allProviders.filter((p) => addedProviderNames.has(p.name) && !isProviderConfigured(p));
+	const configuredProviders = [...configuredStandardProviders, ...customProviders, ...addedOnly].sort((a, b) =>
+		a.name.localeCompare(b.name),
 	);
-	const configuredProviders = [...configuredStandardProviders, ...customProviders, ...addedOnly];
 	// Stable string key derived from configured providers to avoid excessive useEffect firing
 	const configuredProviderNames = configuredProviders.map((p) => p.name).join(",");
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
@@ -147,9 +142,20 @@ export default function Providers() {
 		return <FullPageLoader />;
 	}
 
-	const handleSelectKnownProvider = (name: string) => {
-		setAddedProviderNames((prev) => new Set(prev).add(name));
-		setTimeout(() => setProvider(name), 0);
+	const handleSelectKnownProvider = async (name: string) => {
+		try {
+			await createProvider({ provider: name as ModelProviderName, keys: [] }).unwrap();
+			setAddedProviderNames((prev) => new Set(prev).add(name));
+		} catch (err: any) {
+			if (err?.status === 409) {
+				// Provider already exists — still add it to the sidebar
+				setAddedProviderNames((prev) => new Set(prev).add(name));
+				return;
+			}
+			toast.error("Failed to add provider", {
+				description: getErrorMessage(err),
+			});
+		}
 	};
 
 	if (configuredProviders.length === 0) {
@@ -158,6 +164,7 @@ export default function Providers() {
 				<ProvidersEmptyState
 					addProviderDropdown={
 						<AddProviderDropdown
+							disabled={!hasProviderCreateAccess}
 							existingInSidebar={existingInSidebarNames}
 							knownProviders={allProviders}
 							onSelectKnownProvider={handleSelectKnownProvider}
@@ -217,53 +224,49 @@ export default function Providers() {
 									<div className="text-muted-foreground mb-2 text-xs font-medium">Configured Providers</div>
 									{configuredProviders.map((p) => {
 										const isCustom = !ProviderNames.includes(p.name as KnownProvider);
+										const label = isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels];
 										return (
-											<Tooltip key={p.name}>
-												<TooltipTrigger
-													data-testid={`provider-${p.name}`}
-													className={cn(
-														"mb-1 flex h-8 w-full items-center gap-2 rounded-sm border px-3 text-sm",
-														selectedProvider?.name === p.name
-															? "bg-secondary opacity-100 hover:opacity-100"
-															: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
-													)}
-													onClick={(e) => {
-														e.preventDefault();
-														e.stopPropagation();
-														if (providerFormIsDirty) {
-															setPendingRedirection(p.name);
-															setShowRedirectionDialog(true);
-															return;
-														}
-														setProvider(p.name);
-													}}
-													asChild
-												>
-													<div className="flex w-full items-center gap-2">
-														<RenderProviderIcon
-															provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
-															size="sm"
-															className="h-4 w-4"
-														/>
-														<div className="text-sm">
-															{isCustom ? p.name : ProviderLabels[p.name as keyof typeof ProviderLabels]}
-														</div>
-														<KeyDiscoveryFailedBadge provider={p} />
-														<ProviderStatusBadge status={p.provider_status} />
-														{isCustom && (
-															<Badge variant="secondary" className="ml-auto px-1.5 py-0.5 text-[10px] font-bold text-muted-foreground">
-																CUSTOM
-															</Badge>
-														)}
-													</div>
-												</TooltipTrigger>
-											</Tooltip>
+											<div
+												key={p.name}
+												data-testid={`provider-item-${p.name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}
+												className={cn(
+													"mb-1 flex h-8 w-full min-w-0 cursor-pointer items-center gap-2 rounded-sm border px-3 text-sm",
+													selectedProvider?.name === p.name
+														? "bg-secondary opacity-100 hover:opacity-100"
+														: "hover:bg-secondary cursor-pointer border-transparent opacity-100 hover:border",
+												)}
+												onClick={(e) => {
+													e.preventDefault();
+													e.stopPropagation();
+													if (providerFormIsDirty) {
+														setPendingRedirection(p.name);
+														setShowRedirectionDialog(true);
+														return;
+													}
+													setProvider(p.name);
+												}}
+											>
+												<RenderProviderIcon
+													provider={(isCustom ? p.custom_provider_config?.base_provider_type : p.name) as ProviderIconType}
+													size="sm"
+													className="h-4 w-4 shrink-0"
+												/>
+												<TruncatedName name={label} />
+												<KeyDiscoveryFailedBadge provider={p} />
+												<ProviderStatusBadge status={p.provider_status} />
+												{isCustom && (
+													<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
+														CUSTOM
+													</Badge>
+												)}
+											</div>
 										);
 									})}
 								</div>
 							)}
 							<div className="pb-4">
 								<AddProviderDropdown
+									disabled={!hasProviderCreateAccess}
 									existingInSidebar={existingInSidebarNames}
 									knownProviders={allProviders}
 									onSelectKnownProvider={handleSelectKnownProvider}
@@ -285,12 +288,42 @@ export default function Providers() {
 				</div>
 			)}
 			{!isLoadingProvider && selectedProvider && (
-				<ModelProviderConfig
-					provider={selectedProvider}
-					onRequestDelete={() => setShowDeleteProviderDialog(true)}
-				/>
+				<ModelProviderConfig provider={selectedProvider} onRequestDelete={() => setShowDeleteProviderDialog(true)} />
 			)}
 		</div>
+	);
+}
+
+function TruncatedName({ name }: { name: string }) {
+	const textRef = useRef<HTMLDivElement>(null);
+	const [isTruncated, setIsTruncated] = useState(false);
+
+	const checkTruncation = useCallback(() => {
+		const el = textRef.current;
+		if (el) {
+			setIsTruncated(el.scrollWidth > el.clientWidth);
+		}
+	}, []);
+
+	useEffect(() => {
+		checkTruncation();
+		window.addEventListener("resize", checkTruncation);
+		return () => window.removeEventListener("resize", checkTruncation);
+	}, [checkTruncation, name]);
+
+	const inner = (
+		<div ref={textRef} className="min-w-0 flex-1 truncate text-sm">
+			{name}
+		</div>
+	);
+
+	if (!isTruncated) return inner;
+
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{inner}</TooltipTrigger>
+			<TooltipContent side="right">{name}</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -305,14 +338,14 @@ function ProviderStatusBadge({ status }: { status: ProviderStatus }) {
 	) : null;
 }
 
-function KeyDiscoveryFailedBadge({ 
-	provider 
-}: { 
-	provider: { 
+function KeyDiscoveryFailedBadge({
+	provider,
+}: {
+	provider: {
 		keys: Array<{ status?: string }>;
 		status?: string;
 		description?: string;
-	} 
+	};
 }) {
 	const hasFailedKeys = provider.keys?.some((key) => key.status === "list_models_failed");
 	const providerFailed = provider.status === "list_models_failed";

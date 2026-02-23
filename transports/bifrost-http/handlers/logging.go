@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -17,6 +18,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/errgroup"
 )
 
 // LoggingHandler manages HTTP requests for logging operations
@@ -326,84 +328,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 
 // getLogsHistogram handles GET /api/logs/histogram - Get time-bucketed request counts
 func (h *LoggingHandler) getLogsHistogram(ctx *fasthttp.RequestCtx) {
-	// Parse query parameters into filters (same as getLogsStats)
-	filters := &logstore.SearchFilters{}
-
-	// Extract filters from query parameters
-	if providers := string(ctx.QueryArgs().Peek("providers")); providers != "" {
-		filters.Providers = parseCommaSeparated(providers)
-	}
-	if models := string(ctx.QueryArgs().Peek("models")); models != "" {
-		filters.Models = parseCommaSeparated(models)
-	}
-	if statuses := string(ctx.QueryArgs().Peek("status")); statuses != "" {
-		filters.Status = parseCommaSeparated(statuses)
-	}
-	if objects := string(ctx.QueryArgs().Peek("objects")); objects != "" {
-		filters.Objects = parseCommaSeparated(objects)
-	}
-	if selectedKeyIDs := string(ctx.QueryArgs().Peek("selected_key_ids")); selectedKeyIDs != "" {
-		filters.SelectedKeyIDs = parseCommaSeparated(selectedKeyIDs)
-	}
-	if virtualKeyIDs := string(ctx.QueryArgs().Peek("virtual_key_ids")); virtualKeyIDs != "" {
-		filters.VirtualKeyIDs = parseCommaSeparated(virtualKeyIDs)
-	}
-	if routingRuleIDs := string(ctx.QueryArgs().Peek("routing_rule_ids")); routingRuleIDs != "" {
-		filters.RoutingRuleIDs = parseCommaSeparated(routingRuleIDs)
-	}
-	if routingEngines := string(ctx.QueryArgs().Peek("routing_engine_used")); routingEngines != "" {
-		filters.RoutingEngineUsed = parseCommaSeparated(routingEngines)
-	}
-	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
-		if t, err := time.Parse(time.RFC3339, startTime); err == nil {
-			filters.StartTime = &t
-		}
-	}
-	if endTime := string(ctx.QueryArgs().Peek("end_time")); endTime != "" {
-		if t, err := time.Parse(time.RFC3339, endTime); err == nil {
-			filters.EndTime = &t
-		}
-	}
-	if minLatency := string(ctx.QueryArgs().Peek("min_latency")); minLatency != "" {
-		if f, err := strconv.ParseFloat(minLatency, 64); err == nil {
-			filters.MinLatency = &f
-		}
-	}
-	if maxLatency := string(ctx.QueryArgs().Peek("max_latency")); maxLatency != "" {
-		if val, err := strconv.ParseFloat(maxLatency, 64); err == nil {
-			filters.MaxLatency = &val
-		}
-	}
-	if minTokens := string(ctx.QueryArgs().Peek("min_tokens")); minTokens != "" {
-		if val, err := strconv.Atoi(minTokens); err == nil {
-			filters.MinTokens = &val
-		}
-	}
-	if maxTokens := string(ctx.QueryArgs().Peek("max_tokens")); maxTokens != "" {
-		if val, err := strconv.Atoi(maxTokens); err == nil {
-			filters.MaxTokens = &val
-		}
-	}
-	if cost := string(ctx.QueryArgs().Peek("min_cost")); cost != "" {
-		if val, err := strconv.ParseFloat(cost, 64); err == nil {
-			filters.MinCost = &val
-		}
-	}
-	if maxCost := string(ctx.QueryArgs().Peek("max_cost")); maxCost != "" {
-		if val, err := strconv.ParseFloat(maxCost, 64); err == nil {
-			filters.MaxCost = &val
-		}
-	}
-	if missingCost := string(ctx.QueryArgs().Peek("missing_cost_only")); missingCost != "" {
-		if val, err := strconv.ParseBool(missingCost); err == nil {
-			filters.MissingCostOnly = val
-		}
-	}
-	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
-		filters.ContentSearch = contentSearch
-	}
-
-	// Calculate bucket size based on time range
+	filters := parseHistogramFilters(ctx)
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
 
 	result, err := h.logManager.GetHistogram(ctx, filters, bucketSizeSeconds)
@@ -575,11 +500,58 @@ func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 
 // getAvailableFilterData handles GET /api/logs/filterdata - Get all unique filter data from logs
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
-	models := h.logManager.GetAvailableModels(ctx)
-	selectedKeys := h.logManager.GetAvailableSelectedKeys(ctx)
-	virtualKeys := h.logManager.GetAvailableVirtualKeys(ctx)
-	routingRules := h.logManager.GetAvailableRoutingRules(ctx)
-	routingEngines := h.logManager.GetAvailableRoutingEngines(ctx)
+	var (
+		models         []string
+		selectedKeys   []logging.KeyPair
+		virtualKeys    []logging.KeyPair
+		routingRules   []logging.KeyPair
+		routingEngines []string
+		mu             sync.Mutex
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+
+	g.Go(func() error {
+		result := h.logManager.GetAvailableModels(gCtx)
+		mu.Lock()
+		models = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result := h.logManager.GetAvailableSelectedKeys(gCtx)
+		mu.Lock()
+		selectedKeys = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result := h.logManager.GetAvailableVirtualKeys(gCtx)
+		mu.Lock()
+		virtualKeys = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result := h.logManager.GetAvailableRoutingRules(gCtx)
+		mu.Lock()
+		routingRules = result
+		mu.Unlock()
+		return nil
+	})
+	g.Go(func() error {
+		result := h.logManager.GetAvailableRoutingEngines(gCtx)
+		mu.Lock()
+		routingEngines = result
+		mu.Unlock()
+		return nil
+	})
+
+	if err := g.Wait(); err != nil {
+		logger.Error("failed to get filter data: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get filter data: %v", err))
+		return
+	}
 
 	// Extract IDs for redaction lookup
 	selectedKeyIDs := make([]string, len(selectedKeys))

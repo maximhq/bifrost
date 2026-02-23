@@ -8,8 +8,8 @@
     }
   },
   "auth_config": {
-    "admin_username": "env.ADMIN",
-    "admin_password": "env.PASS",
+    "admin_username": "env.BIFROST_ADMIN_USERNAME",
+    "admin_password": "env.BIFROST_ADMIN_PASSWORD",
     "is_enabled": true,
     "disable_auth_on_inference": true
   },
