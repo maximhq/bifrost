@@ -205,10 +205,7 @@ export function PricingOverridesView() {
 	}, [pricingOverrides]);
 
 	const providerOptions = useMemo(
-		() =>
-			providers
-				.map((provider) => ({ label: provider.name, value: provider.name }))
-				.sort((a, b) => a.label.localeCompare(b.label)),
+		() => providers.map((provider) => ({ label: provider.name, value: provider.name })).sort((a, b) => a.label.localeCompare(b.label)),
 		[providers],
 	);
 
@@ -295,7 +292,7 @@ export function PricingOverridesView() {
 			try {
 				new RegExp(formState.model_pattern);
 			} catch {
-				return "Invalid regex pattern";
+				return "Invalid pattern — must be valid Go RE2 (no lookarounds/backreferences)";
 			}
 		}
 		return undefined;
@@ -353,27 +350,41 @@ export function PricingOverridesView() {
 
 	const isSaving = isCreating || isUpdating;
 
+	const handleEditorOpenChange = (open: boolean) => {
+		if (!open && isSaving) {
+			return;
+		}
+		setEditorOpen(open);
+	};
+
+	const handleDeleteDialogOpenChange = (open: boolean) => {
+		if (open) {
+			return;
+		}
+		if (isDeleting) {
+			return;
+		}
+		setOverrideToDelete(null);
+	};
+
 	return (
 		<div className="space-y-4">
 			<div className="flex items-center justify-between">
 				<div>
 					<h1 className="text-foreground text-lg font-semibold">Pricing Overrides</h1>
-					<p className="text-muted-foreground text-sm">Define scoped per-model pricing patches across global, provider, provider key, and virtual key scopes</p>
+					<p className="text-muted-foreground text-sm">
+						Define scoped per-model pricing patches across global, provider, provider key, and virtual key scopes
+					</p>
 				</div>
 				{canCreate && (
-					<Button
-						onClick={openCreateSheet}
-						disabled={isLoading}
-						className="gap-2"
-						data-testid="pricing-overrides-new-button"
-					>
+					<Button onClick={openCreateSheet} disabled={isLoading} className="gap-2" data-testid="pricing-overrides-new-button">
 						<Plus className="h-4 w-4" />
 						New Override
 					</Button>
 				)}
 			</div>
 
-			<div className="rounded-sm border overflow-hidden">
+			<div className="overflow-hidden rounded-sm border">
 				<Table>
 					<TableHeader>
 						<TableRow className="bg-muted/50">
@@ -392,7 +403,7 @@ export function PricingOverridesView() {
 							[...Array(4)].map((_, index) => (
 								<TableRow key={`pricing-override-loading-${index}`}>
 									<TableCell colSpan={8}>
-										<div className="h-2 w-40 rounded bg-muted animate-pulse" />
+										<div className="bg-muted h-2 w-40 animate-pulse rounded" />
 									</TableCell>
 								</TableRow>
 							))}
@@ -408,12 +419,12 @@ export function PricingOverridesView() {
 							sortedOverrides.map((override) => (
 								<TableRow key={override.id} data-testid={`pricing-override-row-${override.id}`}>
 									<TableCell className="font-medium">
-										<span className="truncate max-w-[240px] inline-block align-bottom">{override.name}</span>
+										<span className="inline-block max-w-[240px] truncate align-bottom">{override.name}</span>
 									</TableCell>
 									<TableCell>
 										<div className="flex flex-col gap-1">
 											<Badge variant="secondary">{formatScope(override.scope)}</Badge>
-											{override.scope_id && <span className="font-mono text-xs text-muted-foreground">{override.scope_id}</span>}
+											{override.scope_id && <span className="text-muted-foreground font-mono text-xs">{override.scope_id}</span>}
 										</div>
 									</TableCell>
 									<TableCell className="font-mono text-xs">{override.model_pattern}</TableCell>
@@ -461,8 +472,8 @@ export function PricingOverridesView() {
 				</Table>
 			</div>
 
-			<Sheet open={editorOpen} onOpenChange={setEditorOpen}>
-				<SheetContent className="dark:bg-card flex w-full flex-col min-w-1/2 gap-4 overflow-x-hidden bg-white p-8">
+			<Sheet open={editorOpen} onOpenChange={handleEditorOpenChange}>
+				<SheetContent className="dark:bg-card flex w-full min-w-1/2 flex-col gap-4 overflow-x-hidden bg-white p-8">
 					<SheetHeader className="flex flex-col items-start">
 						<SheetTitle>{editingOverride ? "Edit Pricing Override" : "Create Pricing Override"}</SheetTitle>
 						<SheetDescription>
@@ -524,7 +535,9 @@ export function PricingOverridesView() {
 							<div className="space-y-2">
 								<Label>Scope Value</Label>
 								{formState.scope === "global" ? (
-									<div className="text-muted-foreground flex h-10 items-center rounded-sm border px-3 text-sm">Not required for global scope</div>
+									<div className="text-muted-foreground flex h-10 items-center rounded-sm border px-3 text-sm">
+										Not required for global scope
+									</div>
 								) : (
 									<Select
 										value={formState.scope_id || undefined}
@@ -552,10 +565,11 @@ export function PricingOverridesView() {
 									id="pricing-override-model-pattern"
 									value={formState.model_pattern}
 									onChange={(event) => setFormState((prev) => ({ ...prev, model_pattern: event.target.value }))}
-									placeholder="gpt-4o, gpt-4o-* or ^gpt-4o.*$"
+									placeholder="gpt-4o, gpt-4o-* or ^gpt-4o.*$ (Go RE2)"
 									className="font-mono"
 									data-testid="pricing-override-model-pattern-input"
 								/>
+								<p className="text-muted-foreground text-xs">Regex patterns must use Go RE2 syntax (no lookarounds/backreferences).</p>
 							</div>
 							<div className="space-y-2">
 								<Label>Match Type</Label>
@@ -592,7 +606,7 @@ export function PricingOverridesView() {
 								}
 								placeholder="All request types"
 								variant="default"
-								className="w-full !bg-white !text-foreground hover:!bg-white dark:!bg-zinc-800 dark:hover:!bg-zinc-800"
+								className="!text-foreground w-full !bg-white hover:!bg-white dark:!bg-zinc-800 dark:hover:!bg-zinc-800"
 								commandClassName="w-full max-w-96 [&_[cmdk-item][data-selected=true]]:!bg-muted [&_[cmdk-item][data-selected=true]]:!text-foreground [&_[cmdk-item]>div:first-child]:!border-border [&_[cmdk-item][aria-selected=true]>div:first-child]:!bg-muted [&_[cmdk-item][aria-selected=true]>div:first-child]:!text-foreground [&_[cmdk-item][aria-selected=true]>div:first-child_svg]:!bg-transparent [&_[cmdk-item][aria-selected=true]>div:first-child_svg]:!text-foreground"
 								animation={0}
 								data-testid="pricing-override-request-types-select"
@@ -616,10 +630,19 @@ export function PricingOverridesView() {
 						</div>
 
 						<div className="flex justify-end gap-2 pt-2">
-							<Button variant="outline" onClick={() => setEditorOpen(false)} disabled={isSaving} data-testid="pricing-override-cancel-button">
+							<Button
+								variant="outline"
+								onClick={() => setEditorOpen(false)}
+								disabled={isSaving}
+								data-testid="pricing-override-cancel-button"
+							>
 								Cancel
 							</Button>
-							<Button onClick={handleSave} disabled={isSaving || (!editingOverride && !canCreate) || (!!editingOverride && !canUpdate)} data-testid="pricing-override-save-button">
+							<Button
+								onClick={handleSave}
+								disabled={isSaving || (!editingOverride && !canCreate) || (!!editingOverride && !canUpdate)}
+								data-testid="pricing-override-save-button"
+							>
 								{isSaving ? "Saving..." : editingOverride ? "Save Changes" : "Create Override"}
 							</Button>
 						</div>
@@ -627,7 +650,7 @@ export function PricingOverridesView() {
 				</SheetContent>
 			</Sheet>
 
-			<AlertDialog open={!!overrideToDelete} onOpenChange={(open) => !open && setOverrideToDelete(null)}>
+			<AlertDialog open={!!overrideToDelete} onOpenChange={handleDeleteDialogOpenChange}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>Delete Pricing Override</AlertDialogTitle>
@@ -639,7 +662,12 @@ export function PricingOverridesView() {
 						<AlertDialogCancel disabled={isDeleting} data-testid="pricing-override-delete-cancel-button">
 							Cancel
 						</AlertDialogCancel>
-						<AlertDialogAction onClick={handleDelete} disabled={isDeleting} className="bg-destructive hover:bg-destructive/90" data-testid="pricing-override-delete-confirm-button">
+						<AlertDialogAction
+							onClick={handleDelete}
+							disabled={isDeleting}
+							className="bg-destructive hover:bg-destructive/90"
+							data-testid="pricing-override-delete-confirm-button"
+						>
 							{isDeleting ? "Deleting..." : "Delete"}
 						</AlertDialogAction>
 					</AlertDialogFooter>
