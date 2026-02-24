@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -66,6 +67,20 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 	}
+}
+
+// streamLargeResponseIfActive checks if large response mode was activated by the provider
+// and streams the response directly to the client. Returns true if the response was handled
+// (caller should return), false if normal response handling should continue.
+func streamLargeResponseIfActive(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	if !ok || !isLargeResponse {
+		return false
+	}
+	if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Large response reader not available")
+	}
+	return true
 }
 
 // SendSSEError sends an error in Server-Sent Events format
