@@ -290,7 +290,9 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.VLLM) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
@@ -502,6 +504,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 			defer stopCancellation()
 
+			providerUtils.DecompressStreamBody(resp)
 			scanner := bufio.NewScanner(resp.BodyStream())
 			chunkIndex := -1
 

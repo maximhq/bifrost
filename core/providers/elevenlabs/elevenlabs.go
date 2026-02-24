@@ -227,7 +227,9 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, bifrostErr
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonData)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -342,7 +344,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make request
 	startTime := time.Now()

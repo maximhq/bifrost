@@ -306,7 +306,9 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Nebius) {
+		req.SetBody(jsonData)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
