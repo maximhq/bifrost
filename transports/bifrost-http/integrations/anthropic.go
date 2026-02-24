@@ -201,11 +201,13 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 			// Split comma-separated beta headers
 			for beta := range strings.SplitSeq(headerValue, ",") {
 				beta = strings.TrimSpace(beta)
-				// Skip unsupported headers for Vertex
-				if beta == anthropic.AnthropicAdvancedToolUseBetaHeader ||
-					beta == anthropic.AnthropicStructuredOutputsBetaHeader ||
-					beta == anthropic.AnthropicPromptCachingScopeBetaHeader ||
-					beta == anthropic.AnthropicMCPClientBetaHeader {
+				// Skip unsupported headers for Vertex.
+				// Use prefix matching so that future date bumps
+				// (e.g. structured-outputs-2025-12-15) are still caught.
+				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) {
 					continue
 				}
 				filteredBetas = append(filteredBetas, beta)

@@ -29,6 +29,14 @@ const (
 	AnthropicCompactionBetaHeader = "compact-2026-01-12"
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
+
+	// Prefixes for Vertex-unsupported beta headers (version-bump proof).
+	// Use these with strings.HasPrefix when filtering headers for Vertex AI,
+	// so that future date bumps (e.g. structured-outputs-2025-12-15) are still matched.
+	AnthropicAdvancedToolUseBetaHeaderPrefix    = "advanced-tool-use-"
+	AnthropicStructuredOutputsBetaHeaderPrefix  = "structured-outputs-"
+	AnthropicPromptCachingScopeBetaHeaderPrefix = "prompt-caching-scope-"
+	AnthropicMCPClientBetaHeaderPrefix          = "mcp-client-"
 )
 
 // ==================== REQUEST TYPES ====================
