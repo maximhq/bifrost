@@ -4,6 +4,7 @@ import { useGetDevGoroutinesQuery, useGetDevPprofQuery } from '@/lib/store'
 import type { GoroutineGroup } from '@/lib/store/apis/devApi'
 import { isDevelopmentMode } from '@/lib/utils/port'
 import { Activity, AlertTriangle, ChevronDown, ChevronRight, ChevronUp, Cpu, EyeOff, HardDrive, RotateCcw, TrendingUp, X } from 'lucide-react'
+import { formatBytes } from '@/lib/utils/strings'
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Area,
@@ -14,15 +15,6 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-
-// Format bytes to human-readable string
-function formatBytes (bytes: number): string {
-  if (bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
-}
 
 // Format nanoseconds to human-readable string
 function formatNs (ns: number): string {

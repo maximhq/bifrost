@@ -11,9 +11,10 @@ interface Props {
 	description: string;
 	readmeLink: string;
 	align?: "middle" | "top";
+	testIdPrefix?: string;
 }
 
-export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle" }: Props) {
+export default function ContactUsView({ icon, title, description, className, readmeLink, align = "middle", testIdPrefix }: Props) {
 	return (
 		<div className={cn("flex flex-col items-center gap-4 text-center", align === "middle" ? "justify-center" : "justify-start", className)}>
 			<div className="text-muted-foreground">{icon}</div>
@@ -25,6 +26,7 @@ export default function ContactUsView({ icon, title, description, className, rea
 						variant="outline"
 						aria-label="Read more about this feature (opens in new tab)"
 						className="mx-auto mt-6"
+						data-testid={testIdPrefix ? `${testIdPrefix}-read-more` : undefined}
 						onClick={() => {
 							window.open(`${readmeLink}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
@@ -34,6 +36,7 @@ export default function ContactUsView({ icon, title, description, className, rea
 					<Button
 						className="mx-auto mt-6"
 						aria-label="Book a demo (opens Calendly in new tab)"
+						data-testid={testIdPrefix ? `${testIdPrefix}-book-demo` : undefined}
 						onClick={() => {
 							window.open("https://calendly.com/maximai/bifrost-demo?utm_source=bfd_ent", "_blank", "noopener,noreferrer");
 						}}

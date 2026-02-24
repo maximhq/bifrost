@@ -106,9 +106,19 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		header: "Message",
 		cell: ({ row }) => {
 			const input = getMessage(row.original);
+			const isLargePayload = row.original.is_large_payload_request || row.original.is_large_payload_response;
 			return (
-				<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
-					{input}
+				<div className="flex items-center gap-1.5">
+					{isLargePayload && (
+						<span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/50 dark:text-amber-400" title="Large payload - streamed directly to provider">
+							LP
+						</span>
+					)}
+					<div className="max-w-[400px] truncate font-mono text-sm font-normal" title={input || "-"}>
+						{input || (isLargePayload
+						? `Large payload ${row.original.is_large_payload_request && row.original.is_large_payload_response ? "request & response" : row.original.is_large_payload_request ? "request" : "response"}`
+						: "-")}
+					</div>
 				</div>
 			);
 		},
