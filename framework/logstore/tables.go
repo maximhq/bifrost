@@ -127,6 +127,8 @@ type Log struct {
 	RawResponse           string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
 	RoutingEngineLogs     string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
 	Metadata              string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
+	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
+	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
 
 	// Denormalized token fields for easier querying
 	PromptTokens     int `gorm:"default:0" json:"-"`

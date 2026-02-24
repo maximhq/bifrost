@@ -214,7 +214,13 @@ func (p *LoggerPlugin) updateLogEntry(
 		}
 
 		// Handle raw request marshaling and logging
-		if data.RawRequest != nil {
+		if data.IsLargePayloadRequest {
+			// Large payload preview is already a string — skip sonic.Marshal to avoid
+			// double-encoding a pre-truncated preview string.
+			if str, ok := data.RawRequest.(string); ok {
+				updates["raw_request"] = str
+			}
+		} else if data.RawRequest != nil {
 			rawRequestBytes, err := sonic.Marshal(data.RawRequest)
 			if err != nil {
 				p.logger.Error("failed to marshal raw request: %v", err)
@@ -222,6 +228,12 @@ func (p *LoggerPlugin) updateLogEntry(
 				updates["raw_request"] = string(rawRequestBytes)
 			}
 		}
+	}
+
+	// Flag is set outside the content logging guard so the dashboard can always
+	// tag large payload requests regardless of content logging settings.
+	if data.IsLargePayloadRequest {
+		updates["is_large_payload_request"] = true
 	}
 
 	if data.TokenUsage != nil {
@@ -260,7 +272,15 @@ func (p *LoggerPlugin) updateLogEntry(
 		}
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging && data.RawResponse != nil {
+	if data.IsLargePayloadResponse {
+		updates["is_large_payload_response"] = true
+		// Large payload preview is already a string — skip sonic.Marshal.
+		if p.disableContentLogging == nil || !*p.disableContentLogging {
+			if str, ok := data.RawResponse.(string); ok {
+				updates["raw_response"] = str
+			}
+		}
+	} else if (p.disableContentLogging == nil || !*p.disableContentLogging) && data.RawResponse != nil {
 		rawResponseBytes, err := sonic.Marshal(data.RawResponse)
 		if err != nil {
 			p.logger.Error("failed to marshal raw response: %v", err)
@@ -286,6 +306,8 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	routingEngineLogs string,
 	streamResponse *streaming.ProcessedStreamResponse,
 	isFinalChunk bool,
+	isLargePayloadRequest bool,
+	isLargePayloadResponse bool,
 ) error {
 	p.logger.Debug("[logging] updating streaming log entry %s", requestID)
 	updates := make(map[string]interface{})
@@ -426,6 +448,13 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 		if streamResponse.Data.RawResponse != nil {
 			updates["raw_response"] = *streamResponse.Data.RawResponse
 		}
+	}
+	// Persist large payload flags for dashboard tagging
+	if isLargePayloadRequest {
+		updates["is_large_payload_request"] = true
+	}
+	if isLargePayloadResponse {
+		updates["is_large_payload_response"] = true
 	}
 	// Only perform update if there's something to update
 	if len(updates) > 0 {
