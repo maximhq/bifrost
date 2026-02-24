@@ -13,7 +13,7 @@ const (
 	maxModelFetchLimit     = 1000
 )
 
-func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider) *schemas.BifrostListModelsResponse {
+func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, inferenceProvider inferenceProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -21,6 +21,8 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
+
+	includedModels := make(map[string]bool)
 	for _, model := range response.Models {
 		if model.ModelID == "" {
 			continue
@@ -28,6 +30,10 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 
 		supported := deriveSupportedMethods(model.PipelineTag, model.Tags)
 		if len(supported) == 0 {
+			continue
+		}
+
+		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ModelID) {
 			continue
 		}
 
@@ -39,7 +45,21 @@ func (response *HuggingFaceListModelsResponse) ToBifrostListModelsResponse(provi
 		}
 
 		bifrostResponse.Data = append(bifrostResponse.Data, newModel)
+		includedModels[model.ModelID] = true
 	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   fmt.Sprintf("%s/%s/%s", providerKey, inferenceProvider, allowedModel),
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
+	}
+
 	return bifrostResponse
 }
 

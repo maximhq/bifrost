@@ -1,6 +1,7 @@
 package replicate
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -10,11 +11,14 @@ import (
 func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
+	allowedModels []string,
+	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
 	}
 
+	includedModels := make(map[string]bool)
 	// Add deployments from /v1/deployments endpoint
 	if deploymentsResponse != nil {
 		for _, deployment := range deploymentsResponse.Results {
@@ -22,6 +26,10 @@ func ToBifrostListModelsResponse(
 
 			modelName := schemas.Ptr(deployment.Name)
 			var created *int64
+
+			if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, deploymentID) {
+				continue
+			}
 
 			// Extract information from current release if available
 			if deployment.CurrentRelease != nil {
@@ -43,10 +51,23 @@ func ToBifrostListModelsResponse(
 			}
 
 			bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
+			includedModels[deploymentID] = true
 		}
 
 		if deploymentsResponse.Next != nil {
 			bifrostResponse.NextPageToken = *deploymentsResponse.Next
+		}
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
 		}
 	}
 

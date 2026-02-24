@@ -200,7 +200,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							</TooltipProvider>
 						</div>
 						<FormControl>
-							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} />
+							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
 						</FormControl>
 						<FormMessage />
 					</FormItem>
@@ -316,7 +316,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 													</TooltipTrigger>
 													<TooltipContent>
 														<p>Optional OAuth scopes for token requests. By default we use
-														https://cognitiveservices.azure.com/.default - add additional scopes here if your setup requires extra permissions.</p>
+															https://cognitiveservices.azure.com/.default - add additional scopes here if your setup requires extra permissions.</p>
 													</TooltipContent>
 												</Tooltip>
 											</TooltipProvider>
@@ -426,31 +426,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
 						</AlertDescription>
 					</Alert>
-				<FormField
-					control={control}
-					name={`key.vertex_key_config.auth_credentials`}
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>Auth Credentials</FormLabel>
-							<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
-							<FormControl>
-								<EnvVarInput
-									variant="textarea"
-									rows={4}
-									placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-									inputClassName="font-mono text-sm"
-									{...field}
-								/>
-							</FormControl>
-							{isRedacted(field.value?.value ?? "") && (
-								<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
-									<Info className="h-3 w-3" />
-									<span>Credentials are stored securely. Edit to update.</span>
-								</div>
-							)}
-						</FormItem>
-					)}
-				/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.auth_credentials`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Auth Credentials</FormLabel>
+								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+								<FormControl>
+									<EnvVarInput
+										variant="textarea"
+										rows={4}
+										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+										inputClassName="font-mono text-sm"
+										{...field}
+									/>
+								</FormControl>
+								{isRedacted(field.value?.value ?? "") && (
+									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+										<Info className="h-3 w-3" />
+										<span>Credentials are stored securely. Edit to update.</span>
+									</div>
+								)}
+							</FormItem>
+						)}
+					/>
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.deployments`}

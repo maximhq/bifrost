@@ -1,3 +1,4 @@
 - feat: added logging_headers config field and metadata column to MCP tool logs
 - feat: add tables for async job results
 - feat: added required_headers config field with DB persistence and migration
+- feat: added support for unfiltered models for provider in model catalog

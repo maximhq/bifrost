@@ -114,7 +114,7 @@ func findDeploymentMatch(deployments map[string]string, customModelID string) (d
 // - If allowedModels is empty, all models are allowed
 // - If allowedModels is non-empty, only models/deployments with keys in allowedModels are included
 // - Deployments map is used to match model IDs to aliases and filter accordingly
-func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string) *schemas.BifrostListModelsResponse {
+func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -146,7 +146,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 			// Empty lists mean "allow all" for that dimension
 			var deploymentValue, deploymentAlias string
 			shouldFilter := false
-			if len(allowedModels) > 0 && len(deployments) > 0 {
+			if !unfiltered && len(allowedModels) > 0 && len(deployments) > 0 {
 				// Both lists are present: model must be in allowedModels AND deployments
 				// AND the deployment alias must also be in allowedModels
 				deploymentValue, deploymentAlias = findDeploymentMatch(deployments, customModelID)
@@ -160,10 +160,10 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 				// Filter if: model not in deployments OR deployment alias not in allowedModels
 				shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-			} else if len(allowedModels) > 0 {
+			} else if !unfiltered && len(allowedModels) > 0 {
 				// Only allowedModels is present: filter if model is not in allowedModels
 				shouldFilter = !slices.Contains(allowedModels, customModelID)
-			} else if len(deployments) > 0 {
+			} else if !unfiltered && len(deployments) > 0 {
 				// Only deployments is present: filter if model is not in deployments
 				deploymentValue, deploymentAlias = findDeploymentMatch(deployments, customModelID)
 				shouldFilter = deploymentValue == ""
@@ -201,7 +201,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 		}
 
 		// Check if this deployment alias is allowed
-		if len(allowedModels) > 0 {
+		if !unfiltered && len(allowedModels) > 0 {
 			// If allowedModels is non-empty, only include if alias is in the list
 			if !slices.Contains(allowedModels, alias) {
 				continue
@@ -230,7 +230,7 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 	// Third pass: Add non-custom models from allowedModels that aren't in deployments
 	// This handles cases where a model is specified in allowedModels but not explicitly mapped in deployments
-	if len(allowedModels) > 0 {
+	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
 			// Skip if model is all digits (custom model ID)
 			if schemas.IsAllDigitsASCII(allowedModel) {

@@ -2,3 +2,6 @@
 - feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
 - feat: add vllm provider support
 - feat: support multiple credential types in vertex auth credentials
+- fix: added replicate and huggingface model allowlist on list models response
+- feat: added support for unfiltered list models response
+- fix: backfill allowed models that were not in the list models response

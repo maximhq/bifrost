@@ -29,6 +29,7 @@ type ModelsManager interface {
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 }
 
 // ProviderHandler manages HTTP requests for provider operations
@@ -579,6 +580,9 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	providerParam := string(ctx.QueryArgs().Peek("provider"))
 	keysParam := string(ctx.QueryArgs().Peek("keys"))
 	limitParam := string(ctx.QueryArgs().Peek("limit"))
+	unfilteredParam := string(ctx.QueryArgs().Peek("unfiltered"))
+
+	unfiltered := unfilteredParam == "true"
 
 	// Parse limit with default
 	limit := 5
@@ -593,14 +597,17 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// If provider is specified, get models for that provider only
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		models := h.modelsManager.GetModelsForProvider(provider)
-
-		// Filter by keys if specified
-		if keysParam != "" {
-			keyIDs := strings.Split(keysParam, ",")
-			models = h.filterModelsByKeys(provider, models, keyIDs)
+		var models []string
+		if unfiltered {
+			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		} else {
+			models = h.modelsManager.GetModelsForProvider(provider)
+			// Filter by keys if specified
+			if keysParam != "" {
+				keyIDs := strings.Split(keysParam, ",")
+				models = h.filterModelsByKeys(provider, models, keyIDs)
+			}
 		}
-
 		for _, model := range models {
 			allModels = append(allModels, ModelResponse{
 				Name:     model,
@@ -617,14 +624,18 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 		// Collect models from all providers
 		for _, provider := range providers {
-			models := h.modelsManager.GetModelsForProvider(provider)
+			var models []string
+			if unfiltered {
+				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+			} else {
+				models = h.modelsManager.GetModelsForProvider(provider)
+				// Filter by keys if specified
+				if keysParam != "" {
+					keyIDs := strings.Split(keysParam, ",")
+					models = h.filterModelsByKeys(provider, models, keyIDs)
+				}
 
-			// Filter by keys if specified
-			if keysParam != "" {
-				keyIDs := strings.Split(keysParam, ",")
-				models = h.filterModelsByKeys(provider, models, keyIDs)
 			}
-
 			for _, model := range models {
 				allModels = append(allModels, ModelResponse{
 					Name:     model,

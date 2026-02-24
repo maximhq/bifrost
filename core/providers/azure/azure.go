@@ -302,7 +302,7 @@ func (provider *AzureProvider) listModelsByKey(ctx *schemas.BifrostContext, key 
 	}
 
 	// Convert to Bifrost response
-	response := azureResponse.ToBifrostListModelsResponse(key.Models, key.AzureKeyConfig.Deployments)
+	response := azureResponse.ToBifrostListModelsResponse(key.Models, key.AzureKeyConfig.Deployments, request.Unfiltered)
 	if response == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert Azure model list response", nil, schemas.Azure)
 	}

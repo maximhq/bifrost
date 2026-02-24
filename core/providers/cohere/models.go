@@ -43,7 +43,7 @@ type CohereRerankMeta struct {
 	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
 }
 
-func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
+func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -52,8 +52,9 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.Models {
-		if len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
+		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -62,6 +63,19 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 			ContextLength:    schemas.Ptr(int(model.ContextLength)),
 			SupportedMethods: model.Endpoints,
 		})
+		includedModels[model.Name] = true
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
 	}
 
 	return bifrostResponse
