@@ -295,7 +295,6 @@ var DefaultClientConfig = configstore.ClientConfig{
 	InitialPoolSize:         schemas.DefaultInitialPoolSize,
 	EnableLogging:           true,
 	DisableContentLogging:   false,
-	EnableGovernance:        true,
 	EnforceAuthOnInference:  false,
 	AllowDirectKeys:         false,
 	AllowedOrigins:          []string{"*"},

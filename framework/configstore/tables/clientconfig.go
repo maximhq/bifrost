@@ -20,7 +20,6 @@ type TableClientConfig struct {
 	DisableContentLogging   bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
 	DisableDBPingsInHealth  bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
 	LogRetentionDays        int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool   `gorm:"" json:"enable_governance"`
 	EnforceAuthOnInference  bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
 	EnforceGovernanceHeader bool   `gorm:"" json:"enforce_governance_header"`
 	EnforceSCIMAuth         bool   `gorm:"default:false" json:"enforce_scim_auth"`

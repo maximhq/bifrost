@@ -56,7 +56,6 @@ bifrost:
     allowedOrigins:
       - "*"
     enableLogging: true
-    enableGovernance: true
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100

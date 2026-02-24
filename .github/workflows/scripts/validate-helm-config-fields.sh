@@ -160,8 +160,7 @@ bifrost:
     enableLogging: true
     disableContentLogging: true
     disableDbPingsInHealth: true
-    logRetentionDays: 30
-    enableGovernance: false
+    logRetentionDays: 30    
     enforceGovernanceHeader: true
     allowDirectKeys: true
     maxRequestBodySizeMb: 50

@@ -43,7 +43,6 @@ type ClientConfig struct {
 	DisableContentLogging   bool                             `json:"disable_content_logging"` // Disable logging of content
 	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
 	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
 	EnforceGovernanceHeader bool                             `json:"enforce_governance_header,omitempty"` // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth         bool                             `json:"enforce_scim_auth,omitempty"`         // Deprecated: use EnforceAuthOnInference
@@ -91,12 +90,6 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("disableDBPingsInHealth:true"))
 	} else {
 		hash.Write([]byte("disableDBPingsInHealth:false"))
-	}
-
-	if c.EnableGovernance {
-		hash.Write([]byte("enableGovernance:true"))
-	} else {
-		hash.Write([]byte("enableGovernance:false"))
 	}
 
 	if c.EnforceAuthOnInference {

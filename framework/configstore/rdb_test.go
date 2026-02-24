@@ -670,7 +670,6 @@ func TestUpdateClientConfig(t *testing.T) {
 
 	config := &ClientConfig{
 		EnableLogging:        true,
-		EnableGovernance:     true,
 		AllowDirectKeys:      true,
 		InitialPoolSize:      100,
 		LogRetentionDays:     30,
@@ -683,7 +682,6 @@ func TestUpdateClientConfig(t *testing.T) {
 	result, err := store.GetClientConfig(ctx)
 	require.NoError(t, err)
 	assert.True(t, result.EnableLogging)
-	assert.True(t, result.EnableGovernance)
 	assert.Equal(t, 100, result.InitialPoolSize)
 }
 
