@@ -128,15 +128,58 @@ func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, 
 	return provider.networkConfig.BaseURL + path
 }
 
+func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request, body []byte) bool {
+	// Keep one request-body path for both modes:
+	// - normal mode: send converted JSON/multipart bytes
+	// - large payload mode: stream original client body reader
+	// Example failure prevented: duplicating large uploads in memory after passthrough
+	// was already activated at transport layer.
+	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Anthropic)
+	if !usedLargePayloadBody {
+		req.SetBody(body)
+	}
+	return usedLargePayloadBody
+}
+
+func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesResponseUsage {
+	node, err := sonic.Get(data, "usage")
+	if err != nil {
+		return nil
+	}
+	raw, _ := node.Raw()
+	if raw == "" {
+		return nil
+	}
+	var usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}
+	if err := sonic.UnmarshalString(raw, &usage); err != nil {
+		return nil
+	}
+	return &schemas.ResponsesResponseUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	}
+}
+
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
+// When large response streaming is activated (BifrostContextKeyLargeResponseMode set in ctx),
+// returns (nil, latency, nil) — callers must check the context flag.
 func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, meta *providerUtils.RequestMetadata) ([]byte, time.Duration, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -151,30 +194,53 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
-	req.SetBody(jsonData)
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonData)
+
+	requestClient := provider.client
+	responseThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
+	isCountTokens := meta != nil && meta.RequestType == schemas.CountTokensRequest
+	// CountTokens responses are always tiny — skip streaming client so the response
+	// is buffered normally (same approach as OpenAI and Gemini count_tokens handlers).
+	if responseThreshold > 0 && !isCountTokens {
+		resp.StreamBody = true
+		requestClient = providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
+	}
 
 	// Send the request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, requestClient, req, resp)
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
 	if bifrostErr != nil {
 		return nil, latency, bifrostErr
 	}
 
-	// Handle error response
+	// Handle error response — materialize stream body for error parsing
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		provider.logger.Debug("error from %s provider: %s", provider.GetProviderKey(), string(resp.Body()))
 		return nil, latency, parseAnthropicError(resp, meta)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+	// CountTokens uses buffered response (streaming skipped above) — decode directly.
+	if isCountTokens {
+		body, err := providerUtils.CheckAndDecodeBody(resp)
+		if err != nil {
+			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+		}
+		return body, latency, nil
 	}
 
-	// Read the response body and copy it before releasing the response
-	// to avoid use-after-free since respBody references fasthttp's internal buffer
-	bodyCopy := append([]byte(nil), body...)
-
-	return bodyCopy, latency, nil
+	// Delegate large response detection + normal buffered path to shared utility
+	body, isLarge, respErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.GetProviderKey(), provider.logger)
+	if respErr != nil {
+		return nil, latency, respErr
+	}
+	if isLarge {
+		respOwned = false
+		return nil, latency, nil
+	}
+	return body, latency, nil
 }
 
 // listModelsByKey performs a list models request for a single key.
@@ -287,6 +353,19 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostTextCompletionResponse{
+			Model: request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.TextCompletionRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+
 	// Create response object from pool
 	response := acquireAnthropicTextResponse()
 	defer releaseAnthropicTextResponse(response)
@@ -356,6 +435,19 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	})
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostChatResponse{
+			Model: request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.ChatCompletionRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
 	}
 
 	// Create response object from pool
@@ -479,10 +571,17 @@ func HandleAnthropicChatCompletionStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -540,6 +639,12 @@ func HandleAnthropicChatCompletionStreaming(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -804,14 +909,72 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
-	// Use struct directly for JSON marshaling
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
-		Provider:    provider.GetProviderKey(),
-		Model:       request.Model,
-		RequestType: schemas.ResponsesRequest,
-	})
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	releaseResp := true
+	defer func() {
+		if releaseResp {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
+		req.Header.Set("x-api-key", key.Value.GetValue())
+	}
+	req.Header.Set("anthropic-version", provider.apiVersion)
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	requestClient := provider.client
+	responseThreshold, hasLargeResponseThreshold := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64)
+	if hasLargeResponseThreshold && responseThreshold > 0 {
+		// Enable streaming + capped buffering only when enterprise threshold is present.
+		// Feature-off behavior keeps the original buffered response path unchanged.
+		resp.StreamBody = true
+		requestClient = providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
+	}
+
+	latency, bifrostReqErr := providerUtils.MakeRequestWithContext(ctx, requestClient, req, resp)
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
+	if bifrostReqErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostReqErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseAnthropicError(resp, &providerUtils.RequestMetadata{
+			Provider:    provider.GetProviderKey(),
+			Model:       request.Model,
+			RequestType: schemas.ResponsesRequest,
+		}), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Delegate large response detection + normal buffered path to shared utility
+	responseBody, isLarge, respErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.GetProviderKey(), provider.logger)
+	if respErr != nil {
+		return nil, providerUtils.EnrichError(ctx, respErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	if isLarge {
+		// Build lightweight response with usage from preview for plugin pipeline
+		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
+		response := &schemas.BifrostResponsesResponse{
+			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+			Object:    "response",
+			CreatedAt: int(time.Now().Unix()),
+			Model:     request.Model,
+			Usage:     extractAnthropicResponsesUsageFromPrefetch([]byte(preview)),
+		}
+		response.ExtraFields.Provider = provider.GetProviderKey()
+		response.ExtraFields.ModelRequested = request.Model
+		response.ExtraFields.RequestType = schemas.ResponsesRequest
+		response.ExtraFields.Latency = latency.Milliseconds()
+		releaseResp = false
+		return response, nil
 	}
 
 	// Create response object from pool
@@ -923,10 +1086,17 @@ func HandleAnthropicResponsesStream(
 	}
 
 	// Set body
-	req.SetBody(jsonBody)
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonBody)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -981,6 +1151,12 @@ func HandleAnthropicResponsesStream(
 			)
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+			return
+		}
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
 			return
 		}
 
@@ -1210,13 +1386,16 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 	}
-	req.SetBody(jsonData)
+	usedLargePayloadBody := setAnthropicRequestBody(ctx, req, jsonData)
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
+	}
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}

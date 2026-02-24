@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -30,6 +31,24 @@ type GeminiProvider struct {
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+}
+
+func buildStreamingResponseClient(base *fasthttp.Client) *fasthttp.Client {
+	client := providerUtils.CloneFastHTTPClientConfig(base)
+	client.StreamResponseBody = true
+	return client
+}
+
+func setGeminiRequestBody(req *fasthttp.Request, bodyReader io.Reader, bodySize int, jsonData []byte) {
+	// Large payload mode streams request bytes directly from the ingress reader.
+	// Normal mode sends marshaled JSON as before.
+	// Example failure prevented: materializing giant request payloads again here
+	// after transport already selected streaming mode.
+	if bodyReader != nil {
+		req.SetBodyStream(bodyReader, bodySize)
+		return
+	}
+	req.SetBody(jsonData)
 }
 
 // NewGeminiProvider creates a new Gemini provider instance.
@@ -71,7 +90,9 @@ func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Gemini, provider.customProviderConfig)
 }
 
-// completeRequest handles the common HTTP request pattern for Gemini API calls
+// completeRequest handles the common HTTP request pattern for Gemini API calls.
+// When large response streaming is activated (BifrostContextKeyLargeResponseMode set in ctx),
+// returns (nil, nil, latency, nil) — callers must check the context flag.
 func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, model string, key schemas.Key, jsonBody []byte, endpoint string, meta *providerUtils.RequestMetadata) (*GenerateContentResponse, interface{}, time.Duration, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
@@ -79,7 +100,12 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -92,37 +118,47 @@ func (provider *GeminiProvider) completeRequest(ctx *schemas.BifrostContext, mod
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
 	}
 
-	req.SetBody(jsonBody)
+	// Large payload mode: stream original request bytes directly from ingress.
+	// Normal mode: use converted JSON body.
+	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
+	if !usedLargePayloadBody {
+		req.SetBody(jsonBody)
+	}
 
-	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	// Send the request with optional large response streaming
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, nil, latency, bifrostErr
+	}
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, nil, latency, parseGeminiError(resp, meta)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, providerName, provider.logger)
+	if decodeErr != nil {
+		return nil, nil, latency, decodeErr
 	}
-
-	// Copy the response body before releasing the response
-	// to avoid use-after-free since, respBody references fasthttp's internal buffer
-	responseBody := append([]byte(nil), body...)
+	if isLargeResp {
+		respOwned = false
+		return nil, nil, latency, nil
+	}
 
 	// Parse Gemini's response
 	var geminiResponse GenerateContentResponse
-	if err := sonic.Unmarshal(responseBody, &geminiResponse); err != nil {
+	if err := sonic.Unmarshal(body, &geminiResponse); err != nil {
 		return nil, nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 	}
 
 	var rawResponse interface{}
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
+		if err := sonic.Unmarshal(body, &rawResponse); err != nil {
 			return nil, nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
 		}
 	}
@@ -250,6 +286,19 @@ func (provider *GeminiProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostChatResponse{
+			Model: request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				RequestType:    schemas.ChatCompletionRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+
 	bifrostResponse := geminiResponse.ToBifrostChatResponse()
 
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
@@ -352,10 +401,14 @@ func HandleGeminiChatCompletionStream(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	// Large payload mode: stream original request bytes directly from ingress.
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make the request
-	doErr := client.Do(req, resp)
+	streamingClient := buildStreamingResponseClient(client)
+	doErr := streamingClient.Do(req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -374,11 +427,15 @@ func HandleGeminiChatCompletionStream(
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	// Check for HTTP errors
+	// Check for HTTP errors — use parseGeminiError to preserve upstream error details
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		respBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil), jsonBody, respBody, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       model,
+			RequestType: schemas.ChatCompletionStreamRequest,
+		}), jsonBody, respBody, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -411,9 +468,17 @@ func HandleGeminiChatCompletionStream(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		providerUtils.DecompressStreamBody(resp)
+		skipInlineData := shouldSkipInlineDataForStreamingContext(ctx)
+		var reader *bufio.Reader
+		var scanner *bufio.Scanner
+		if skipInlineData {
+			reader = bufio.NewReaderSize(resp.BodyStream(), 64*1024)
+		} else {
+			scanner = bufio.NewScanner(resp.BodyStream())
+			buf := make([]byte, 0, 1024*1024)
+			scanner.Buffer(buf, 10*1024*1024)
+		}
 
 		chunkIndex := 0
 		startTime := time.Now()
@@ -422,25 +487,52 @@ func HandleGeminiChatCompletionStream(
 		var responseID string
 		var modelName string
 
-		for scanner.Scan() {
+		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
-			line := scanner.Text()
-
-			// Skip empty lines and comments
-			if line == "" || strings.HasPrefix(line, ":") {
-				continue
+			var (
+				eventData []byte
+				readErr   error
+			)
+			if skipInlineData {
+				eventData, readErr = readNextSSEDataLine(reader, true)
+			} else {
+				for {
+					if !scanner.Scan() {
+						readErr = scanner.Err()
+						if readErr == nil {
+							readErr = io.EOF
+						}
+						break
+					}
+					line := scanner.Bytes()
+					if len(line) == 0 || line[0] == ':' {
+						continue
+					}
+					if !bytes.HasPrefix(line, []byte("data: ")) {
+						continue
+					}
+					eventData = bytes.TrimSpace(line[len("data: "):])
+					if len(eventData) == 0 {
+						continue
+					}
+					break
+				}
 			}
-			// Parse SSE data
-			if !strings.HasPrefix(line, "data: ") {
-				continue
+			if readErr == io.EOF {
+				break
 			}
-			eventData := strings.TrimPrefix(line, "data: ")
-			// Skip empty data
-			if strings.TrimSpace(eventData) == "" {
-				continue
+			if readErr != nil {
+				// If context was cancelled/timed out, let defer handle it
+				if ctx.Err() != nil {
+					return
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				logger.Warn("Error reading stream: %v", readErr)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.ChatCompletionStreamRequest, providerName, model, logger)
+				return
 			}
 			// Process chunk using shared function
 			geminiResponse, err := processGeminiStreamChunk(eventData)
@@ -511,7 +603,7 @@ func HandleGeminiChatCompletionStream(
 				}
 
 				if sendBackRawResponse {
-					response.ExtraFields.RawResponse = eventData
+					response.ExtraFields.RawResponse = string(eventData)
 				}
 
 				lastChunkTime = time.Now()
@@ -531,17 +623,6 @@ func HandleGeminiChatCompletionStream(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 			}
 		}
-
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {
-				return
-			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn("Error reading stream: %v", err)
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, model, logger)
-		}
 	}()
 
 	return responseChan, nil
@@ -555,20 +636,43 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 		return nil, err
 	}
 
-	// Convert to Gemini format using the centralized converter
-	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			reqBody := ToGeminiResponsesRequest(request)
-			if reqBody == nil {
-				return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
+	// Check for large payload streaming mode (enterprise-only feature)
+	// In large payload mode, the request body streams directly from the client — skip body conversion
+	var bodyReader io.Reader
+	bodySize := -1
+	var jsonData []byte
+
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		if reader, readerOk := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader); readerOk && reader != nil {
+			bodyReader = reader
+			if contentLength, lenOk := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); lenOk {
+				bodySize = contentLength
 			}
-			return reqBody, nil
-		},
-		provider.GetProviderKey())
-	if err != nil {
-		return nil, err
+		}
+	}
+
+	// For normal path (no large payload body reader), convert request to bytes
+	if bodyReader == nil {
+		var err *schemas.BifrostError
+		jsonData, err = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				reqBody := ToGeminiResponsesRequest(request)
+				if reqBody == nil {
+					return nil, fmt.Errorf("responses input is not provided or could not be converted to Gemini format")
+				}
+				return reqBody, nil
+			},
+			provider.GetProviderKey())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Check if enterprise large response detection is enabled
+	if responseThreshold, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64); ok && responseThreshold > 0 {
+		return provider.responsesWithLargeResponseDetection(ctx, key, request, jsonData, responseThreshold, bodyReader, bodySize)
 	}
 
 	// Use struct directly for JSON marshaling
@@ -579,6 +683,19 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	})
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostResponsesResponse{
+			Model: request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.ResponsesRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
 	}
 
 	// Create final response
@@ -601,6 +718,129 @@ func (provider *GeminiProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	return bifrostResponse, nil
+}
+
+// responsesWithLargeResponseDetection makes the upstream request with response body streaming
+// enabled. If the response Content-Length exceeds the threshold, it sets context flags for
+// the router to stream the body directly to the client without full materialization.
+// If the response is small, it falls through to the normal parse-and-convert path.
+func (provider *GeminiProvider) responsesWithLargeResponseDetection(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	request *schemas.BifrostResponsesRequest,
+	jsonData []byte,
+	responseThreshold int64,
+	bodyReader io.Reader, // Optional: for large payload request streaming (pass nil for normal path)
+	bodySize int, // Required if bodyReader is non-nil
+) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	meta := &providerUtils.RequestMetadata{
+		Provider:    providerName,
+		Model:       request.Model,
+		RequestType: schemas.ResponsesRequest,
+	}
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	// Note: resp is NOT deferred — lifecycle managed manually for large responses
+
+	// Enable response body streaming so fasthttp doesn't buffer the entire body
+	resp.StreamBody = true
+
+	// Set up request (same as completeRequest)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":generateContent"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("x-goog-api-key", key.Value.GetValue())
+	}
+
+	// Large payload mode streams request bytes directly to upstream; normal mode sends marshaled bytes.
+	setGeminiRequestBody(req, bodyReader, bodySize, jsonData)
+
+	// Make request
+	streamingClient := providerUtils.BuildLargeResponseClient(provider.client, responseThreshold)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, streamingClient, req, resp)
+	if bifrostErr != nil {
+		fasthttp.ReleaseResponse(resp)
+		return nil, bifrostErr
+	}
+
+	// Handle error response — materialize stream body for error parsing
+	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		bifrostErr := parseGeminiError(resp, meta)
+		fasthttp.ReleaseResponse(resp)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Delegate large response detection + normal buffered path to shared utility
+	responseBody, isLarge, respErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, providerName, provider.logger)
+	if respErr != nil {
+		fasthttp.ReleaseResponse(resp)
+		return nil, providerUtils.EnrichError(ctx, respErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	if isLarge {
+		// Build lightweight response with usage from preview for plugin pipeline
+		preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
+		usage := extractUsageFromResponsePrefetch([]byte(preview))
+		bifrostResponse := &schemas.BifrostResponsesResponse{
+			ID:        schemas.Ptr("resp_" + providerUtils.GetRandomString(50)),
+			CreatedAt: int(time.Now().Unix()),
+			Model:     request.Model,
+			Usage:     usage,
+		}
+		bifrostResponse.ExtraFields.Provider = providerName
+		bifrostResponse.ExtraFields.ModelRequested = request.Model
+		bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+		bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+		// resp owned by reader in context — don't release
+		return bifrostResponse, nil
+	}
+	fasthttp.ReleaseResponse(resp)
+
+	// Normal parse-and-convert path
+	var geminiResponse GenerateContentResponse
+	if unmarshalErr := sonic.Unmarshal(responseBody, &geminiResponse); unmarshalErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, unmarshalErr, providerName)
+	}
+	bifrostResponse := geminiResponse.ToResponsesBifrostResponsesResponse()
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		var rawResponse interface{}
+		sonic.Unmarshal(responseBody, &rawResponse) //nolint:errcheck
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResponse, nil
+}
+
+// extractUsageFromResponsePrefetch extracts usage metadata from the response prefetch buffer.
+// Uses sonic.Get for O(1) extraction without parsing the full response.
+func extractUsageFromResponsePrefetch(data []byte) *schemas.ResponsesResponseUsage {
+	node, err := sonic.Get(data, "usageMetadata")
+	if err != nil {
+		return nil
+	}
+	raw, _ := node.Raw()
+	if raw == "" {
+		return nil
+	}
+
+	var usageMeta GenerateContentResponseUsageMetadata
+	if err := sonic.UnmarshalString(raw, &usageMeta); err != nil {
+		return nil
+	}
+
+	return ConvertGeminiUsageMetadataToResponsesUsage(&usageMeta)
 }
 
 // ResponsesStream performs a streaming responses request to the Gemini API.
@@ -682,10 +922,14 @@ func HandleGeminiResponsesStream(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	// Large payload mode: stream original request body to upstream.
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make the request
-	doErr := client.Do(req, resp)
+	streamingClient := buildStreamingResponseClient(client)
+	doErr := streamingClient.Do(req, resp)
 	if doErr != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(doErr, context.Canceled) {
@@ -704,10 +948,14 @@ func HandleGeminiResponsesStream(
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, doErr, providerName), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	// Check for HTTP errors
+	// Check for HTTP errors — use parseGeminiError to preserve upstream error details
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode()), fmt.Errorf("%s", string(resp.Body())), resp.StatusCode(), providerName, nil, nil), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
+			Provider:    providerName,
+			Model:       model,
+			RequestType: schemas.ResponsesStreamRequest,
+		}), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Create response channel
@@ -747,9 +995,17 @@ func HandleGeminiResponsesStream(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		providerUtils.DecompressStreamBody(resp)
+		skipInlineData := shouldSkipInlineDataForStreamingContext(ctx)
+		var reader *bufio.Reader
+		var scanner *bufio.Scanner
+		if skipInlineData {
+			reader = bufio.NewReaderSize(resp.BodyStream(), 64*1024)
+		} else {
+			scanner = bufio.NewScanner(resp.BodyStream())
+			buf := make([]byte, 0, 1024*1024)
+			scanner.Buffer(buf, 10*1024*1024)
+		}
 
 		chunkIndex := 0
 		sequenceNumber := 0 // Track sequence across all events
@@ -762,29 +1018,51 @@ func HandleGeminiResponsesStream(
 
 		var lastUsageMetadata *GenerateContentResponseUsageMetadata
 
-		for scanner.Scan() {
+		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
-
-			line := scanner.Text()
-
-			// Skip empty lines and comments
-			if line == "" || strings.HasPrefix(line, ":") {
-				continue
+			var (
+				eventData []byte
+				readErr   error
+			)
+			if skipInlineData {
+				eventData, readErr = readNextSSEDataLine(reader, true)
+			} else {
+				for {
+					if !scanner.Scan() {
+						readErr = scanner.Err()
+						if readErr == nil {
+							readErr = io.EOF
+						}
+						break
+					}
+					line := scanner.Bytes()
+					if len(line) == 0 || line[0] == ':' {
+						continue
+					}
+					if !bytes.HasPrefix(line, []byte("data: ")) {
+						continue
+					}
+					eventData = bytes.TrimSpace(line[len("data: "):])
+					if len(eventData) == 0 {
+						continue
+					}
+					break
+				}
 			}
-
-			// Parse SSE data
-			if !strings.HasPrefix(line, "data: ") {
-				continue
+			if readErr == io.EOF {
+				break
 			}
-
-			eventData := strings.TrimPrefix(line, "data: ")
-
-			// Skip empty data
-			if strings.TrimSpace(eventData) == "" {
-				continue
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				logger.Warn("Error reading stream: %v", readErr)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
+				return
 			}
 
 			// Process chunk using shared function
@@ -851,7 +1129,7 @@ func HandleGeminiResponsesStream(
 
 					// Only add raw response to the LAST response in the array
 					if sendBackRawResponse && i == len(responses)-1 {
-						response.ExtraFields.RawResponse = eventData
+						response.ExtraFields.RawResponse = string(eventData)
 					}
 
 					chunkIndex++
@@ -882,17 +1160,6 @@ func HandleGeminiResponsesStream(
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
 				}
 			}
-		}
-
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn("Error reading stream: %v", err)
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
-			return
 		}
 		// Finalize the stream by closing any open items
 		finalResponses := FinalizeGeminiResponsesStream(streamState, lastUsageMetadata, sequenceNumber)
@@ -961,7 +1228,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle managed manually for large response streaming
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -974,28 +1241,58 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
 	}
 
-	req.SetBody(jsonData)
+	// Large payload mode: stream original request bytes directly from ingress.
+	// Normal mode: use converted JSON body.
+	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
+	if !usedLargePayloadBody {
+		req.SetBody(jsonData)
+	}
 
-	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	// Send the request with optional large response streaming
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
+		fasthttp.ReleaseResponse(resp)
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	// When upstream responds before consuming full upload, drain remaining bytes from
+	// ingress reader so proxy hops (e.g., Caddy) don't surface broken-pipe 502s.
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
+		parsedErr := providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
 			Model:       request.Model,
 			RequestType: schemas.EmbeddingRequest,
 		}), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		fasthttp.ReleaseResponse(resp)
+		return nil, parsedErr
 	}
 
-	body, decodeErr := providerUtils.CheckAndDecodeBody(resp)
+	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, providerName, provider.logger)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr, providerName), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		fasthttp.ReleaseResponse(resp)
+		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+	if isLargeResp {
+		// Large response detected — return lightweight response with metadata only;
+		// resp owned by LargeResponseReader in context, don't release.
+		return &schemas.BifrostEmbeddingResponse{
+			Model: request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				RequestType:    schemas.EmbeddingRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+	fasthttp.ReleaseResponse(resp)
 
 	// Parse Gemini's batch embedding response
 	var geminiResponse GeminiEmbeddingResponse
@@ -1059,6 +1356,19 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostSpeechResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.SpeechRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+
 	if request.Params != nil {
 		ctx.SetValue(BifrostContextKeyResponseFormat, request.Params.ResponseFormat)
 	}
@@ -1130,11 +1440,14 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	// Set headers
-	req.SetBody(jsonBody)
+	// Large payload mode: stream original request body to upstream.
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	streamingClient := buildStreamingResponseClient(provider.client)
+	err := streamingClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1183,6 +1496,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
+		providerUtils.DecompressStreamBody(resp)
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
@@ -1198,24 +1512,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				return
 			}
 
-			line := scanner.Text()
-
-			// Skip empty lines
-			if line == "" {
-				continue
-			}
-
-			var jsonData string
-			// Parse SSE data
-			if strings.HasPrefix(line, "data: ") {
-				jsonData = strings.TrimPrefix(line, "data: ")
-			} else {
-				// Handle raw JSON errors (without "data: " prefix)
-				jsonData = line
-			}
-
-			// Skip empty data
-			if strings.TrimSpace(jsonData) == "" {
+			line := scanner.Bytes()
+			jsonData, ok := extractSSEJSONData(line)
+			if !ok {
 				continue
 			}
 
@@ -1364,6 +1663,18 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostTranscriptionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.TranscriptionRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+
 	response := geminiResponse.ToBifrostTranscriptionResponse()
 
 	// Set ExtraFields
@@ -1424,10 +1735,14 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 
-	req.SetBody(jsonBody)
+	// Large payload mode: stream original request body to upstream.
+	if !providerUtils.ApplyLargePayloadRequestBody(ctx, req) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make the request
-	err := provider.client.Do(req, resp)
+	streamingClient := buildStreamingResponseClient(provider.client)
+	err := streamingClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1474,6 +1789,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
+		providerUtils.DecompressStreamBody(resp)
 		scanner := bufio.NewScanner(resp.BodyStream())
 		// Increase buffer size to handle large chunks (especially for audio data)
 		buf := make([]byte, 0, 1024*1024) // 1MB initial buffer
@@ -1491,57 +1807,34 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 				return
 			}
 
-			line := scanner.Text()
-
-			// Skip empty lines
-			if line == "" {
-				continue
-			}
-			var jsonData string
-			// Parse SSE data
-			if after, ok := strings.CutPrefix(line, "data: "); ok {
-				jsonData = after
-			} else {
-				// Handle raw JSON errors (without "data: " prefix)
-				jsonData = line
-			}
-
-			// Skip empty data
-			if strings.TrimSpace(jsonData) == "" {
+			line := scanner.Bytes()
+			jsonData, ok := extractSSEJSONData(line)
+			if !ok {
 				continue
 			}
 
-			// First, check if this is an error response
-			var errorCheck map[string]interface{}
-			if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-				provider.logger.Warn("Failed to parse stream data as JSON: %v", err)
-				continue
-			}
-
-			// Handle error responses
-			if _, hasError := errorCheck["error"]; hasError {
-				bifrostErr := &schemas.BifrostError{
-					Type:           schemas.Ptr("gemini_api_error"),
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: fmt.Sprintf("Gemini API error: %v", errorCheck["error"]),
-						Error:   fmt.Errorf("stream error: %v", errorCheck["error"]),
-					},
-					ExtraFields: schemas.BifrostErrorExtraFields{
-						RequestType:    schemas.TranscriptionStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-					},
+			// Process chunk using shared function.
+			geminiResponse, err := processGeminiStreamChunk(jsonData)
+			if err != nil {
+				if strings.Contains(err.Error(), "gemini api error") {
+					bifrostErr := &schemas.BifrostError{
+						Type:           schemas.Ptr("gemini_api_error"),
+						IsBifrostError: false,
+						Error: &schemas.ErrorField{
+							Message: err.Error(),
+							Error:   err,
+						},
+						ExtraFields: schemas.BifrostErrorExtraFields{
+							RequestType:    schemas.TranscriptionStreamRequest,
+							Provider:       providerName,
+							ModelRequested: request.Model,
+						},
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+					return
 				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-				return
-			}
-
-			// Parse Gemini streaming response
-			var geminiResponse GenerateContentResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &geminiResponse); err != nil {
-				provider.logger.Warn("Failed to parse Gemini stream response: %v", err)
+				provider.logger.Warn("Failed to process chunk: %v", err)
 				continue
 			}
 
@@ -1565,7 +1858,7 @@ func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 			// Check if this is the final chunk (has finishReason)
 			if len(geminiResponse.Candidates) > 0 && (geminiResponse.Candidates[0].FinishReason != "" || geminiResponse.UsageMetadata != nil) {
 				// Extract usage metadata from Gemini response
-				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(&geminiResponse)
+				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(geminiResponse)
 				usage.InputTokens = schemas.Ptr(inputTokens)
 				usage.OutputTokens = schemas.Ptr(outputTokens)
 				usage.TotalTokens = schemas.Ptr(totalTokens)
@@ -1671,6 +1964,18 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       provider.GetProviderKey(),
+				ModelRequested: request.Model,
+				RequestType:    schemas.ImageGenerationRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
+	}
+
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
 	if bifrostErr != nil {
 		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -1726,7 +2031,12 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1740,14 +2050,16 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 		req.Header.Set("x-goog-api-key", value)
 	}
 
-	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	// Send the request with optional large response streaming
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
@@ -1757,9 +2069,20 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	}
 
 	// Parse Imagen response
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, providerName, provider.logger)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	if isLargeResp {
+		respOwned = false
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				RequestType:    schemas.ImageGenerationRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
 	}
 
 	imagenResponse := GeminiImagenResponse{}
@@ -1815,7 +2138,12 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
+		imagenRespOwned := true
+		defer func() {
+			if imagenRespOwned {
+				fasthttp.ReleaseResponse(resp)
+			}
+		}()
 
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 		req.SetRequestURI(baseURL)
@@ -1827,12 +2155,14 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			req.Header.Set("x-goog-api-key", value)
 		}
 
-		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 
 		if resp.StatusCode() != fasthttp.StatusOK {
+			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			provider.logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 			return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp, &providerUtils.RequestMetadata{
 				Provider:    providerName,
@@ -1841,9 +2171,20 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 			}), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+		body, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, providerName, provider.logger)
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		if isLargeResp {
+			imagenRespOwned = false
+			return &schemas.BifrostImageGenerationResponse{
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					RequestType:    schemas.ImageEditRequest,
+					Latency:        latency.Milliseconds(),
+				},
+			}, nil
 		}
 
 		imagenResponse := GeminiImagenResponse{}
@@ -1888,6 +2229,18 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	})
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Large response mode: return lightweight response with metadata only
+	if isLargeResp, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLargeResp {
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				Provider:       providerName,
+				ModelRequested: request.Model,
+				RequestType:    schemas.ImageEditRequest,
+				Latency:        latency.Milliseconds(),
+			},
+		}, nil
 	}
 
 	response, bifrostErr := geminiResponse.ToBifrostImageGenerationResponse()
@@ -2766,25 +3119,133 @@ func (provider *GeminiProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 }
 
 // processGeminiStreamChunk processes a single chunk from Gemini streaming response
-func processGeminiStreamChunk(jsonData string) (*GenerateContentResponse, error) {
-	// First, check if this is an error response
-	var errorCheck map[string]interface{}
-	if err := sonic.Unmarshal([]byte(jsonData), &errorCheck); err != nil {
-		return nil, fmt.Errorf("failed to parse stream data as JSON: %v", err)
+func processGeminiStreamChunk(jsonData []byte) (*GenerateContentResponse, error) {
+	// Error chunks are rare; avoid a second decode in the common path.
+	if bytes.Contains(jsonData, []byte(`"error"`)) {
+		var errorCheck map[string]interface{}
+		if err := sonic.Unmarshal(jsonData, &errorCheck); err == nil {
+			if errValue, hasError := errorCheck["error"]; hasError {
+				return nil, fmt.Errorf("gemini api error: %v", errValue)
+			}
+		}
 	}
 
-	// Handle error responses
-	if _, hasError := errorCheck["error"]; hasError {
-		return nil, fmt.Errorf("gemini api error: %v", errorCheck["error"])
-	}
-
-	// Parse Gemini streaming response
 	var geminiResponse GenerateContentResponse
-	if err := sonic.Unmarshal([]byte(jsonData), &geminiResponse); err != nil {
+	if err := sonic.Unmarshal(jsonData, &geminiResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse Gemini stream response: %v", err)
 	}
 
 	return &geminiResponse, nil
+}
+
+func shouldSkipInlineDataForStreamingContext(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return true
+	}
+	if responseThreshold, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64); ok && responseThreshold > 0 {
+		return true
+	}
+	return false
+}
+
+// extractSSEJSONData returns the JSON payload for SSE "data:" lines.
+// It skips comments, control fields (event/id/retry), empty lines, and [DONE].
+func extractSSEJSONData(line []byte) ([]byte, bool) {
+	line = bytes.TrimSpace(line)
+	if len(line) == 0 || line[0] == ':' {
+		return nil, false
+	}
+	if !bytes.HasPrefix(line, []byte("data:")) {
+		return nil, false
+	}
+	data := bytes.TrimSpace(line[len("data:"):])
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return nil, false
+	}
+	return data, true
+}
+
+// readNextSSEDataLine reads the next SSE `data:` line from a streaming response.
+// It avoids scanner growth on oversized lines by reading fragments and discarding
+// inlineData lines when skipInlineData is enabled.
+func readNextSSEDataLine(reader *bufio.Reader, skipInlineData bool) ([]byte, error) {
+	for {
+		fragment, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+
+		trimmed := bytes.TrimSpace(fragment)
+		if len(trimmed) == 0 || trimmed[0] == ':' || !bytes.HasPrefix(trimmed, []byte("data:")) {
+			for isPrefix {
+				_, isPrefix, err = reader.ReadLine()
+				if err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+
+		data := bytes.TrimLeft(trimmed[len("data:"):], " \t")
+		if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+			for isPrefix {
+				_, isPrefix, err = reader.ReadLine()
+				if err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+
+		// Large mocked stream chunks encode binary inlineData; skip those lines entirely.
+		if skipInlineData && bytes.Contains(data, []byte(`"inlineData"`)) {
+			for isPrefix {
+				_, isPrefix, err = reader.ReadLine()
+				if err != nil {
+					return nil, err
+				}
+			}
+			continue
+		}
+
+		if !isPrefix {
+			return append([]byte(nil), data...), nil
+		}
+
+		// For continued lines, bound accumulation to avoid unbounded memory growth.
+		const maxJSONLineBytes = 512 * 1024
+		collected := make([]byte, 0, len(data)+1024)
+		collected = append(collected, data...)
+		dropLine := false
+
+		for isPrefix {
+			fragment, isPrefix, err = reader.ReadLine()
+			if err != nil {
+				return nil, err
+			}
+			if skipInlineData && bytes.Contains(fragment, []byte(`"inlineData"`)) {
+				dropLine = true
+				continue
+			}
+			if dropLine || len(collected)+len(fragment) > maxJSONLineBytes {
+				dropLine = true
+				continue
+			}
+			collected = append(collected, fragment...)
+		}
+
+		if dropLine {
+			continue
+		}
+		collected = bytes.TrimSpace(collected)
+		if len(collected) == 0 || bytes.Equal(collected, []byte("[DONE]")) {
+			continue
+		}
+		return collected, nil
+	}
 }
 
 // batchResultsByKey retrieves batch results for Gemini for a single key.
@@ -3515,29 +3976,44 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 		return nil, err
 	}
 
-	// Build JSON body from Bifrost request
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGeminiResponsesRequest(request), nil
-		},
-		provider.GetProviderKey(),
-	)
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// Large payload mode only: stream original request bytes directly to upstream.
+	// Feature-off behavior stays on the normal buffered request construction path.
+	// This avoids early upstream completion before body upload (which can trigger
+	// proxy broken-pipe 502s when a fronting LB is still forwarding a large body).
+	isLargePayload := false
+	if v, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && v {
+		isLargePayload = true
 	}
 
-	var payload map[string]any
-	if err := sonic.Unmarshal(jsonData, &payload); err == nil {
-		delete(payload, "toolConfig")
-		delete(payload, "generationConfig")
-		delete(payload, "systemInstruction")
-		newData, err := sonic.Marshal(payload)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
+	var (
+		jsonData   []byte
+		bifrostErr *schemas.BifrostError
+	)
+	if !isLargePayload {
+		// Build JSON body from Bifrost request for normal path.
+		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return ToGeminiResponsesRequest(request), nil
+			},
+			provider.GetProviderKey(),
+		)
+		if bifrostErr != nil {
+			return nil, bifrostErr
 		}
-		jsonData = newData
+
+		var payload map[string]any
+		if err := sonic.Unmarshal(jsonData, &payload); err == nil {
+			delete(payload, "toolConfig")
+			delete(payload, "generationConfig")
+			delete(payload, "systemInstruction")
+			newData, err := sonic.Marshal(payload)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
+			}
+			jsonData = newData
+		}
 	}
 
 	providerName := provider.GetProviderKey()
@@ -3561,11 +4037,21 @@ func (provider *GeminiProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if key.Value.GetValue() != "" {
 		req.Header.Set("x-goog-api-key", key.Value.GetValue())
 	}
-	req.SetBody(jsonData)
+	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBody(ctx, req)
+	if !usedLargePayloadBody {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	// Keep passthrough request mode for countTokens, but fully drain the remaining
+	// client upload before returning. This avoids proxy-layer broken-pipe 502s when
+	// upstream responds early to lightweight count endpoints.
+	// Example: under pressure, Caddy returned intermittent 502 with broken pipe.
+	if usedLargePayloadBody {
+		providerUtils.DrainLargePayloadRemainder(ctx)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
