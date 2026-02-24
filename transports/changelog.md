@@ -6,3 +6,4 @@
 - fix: routing rules now support case-insensitive header matching
 - fix: azure openai sdk requests handling in openai integration
 - feat: support multiple credential types in vertex auth credentials
+- fix: semantic caching plugin initialization when configured using UI
