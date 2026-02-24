@@ -20,6 +20,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -782,6 +783,10 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
+
+	// Detect CLI user agent
+	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingTextCompletion(ctx, bifrostTextReq, bifrostCtx, cancel)
 		return
@@ -885,6 +890,10 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
+
+	// Detect CLI user agent
+	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
 		return
@@ -972,6 +981,9 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
+
+	// Detect CLI user agent
+	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
 
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
@@ -1367,6 +1379,9 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	// Detect CLI user agent
+	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
