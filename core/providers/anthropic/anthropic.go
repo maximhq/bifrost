@@ -220,7 +220,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 	}
 
 	// Create final response
-	response := anthropicResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models)
+	response := anthropicResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, request.Unfiltered)
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled

@@ -58,7 +58,7 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string) *schemas.BifrostListModelsResponse {
+func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -67,6 +67,7 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		Data: make([]schemas.Model, 0, len(response.Data)),
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
 		modelID := model.ID
 		matchedAllowedModel := ""
@@ -77,7 +78,7 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		// Empty lists mean "allow all" for that dimension
 		// Check considering base model matches (ignoring version suffixes)
 		shouldFilter := false
-		if len(allowedModels) > 0 && len(deployments) > 0 {
+		if !unfiltered && len(allowedModels) > 0 && len(deployments) > 0 {
 			// Both lists are present: model must be in allowedModels AND deployments
 			// AND the deployment alias must also be in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ID)
@@ -92,11 +93,11 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 
 			// Filter if: model not in deployments OR deployment alias not in allowedModels
 			shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-		} else if len(allowedModels) > 0 {
+		} else if !unfiltered && len(allowedModels) > 0 {
 			// Only allowedModels is present: filter if model is not in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ID)
 			shouldFilter = matchedAllowedModel == ""
-		} else if len(deployments) > 0 {
+		} else if !unfiltered && len(deployments) > 0 {
 			// Only deployments is present: filter if model is not in deployments
 			deploymentValue, deploymentAlias = findDeploymentMatch(deployments, model.ID)
 			shouldFilter = deploymentValue == ""
@@ -123,9 +124,25 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		if deploymentValue != "" && deploymentAlias != "" {
 			modelEntry.ID = string(schemas.Azure) + "/" + deploymentAlias
 			modelEntry.Deployment = schemas.Ptr(deploymentValue)
+			includedModels[deploymentAlias] = true
+		} else {
+			includedModels[modelID] = true
 		}
 
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
 	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(schemas.Azure) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
+	}
+
 	return bifrostResponse
 }

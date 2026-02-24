@@ -2,11 +2,11 @@ import { AddProviderRequest, ListProvidersResponse, ModelProvider, ModelProvider
 import { DBKey } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
 
-function sortProviders (a: ModelProvider, b: ModelProvider) {
-	const aIsCustom = !!a.custom_provider_config
-	const bIsCustom = !!b.custom_provider_config
-	if (aIsCustom !== bIsCustom) return aIsCustom ? 1 : -1
-	return a.name.localeCompare(b.name)
+function sortProviders(a: ModelProvider, b: ModelProvider) {
+	const aIsCustom = !!a.custom_provider_config;
+	const bIsCustom = !!b.custom_provider_config;
+	if (aIsCustom !== bIsCustom) return aIsCustom ? 1 : -1;
+	return a.name.localeCompare(b.name);
 }
 
 // Types for models API
@@ -26,6 +26,7 @@ export interface GetModelsRequest {
 	provider?: string;
 	keys?: string[];
 	limit?: number;
+	unfiltered?: boolean;
 }
 
 export interface GetBaseModelsRequest {
@@ -67,7 +68,7 @@ export const providersApi = baseApi.injectEndpoints({
 						providersApi.util.updateQueryData("getProviders", undefined, (draft) => {
 							draft.push(newProvider);
 							draft.sort(sortProviders);
-						})
+						}),
 					);
 				} catch {}
 			},
@@ -89,7 +90,7 @@ export const providersApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft[index] = updatedProvider;
 							}
-						})
+						}),
 					);
 					dispatch(providersApi.util.updateQueryData("getProvider", arg.name, () => updatedProvider));
 				} catch {}
@@ -111,7 +112,7 @@ export const providersApi = baseApi.injectEndpoints({
 							if (index !== -1) {
 								draft.splice(index, 1);
 							}
-						})
+						}),
 					);
 				} catch {}
 			},
@@ -125,12 +126,13 @@ export const providersApi = baseApi.injectEndpoints({
 
 		// Get models with optional filtering
 		getModels: builder.query<ListModelsResponse, GetModelsRequest>({
-			query: ({ query, provider, keys, limit }) => {
+			query: ({ query, provider, keys, limit, unfiltered }) => {
 				const params = new URLSearchParams();
 				if (query) params.append("query", query);
 				if (provider) params.append("provider", provider);
 				if (keys && keys.length > 0) params.append("keys", keys.join(","));
 				if (limit !== undefined) params.append("limit", limit.toString());
+				if (unfiltered !== undefined) params.append("unfiltered", unfiltered.toString());
 				return `/models?${params.toString()}`;
 			},
 			providesTags: ["Models"],

@@ -74,6 +74,7 @@ type ServerCallbacks interface {
 	RemoveVirtualKey(ctx context.Context, id string) error
 	// Provider related callbacks
 	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
 	ReloadModelConfig(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error)
@@ -529,6 +530,15 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
+	unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+		Provider:   provider,
+		Unfiltered: true,
+	})
+	if listModelsErr != nil {
+		logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+	} else {
+		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+	}
 	return updatedProvider, nil
 }
 
@@ -750,6 +760,15 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider:   provider,
+				Unfiltered: true,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			} else {
+				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+			}
 			bfCtx.Cancel()
 		}
 	}
@@ -790,6 +809,14 @@ func (s *BifrostHTTPServer) GetModelsForProvider(provider schemas.ModelProvider)
 		return []string{}
 	}
 	return s.Config.ModelCatalog.GetModelsForProvider(provider)
+}
+
+// GetUnfilteredModelsForProvider returns all unfiltered models for a specific provider from the model catalog
+func (s *BifrostHTTPServer) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
+	if s.Config == nil || s.Config.ModelCatalog == nil {
+		return []string{}
+	}
+	return s.Config.ModelCatalog.GetUnfilteredModelsForProvider(provider)
 }
 
 // GetPluginStatus returns the status of all plugins
@@ -1200,6 +1227,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 				}
 			}
 			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+				Provider:   provider,
+				Unfiltered: true,
+			})
+			if listModelsErr != nil {
+				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+			} else {
+				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+			}
 			bfCtx.Cancel()
 		}
 	}

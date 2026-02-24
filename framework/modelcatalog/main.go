@@ -42,8 +42,9 @@ type ModelCatalog struct {
 	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
 	overridesMu       sync.RWMutex
 
-	modelPool      map[schemas.ModelProvider][]string
-	baseModelIndex map[string]string // model string → canonical base model name
+	modelPool           map[schemas.ModelProvider][]string
+	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
+	baseModelIndex      map[string]string                  // model string → canonical base model name
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -122,6 +123,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
 		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		modelPool:              make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
@@ -277,6 +279,22 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	defer mc.mu.RUnlock()
 
 	models, exists := mc.modelPool[provider]
+	if !exists {
+		return []string{}
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
+
+// GetUnfilteredModelsForProvider returns all available models for a given provider (thread-safe)
+func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	models, exists := mc.unfilteredModelPool[provider]
 	if !exists {
 		return []string{}
 	}
@@ -493,6 +511,7 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 	defer mc.mu.Unlock()
 
 	delete(mc.modelPool, provider)
+	delete(mc.unfilteredModelPool, provider)
 }
 
 // UpsertModelDataForProvider upserts model data for a given provider
@@ -568,6 +587,40 @@ func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvide
 	mc.modelPool[provider] = finalModelList
 }
 
+// UpsertUnfilteredModelDataForProvider upserts unfiltered model data for a given provider
+func (mc *ModelCatalog) UpsertUnfilteredModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse) {
+	if modelData == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	// Populating models from pricing data for the given provider
+	providerModels := []string{}
+	seenModels := make(map[string]bool)
+	for _, pricing := range mc.pricingData {
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+		if normalizedProvider != provider {
+			continue
+		}
+		if !seenModels[pricing.Model] {
+			seenModels[pricing.Model] = true
+			providerModels = append(providerModels, pricing.Model)
+		}
+	}
+	for _, model := range modelData.Data {
+		parsedProvider, parsedModel := schemas.ParseModelString(model.ID, "")
+		if parsedProvider != provider {
+			continue
+		}
+		if !seenModels[parsedModel] {
+			seenModels[parsedModel] = true
+			providerModels = append(providerModels, parsedModel)
+		}
+	}
+	mc.unfilteredModelPool[provider] = providerModels
+}
+
 // RefineModelForProvider refines the model for a given provider by performing a lookup
 // in mc.modelPool and using schemas.ParseModelString to extract provider and model parts.
 // e.g. "gpt-oss-120b" for groq provider -> "openai/gpt-oss-120b"
@@ -633,6 +686,7 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 
 	// Clear existing model pool and base model index
 	mc.modelPool = make(map[schemas.ModelProvider][]string)
+	mc.unfilteredModelPool = make(map[schemas.ModelProvider][]string)
 	mc.baseModelIndex = make(map[string]string)
 
 	// Map to track unique models per provider
@@ -664,6 +718,7 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 			models = append(models, model)
 		}
 		mc.modelPool[provider] = models
+		mc.unfilteredModelPool[provider] = models
 	}
 
 	// Log the populated model pool for debugging
@@ -700,10 +755,11 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		baseModelIndex = make(map[string]string)
 	}
 	return &ModelCatalog{
-		modelPool:         make(map[schemas.ModelProvider][]string),
-		baseModelIndex:    baseModelIndex,
-		pricingData:       make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides: make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
-		done:              make(chan struct{}),
+		modelPool:           make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
+		baseModelIndex:      baseModelIndex,
+		pricingData:         make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		done:                make(chan struct{}),
 	}
 }

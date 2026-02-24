@@ -221,7 +221,7 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string) *schemas.BifrostListModelsResponse {
+func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -235,6 +235,7 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		deploymentValues = append(deploymentValues, deployment)
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.ModelSummaries {
 		modelID := model.ModelID
 		matchedAllowedModel := ""
@@ -245,7 +246,7 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		// Empty lists mean "allow all" for that dimension
 		// Check considering global prefix variations
 		shouldFilter := false
-		if len(allowedModels) > 0 && len(deploymentValues) > 0 {
+		if !unfiltered && len(allowedModels) > 0 && len(deploymentValues) > 0 {
 			// Both lists are present: model must be in allowedModels AND deployments
 			// AND the deployment alias must also be in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
@@ -260,11 +261,11 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 
 			// Filter if: model not in deployments OR deployment alias not in allowedModels
 			shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-		} else if len(allowedModels) > 0 {
+		} else if !unfiltered && len(allowedModels) > 0 {
 			// Only allowedModels is present: filter if model is not in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
 			shouldFilter = matchedAllowedModel == ""
-		} else if len(deploymentValues) > 0 {
+		} else if !unfiltered && len(deploymentValues) > 0 {
 			// Only deployments is present: filter if model is not in deployments
 			deploymentValue, deploymentAlias = findDeploymentMatch(deployments, model.ModelID)
 			shouldFilter = deploymentValue == ""
@@ -297,8 +298,23 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			modelEntry.ID = string(providerKey) + "/" + deploymentAlias
 			// Use the actual deployment value (which might have global prefix)
 			modelEntry.Deployment = schemas.Ptr(deploymentValue)
+			includedModels[deploymentAlias] = true
+		} else {
+			includedModels[modelID] = true
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
 	}
 
 	return bifrostResponse

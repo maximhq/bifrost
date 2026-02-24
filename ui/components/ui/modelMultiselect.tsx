@@ -26,6 +26,7 @@ interface ModelMultiselectPropsBase {
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 	/** Single select mode - value and onChange will be string instead of string[] */
 	isSingleSelect: true;
+	unfiltered?: boolean;
 	value: string;
 	onChange: (model: string) => void;
 }
@@ -33,6 +34,7 @@ interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
 interface ModelMultiselectPropsMulti extends ModelMultiselectPropsBase {
 	/** Multi select mode (default) - value and onChange will be string[] */
 	isSingleSelect?: false;
+	unfiltered?: boolean;
 	value: string[];
 	onChange: (models: string[]) => void;
 }
@@ -50,6 +52,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		provider,
 		keys,
 		value,
+		unfiltered = false,
 		onChange,
 		placeholder = "Search models...",
 		disabled = false,
@@ -88,6 +91,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				provider,
 				keys: keys && keys.length > 0 ? keys : undefined,
 				limit: 5,
+				unfiltered,
 			});
 		} else if (shouldUseBaseModels) {
 			getBaseModels({ limit: 20 });
@@ -95,6 +99,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			getModels({
 				keys: keys && keys.length > 0 ? keys : undefined,
 				limit: 20,
+				unfiltered,
 			});
 		}
 	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
@@ -129,6 +134,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					provider: provider || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: query ? 50 : shouldLoadOnEmpty && !provider ? 20 : 5,
+					unfiltered,
 				})
 					.unwrap()
 					.then((response) => {
@@ -166,6 +172,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					provider,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: currentQuery ? 20 : 5,
+					unfiltered,
 				});
 			} else if (shouldUseBaseModels) {
 				getBaseModels({
@@ -177,6 +184,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					query: currentQuery || undefined,
 					keys: keys && keys.length > 0 ? keys : undefined,
 					limit: currentQuery ? 20 : 5,
+					unfiltered,
 				});
 			}
 		},

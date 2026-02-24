@@ -314,7 +314,7 @@ type ChatToolFunction struct {
 type ToolFunctionParameters struct {
 	Type                 string                      `json:"type"`                           // Type of the parameters
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
-	Properties           *OrderedMap                 `json:"properties,omitempty"`           // Parameter properties
+	Properties           *OrderedMap                 `json:"properties"`                     // Parameter properties - always include even if empty (required by JSON Schema and some providers like OpenAI)
 	Required             []string                    `json:"required,omitempty"`             // Required parameter names
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
 	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
@@ -348,6 +348,16 @@ type ToolFunctionParameters struct {
 	Title    *string     `json:"title,omitempty"`    // Schema title
 	Default  interface{} `json:"default,omitempty"`  // Default value
 	Nullable *bool       `json:"nullable,omitempty"` // Nullable indicator (OpenAPI 3.0 style)
+}
+
+// MarshalJSON ensures properties is always an object, never null.
+func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
+	type Alias ToolFunctionParameters
+	tmp := Alias(t)
+	if tmp.Properties == nil {
+		tmp.Properties = &OrderedMap{}
+	}
+	return Marshal(tmp)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.

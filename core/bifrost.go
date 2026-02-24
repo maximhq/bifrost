@@ -386,9 +386,12 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
-func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-	if request == nil {
-		request = &schemas.BifrostListModelsRequest{}
+func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if req == nil {
+		req = &schemas.BifrostListModelsRequest{}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
 	}
 
 	providerKeys, err := bifrost.GetConfiguredProviders()
@@ -434,8 +437,9 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 
 			// Create request for this provider with limit of 1000
 			providerRequest := &schemas.BifrostListModelsRequest{
-				Provider: providerKey,
-				PageSize: schemas.DefaultPageSize,
+				Provider:   providerKey,
+				PageSize:   schemas.DefaultPageSize,
+				Unfiltered: req.Unfiltered,
 			}
 
 			iterations := 0
@@ -540,7 +544,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, request *sche
 		},
 	}
 
-	response = response.ApplyPagination(request.PageSize, request.PageToken)
+	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
 }
