@@ -94,6 +94,22 @@ type ProviderQueue struct {
 	closeOnce  sync.Once
 }
 
+func isLargePayloadPassthrough(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	// Large payload mode intentionally skips JSON->Bifrost input materialization.
+	// Example: a 400MB multipart/audio upload sets Input=nil by design; strict
+	// non-nil validation here would reject valid passthrough requests.
+	isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !isLargePayload {
+		return false
+	}
+	// Verify reader is present (flag and reader are always set together by middleware)
+	reader := ctx.Value(schemas.BifrostContextKeyLargePayloadReader)
+	return reader != nil
+}
+
 // signalClosing signals the closing of the provider queue.
 // This is lock-free: uses atomic store and sync.Once to safely signal shutdown.
 func (pq *ProviderQueue) signalClosing() {
@@ -565,7 +581,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 			},
 		}
 	}
-	if req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil) {
+	if (req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil)) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -604,7 +620,7 @@ func (bifrost *Bifrost) TextCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil) {
+	if (req.Input == nil || (req.Input.PromptStr == nil && req.Input.PromptArray == nil)) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -635,7 +651,7 @@ func (bifrost *Bifrost) makeChatCompletionRequest(ctx *schemas.BifrostContext, r
 			},
 		}
 	}
-	if req.Input == nil {
+	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -700,7 +716,7 @@ func (bifrost *Bifrost) ChatCompletionStreamRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil {
+	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -733,17 +749,21 @@ func (bifrost *Bifrost) makeResponsesRequest(ctx *schemas.BifrostContext, req *s
 			},
 		}
 	}
+	// In large payload mode, Input is intentionally nil — body streams directly to upstream
 	if req.Input == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "responses not provided for responses request",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ResponsesRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
+		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+		if !isLargePayload {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "responses not provided for responses request",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ResponsesRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
+				},
+			}
 		}
 	}
 
@@ -797,17 +817,21 @@ func (bifrost *Bifrost) ResponsesStreamRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
+	// In large payload mode, Input is intentionally nil — body streams directly to upstream
 	if req.Input == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "responses not provided for responses stream request",
-			},
-			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       req.Provider,
-				ModelRequested: req.Model,
-			},
+		isLargePayload, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+		if !isLargePayload {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: "responses not provided for responses stream request",
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:    schemas.ResponsesStreamRequest,
+					Provider:       req.Provider,
+					ModelRequested: req.Model,
+				},
+			}
 		}
 	}
 
@@ -831,7 +855,7 @@ func (bifrost *Bifrost) CountTokensRequest(ctx *schemas.BifrostContext, req *sch
 			},
 		}
 	}
-	if req.Input == nil {
+	if req.Input == nil && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -870,7 +894,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	if req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil) {
+	if (req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil)) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -974,7 +998,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Input == "" {
+	if (req.Input == nil || req.Input.Input == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1013,7 +1037,7 @@ func (bifrost *Bifrost) SpeechStreamRequest(ctx *schemas.BifrostContext, req *sc
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Input == "" {
+	if (req.Input == nil || req.Input.Input == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1047,7 +1071,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 			},
 		}
 	}
-	if req.Input == nil || req.Input.File == nil {
+	if (req.Input == nil || req.Input.File == nil) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1086,7 +1110,7 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 			},
 		}
 	}
-	if req.Input == nil || req.Input.File == nil {
+	if (req.Input == nil || req.Input.File == nil) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1121,7 +1145,7 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Prompt == "" {
+	if (req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1174,7 +1198,7 @@ func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Prompt == "" {
+	if (req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1208,7 +1232,7 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0 {
+	if (req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1222,19 +1246,18 @@ func (bifrost *Bifrost) ImageEditRequest(ctx *schemas.BifrostContext, req *schem
 		}
 	}
 	// Prompt is not required when type is background_removal
-	if req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal" {
-		if req.Input.Prompt == "" {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: "prompt not provided for image edit request",
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ImageEditRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
-				},
-			}
+	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image edit request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageEditRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
 		}
 	}
 
@@ -1277,7 +1300,7 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0 {
+	if (req.Input == nil || req.Input.Images == nil || len(req.Input.Images) == 0) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1291,19 +1314,18 @@ func (bifrost *Bifrost) ImageEditStreamRequest(ctx *schemas.BifrostContext, req 
 		}
 	}
 	// Prompt is not required when type is background_removal
-	if req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal" {
-		if req.Input.Prompt == "" {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: "prompt not provided for image edit stream request",
-				},
-				ExtraFields: schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ImageEditStreamRequest,
-					Provider:       req.Provider,
-					ModelRequested: req.Model,
-				},
-			}
+	if (req.Params == nil || req.Params.Type == nil || *req.Params.Type != "background_removal") &&
+		(req.Input == nil || req.Input.Prompt == "") && !isLargePayloadPassthrough(ctx) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "prompt not provided for image edit stream request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:    schemas.ImageEditStreamRequest,
+				Provider:       req.Provider,
+				ModelRequested: req.Model,
+			},
 		}
 	}
 
@@ -1327,7 +1349,7 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 			},
 		}
 	}
-	if req.Input == nil || req.Input.Image.Image == nil || len(req.Input.Image.Image) == 0 {
+	if (req.Input == nil || req.Input.Image.Image == nil || len(req.Input.Image.Image) == 0) && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
