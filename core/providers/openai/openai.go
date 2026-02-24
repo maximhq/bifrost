@@ -257,7 +257,14 @@ func HandleOpenAITextCompletionRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -268,6 +275,26 @@ func HandleOpenAITextCompletionRequest(
 
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.TextCompletionRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostTextCompletionResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TextCompletionRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostTextCompletionResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TextCompletionRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -284,22 +311,31 @@ func HandleOpenAITextCompletionRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.TextCompletionRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.TextCompletionRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+	if lpResult != nil {
+		return &schemas.BifrostTextCompletionResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TextCompletionRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostTextCompletionResponse{}
@@ -428,10 +464,14 @@ func HandleOpenAITextCompletionStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -453,6 +493,7 @@ func HandleOpenAITextCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.TextCompletionStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
@@ -476,6 +517,14 @@ func HandleOpenAITextCompletionStreaming(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.TextCompletionStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -720,7 +769,14 @@ func HandleOpenAIChatCompletionRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -731,6 +787,26 @@ func HandleOpenAIChatCompletionRequest(
 
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ChatCompletionRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostChatResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ChatCompletionRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostChatResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ChatCompletionRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -747,13 +823,14 @@ func HandleOpenAIChatCompletionRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.ChatCompletionRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -761,9 +838,17 @@ func HandleOpenAIChatCompletionRequest(
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ChatCompletionRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+	if lpResult != nil {
+		return &schemas.BifrostChatResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ChatCompletionRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostChatResponse{}
@@ -916,10 +1001,14 @@ func HandleOpenAIChatCompletionStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -941,6 +1030,7 @@ func HandleOpenAIChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
@@ -972,6 +1062,14 @@ func HandleOpenAIChatCompletionStreaming(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, streamRequestType, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1280,7 +1378,14 @@ func HandleOpenAIResponsesRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -1291,6 +1396,25 @@ func HandleOpenAIResponsesRequest(
 
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ResponsesRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostResponsesResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostResponsesResponse{
+			Model:       request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	// Use centralized converter
@@ -1308,13 +1432,14 @@ func HandleOpenAIResponsesRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.ResponsesRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
@@ -1322,9 +1447,16 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ResponsesRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+	if lpResult != nil {
+		return &schemas.BifrostResponsesResponse{
+			Model:       request.Model,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ResponsesRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostResponsesResponse{}
@@ -1456,10 +1588,14 @@ func HandleOpenAIResponsesStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -1481,6 +1617,7 @@ func HandleOpenAIResponsesStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp, schemas.ResponsesStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 		}
@@ -1504,6 +1641,14 @@ func HandleOpenAIResponsesStreaming(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.ResponsesStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -1693,7 +1838,14 @@ func HandleOpenAIEmbeddingRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -1704,6 +1856,26 @@ func HandleOpenAIEmbeddingRequest(
 
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.EmbeddingRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostEmbeddingResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.EmbeddingRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostEmbeddingResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.EmbeddingRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	// Use centralized converter
@@ -1721,20 +1893,29 @@ func HandleOpenAIEmbeddingRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.EmbeddingRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+	if lpResult != nil {
+		return &schemas.BifrostEmbeddingResponse{
+			Model:       request.Model,
+			Usage:       lpResult.Usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.EmbeddingRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostEmbeddingResponse{}
@@ -1816,7 +1997,14 @@ func HandleOpenAISpeechRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -1826,6 +2014,18 @@ func HandleOpenAISpeechRequest(
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.SpeechRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		// Speech response is raw audio bytes (MP3/WAV), not JSON
+		return &schemas.BifrostSpeechResponse{
+			Audio:       lpResult.ResponseBody,
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.SpeechRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -1840,21 +2040,28 @@ func HandleOpenAISpeechRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.SpeechRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Get the binary audio data from the response body
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, providerUtils.EnrichError(ctx, finalErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+	}
+	if lpResult != nil {
+		return &schemas.BifrostSpeechResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.SpeechRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	// Create final response with the audio data
@@ -1978,10 +2185,14 @@ func HandleOpenAISpeechStreamRequest(
 		return nil, bifrostErr
 	}
 
-	req.SetBody(jsonBody)
+	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -2003,6 +2214,7 @@ func HandleOpenAISpeechStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.SpeechStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -2023,6 +2235,14 @@ func HandleOpenAISpeechStreamRequest(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.SpeechStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -2170,11 +2390,37 @@ func HandleOpenAITranscriptionRequest(
 	customResponseHandler responseHandler[schemas.BifrostTranscriptionResponse],
 	logger schemas.Logger,
 ) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	// Large payload passthrough: stream multipart body directly without parsing
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.TranscriptionRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		// Unmarshal the upstream response body to preserve transcription text and fields
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostTranscriptionResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TranscriptionRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostTranscriptionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TranscriptionRequest, Latency: lpResult.Latency},
+		}, nil
+	}
+
 	// Create request
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -2202,20 +2448,27 @@ func HandleOpenAITranscriptionRequest(
 	req.SetBody(body.Bytes())
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, ParseOpenAIError(resp, schemas.TranscriptionRequest, providerName, request.Model)
 	}
 
-	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	responseBody, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, finalErr
+	}
+	if lpResult != nil {
+		return &schemas.BifrostTranscriptionResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.TranscriptionRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	// Check for empty response
@@ -2398,6 +2651,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
@@ -2418,6 +2672,14 @@ func HandleOpenAITranscriptionStreamRequest(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		chunkIndex := -1
@@ -2595,7 +2857,14 @@ func HandleOpenAIImageGenerationRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -2606,6 +2875,24 @@ func HandleOpenAIImageGenerationRequest(
 
 	if value := key.Value.GetValue(); value != "" {
 		req.Header.Set("Authorization", "Bearer "+value)
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ImageGenerationRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostImageGenerationResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageGenerationRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageGenerationRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	// Use centralized converter
@@ -2623,20 +2910,27 @@ func HandleOpenAIImageGenerationRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageGenerationRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, finalErr
+	}
+	if lpResult != nil {
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageGenerationRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
@@ -2776,13 +3070,17 @@ func HandleOpenAIImageGenerationStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	setStreamingRequestBody(ctx, req, jsonBody, providerName)
+
+	// Use streaming-aware client when large payload optimization is active — ensures
+	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Capture start time before making the HTTP request for latency calculation
 	startTime := time.Now()
 
 	// Make the request
-	err := client.Do(req, resp)
+	err := activeClient.Do(req, resp)
 	if err != nil {
 		defer providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {
@@ -2804,6 +3102,7 @@ func HandleOpenAIImageGenerationStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageGenerationStreamRequest, providerName, request.Model), jsonBody, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -2824,6 +3123,14 @@ func HandleOpenAIImageGenerationStreaming(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -3657,7 +3964,14 @@ func HandleOpenAICountTokensRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
@@ -3668,6 +3982,24 @@ func HandleOpenAICountTokensRequest(
 
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Large payload passthrough: stream body directly without JSON marshaling
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.CountTokensRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostCountTokensResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.CountTokensRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostCountTokensResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.CountTokensRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -3685,20 +4017,27 @@ func HandleOpenAICountTokensRequest(
 	req.SetBody(jsonData)
 
 	// Make request
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		logger.Debug(fmt.Sprintf("error from %s provider: %s", providerName, string(resp.Body())))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.CountTokensRequest, providerName, request.Model), jsonData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, finalErr
+	}
+	if lpResult != nil {
+		return &schemas.BifrostCountTokensResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.CountTokensRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostCountTokensResponse{}
@@ -3758,6 +4097,23 @@ func HandleOpenAIImageEditRequest(
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Large payload passthrough: stream multipart body directly without parsing
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ImageEditRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostImageGenerationResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageEditRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageEditRequest, Latency: lpResult.Latency},
+		}, nil
+	}
 
 	openaiReq := ToOpenAIImageEditRequest(request)
 	if openaiReq == nil {
@@ -3768,7 +4124,14 @@ func HandleOpenAIImageEditRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 	req.SetRequestURI(url)
@@ -3790,18 +4153,25 @@ func HandleOpenAIImageEditRequest(
 	bodyData := body.Bytes()
 	req.SetBody(bodyData)
 
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageEditRequest, providerName, request.Model), bodyData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	bodyBytes, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	bodyBytes, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, finalErr
+	}
+	if lpResult != nil {
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageEditRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
@@ -3942,6 +4312,7 @@ func HandleOpenAIImageEditStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageEditStreamRequest, providerName, request.Model), body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
@@ -3962,6 +4333,14 @@ func HandleOpenAIImageEditStreamRequest(
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
+
+		// Skip scanner for non-SSE responses — avoids bufio.Scanner buffer bloat
+		// on non-line-delimited data (e.g. provider returned JSON instead of SSE).
+		if providerUtils.DrainNonSSEStreamResponse(resp) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendError(ctx, postHookRunner, errors.New("provider returned non-SSE response for streaming request"), responseChan, schemas.ImageEditStreamRequest, providerName, request.Model, logger)
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
@@ -4241,6 +4620,24 @@ func HandleOpenAIImageVariationRequest(
 	providerName schemas.ModelProvider,
 	logger schemas.Logger,
 ) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	// Large payload passthrough: stream multipart body directly without parsing
+	if lpResult, lpErr, handled := handleOpenAILargePayloadPassthrough(ctx, client, url, key, extraHeaders, providerName, request.Model, schemas.ImageVariationRequest, logger); handled {
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		if len(lpResult.ResponseBody) > 0 {
+			response := &schemas.BifrostImageGenerationResponse{}
+			if err := sonic.Unmarshal(lpResult.ResponseBody, response); err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, providerName)
+			}
+			response.ExtraFields = schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageVariationRequest, Latency: lpResult.Latency}
+			return response, nil
+		}
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageVariationRequest, Latency: lpResult.Latency},
+		}, nil
+	}
+
 	openaiReq := ToOpenAIImageVariationRequest(request)
 	if openaiReq == nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert request to OpenAI format", nil, providerName)
@@ -4250,7 +4647,14 @@ func HandleOpenAIImageVariationRequest(
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// resp lifecycle: managed by finalizeOpenAIResponse or released on error paths
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 	req.SetRequestURI(url)
@@ -4271,18 +4675,25 @@ func HandleOpenAIImageVariationRequest(
 	bodyData := body.Bytes()
 	req.SetBody(bodyData)
 
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, bodyData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp, schemas.ImageVariationRequest, providerName, request.Model), bodyData, nil, sendBackRawRequest, sendBackRawResponse)
 	}
 
-	bodyBytes, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	bodyBytes, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
+	respOwned = false // ownership transferred
+	if finalErr != nil {
+		return nil, finalErr
+	}
+	if lpResult != nil {
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: providerName, ModelRequested: request.Model, RequestType: schemas.ImageVariationRequest, Latency: lpResult.Latency},
+		}, nil
 	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
