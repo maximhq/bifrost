@@ -333,11 +333,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	updatedConfig.DisableContentLogging = payload.ClientConfig.DisableContentLogging
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
-
-	if payload.ClientConfig.EnableGovernance != currentConfig.EnableGovernance {
-		restartReasons = append(restartReasons, "Governance enabled")
-	}
-	updatedConfig.EnableGovernance = payload.ClientConfig.EnableGovernance
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
 	// Handle unified auth on inference toggle

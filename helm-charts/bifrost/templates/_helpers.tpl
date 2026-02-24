@@ -215,9 +215,6 @@ false
 {{- if hasKey .Values.bifrost.client "enableLogging" }}
 {{- $_ := set $client "enable_logging" .Values.bifrost.client.enableLogging }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "enableGovernance" }}
-{{- $_ := set $client "enable_governance" .Values.bifrost.client.enableGovernance }}
-{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}

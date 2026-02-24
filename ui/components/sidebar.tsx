@@ -10,7 +10,6 @@ import {
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircleDollarSign,
-	Cog,
 	Construction,
 	DatabaseZap,
 	FlaskConical,
@@ -26,6 +25,7 @@ import {
 	Puzzle,
 	ScrollText,
 	Search,
+	SearchCheck,
 	Settings,
 	Settings2Icon,
 	ShieldCheck,
@@ -38,7 +38,7 @@ import {
 	UserRoundCheck,
 	Users,
 	Wallet,
-	WalletCards,
+	WalletCards
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -168,7 +168,6 @@ interface SidebarItem {
 const SidebarItemView = ({
 	item,
 	isActive,
-	isAllowed,
 	isExternal,
 	isWebSocketConnected,
 	isExpanded,
@@ -176,13 +175,11 @@ const SidebarItemView = ({
 	pathname,
 	router,
 	isSidebarCollapsed,
-	expandSidebar,
-	isGovernanceEnabled,
+	expandSidebar,	
 	highlightedUrl,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
-	isAllowed: boolean;
 	isExternal?: boolean;
 	isWebSocketConnected: boolean;
 	isExpanded?: boolean;
@@ -190,8 +187,7 @@ const SidebarItemView = ({
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
-	expandSidebar: () => void;
-	isGovernanceEnabled: boolean;
+	expandSidebar: () => void;	
 	highlightedUrl?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
@@ -222,7 +218,6 @@ const SidebarItemView = ({
 	};
 
 	const handleNavigation = (url: string, e?: React.MouseEvent) => {
-		if (!isAllowed) return;
 		if (isExternal || e?.metaKey || e?.ctrlKey) {
 			openInNewTab(url);
 			return;
@@ -251,7 +246,7 @@ const SidebarItemView = ({
 						? "bg-sidebar-accent text-accent-foreground border-primary/20"
 						: isActive || isAnySubItemActive
 							? "bg-sidebar-accent text-primary border-primary/20"
-							: isAllowed && item.hasAccess
+							: item.hasAccess
 								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
 								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 				} `}
@@ -285,9 +280,6 @@ const SidebarItemView = ({
 			{hasSubItems && isExpanded && (
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
-						// Hide governance-dependent subitems when governance is disabled
-						if ((subItem.url === "/workspace/model-limits" || subItem.url === "/workspace/routing-rules") && !isGovernanceEnabled)
-							return null;
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
 						const isSubItemHighlighted = highlightedUrl === subItem.url;
@@ -447,7 +439,7 @@ export default function AppSidebar() {
 				url: "/workspace/providers",
 				icon: BoxIcon,
 				description: "Configure models",
-				hasAccess: hasModelProvidersAccess || hasRoutingRulesAccess,
+				hasAccess: true,
 				subItems: [
 					{
 						title: "Model Providers",
@@ -472,7 +464,7 @@ export default function AppSidebar() {
 					},
 					{
 						title: "Pricing config",
-						url: "/workspace/providers/custom-pricing",
+						url: "/workspace/custom-pricing",
 						icon: CircleDollarSign,
 						description: "Pricing configuration",
 						hasAccess: hasSettingsAccess,
@@ -529,14 +521,7 @@ export default function AppSidebar() {
 				url: "/workspace/governance",
 				icon: Landmark,
 				description: "Virtual keys, users, teams, customers & roles",
-				hasAccess:
-					hasGovernanceAccess ||
-					hasVirtualKeysAccess ||
-					hasCustomersAccess ||
-					hasTeamsAccess ||
-					hasUserProvisioningAccess ||
-					hasRbacAccess ||
-					hasAuditLogsAccess,
+				hasAccess: hasGovernanceAccess,
 				subItems: [
 					{
 						title: "Virtual Keys",
@@ -597,10 +582,10 @@ export default function AppSidebar() {
 				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
 				subItems: [
 					{
-						title: "Configuration",
+						title: "Rules",
 						url: "/workspace/guardrails/configuration",
-						icon: Cog,
-						description: "Guardrail configuration",
+						icon: SearchCheck,
+						description: "Guardrail rules",
 						hasAccess: hasGuardrailsConfigAccess,
 					},
 					{
@@ -764,7 +749,6 @@ export default function AppSidebar() {
 	}, [latestRelease, version]);
 	// Get governance config from RTK Query
 	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config.enable_governance || false;
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
@@ -833,7 +817,6 @@ export default function AppSidebar() {
 				if (searchQuery.trim() || expandedItems.has(item.title)) {
 					for (const sub of item.subItems!) {
 						if (sub.hasAccess === false) continue;
-						if ((sub.url === "/workspace/model-limits" || sub.url === "/workspace/routing-rules") && !isGovernanceEnabled) continue;
 						result.push({ title: sub.title, url: sub.url, queryParam: sub.queryParam });
 					}
 				} else {
@@ -845,7 +828,7 @@ export default function AppSidebar() {
 			}
 		}
 		return result;
-	}, [filteredItems, expandedItems, searchQuery, isGovernanceEnabled]);
+	}, [filteredItems, expandedItems, searchQuery]);
 
 	const handleSearchKeyDown = useCallback(
 		(e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1067,14 +1050,13 @@ export default function AppSidebar() {
 						<SidebarMenu className="space-y-0.5">
 							{filteredItems.map((item) => {
 								const isActive = isActiveRoute(item.url);
-								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
+
 								const highlightedUrl = focusedIndex >= 0 ? navigableItems[focusedIndex]?.url : undefined;
 								return (
 									<SidebarItemView
 										key={item.title}
 										item={item}
 										isActive={isActive}
-										isAllowed={isAllowed}
 										isExternal={item.isExternal ?? false}
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
@@ -1083,7 +1065,6 @@ export default function AppSidebar() {
 										router={router}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
-										isGovernanceEnabled={isGovernanceEnabled}
 										highlightedUrl={highlightedUrl}
 									/>
 								);

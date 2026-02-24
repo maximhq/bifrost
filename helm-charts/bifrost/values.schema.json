@@ -283,9 +283,6 @@
               "type": "integer",
               "minimum": 1
             },
-            "enableGovernance": {
-              "type": "boolean"
-            },
             "enforceGovernanceHeader": {
               "type": "boolean"
             },

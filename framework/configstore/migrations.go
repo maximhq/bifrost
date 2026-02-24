@@ -278,6 +278,10 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
+
+		return err
+	}
+	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -1999,7 +2003,6 @@ func migrationAddAdditionalConfigHashColumns(ctx context.Context, db *gorm.DB) e
 							EnableLogging:           cc.EnableLogging,
 							DisableContentLogging:   cc.DisableContentLogging,
 							LogRetentionDays:        cc.LogRetentionDays,
-							EnableGovernance:        true,
 							EnforceGovernanceHeader: cc.EnforceGovernanceHeader,
 							AllowDirectKeys:         cc.AllowDirectKeys,
 							AllowedOrigins:          cc.AllowedOrigins,
@@ -3908,6 +3911,27 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running encryption columns rollback: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationDropEnableGovernanceColumn drops the enable_governance column from the config_client table
+func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "drop_enable_governance_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableClientConfig{}, "enable_governance") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "enable_governance"); err != nil {
+					return fmt.Errorf("failed to drop enable_governance column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running drop enable governance column rollback: %s", err.Error())
 	}
 	return nil
 }

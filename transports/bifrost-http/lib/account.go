@@ -39,37 +39,31 @@ func (baseAccount *BaseAccount) GetKeysForProvider(ctx context.Context, provider
 	if baseAccount.store == nil {
 		return nil, fmt.Errorf("store not initialized")
 	}
-
 	config, err := baseAccount.store.GetProviderConfigRaw(providerKey)
 	if err != nil {
 		return nil, err
 	}
-
 	keys := config.Keys
-
-	if baseAccount.store.ClientConfig.EnableGovernance {
-		if v := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys); v != nil {
-			if includeOnlyKeys, ok := v.([]string); ok {
-				if len(includeOnlyKeys) == 0 {
-					// header present but empty means "no keys allowed"
-					keys = nil
-				} else {
-					set := make(map[string]struct{}, len(includeOnlyKeys))
-					for _, id := range includeOnlyKeys {
-						set[id] = struct{}{}
-					}
-					filtered := make([]schemas.Key, 0, len(keys))
-					for _, key := range keys {
-						if _, ok := set[key.ID]; ok {
-							filtered = append(filtered, key)
-						}
-					}
-					keys = filtered
+	if v := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys); v != nil {
+		if includeOnlyKeys, ok := v.([]string); ok {
+			if len(includeOnlyKeys) == 0 {
+				// header present but empty means "no keys allowed"
+				keys = nil
+			} else {
+				set := make(map[string]struct{}, len(includeOnlyKeys))
+				for _, id := range includeOnlyKeys {
+					set[id] = struct{}{}
 				}
+				filtered := make([]schemas.Key, 0, len(keys))
+				for _, key := range keys {
+					if _, ok := set[key.ID]; ok {
+						filtered = append(filtered, key)
+					}
+				}
+				keys = filtered
 			}
 		}
 	}
-
 	return keys, nil
 }
 

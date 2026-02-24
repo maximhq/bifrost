@@ -41,7 +41,7 @@ export default function Providers() {
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
 		if (!hasProvidersAccess && hasSettingsOnly) {
-			router.replace("/workspace/providers/custom-pricing");
+			router.replace("/workspace/custom-pricing");
 		}
 	}, [hasProvidersAccess, hasSettingsOnly, router]);
 
