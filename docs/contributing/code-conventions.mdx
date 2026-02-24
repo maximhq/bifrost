@@ -1,0 +1,358 @@
+---
+title: "Code Conventions"
+description: "Code style and convention guidelines for contributing to Bifrost."
+icon: "brush"
+---
+
+## Commit Message Format
+
+All commits to Bifrost should follow a standardized format. This ensures clear history and makes it easy to understand changes at a glance.
+
+### Format
+
+```
+[type]: description
+
+Optional body with more details
+```
+
+### Types
+
+- **feat** - New feature
+- **fix** - Bug fix
+- **refactor** - Code refactoring (no feature change, no bug fix)
+- **docs** - Documentation changes
+- **test** - Test changes
+- **chore** - Build, dependencies, tooling changes
+- **perf** - Performance improvements
+
+### Key Rule: Always List Affected Packages
+
+For every commit, **explicitly mention all packages/directories that were modified**. This is crucial for understanding the scope of changes.
+
+```
+[fix]: Handle null pointer in model response
+
+Affected packages:
+- core/providers/openai/
+- core/schemas/
+
+Impact: Fixes intermittent crashes when provider returns malformed response
+```
+
+### Examples
+
+**Good:**
+```
+[feat]: Add retry logic to MCP client manager
+
+Implements exponential backoff for transient errors (connection timeouts, network issues).
+Retries only for transient errors, fails immediately for permanent errors (auth, config).
+
+Affected packages:
+- core/mcp/clientmanager.go - Connection retry logic
+- core/mcp/utils.go - Retry executor and error classification
+- core/mcp/healthmonitor.go - Automatic reconnection
+
+Tests:
+- Added tests for retry backoff progression
+- Added tests for error classification
+```
+
+**Better (if changes are significant to multiple packages):**
+```
+[feat]: Add resilient MCP connection handling
+
+Commit 1: [feat]: MCP utils - Add retry executor with exponential backoff
+Commit 2: [fix]: MCP client - Use retry logic for connection establishment
+Commit 3: [feat]: MCP health monitor - Add automatic reconnection
+```
+
+## Go Code Conventions
+
+### Style Guidelines
+
+1. **Follow standard Go conventions**
+   - Use `gofmt` for formatting
+   - Run `make fmt` before committing
+
+2. **Naming**
+   - Use meaningful variable names
+   - Avoid single letters except in loops
+   - Use `camelCase` for variables and functions
+   - Use `PascalCase` for exported types
+
+3. **Comments**
+   - Comment exported functions and types
+   - Use clear, concise comments
+   - Explain *why*, not *what*
+
+4. **Error Handling**
+   - Always check and handle errors
+   - Provide context in error messages
+   - Don't ignore errors with `_`
+
+### Structure
+
+```go
+// Exported functions first
+func NewClient(config Config) (*Client, error) {
+    // implementation
+}
+
+// Exported methods
+func (c *Client) Do(ctx context.Context) error {
+    // implementation
+}
+
+// Unexported helper functions
+func (c *Client) validate() error {
+    // implementation
+}
+```
+
+### Documentation
+
+Each package should have:
+- A `package` comment
+- Exported function/type comments
+- Complex logic explanations
+
+```go
+// Package mcp provides Model Context Protocol integration
+// for connecting AI models to external tools and services.
+package mcp
+
+// Client manages connections to MCP servers.
+type Client struct {
+    // fields...
+}
+
+// Connect establishes a connection to the MCP server.
+// Returns an error if the connection fails.
+func (c *Client) Connect(ctx context.Context) error {
+    // implementation
+}
+```
+
+## TypeScript/React Code Conventions
+
+### Style Guidelines
+
+1. **Use TypeScript** - Avoid `any` types when possible
+2. **Use functional components** - No class components
+3. **Props interface**
+   ```typescript
+   interface ButtonProps {
+     onClick: () => void;
+     children: React.ReactNode;
+   }
+   ```
+
+4. **Naming**
+   - Components: `PascalCase`
+   - Functions/variables: `camelCase`
+   - Constants: `UPPER_SNAKE_CASE`
+
+### Structure
+
+```typescript
+// Imports
+import React from 'react';
+import { useContext } from 'react';
+
+// Types
+interface Props {
+  id: string;
+  onSubmit: (data: FormData) => Promise<void>;
+}
+
+// Component
+export const MyComponent: React.FC<Props> = ({ id, onSubmit }) => {
+  return (
+    <div>
+      {/* implementation */}
+    </div>
+  );
+};
+```
+
+## Testing Conventions
+
+### Go Tests
+
+1. **Test file naming**: `*_test.go`
+2. **Test function naming**: `Test<FunctionName>`
+3. **Table-driven tests for multiple cases**
+
+```go
+func TestProcessRequest(t *testing.T) {
+    tests := []struct {
+        name    string
+        input   string
+        want    string
+        wantErr bool
+    }{
+        {"valid input", "test", "result", false},
+        {"invalid input", "", "", true},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := ProcessRequest(tt.input)
+            if (err != nil) != tt.wantErr {
+                t.Errorf("unexpected error: %v", err)
+            }
+            if got != tt.want {
+                t.Errorf("got %s, want %s", got, tt.want)
+            }
+        })
+    }
+}
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+make test-all
+
+# Run specific test suite
+make test-core PROVIDER=openai
+
+# Run specific test case
+make test-core PROVIDER=openai TESTCASE=TestName/SubTest
+```
+
+## Documentation Conventions
+
+### MDX Files
+
+1. **Front matter**
+   ```mdx
+   ---
+   title: "Feature Name"
+   description: "Brief description of the feature"
+   icon: "icon-name"
+   ---
+   ```
+
+2. **Headings** - Use H2 (`##`) as top level in body
+3. **Code blocks** - Always include language: ` ```go`
+4. **Links** - Use relative paths: `/features/caching`
+
+### Examples
+
+```mdx
+---
+title: "Semantic Caching"
+description: "Intelligent response caching based on semantic similarity"
+icon: "database"
+---
+
+## Overview
+
+Semantic caching intelligently caches responses...
+
+## Configuration
+
+```yaml
+plugins:
+  semanticcache:
+    enabled: true
+```
+
+<Note>
+This is important information that needs highlighting.
+</Note>
+
+## Benefits
+
+- Reduces costs by 30-40%
+- Improves latency for similar queries
+```
+
+## Pull Request Conventions
+
+See [Raising a PR](/contributing/raising-a-pr) for detailed guidelines. Key points:
+
+1. **Commit messages**: Follow `[type]: description` format
+2. **Package listing**: Always mention affected packages
+3. **Changelog updates**: Update `changelog.md` for each affected package
+4. **Tests**: Ensure all tests pass before opening PR
+5. **Documentation**: Update docs if behavior changes
+
+## Changelog Format
+
+For each package you modify, update its `changelog.md` file at the top with:
+
+```
+[type]: description [@Your Name](https://github.com/yourname)
+```
+
+**Example:**
+```markdown
+[feat]: add semantic caching support for image generation [@prathammaxim](https://github.com/prathammaxim)
+[fix]: handle null pointer in response parsing [@username](https://github.com/username)
+[refactor]: simplify model caching logic [@username](https://github.com/username)
+```
+
+**File locations:**
+- `core/changelog.md`
+- `framework/changelog.md`
+- `transports/changelog.md`
+- `plugins/{plugin-name}/changelog.md`
+
+## Code Quality Standards
+
+Before submitting code:
+
+### Go Code
+```bash
+# Format code
+make fmt
+
+# Run linter
+make lint
+
+# Run tests
+make test-all
+```
+
+### TypeScript/React
+- Use ESLint configuration from project
+- Run Prettier for formatting
+- Ensure TypeScript compilation succeeds
+
+## Key Principles
+
+1. **Clarity** - Code should be easy to understand
+2. **Consistency** - Follow existing patterns in codebase
+3. **Testing** - All code should have tests
+4. **Documentation** - Document public APIs and complex logic
+5. **Simplicity** - Avoid over-engineering
+6. **Performance** - Consider performance implications of changes
+
+## Common Pitfalls
+
+❌ **Don't:**
+- Submit PRs without running tests
+- Use `fmt.Println` for logging (use logger)
+- Ignore error handling
+- Create huge functions (>100 lines)
+- Mix refactoring with feature changes
+- Forget to list affected packages in commit messages
+
+✅ **Do:**
+- Run `make test-all` before opening PR
+- Use structured logging
+- Handle all error cases
+- Keep functions focused and testable
+- Make logical, focused commits
+- Always mention affected packages and changes
+
+## Getting Help
+
+- See [Setting up the repository](/contributing/setting-up-repo) for development setup
+- Check [Architecture docs](/architecture) to understand the codebase
+- Ask in [Discord](https://discord.gg/exN5KAydbU) if you have questions

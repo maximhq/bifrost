@@ -309,6 +309,8 @@
             "icon": "code",
             "pages": [
               "contributing/setting-up-repo",
+              "contributing/raising-a-pr",
+              "contributing/code-conventions",
               "contributing/adding-a-provider",
               "contributing/adding-a-configstore",
               "contributing/adding-a-logstore",
