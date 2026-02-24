@@ -257,6 +257,8 @@ type AllowedRequests struct {
 	ContainerFileDelete   bool `json:"container_file_delete"`
 	Passthrough           bool `json:"passthrough"`
 	PassthroughStream     bool `json:"passthrough_stream"`
+	WebSocketResponses    bool `json:"websocket_responses"`
+	Realtime              bool `json:"realtime"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -360,6 +362,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Passthrough
 	case PassthroughStreamRequest:
 		return ar.PassthroughStream
+	case WebSocketResponsesRequest:
+		return ar.WebSocketResponses
+	case RealtimeRequest:
+		return ar.Realtime
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -593,4 +599,18 @@ type Provider interface {
 	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
 	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
 	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
+}
+
+// WebSocketCapableProvider is an optional interface that providers can implement
+// to indicate support for the OpenAI Responses API WebSocket Mode.
+// Checked via type assertion: provider.(WebSocketCapableProvider).
+// Providers that implement this interface will have native WS upstream connections
+// instead of the HTTP bridge fallback for Responses WS mode.
+type WebSocketCapableProvider interface {
+	// SupportsWebSocketMode returns true if the provider supports the Responses API WebSocket Mode.
+	SupportsWebSocketMode() bool
+	// WebSocketResponsesURL returns the WebSocket URL for the Responses API.
+	WebSocketResponsesURL(key Key) string
+	// WebSocketHeaders returns the headers required for the upstream WebSocket connection.
+	WebSocketHeaders(key Key) map[string]string
 }

@@ -83,6 +83,8 @@ type TestScenarios struct {
 	PassThroughExtraParams bool // Pass through extra params functionality
 	Rerank                 bool // Rerank functionality
 	PassthroughAPI         bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
+	WebSocketResponses     bool // WebSocket Responses API mode
+	Realtime               bool // Realtime API (bidirectional audio/text)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -120,6 +122,7 @@ type ComprehensiveTestConfig struct {
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
+	RealtimeModel            string                 // Model for Realtime API (e.g., "gpt-4o-realtime-preview")
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.

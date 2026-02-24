@@ -104,7 +104,10 @@ func TestOpenAI(t *testing.T) {
 			ContainerFileContent:  true,
 			ContainerFileDelete:   true,
 			PassthroughAPI:        true,
+			WebSocketResponses:    true,
+			Realtime:              true,
 		},
+		RealtimeModel: "gpt-4o-realtime-preview",
 	}
 
 	t.Run("OpenAITests", func(t *testing.T) {

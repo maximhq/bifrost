@@ -480,12 +480,20 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 	return true
 }
 
+// isInferenceWSEndpoint returns true for WebSocket endpoints that should use
+// standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
+func isInferenceWSEndpoint(path string) bool {
+	return path == "/v1/responses" || path == "/v1/realtime"
+}
+
+// AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
 	store         configstore.ConfigStore
 	authConfig    atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore *WSTicketStore
 }
 
+// InitAuthMiddleware initializes the auth middleware.
 func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
@@ -564,40 +572,47 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// Get the authorization header
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
-				// Check if its a websocket 101 upgrade request
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					// Prefer short-lived ticket-based auth (from POST /api/session/ws-ticket)
-					ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
-					if ticket != "" && m.wsTicketStore != nil {
-						sessionToken := m.wsTicketStore.Consume(ticket)
-						if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
-							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
+					path := string(ctx.Path())
+					if isInferenceWSEndpoint(path) {
+						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
+						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
+						// If no Authorization header, fall through to return 401 below
+						// (or the shouldSkip check above already passed them through).
+					} else {
+						// Prefer short-lived ticket-based auth (from POST /api/session/ws-ticket)
+						ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
+						if ticket != "" && m.wsTicketStore != nil {
+							sessionToken := m.wsTicketStore.Consume(ticket)
+							if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
+								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
+								next(ctx)
+								return
+							}
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						// Fallback: legacy ?token= param (for backward compatibility)
+						token := string(ctx.Request.URI().QueryArgs().Peek("token"))
+						if token != "" {
+							if validateSession(ctx, m.store, token) {
+								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+								next(ctx)
+								return
+							}
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						// Fallback: cookie-based WS auth
+						cookieToken := string(ctx.Request.Header.Cookie("token"))
+						if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
 							next(ctx)
 							return
 						}
 						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 						return
 					}
-					// Fallback: legacy ?token= param (for backward compatibility)
-					token := string(ctx.Request.URI().QueryArgs().Peek("token"))
-					if token != "" {
-						if validateSession(ctx, m.store, token) {
-							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
-							next(ctx)
-							return
-						}
-						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-						return
-					}
-					// Fallback: cookie-based WS auth
-					cookieToken := string(ctx.Request.Header.Cookie("token"))
-					if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
-						ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
-						next(ctx)
-						return
-					}
-					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-					return
 				}
 				// Cookie-based auth fallback: if no Authorization header, check for the HTTPOnly session cookie.
 				// This supports the dashboard which relies on cookies instead of localStorage tokens.
