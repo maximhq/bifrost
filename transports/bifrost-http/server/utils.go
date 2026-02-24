@@ -9,25 +9,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/plugins/litellmcompat"
-	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/plugins/maxim"
-	"github.com/maximhq/bifrost/plugins/otel"
-	"github.com/maximhq/bifrost/plugins/semanticcache"
-	"github.com/maximhq/bifrost/plugins/telemetry"
 )
-
-// isBuiltinPlugin checks if a plugin is a built-in plugin
-func isBuiltinPlugin(name string) bool {
-	return name == telemetry.PluginName ||
-		name == logging.PluginName ||
-		name == governance.PluginName ||
-		name == litellmcompat.PluginName ||
-		name == maxim.PluginName ||
-		name == semanticcache.PluginName ||
-		name == otel.PluginName
-}
 
 // GetDefaultConfigDir returns the OS-specific default configuration directory for Bifrost.
 // This follows standard conventions:

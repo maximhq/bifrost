@@ -216,11 +216,21 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Plugin name is required")
 		return
 	}
+	// Normalize empty path to nil (treat empty string as built-in plugin)
+	if request.Path != nil && *request.Path == "" {
+		request.Path = nil
+	}
 	// Check if plugin already exists
 	existingPlugin, err := h.configStore.GetPlugin(ctx, request.Name)
 	if err == nil && existingPlugin != nil {
 		SendError(ctx, fasthttp.StatusConflict, "Plugin already exists")
 		return
+	}
+	// Determine if this is a built-in or custom plugin
+	isBuiltin := lib.IsBuiltinPlugin(request.Name)
+	// Built-in plugins should not have a path
+	if isBuiltin && request.Path != nil {
+		request.Path = nil
 	}
 	// Create DB entry first to avoid orphaned in-memory state if DB write fails
 	if err := h.configStore.CreatePlugin(ctx, &configstoreTables.TablePlugin{
@@ -228,7 +238,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		Enabled:  request.Enabled,
 		Config:   request.Config,
 		Path:     request.Path,
-		IsCustom: true,
+		IsCustom: !isBuiltin,
 	}); err != nil {
 		logger.Error("failed to create plugin: %v", err)
 		SendError(ctx, 500, "Failed to create plugin")
@@ -320,13 +330,23 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid request body")
 		return
 	}
+	// Normalize empty path to nil (treat empty string as built-in plugin)
+	if request.Path != nil && *request.Path == "" {
+		request.Path = nil
+	}
+	// Determine if this is a built-in plugin
+	isBuiltin := lib.IsBuiltinPlugin(name)
+	// Built-in plugins should not have a path
+	if isBuiltin && request.Path != nil {
+		request.Path = nil
+	}
 	// Updating the plugin
 	if err := h.configStore.UpdatePlugin(ctx, &configstoreTables.TablePlugin{
 		Name:     name,
 		Enabled:  request.Enabled,
 		Config:   request.Config,
 		Path:     request.Path,
-		IsCustom: plugin.IsCustom,
+		IsCustom: !isBuiltin,
 	}); err != nil {
 		logger.Error("failed to update plugin: %v", err)
 		SendError(ctx, 500, "Failed to update plugin")

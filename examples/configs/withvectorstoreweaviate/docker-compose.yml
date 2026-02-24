@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+    container_name: weaviate
+    ports:
+      - "9000:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_APIKEY_ENABLED: "false"
+      PERSISTENCE_DATA_PATH: "/var/lib/weaviate"
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  weaviate_data:

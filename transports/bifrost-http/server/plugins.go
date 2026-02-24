@@ -124,11 +124,7 @@ func loadCustomPlugin(ctx context.Context, path *string, pluginConfig any, bifro
 	return plugin, nil
 }
 
-// Multi-plugin methods used on startup
-
-// InstantiatePlugins loads all plugins from configuration
-// This is called once during Bootstrap
-
+// LoadPlugins loads the plugins for the server.
 func (s *BifrostHTTPServer) LoadPlugins(ctx context.Context) error {
 	// Load built-in plugins first (order matters)
 	if err := s.loadBuiltinPlugins(ctx); err != nil {
@@ -188,6 +184,30 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 		s.markPluginDisabled(otel.PluginName)
 	}
 
+	// 5. Semantic Cache (if configured in PluginConfigs)
+	semanticCacheConfig := s.getPluginConfig(semanticcache.PluginName)
+	if semanticCacheConfig != nil && semanticCacheConfig.Enabled {
+		s.registerPluginWithStatus(ctx, semanticcache.PluginName, nil, semanticCacheConfig.Config, false)
+	} else {
+		s.markPluginDisabled(semanticcache.PluginName)
+	}
+
+	// 6. Litellmcompat (if configured in PluginConfigs)
+	litellmcompatConfig := s.getPluginConfig(litellmcompat.PluginName)
+	if litellmcompatConfig != nil && litellmcompatConfig.Enabled {
+		s.registerPluginWithStatus(ctx, litellmcompat.PluginName, nil, litellmcompatConfig.Config, false)
+	} else {
+		s.markPluginDisabled(litellmcompat.PluginName)
+	}
+
+	// 7. Maxim (if configured in PluginConfigs)
+	maximConfig := s.getPluginConfig(maxim.PluginName)
+	if maximConfig != nil && maximConfig.Enabled {
+		s.registerPluginWithStatus(ctx, maxim.PluginName, nil, maximConfig.Config, false)
+	} else {
+		s.markPluginDisabled(maxim.PluginName)
+	}
+
 	return nil
 }
 
@@ -195,7 +215,7 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 func (s *BifrostHTTPServer) loadCustomPlugins(ctx context.Context) error {
 	for _, cfg := range s.Config.PluginConfigs {
 		// Skip built-ins (already loaded)
-		if isBuiltinPlugin(cfg.Name) {
+		if lib.IsBuiltinPlugin(cfg.Name) {
 			continue
 		}
 		// Handle disabled plugins
