@@ -226,6 +226,8 @@ type HTTPTransportPlugin interface {
 	// Only invoked when using HTTP transport (bifrost-http), not when using Bifrost as a Go SDK directly.
 	// Works with both native .so plugins and WASM plugins due to serializable types.
 	// NOTE: This hook is NOT called for streaming responses. Use HTTPTransportStreamChunkHook instead.
+	// NOTE: For large streamed responses (non-streaming APIs that switch to body streaming for memory safety),
+	// resp.Body may be nil by design while StatusCode and Headers remain populated.
 	//
 	// Return values:
 	// - nil: Continue to next plugin/handler, response modifications are applied

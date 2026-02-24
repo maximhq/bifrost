@@ -213,6 +213,27 @@ const (
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
+	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
+	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"                     // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
+	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length"             // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
+	BifrostContextKeyLargePayloadContentType             BifrostContextKey = "bifrost-large-payload-content-type"               // string (set by enterprise - DO NOT SET THIS MANUALLY)) original content type for large payload passthrough
+	BifrostContextKeyLargePayloadMetadata                BifrostContextKey = "bifrost-large-payload-metadata"                   // *LargePayloadMetadata (set by bifrost - DO NOT SET THIS MANUALLY)) routing metadata for large payloads
+	BifrostContextKeyLargePayloadRequestThreshold        BifrostContextKey = "bifrost-large-payload-request-threshold"          // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) request threshold used by transport heuristics
+	BifrostContextKeyLargeResponseMode                   BifrostContextKey = "bifrost-large-response-mode"                      // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large response streaming mode is active
+	BifrostContextKeyLargePayloadRequestPreview          BifrostContextKey = "bifrost-large-payload-request-preview"            // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated request body preview for logging
+	BifrostContextKeyLargePayloadResponsePreview         BifrostContextKey = "bifrost-large-payload-response-preview"           // string (set by bifrost - DO NOT SET THIS MANUALLY)) truncated response body preview for logging
+	BifrostContextKeyLargeResponseReader                 BifrostContextKey = "bifrost-large-response-reader"                    // io.ReadCloser (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large responses
+	BifrostContextKeyLargeResponseContentLength          BifrostContextKey = "bifrost-large-response-content-length"            // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large responses
+	BifrostContextKeyLargeResponseContentType            BifrostContextKey = "bifrost-large-response-content-type"              // string (set by bifrost - DO NOT SET THIS MANUALLY)) upstream content type for large responses
+	BifrostContextKeyLargeResponseThreshold              BifrostContextKey = "bifrost-large-response-threshold"                 // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) threshold for response streaming
+	BifrostContextKeyLargePayloadPrefetchSize           BifrostContextKey = "bifrost-large-payload-prefetch-size"               // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
+	BifrostContextKeyDeferredUsage                      BifrostContextKey = "bifrost-deferred-usage"                            // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
+)
+
+const (
+	// DefaultLargePayloadRequestThresholdBytes is the default request-size heuristic
+	// used by transport guards when no enterprise threshold is present on context.
+	DefaultLargePayloadRequestThresholdBytes = 10 * 1024 * 1024 // 10MB
 )
 
 // RoutingEngine constants
@@ -232,6 +253,16 @@ type RoutingEngineLogEntry struct {
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
 // make sure to mark BifrostContextKeyStreamEndIndicator as true at the end of the stream.
+
+// LargePayloadMetadata holds routing-relevant metadata selectively extracted from large payloads.
+// This is used when the full request body is too large to parse (e.g., 400MB video upload).
+// Only small routing/observability fields are extracted; the body itself streams through unchanged.
+type LargePayloadMetadata struct {
+	ResponseModalities []string // e.g., ["AUDIO"] for speech, ["IMAGE"] for image generation
+	SpeechConfig       bool     // true if generationConfig.speechConfig is present
+	Model              string   // model extracted without full body parsing (openai/anthropic multipart/json)
+	StreamRequested    *bool    // stream flag when available in request payload metadata
+}
 
 //* Request Structs
 

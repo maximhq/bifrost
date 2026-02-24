@@ -3,6 +3,8 @@
 package utils
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -440,6 +442,335 @@ type RequestBodyWithExtraParams interface {
 
 type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
+// IsLargePayloadPassthroughEnabled returns true when large payload mode has already
+// prepared an upstream body reader in context.
+func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !ok || !isLargePayload {
+		return false
+	}
+	reader, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	return ok && reader != nil
+}
+
+// ApplyLargePayloadRequestBody applies the request body reader from context to the
+// outgoing provider request. Returns true when a streaming body was applied.
+func ApplyLargePayloadRequestBody(ctx context.Context, req *fasthttp.Request) bool {
+	return ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, "")
+}
+
+const largePayloadModelRewriteScanBytes = 256 * 1024
+
+// ApplyLargePayloadRequestBodyWithModelNormalization applies the streaming body
+// reader from context and optionally rewrites prefixed model values for JSON
+// passthrough requests (for example "openai/gpt-5" -> "gpt-5").
+// This preserves low-memory streaming while keeping large-payload behavior
+// aligned with the normal parsed path that strips provider prefixes.
+func ApplyLargePayloadRequestBodyWithModelNormalization(
+	ctx context.Context,
+	req *fasthttp.Request,
+	defaultProvider schemas.ModelProvider,
+) bool {
+	if req == nil || !IsLargePayloadPassthroughEnabled(ctx) {
+		return false
+	}
+
+	bodyReader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	bodySize := -1
+	if contentLength, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); ok {
+		bodySize = contentLength
+	}
+
+	if contentType, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadContentType).(string); ok && contentType != "" {
+		ctLower := strings.ToLower(contentType)
+		if metadata, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); ok && metadata != nil {
+			if rawModel := strings.TrimSpace(metadata.Model); rawModel != "" && defaultProvider != "" {
+				_, normalizedModel := schemas.ParseModelString(rawModel, defaultProvider)
+				if normalizedModel != "" && normalizedModel != rawModel {
+					if strings.Contains(ctLower, "application/json") {
+						rewrittenReader, sizeDelta := RewriteLargePayloadModelInJSONPrefix(bodyReader, rawModel, normalizedModel)
+						bodyReader = rewrittenReader
+						if bodySize >= 0 {
+							bodySize += sizeDelta
+						}
+					} else if strings.Contains(ctLower, "multipart/form-data") {
+						rewrittenReader, sizeDelta := RewriteLargePayloadModelInMultipartPrefix(bodyReader, rawModel, normalizedModel)
+						bodyReader = rewrittenReader
+						if bodySize >= 0 {
+							bodySize += sizeDelta
+						}
+					}
+				}
+			}
+		}
+		req.Header.SetContentType(contentType)
+	}
+	req.SetBodyStream(bodyReader, bodySize)
+	return true
+}
+
+// RewriteLargePayloadModelInJSONPrefix reads the first 256KB of a streaming body,
+// rewrites the "model" JSON value from fromModel to toModel, and returns a
+// combined reader (rewritten prefix + remaining stream) with the size delta.
+func RewriteLargePayloadModelInJSONPrefix(reader io.Reader, fromModel, toModel string) (io.Reader, int) {
+	if reader == nil || fromModel == "" || toModel == "" || fromModel == toModel {
+		return reader, 0
+	}
+	prefix := make([]byte, largePayloadModelRewriteScanBytes)
+	n, err := io.ReadFull(reader, prefix)
+	if n == 0 && err != nil {
+		return reader, 0
+	}
+	prefix = prefix[:n]
+
+	rewrittenPrefix, changed := rewriteJSONModelValue(prefix, fromModel, toModel)
+	if !changed {
+		return io.MultiReader(bytes.NewReader(prefix), reader), 0
+	}
+	return io.MultiReader(bytes.NewReader(rewrittenPrefix), reader), len(rewrittenPrefix) - len(prefix)
+}
+
+func rewriteJSONModelValue(data []byte, fromModel, toModel string) ([]byte, bool) {
+	if len(data) == 0 || fromModel == "" || toModel == "" || fromModel == toModel {
+		return data, false
+	}
+	pattern := []byte(`"model"`)
+	searchFrom := 0
+	for {
+		match := bytes.Index(data[searchFrom:], pattern)
+		if match < 0 {
+			return data, false
+		}
+		idx := searchFrom + match + len(pattern)
+
+		for idx < len(data) && (data[idx] == ' ' || data[idx] == '\t' || data[idx] == '\r' || data[idx] == '\n') {
+			idx++
+		}
+		if idx >= len(data) || data[idx] != ':' {
+			searchFrom += match + len(pattern)
+			continue
+		}
+		idx++
+		for idx < len(data) && (data[idx] == ' ' || data[idx] == '\t' || data[idx] == '\r' || data[idx] == '\n') {
+			idx++
+		}
+		if idx >= len(data) || data[idx] != '"' {
+			searchFrom += match + len(pattern)
+			continue
+		}
+
+		valueStart := idx + 1
+		valueEnd := valueStart
+		escaped := false
+		for valueEnd < len(data) {
+			ch := data[valueEnd]
+			if escaped {
+				escaped = false
+				valueEnd++
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				valueEnd++
+				continue
+			}
+			if ch == '"' {
+				break
+			}
+			valueEnd++
+		}
+		if valueEnd >= len(data) {
+			return data, false
+		}
+
+		if string(data[valueStart:valueEnd]) != fromModel {
+			searchFrom = valueEnd + 1
+			continue
+		}
+
+		rewritten := make([]byte, 0, len(data)-len(fromModel)+len(toModel))
+		rewritten = append(rewritten, data[:valueStart]...)
+		rewritten = append(rewritten, toModel...)
+		rewritten = append(rewritten, data[valueEnd:]...)
+		return rewritten, true
+	}
+}
+
+// RewriteLargePayloadModelInMultipartPrefix reads the first 256KB of a streaming
+// multipart body, finds the model form field value, and rewrites it from fromModel
+// to toModel. The model field appears early in multipart bodies (typically the first
+// form field), so scanning the prefix is sufficient.
+func RewriteLargePayloadModelInMultipartPrefix(reader io.Reader, fromModel, toModel string) (io.Reader, int) {
+	if reader == nil || fromModel == "" || toModel == "" || fromModel == toModel {
+		return reader, 0
+	}
+	prefix := make([]byte, largePayloadModelRewriteScanBytes)
+	n, err := io.ReadFull(reader, prefix)
+	if n == 0 && err != nil {
+		return reader, 0
+	}
+	prefix = prefix[:n]
+
+	// In multipart, the model value appears as:
+	//   ...name="model"\r\n\r\nopenai/whisper-1\r\n--boundary...
+	// A direct byte replacement of fromModel→toModel in the prefix is safe because
+	// the model string (e.g. "openai/whisper-1") is unique within the form metadata.
+	from := []byte(fromModel)
+	to := []byte(toModel)
+	if idx := bytes.Index(prefix, from); idx >= 0 {
+		rewritten := make([]byte, 0, len(prefix)-len(from)+len(to))
+		rewritten = append(rewritten, prefix[:idx]...)
+		rewritten = append(rewritten, to...)
+		rewritten = append(rewritten, prefix[idx+len(from):]...)
+		return io.MultiReader(bytes.NewReader(rewritten), reader), len(rewritten) - len(prefix)
+	}
+	return io.MultiReader(bytes.NewReader(prefix), reader), 0
+}
+
+// DrainLargePayloadRemainder drains any unread bytes from the large payload reader.
+// This is useful for request types that may receive an upstream response before the
+// incoming client upload is fully consumed (for example, lightweight preflight APIs).
+// Example failure this prevents: fronting proxy returns 502/broken-pipe when backend
+// responds early while client is still uploading a large body.
+func DrainLargePayloadRemainder(ctx context.Context) {
+	if !IsLargePayloadPassthroughEnabled(ctx) {
+		return
+	}
+	bodyReader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	if bodyReader == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, bodyReader)
+}
+
+// CloneFastHTTPClientConfig creates a fresh fasthttp.Client by copying only
+// config fields from base.
+// Never copy fasthttp.Client by value: it contains internal pools and locks.
+// Example failure this prevents: parallel load regressions with unexpected buffering
+// behavior after `cloned := *base` copies of active clients.
+func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
+	if base == nil {
+		return &fasthttp.Client{}
+	}
+
+	return &fasthttp.Client{
+		Transport:                     base.Transport,
+		DialTimeout:                   base.DialTimeout,
+		Dial:                          base.Dial,
+		TLSConfig:                     base.TLSConfig,
+		RetryIf:                       base.RetryIf,
+		RetryIfErr:                    base.RetryIfErr,
+		ConfigureClient:               base.ConfigureClient,
+		Name:                          base.Name,
+		MaxConnsPerHost:               base.MaxConnsPerHost,
+		MaxIdleConnDuration:           base.MaxIdleConnDuration,
+		MaxConnDuration:               base.MaxConnDuration,
+		MaxIdemponentCallAttempts:     base.MaxIdemponentCallAttempts,
+		ReadBufferSize:                base.ReadBufferSize,
+		WriteBufferSize:               base.WriteBufferSize,
+		ReadTimeout:                   base.ReadTimeout,
+		WriteTimeout:                  base.WriteTimeout,
+		MaxResponseBodySize:           base.MaxResponseBodySize,
+		MaxConnWaitTimeout:            base.MaxConnWaitTimeout,
+		ConnPoolStrategy:              base.ConnPoolStrategy,
+		NoDefaultUserAgentHeader:      base.NoDefaultUserAgentHeader,
+		DialDualStack:                 base.DialDualStack,
+		DisableHeaderNamesNormalizing: base.DisableHeaderNamesNormalizing,
+		DisablePathNormalizing:        base.DisablePathNormalizing,
+		StreamResponseBody:            base.StreamResponseBody,
+	}
+}
+
+// gzipReaderPool reuses gzip.Reader instances across requests to avoid
+// re-allocating the ~32KB internal DEFLATE sliding window on every
+// compressed streaming response.
+var gzipReaderPool sync.Pool
+
+func getGzipReader(r io.Reader) (*gzip.Reader, error) {
+	if v := gzipReaderPool.Get(); v != nil {
+		gz := v.(*gzip.Reader)
+		if err := gz.Reset(r); err != nil {
+			return nil, err
+		}
+		return gz, nil
+	}
+	return gzip.NewReader(r)
+}
+
+// pooledGzipReader wraps a pooled gzip.Reader and returns it to the pool
+// when the stream is fully consumed (EOF) or encounters an error.
+// Transparent to callers — implements io.Reader with no Close required.
+type pooledGzipReader struct {
+	gz       *gzip.Reader
+	returned bool
+}
+
+func (r *pooledGzipReader) Read(p []byte) (int, error) {
+	if r.gz == nil {
+		return 0, io.EOF
+	}
+	n, err := r.gz.Read(p)
+	if err != nil && !r.returned {
+		r.returned = true
+		_ = r.gz.Close()
+		gzipReaderPool.Put(r.gz)
+		r.gz = nil
+	}
+	return n, err
+}
+
+// decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
+// with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
+// header so downstream consumers don't double-decompress. Returns original reader
+// unchanged if not gzip-encoded.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (io.Reader, bool) {
+	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if ce != "gzip" {
+		return stream, false
+	}
+	gz, err := getGzipReader(stream)
+	if err != nil {
+		return stream, false
+	}
+	resp.Header.Del("Content-Encoding")
+	return &pooledGzipReader{gz: gz}, true
+}
+
+// DecompressStreamBody wraps resp's BodyStream with on-the-fly gzip decompression
+// when Content-Encoding indicates gzip. Modifies the response in-place so all
+// subsequent BodyStream() calls return decompressed data. Clears Content-Encoding
+// to prevent double-decompression. No-op if BodyStream is nil or not gzip-encoded.
+func DecompressStreamBody(resp *fasthttp.Response) {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		return
+	}
+	decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	if wasGzip {
+		resp.SetBodyStream(decompressed, -1)
+	}
+}
+
+// DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
+// If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
+// non-line-delimited data. Returns true if body was drained (caller should skip scanner).
+func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+	ct := strings.ToLower(string(resp.Header.ContentType()))
+	if strings.Contains(ct, "text/event-stream") {
+		// Decompress in-place so scanner reads decompressed SSE lines
+		// (e.g. Anthropic returns Content-Encoding: gzip on streaming responses).
+		DecompressStreamBody(resp)
+		return false
+	}
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		io.Copy(io.Discard, bodyStream) //nolint:errcheck
+	}
+	return true
+}
+
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
 func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) {
 	for k, v := range extraParams {
@@ -457,6 +788,10 @@ func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]int
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
 		convertedBody, err := requestConverter()
