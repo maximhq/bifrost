@@ -257,7 +257,7 @@ echo "------------------------------------------------------"
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semanticcache")
 # Go registry: plugins/semanticcache/main.go defines PluginName = "semantic_cache"
 test_name="semanticCache plugin name matches Go registry (semantic_cache)"
-helm template bifrost ./helm-charts/bifrost \
+if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \
   --set bifrost.plugins.semanticCache.enabled=true \
   --set bifrost.plugins.semanticCache.config.dimension=1536 \
@@ -265,8 +265,18 @@ helm template bifrost ./helm-charts/bifrost \
   --set 'bifrost.plugins.semanticCache.config.keys[0]=sk-test' \
   --set vectorStore.enabled=true \
   --set vectorStore.type=redis \
-  --set vectorStore.redis.enabled=true 2>/dev/null | grep -q '"name":"semantic_cache"'
-report_result "$test_name" $?
+  --set vectorStore.redis.enabled=true \
+  > /tmp/helm-template-output.yaml 2>&1; then
+  if grep -Eq '"name"[[:space:]]*:[[:space:]]*"semantic_cache"' /tmp/helm-template-output.yaml; then
+    report_result "$test_name" 0
+  else
+    report_result "$test_name" 1
+  fi
+else
+  report_result "$test_name" 1
+  echo -e "${YELLOW}  Error output:${NC}"
+  head -10 /tmp/helm-template-output.yaml | sed 's/^/    /'
+fi
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml
