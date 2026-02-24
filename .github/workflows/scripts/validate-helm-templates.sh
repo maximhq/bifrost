@@ -173,10 +173,40 @@ test_template "sqlite + qdrant" \
   --set vectorStore.type=qdrant \
   --set vectorStore.qdrant.enabled=true
 
-# 3. Special Configurations (4 tests)
+# 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/3 - Testing Special Configurations (4 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/3 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
+
+# semantic cache: direct mode (dimension: 1, no provider/keys)
+test_template "semanticCache: direct mode (dimension: 1)" \
+  --set bifrost.plugins.semanticCache.enabled=true \
+  --set bifrost.plugins.semanticCache.config.dimension=1 \
+  --set bifrost.plugins.semanticCache.config.ttl=30m \
+  --set vectorStore.enabled=true \
+  --set vectorStore.type=redis \
+  --set vectorStore.redis.enabled=true
+
+# semantic cache: semantic mode (dimension > 1, requires provider/keys)
+test_template "semanticCache: semantic mode (dimension: 1536)" \
+  --set bifrost.plugins.semanticCache.enabled=true \
+  --set bifrost.plugins.semanticCache.config.dimension=1536 \
+  --set bifrost.plugins.semanticCache.config.provider=openai \
+  --set 'bifrost.plugins.semanticCache.config.keys[0]=sk-test' \
+  --set vectorStore.enabled=true \
+  --set vectorStore.type=redis \
+  --set vectorStore.redis.enabled=true
+
+# semantic cache: direct mode with redis + postgres
+test_template "semanticCache: direct mode + postgres" \
+  --set bifrost.plugins.semanticCache.enabled=true \
+  --set bifrost.plugins.semanticCache.config.dimension=1 \
+  --set storage.mode=postgres \
+  --set postgresql.enabled=true \
+  --set postgresql.auth.password=testpass \
+  --set vectorStore.enabled=true \
+  --set vectorStore.type=redis \
+  --set vectorStore.redis.enabled=true
 
 # sqlite + persistence + autoscaling (StatefulSet HPA)
 test_template "sqlite + persistence + autoscaling (StatefulSet)" \

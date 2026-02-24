@@ -570,7 +570,7 @@
                       "items": {
                         "type": "string"
                       },
-                      "description": "API keys for embedding provider (required when enabled)"
+                      "description": "API keys for embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)"
                     },
                     "embedding_model": {
                       "type": "string"
@@ -630,8 +630,6 @@
                 "properties": {
                   "config": {
                     "required": [
-                      "provider",
-                      "keys",
                       "dimension"
                     ]
                   }

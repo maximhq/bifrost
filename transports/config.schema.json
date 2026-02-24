@@ -1001,11 +1001,10 @@
                     },
                     "keys": {
                       "type": "array",
-                      "description": "API keys for the embedding provider",
+                      "description": "API keys for the embedding provider (required for semantic caching, not needed for direct caching with dimension: 1)",
                       "items": {
                         "type": "string"
-                      },
-                      "minItems": 1
+                      }
                     },
                     "embedding_model": {
                       "type": "string",
@@ -1040,7 +1039,7 @@
                     },
                     "dimension": {
                       "type": "integer",
-                      "description": "Dimension for vector store embeddings",
+                      "description": "Dimension for vector store embeddings. Use 1 for direct (hash-based) caching without an embedding provider.",
                       "minimum": 1
                     },
                     "default_cache_key": {
@@ -1066,8 +1065,6 @@
                     }
                   },
                   "required": [
-                    "provider",
-                    "keys",
                     "dimension"
                   ],
                   "additionalProperties": false
