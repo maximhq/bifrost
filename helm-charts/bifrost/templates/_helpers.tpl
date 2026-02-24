@@ -749,7 +749,7 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "semanticcache" "config" $scConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}
