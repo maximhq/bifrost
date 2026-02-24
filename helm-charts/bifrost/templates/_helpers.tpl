@@ -657,6 +657,9 @@ false
 {{- if hasKey $client "is_ping_available" }}
 {{- $_ := set $cc "is_ping_available" $client.is_ping_available }}
 {{- end }}
+{{- if hasKey $client "isCodeModeClient" }}
+{{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
+{{- end }}
 {{- $clientConfigs = append $clientConfigs $cc }}
 {{- end }}
 {{- $mcpConfig := dict "client_configs" $clientConfigs }}
@@ -672,6 +675,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- $_ := set $tmConfig "max_agent_depth" .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- $_ := set $tmConfig "code_mode_binding_level" .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}

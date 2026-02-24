@@ -392,6 +392,10 @@
                 "maxAgentDepth": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "codeModeBindingLevel": {
+                  "type": "string",
+                  "enum": ["server", "tool"]
                 }
               }
             }
@@ -2384,6 +2388,9 @@
           "required": [
             "url"
           ]
+        },
+        "isCodeModeClient": {
+          "type": "boolean"
         }
       },
       "required": [

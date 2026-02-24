@@ -364,8 +364,10 @@ bifrost:
 |-----------|-------------|---------|
 | `bifrost.mcp.enabled` | Enable MCP (Model Context Protocol) | `false` |
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
+| `bifrost.mcp.clientConfigs[].isCodeModeClient` | Whether the client is a code mode client | `false` |
 | `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout (Go duration string like "30s". Helm numeric values are treated as seconds; raw JSON numeric values are interpreted as nanoseconds for legacy compatibility.) | `"30s"` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
+| `bifrost.mcp.toolManagerConfig.codeModeBindingLevel` | How tools are exposed in VFS for code mode: "server" (grouped by client) or "tool" (each tool gets own file) | `"server"` |
 
 ### Ingress Configuration
 
