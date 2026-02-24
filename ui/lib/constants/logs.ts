@@ -68,6 +68,9 @@ export const RequestTypes = [
 	"container_file_retrieve",
 	"container_file_content",
 	"container_file_delete",
+	// WebSocket/Realtime operations
+	"websocket_responses",
+	"realtime",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -188,6 +191,10 @@ export const RequestTypeLabels = {
 	container_file_retrieve: "Container File Retrieve",
 	container_file_content: "Container File Content",
 	container_file_delete: "Container File Delete",
+
+	// WebSocket operations
+	websocket_responses: "WebSocket Responses",
+	realtime: "Realtime",
 } as const;
 
 export const RequestTypeColors = {
@@ -260,6 +267,10 @@ export const RequestTypeColors = {
 	file_retrieve: "bg-orange-100 text-orange-800",
 	file_delete: "bg-red-100 text-red-800",
 	file_content: "bg-blue-100 text-blue-800",
+
+	// WebSocket operations
+	websocket_responses: "bg-teal-100 text-teal-800",
+	realtime: "bg-indigo-100 text-indigo-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

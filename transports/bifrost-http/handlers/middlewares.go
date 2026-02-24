@@ -261,6 +261,12 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 	return true
 }
 
+// isInferenceWSEndpoint returns true for WebSocket endpoints that should use
+// standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
+func isInferenceWSEndpoint(path string) bool {
+	return path == "/v1/responses" || path == "/v1/realtime"
+}
+
 type AuthMiddleware struct {
 	store      configstore.ConfigStore
 	authConfig atomic.Pointer[configstore.AuthConfig]
@@ -340,22 +346,27 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// Get the authorization header
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
-				// Check if its a websocket 101 upgrade request
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					// Here we get the token from query params
-					token := string(ctx.Request.URI().QueryArgs().Peek("token"))
-					if token == "" {
-						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+					path := string(ctx.Path())
+					if isInferenceWSEndpoint(path) {
+						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
+						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
+						// If no Authorization header, fall through to return 401 below
+						// (or the shouldSkip check above already passed them through).
+					} else {
+						// Dashboard WS (/ws) uses session token from query params
+						token := string(ctx.Request.URI().QueryArgs().Peek("token"))
+						if token == "" {
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						if !validateSession(ctx, m.store, token) {
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						next(ctx)
 						return
 					}
-					// Verify the session
-					if !validateSession(ctx, m.store, token) {
-						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-						return
-					}
-					// Continue with the next handler
-					next(ctx)
-					return
 				}
 				SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 				return

@@ -347,7 +347,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			initialData.Params = req.ChatRequest.Params
 			initialData.Tools = req.ChatRequest.Params.Tools
-		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 			initialData.Params = req.ResponsesRequest.Params
 
 			var tools []schemas.ChatTool

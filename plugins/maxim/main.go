@@ -346,7 +346,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 				json.Unmarshal(jsonData, &modelParams)
 			}
 		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		for _, message := range req.ResponsesRequest.Input {
 			if message.Content != nil {
 				role := schemas.ChatMessageRoleUser
@@ -568,12 +568,12 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 					} else {
 						logger.AddResultToGeneration(generationID, result.ChatResponse)
 					}
-				case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
-					if streamResponse != nil {
-						logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
-					} else {
-						logger.AddResultToGeneration(generationID, result.ResponsesResponse)
-					}
+			case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+				if streamResponse != nil {
+					logger.AddResultToGeneration(generationID, streamResponse.ToBifrostResponse().ResponsesResponse)
+				} else {
+					logger.AddResultToGeneration(generationID, result.ResponsesResponse)
+				}
 				}
 				if streamResponse != nil && isFinalChunk {
 					// Cleanup via central tracer

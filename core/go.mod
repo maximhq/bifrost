@@ -14,6 +14,7 @@ require (
 	github.com/aws/smithy-go v1.24.0
 	github.com/bytedance/sonic v1.15.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0

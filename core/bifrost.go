@@ -1028,6 +1028,104 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	return pq, nil
 }
 
+// GetProviderByKey returns the provider instance for the given provider key.
+// Returns nil if no provider with the given key exists.
+func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
+	return bifrost.getProviderByKey(providerKey)
+}
+
+// SelectKeyForProvider selects an API key for the given provider and model.
+// Used by WebSocket handlers that need a key for upstream connections.
+func (bifrost *Bifrost) SelectKeyForProvider(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	return bifrost.selectKeyFromProviderForModel(ctx, schemas.WebSocketResponsesRequest, providerKey, model, providerKey)
+}
+
+// WSStreamHooks holds the post-hook runner and cleanup function returned by RunStreamPreHooks.
+// Call PostHookRunner for each streaming chunk, setting StreamEndIndicator on the final chunk.
+// Call Cleanup when done to release the pipeline back to the pool.
+// If ShortCircuitResponse is non-nil, a plugin short-circuited with a cached response —
+// the caller should write this response to the client and skip the upstream call.
+type WSStreamHooks struct {
+	PostHookRunner       schemas.PostHookRunner
+	Cleanup              func()
+	ShortCircuitResponse *schemas.BifrostResponse
+}
+
+// RunStreamPreHooks acquires a plugin pipeline, sets up tracing context, runs PreLLMHooks,
+// and returns a PostHookRunner for per-chunk post-processing.
+// Used by WebSocket handlers that bypass the normal inference path but still need plugin hooks.
+func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*WSStreamHooks, *schemas.BifrostError) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+	}
+
+	tracer := bifrost.getTracer()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+
+	// Create a trace so the logging plugin can accumulate streaming chunks.
+	// The traceID is used as the accumulator key in ProcessStreamingChunk.
+	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
+		traceID := tracer.CreateTrace("")
+		if traceID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+		}
+	}
+
+	// Mark as streaming context so RunPostLLMHooks uses accumulated timing
+	ctx.SetValue(schemas.BifrostContextKeyStreamStartTime, time.Now())
+
+	pipeline := bifrost.getPluginPipeline()
+
+	cleanup := func() {
+		if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+			tracer.CleanupStreamAccumulator(traceID)
+		}
+		bifrost.releasePluginPipeline(pipeline)
+	}
+
+	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
+	if preReq == nil && shortCircuit == nil {
+		cleanup()
+		return nil, newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
+	}
+	if shortCircuit != nil {
+		if shortCircuit.Error != nil {
+			_, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
+			cleanup()
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			return nil, shortCircuit.Error
+		}
+		if shortCircuit.Response != nil {
+			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
+			cleanup()
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			return &WSStreamHooks{
+				ShortCircuitResponse: resp,
+			}, nil
+		}
+	}
+
+	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return pipeline.RunPostLLMHooks(ctx, result, err, preCount)
+	}
+
+	return &WSStreamHooks{
+		PostHookRunner: postHookRunner,
+		Cleanup:        cleanup,
+	}, nil
+}
+
 // getProviderByKey retrieves a provider instance from the providers array by its provider key.
 // Returns the provider if found, or nil if no provider with the given key exists.
 func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
@@ -1680,6 +1778,17 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	// The streaming goroutine captures the context when it starts, so these values
 	// must be set before requestHandler() is called.
 	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+
+	// Ensure traceID exists so the logging plugin can create a stream accumulator
+	// in PreLLMHook and accumulate chunks in PostLLMHook. For HTTP handler requests the
+	// tracing middleware already sets this; for WebSocket bridge and Go SDK callers it
+	// may be absent.
+	if _, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); !ok {
+		traceID := tracer.CreateTrace("")
+		if traceID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+		}
+	}
 
 	pipeline := bifrost.getPluginPipeline()
 	defer func() {

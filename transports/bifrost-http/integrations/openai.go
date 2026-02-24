@@ -2626,6 +2626,38 @@ func extractContainerAndFileIDFromPath(handlerStore lib.HandlerStore) PreRequest
 	}
 }
 
+// OpenAIWSResponsesPaths returns WebSocket GET paths for the Responses API.
+// Mirrors the HTTP POST paths from CreateOpenAIRouteConfigs for /v1/responses and /responses.
+// No /deployments/ paths — model is specified in event body, not URL.
+func OpenAIWSResponsesPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/responses",
+		"/responses",
+		"/openai/responses",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimePaths returns WebSocket GET paths for the Realtime API.
+// Azure GA uses /openai/v1/realtime?model=..., preview uses /openai/realtime?deployment=...
+// No /deployments/ paths — model is always in query params.
+func OpenAIRealtimePaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)

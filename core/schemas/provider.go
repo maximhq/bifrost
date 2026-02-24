@@ -259,6 +259,8 @@ type AllowedRequests struct {
 	ContainerFileRetrieve bool `json:"container_file_retrieve"`
 	ContainerFileContent  bool `json:"container_file_content"`
 	ContainerFileDelete   bool `json:"container_file_delete"`
+	WebSocketResponses    bool `json:"websocket_responses"`
+	Realtime              bool `json:"realtime"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -356,6 +358,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ContainerFileContent
 	case ContainerFileDeleteRequest:
 		return ar.ContainerFileDelete
+	case WebSocketResponsesRequest:
+		return ar.WebSocketResponses
+	case RealtimeRequest:
+		return ar.Realtime
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -550,4 +556,18 @@ type Provider interface {
 	ContainerFileContent(ctx *BifrostContext, keys []Key, request *BifrostContainerFileContentRequest) (*BifrostContainerFileContentResponse, *BifrostError)
 	// ContainerFileDelete deletes a file from a container
 	ContainerFileDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerFileDeleteRequest) (*BifrostContainerFileDeleteResponse, *BifrostError)
+}
+
+// WebSocketCapableProvider is an optional interface that providers can implement
+// to indicate support for the OpenAI Responses API WebSocket Mode.
+// Checked via type assertion: provider.(WebSocketCapableProvider).
+// Providers that implement this interface will have native WS upstream connections
+// instead of the HTTP bridge fallback for Responses WS mode.
+type WebSocketCapableProvider interface {
+	// SupportsWebSocketMode returns true if the provider supports the Responses API WebSocket Mode.
+	SupportsWebSocketMode() bool
+	// WebSocketResponsesURL returns the WebSocket URL for the Responses API.
+	WebSocketResponsesURL(key Key) string
+	// WebSocketHeaders returns the headers required for the upstream WebSocket connection.
+	WebSocketHeaders(key Key) map[string]string
 }

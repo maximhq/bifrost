@@ -36,6 +36,7 @@ dependencies = [
     "pydantic-ai>=0.1.0",
     "boto3>=1.34.0",
     # Testing utilities
+    "websocket-client>=1.6.0",
     "httpx>=0.25.0",
     "pytest-timeout>=2.1.0",
     "pytest-mock>=3.11.0",
