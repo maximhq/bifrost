@@ -385,7 +385,8 @@
                       "minimum": 1
                     },
                     {
-                      "type": "string"
+                      "type": "string",
+                      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
                     }
                   ]
                 },
