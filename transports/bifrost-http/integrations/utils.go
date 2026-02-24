@@ -3,7 +3,6 @@ package integrations
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -140,31 +140,6 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 	return string(out)
 }
 
-// sendStreamError sends an error in streaming format using the stream error converter if available
-func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
-	var errorResponse interface{}
-
-	// Use stream error converter if available, otherwise fallback to regular error converter
-	if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-		errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
-	} else {
-		errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
-	}
-
-	errorJSON, err := sonic.Marshal(map[string]interface{}{
-		"error": errorResponse,
-	})
-	if err != nil {
-		log.Printf("Failed to marshal error for SSE: %v", err)
-		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
-		return
-	}
-
-	if _, err := fmt.Fprintf(ctx, "data: %s\n\n", errorJSON); err != nil {
-		log.Printf("Failed to write SSE error: %v", err)
-	}
-}
-
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
 func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
@@ -207,6 +182,34 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 	}
 
 	ctx.SetBody(responseBody)
+}
+
+// tryStreamLargeResponse checks if large response mode was activated by the provider,
+// sets the transport marker, and streams the response directly to the client.
+// Returns true if the response was handled (caller should return).
+func (g *GenericRouter) tryStreamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) bool {
+	isLargeResponse, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	if !ok || !isLargeResponse {
+		return false
+	}
+	ctx.SetUserValue(lib.FastHTTPUserValueLargeResponseMode, true)
+	g.streamLargeResponse(ctx, bifrostCtx)
+	return true
+}
+
+// streamLargeResponse streams the large response body directly from the upstream provider to the client.
+// This bypasses the normal serialize → set body path, piping the response bytes unchanged.
+func (g *GenericRouter) streamLargeResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) {
+	// Enterprise hook: wrap the reader with Phase B scanning (e.g., usage extraction
+	// from the full response stream) before streaming to client.
+	if g.largeResponseHook != nil {
+		g.largeResponseHook(ctx, bifrostCtx)
+	}
+
+	if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetBodyString("large response reader not available")
+	}
 }
 
 // extractAndParseFallbacks extracts fallbacks from the integration request and adds them to the BifrostRequest

@@ -115,9 +115,10 @@ type BifrostHTTPServer struct {
 	Server *fasthttp.Server
 	Router *router.Router
 
-	WebSocketHandler *handlers.WebSocketHandler
-	MCPServerHandler *handlers.MCPServerHandler
-	devPprofHandler  *handlers.DevPprofHandler
+	WebSocketHandler   *handlers.WebSocketHandler
+	MCPServerHandler   *handlers.MCPServerHandler
+	devPprofHandler    *handlers.DevPprofHandler
+	IntegrationHandler *handlers.IntegrationHandler
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
@@ -914,7 +915,7 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
+	s.IntegrationHandler = handlers.NewIntegrationHandler(s.Client, s.Config)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
@@ -922,7 +923,7 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	}
 	s.MCPServerHandler = mcpServerHandler
 	asyncHandler := handlers.NewAsyncHandler(s.Client, s.Config)
-	integrationHandler.RegisterRoutes(s.Router, middlewares...)
+	s.IntegrationHandler.RegisterRoutes(s.Router, middlewares...)
 	inferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1292,6 +1293,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Handler:            handlers.CorsMiddleware(s.Config)(s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     1024 * 64, // 64kb
+		// Stream request bodies to reduce pre-buffering for large payload routes.
+		StreamRequestBody: true,
 	}
 	return nil
 }

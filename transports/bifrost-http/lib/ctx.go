@@ -22,6 +22,17 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+const (
+	// FastHTTPUserValueBifrostContext stores the active *schemas.BifrostContext on fasthttp.RequestCtx.
+	// This allows transport middleware and request handlers to share the same context instance.
+	FastHTTPUserValueBifrostContext = "__bifrost_context"
+	// FastHTTPUserValueBifrostCancel stores the cancel func for the active shared Bifrost context.
+	FastHTTPUserValueBifrostCancel = "__bifrost_context_cancel"
+	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
+	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
+	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
+)
+
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
 //
@@ -79,16 +90,46 @@ import (
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
-	// Create cancellable context for all requests
-	// This enables proper cleanup when clients disconnect or requests are cancelled
-	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
-
-	// First, check if x-request-id header exists
-	requestID := string(ctx.Request.Header.Peek("x-request-id"))
-	if requestID == "" {
-		requestID = uuid.New().String()
+	// Reuse a shared request-scoped context when available.
+	var bifrostCtx *schemas.BifrostContext
+	var cancel context.CancelFunc
+	if existing, ok := ctx.UserValue(FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && existing != nil {
+		if existingCancel, ok := ctx.UserValue(FastHTTPUserValueBifrostCancel).(context.CancelFunc); ok && existingCancel != nil {
+			bifrostCtx = existing
+			cancel = existingCancel
+		} else {
+			// Create one cancellable child context and promote it as the shared context.
+			bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(existing)
+			ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
+			ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
+		}
 	}
-	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	if bifrostCtx == nil {
+		// Create cancellable context for requests that don't have a shared context yet.
+		parent := context.Context(ctx)
+		func() {
+			// Zero-value fasthttp.RequestCtx can panic on Done(); fall back safely.
+			defer func() {
+				if recover() != nil {
+					parent = context.Background()
+				}
+			}()
+			_ = ctx.Done()
+		}()
+		bifrostCtx, cancel = schemas.NewBifrostContextWithCancel(parent)
+		ctx.SetUserValue(FastHTTPUserValueBifrostContext, bifrostCtx)
+		ctx.SetUserValue(FastHTTPUserValueBifrostCancel, cancel)
+	}
+
+	// Preserve existing request-id if already present on the shared context.
+	if existingRequestID, ok := bifrostCtx.Value(schemas.BifrostContextKeyRequestID).(string); !ok || existingRequestID == "" {
+		// First, check if x-request-id header exists
+		requestID := string(ctx.Request.Header.Peek("x-request-id"))
+		if requestID == "" {
+			requestID = uuid.New().String()
+		}
+		bifrostCtx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+	}
 	// Populating all user values from the request context
 	ctx.VisitUserValuesAll(func(key, value any) {
 		bifrostCtx.SetValue(key, value)
@@ -148,10 +189,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 	}
 
 	// Debug: Log header filter config
-	if headerFilterConfig != nil {
-		logger.Debug("headerFilterConfig allowlist: %v, denylist: %v", headerFilterConfig.Allowlist, headerFilterConfig.Denylist)
-	} else {
-		logger.Debug("headerFilterConfig is nil")
+	if logger != nil {
+		if headerFilterConfig != nil {
+			logger.Debug("headerFilterConfig allowlist: %v, denylist: %v", headerFilterConfig.Allowlist, headerFilterConfig.Denylist)
+		} else {
+			logger.Debug("headerFilterConfig is nil")
+		}
 	}
 
 	// Then process other headers
@@ -332,7 +375,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 					return true
 				}
 				// Forward the header directly with its original name
-				logger.Debug("forwarding header via allowlist: %s = %s", keyStr, string(value))
+				if logger != nil {
+					logger.Debug("forwarding header via allowlist: %s", keyStr)
+				}
 				extraHeaders[keyStr] = append(extraHeaders[keyStr], string(value))
 				return true
 			}

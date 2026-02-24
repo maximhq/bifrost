@@ -3,6 +3,7 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -108,7 +109,8 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 	return copy
 }
 
-// buildCompleteMessageFromChunks builds a complete message from accumulated chunks
+// buildCompleteMessageFromChunks builds a complete message from accumulated chunks.
+// Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
 func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
 	completeMessage := &schemas.ChatMessage{
 		Role:    schemas.ChatMessageRoleAssistant,
@@ -117,6 +119,32 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	sort.Slice(chunks, func(i, j int) bool {
 		return chunks[i].ChunkIndex < chunks[j].ChunkIndex
 	})
+
+	// Builders for O(n) accumulation of large text fields
+	var contentBuilder strings.Builder
+	var refusalBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	var audioDataBuilder strings.Builder
+	var audioTranscriptBuilder strings.Builder
+	hasContent, hasRefusal, hasReasoning := false, false, false
+
+	// Reasoning details builders keyed by detail index
+	type rdAccum struct {
+		text, summary, data         strings.Builder
+		hasText, hasSummary, hasData bool
+		typ                         schemas.BifrostReasoningDetailsType
+		id, signature               *string
+	}
+	var rdAccums map[int]*rdAccum
+
+	// Tool call argument builders keyed by delta index
+	type tcAccum struct {
+		id   *string
+		typ  *string
+		name *string
+		args strings.Builder
+	}
+	var tcAccums map[uint16]*tcAccum
 
 	for _, chunk := range chunks {
 		if chunk.Delta == nil {
@@ -128,156 +156,193 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 		}
 		// Append content delta
 		if chunk.Delta.Content != nil && *chunk.Delta.Content != "" {
-			a.appendContentToMessage(completeMessage, *chunk.Delta.Content)
+			contentBuilder.WriteString(*chunk.Delta.Content)
+			hasContent = true
 		}
 		// Handle refusal delta
 		if chunk.Delta.Refusal != nil && *chunk.Delta.Refusal != "" {
-			if completeMessage.ChatAssistantMessage == nil {
-				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
-			}
-			if completeMessage.ChatAssistantMessage.Refusal == nil {
-				// Deep copy on first assignment
-				refusalCopy := *chunk.Delta.Refusal
-				completeMessage.ChatAssistantMessage.Refusal = &refusalCopy
-			} else {
-				*completeMessage.ChatAssistantMessage.Refusal += *chunk.Delta.Refusal
-			}
+			refusalBuilder.WriteString(*chunk.Delta.Refusal)
+			hasRefusal = true
 		}
 		// Handle reasoning delta
 		if chunk.Delta.Reasoning != nil && *chunk.Delta.Reasoning != "" {
-			if completeMessage.ChatAssistantMessage == nil {
-				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
-			}
-			if completeMessage.ChatAssistantMessage.Reasoning == nil {
-				// Deep copy on first assignment
-				reasoningCopy := *chunk.Delta.Reasoning
-				completeMessage.ChatAssistantMessage.Reasoning = &reasoningCopy
-			} else {
-				*completeMessage.ChatAssistantMessage.Reasoning += *chunk.Delta.Reasoning
-			}
+			reasoningBuilder.WriteString(*chunk.Delta.Reasoning)
+			hasReasoning = true
 		}
 		// Handle reasoning details delta
-		if len(chunk.Delta.ReasoningDetails) > 0 {
-			if completeMessage.ChatAssistantMessage == nil {
-				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		for _, rd := range chunk.Delta.ReasoningDetails {
+			if rdAccums == nil {
+				rdAccums = make(map[int]*rdAccum)
 			}
-			// Accumulate reasoning details by index
-			for _, rd := range chunk.Delta.ReasoningDetails {
-				found := false
-				for i := range completeMessage.ChatAssistantMessage.ReasoningDetails {
-					existingRd := &completeMessage.ChatAssistantMessage.ReasoningDetails[i]
-					if existingRd.Index == rd.Index {
-						// Found matching index - accumulate text delta
-						if rd.Text != nil && *rd.Text != "" {
-							if existingRd.Text == nil {
-								// Deep copy on first assignment
-								textCopy := *rd.Text
-								existingRd.Text = &textCopy
-							} else {
-								*existingRd.Text += *rd.Text
-							}
-						}
-						// Accumulate summary delta
-						if rd.Summary != nil && *rd.Summary != "" {
-							if existingRd.Summary == nil {
-								summaryCopy := *rd.Summary
-								existingRd.Summary = &summaryCopy
-							} else {
-								*existingRd.Summary += *rd.Summary
-							}
-						}
-						// Accumulate data delta
-						if rd.Data != nil && *rd.Data != "" {
-							if existingRd.Data == nil {
-								dataCopy := *rd.Data
-								existingRd.Data = &dataCopy
-							} else {
-								*existingRd.Data += *rd.Data
-							}
-						}
-						// Overwrite signature (typically sent once at the end)
-						if rd.Signature != nil {
-							sigCopy := *rd.Signature
-							existingRd.Signature = &sigCopy
-						}
-						// Update type if present
-						if rd.Type != "" {
-							existingRd.Type = rd.Type
-						}
-						// Update ID if present
-						if rd.ID != nil {
-							idCopy := *rd.ID
-							existingRd.ID = &idCopy
-						}
-						found = true
-						break
-					}
-				}
-				// If not found, add new entry with deep copied values
-				if !found {
-					newRd := schemas.ChatReasoningDetails{
-						Index: rd.Index,
-						Type:  rd.Type,
-					}
-					if rd.ID != nil {
-						idCopy := *rd.ID
-						newRd.ID = &idCopy
-					}
-					if rd.Text != nil {
-						textCopy := *rd.Text
-						newRd.Text = &textCopy
-					}
-					if rd.Signature != nil {
-						sigCopy := *rd.Signature
-						newRd.Signature = &sigCopy
-					}
-					if rd.Summary != nil {
-						summaryCopy := *rd.Summary
-						newRd.Summary = &summaryCopy
-					}
-					if rd.Data != nil {
-						dataCopy := *rd.Data
-						newRd.Data = &dataCopy
-					}
-					completeMessage.ChatAssistantMessage.ReasoningDetails = append(
-						completeMessage.ChatAssistantMessage.ReasoningDetails, newRd)
-				}
+			acc, ok := rdAccums[rd.Index]
+			if !ok {
+				acc = &rdAccum{typ: rd.Type}
+				rdAccums[rd.Index] = acc
+			}
+			if rd.Text != nil && *rd.Text != "" {
+				acc.text.WriteString(*rd.Text)
+				acc.hasText = true
+			}
+			if rd.Summary != nil && *rd.Summary != "" {
+				acc.summary.WriteString(*rd.Summary)
+				acc.hasSummary = true
+			}
+			if rd.Data != nil && *rd.Data != "" {
+				acc.data.WriteString(*rd.Data)
+				acc.hasData = true
+			}
+			if rd.Signature != nil {
+				sigCopy := *rd.Signature
+				acc.signature = &sigCopy
+			}
+			if rd.Type != "" {
+				acc.typ = rd.Type
+			}
+			if rd.ID != nil {
+				idCopy := *rd.ID
+				acc.id = &idCopy
 			}
 		}
-		// Handle audio data - accumulate audio data and transcript
+		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
 				completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 			}
 			if completeMessage.ChatAssistantMessage.Audio == nil {
-				// First chunk with audio - initialize with copies
-				completeMessage.ChatAssistantMessage.Audio = &schemas.ChatAudioMessageAudio{
-					ID:         chunk.Delta.Audio.ID,
-					Data:       chunk.Delta.Audio.Data,
-					ExpiresAt:  chunk.Delta.Audio.ExpiresAt,
-					Transcript: chunk.Delta.Audio.Transcript,
-				}
-			} else {
-				// Subsequent chunks - accumulate data and transcript
-				if chunk.Delta.Audio.Data != "" {
-					completeMessage.ChatAssistantMessage.Audio.Data += chunk.Delta.Audio.Data
-				}
-				if chunk.Delta.Audio.Transcript != "" {
-					completeMessage.ChatAssistantMessage.Audio.Transcript += chunk.Delta.Audio.Transcript
-				}
-				// Update ID and ExpiresAt if present (they should be consistent or final)
-				if chunk.Delta.Audio.ID != "" {
-					completeMessage.ChatAssistantMessage.Audio.ID = chunk.Delta.Audio.ID
-				}
-				if chunk.Delta.Audio.ExpiresAt != 0 {
-					completeMessage.ChatAssistantMessage.Audio.ExpiresAt = chunk.Delta.Audio.ExpiresAt
-				}
+				completeMessage.ChatAssistantMessage.Audio = &schemas.ChatAudioMessageAudio{}
+			}
+			if chunk.Delta.Audio.Data != "" {
+				audioDataBuilder.WriteString(chunk.Delta.Audio.Data)
+			}
+			if chunk.Delta.Audio.Transcript != "" {
+				audioTranscriptBuilder.WriteString(chunk.Delta.Audio.Transcript)
+			}
+			if chunk.Delta.Audio.ID != "" {
+				completeMessage.ChatAssistantMessage.Audio.ID = chunk.Delta.Audio.ID
+			}
+			if chunk.Delta.Audio.ExpiresAt != 0 {
+				completeMessage.ChatAssistantMessage.Audio.ExpiresAt = chunk.Delta.Audio.ExpiresAt
 			}
 		}
-		// Accumulate tool calls
-		if len(chunk.Delta.ToolCalls) > 0 {
-			a.accumulateToolCallsInMessage(completeMessage, chunk.Delta.ToolCalls)
+		// Accumulate tool calls by index
+		for _, deltaToolCall := range chunk.Delta.ToolCalls {
+			if tcAccums == nil {
+				tcAccums = make(map[uint16]*tcAccum)
+			}
+			idx := deltaToolCall.Index
+			acc, ok := tcAccums[idx]
+			if !ok {
+				acc = &tcAccum{}
+				tcAccums[idx] = acc
+			}
+			if deltaToolCall.ID != nil {
+				v := *deltaToolCall.ID
+				acc.id = &v
+			}
+			if deltaToolCall.Type != nil {
+				t := *deltaToolCall.Type
+				acc.typ = &t
+			}
+			if deltaToolCall.Function.Name != nil {
+				n := *deltaToolCall.Function.Name
+				acc.name = &n
+			}
+			if args := deltaToolCall.Function.Arguments; args != "" && args != "{}" {
+				acc.args.WriteString(args)
+			}
 		}
+	}
+
+	// Finalize content
+	if hasContent {
+		str := contentBuilder.String()
+		completeMessage.Content.ContentStr = &str
+	}
+
+	// Finalize refusal
+	if hasRefusal {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		str := refusalBuilder.String()
+		completeMessage.ChatAssistantMessage.Refusal = &str
+	}
+
+	// Finalize reasoning
+	if hasReasoning {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		str := reasoningBuilder.String()
+		completeMessage.ChatAssistantMessage.Reasoning = &str
+	}
+
+	// Finalize reasoning details
+	if len(rdAccums) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		// Sort by index for deterministic output
+		indices := make([]int, 0, len(rdAccums))
+		for idx := range rdAccums {
+			indices = append(indices, idx)
+		}
+		sort.Ints(indices)
+		for _, idx := range indices {
+			acc := rdAccums[idx]
+			rd := schemas.ChatReasoningDetails{
+				Index:     idx,
+				Type:      acc.typ,
+				ID:        acc.id,
+				Signature: acc.signature,
+			}
+			if acc.hasText {
+				str := acc.text.String()
+				rd.Text = &str
+			}
+			if acc.hasSummary {
+				str := acc.summary.String()
+				rd.Summary = &str
+			}
+			if acc.hasData {
+				str := acc.data.String()
+				rd.Data = &str
+			}
+			completeMessage.ChatAssistantMessage.ReasoningDetails = append(
+				completeMessage.ChatAssistantMessage.ReasoningDetails, rd)
+		}
+	}
+
+	// Finalize audio
+	if completeMessage.ChatAssistantMessage != nil && completeMessage.ChatAssistantMessage.Audio != nil {
+		completeMessage.ChatAssistantMessage.Audio.Data = audioDataBuilder.String()
+		completeMessage.ChatAssistantMessage.Audio.Transcript = audioTranscriptBuilder.String()
+	}
+
+	// Finalize tool calls — sort by original index for deterministic output
+	if len(tcAccums) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		tcIndices := make([]int, 0, len(tcAccums))
+		for idx := range tcAccums {
+			tcIndices = append(tcIndices, int(idx))
+		}
+		sort.Ints(tcIndices)
+		toolCalls := make([]schemas.ChatAssistantMessageToolCall, 0, len(tcIndices))
+		for _, idx := range tcIndices {
+			acc := tcAccums[uint16(idx)]
+			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+				Index: uint16(idx),
+				ID:    acc.id,
+				Type:  acc.typ,
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      acc.name,
+					Arguments: acc.args.String(),
+				},
+			})
+		}
+		completeMessage.ChatAssistantMessage.ToolCalls = toolCalls
 	}
 
 	return completeMessage

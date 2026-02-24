@@ -40,3 +40,28 @@ func (h *IntegrationHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 		extension.RegisterRoutes(r, middlewares...)
 	}
 }
+
+// SetLargePayloadHook sets the large payload detection hook on all integration routers
+// that support it. This is used by enterprise to inject large payload optimization.
+func (h *IntegrationHandler) SetLargePayloadHook(hook integrations.LargePayloadHook) {
+	for _, extension := range h.extensions {
+		if setter, ok := extension.(interface {
+			SetLargePayloadHook(integrations.LargePayloadHook)
+		}); ok {
+			setter.SetLargePayloadHook(hook)
+		}
+	}
+}
+
+// SetLargeResponseHook sets the large response scanning hook on all integration routers
+// that support it. Enterprise uses this to inject Phase B usage extraction into the
+// response stream without embedding scanning logic in the OSS router.
+func (h *IntegrationHandler) SetLargeResponseHook(hook integrations.LargeResponseHook) {
+	for _, extension := range h.extensions {
+		if setter, ok := extension.(interface {
+			SetLargeResponseHook(integrations.LargeResponseHook)
+		}); ok {
+			setter.SetLargeResponseHook(hook)
+		}
+	}
+}

@@ -53,6 +53,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return anthropic.ToAnthropicChatCompletionError(err)
 		},
+		PreCallback: checkAnthropicPassthrough,
 	}
 }
 
@@ -274,10 +275,43 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 	}
 }
 
+func hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+	if bifrostCtx == nil {
+		return
+	}
+	isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !isLargePayload {
+		return
+	}
+	metadata, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
+	if metadata == nil {
+		return
+	}
+
+	switch r := req.(type) {
+	case *anthropic.AnthropicTextRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if metadata.StreamRequested != nil && r.Stream == nil {
+			r.Stream = schemas.Ptr(*metadata.StreamRequested)
+		}
+	case *anthropic.AnthropicMessageRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if metadata.StreamRequested != nil && r.Stream == nil {
+			r.Stream = schemas.Ptr(*metadata.StreamRequested)
+		}
+	}
+}
+
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
 func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateAnthropicRequestFromLargePayloadMetadata(bifrostCtx, req)
+
 	var provider schemas.ModelProvider
 	var model string
 

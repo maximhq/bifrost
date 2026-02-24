@@ -11,6 +11,51 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+// hydrateCohereRequestFromLargePayloadMetadata populates model + stream from
+// LargePayloadMetadata when body parsing is skipped under large payload mode.
+func hydrateCohereRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+	if bifrostCtx == nil {
+		return
+	}
+	isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !isLargePayload {
+		return
+	}
+	metadata, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
+	if metadata == nil {
+		return
+	}
+
+	switch r := req.(type) {
+	case *cohere.CohereChatRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if metadata.StreamRequested != nil && r.Stream == nil {
+			r.Stream = schemas.Ptr(*metadata.StreamRequested)
+		}
+	case *cohere.CohereEmbeddingRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+	case *cohere.CohereRerankRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+	case *cohere.CohereCountTokensRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+	}
+}
+
+// cohereLargePayloadPreHook populates model + stream from LargePayloadMetadata
+// when body parsing is skipped under large payload mode.
+func cohereLargePayloadPreHook(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateCohereRequestFromLargePayloadMetadata(bifrostCtx, req)
+	return nil
+}
+
 // CohereRouter holds route registrations for Cohere endpoints.
 // It supports Cohere's v2 chat, embeddings, and rerank APIs.
 type CohereRouter struct {
@@ -30,9 +75,10 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Chat completions endpoint (v2/chat)
 	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeCohere,
-		Path:   pathPrefix + "/v2/chat",
-		Method: "POST",
+		Type:        RouteConfigTypeCohere,
+		Path:        pathPrefix + "/v2/chat",
+		Method:      "POST",
+		PreCallback: cohereLargePayloadPreHook,
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.ChatCompletionRequest
 		},
@@ -75,9 +121,10 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Embeddings endpoint (v2/embed)
 	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeCohere,
-		Path:   pathPrefix + "/v2/embed",
-		Method: "POST",
+		Type:        RouteConfigTypeCohere,
+		Path:        pathPrefix + "/v2/embed",
+		Method:      "POST",
+		PreCallback: cohereLargePayloadPreHook,
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.EmbeddingRequest
 		},
@@ -107,9 +154,10 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Rerank endpoint (v2/rerank)
 	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeCohere,
-		Path:   pathPrefix + "/v2/rerank",
-		Method: "POST",
+		Type:        RouteConfigTypeCohere,
+		Path:        pathPrefix + "/v2/rerank",
+		Method:      "POST",
+		PreCallback: cohereLargePayloadPreHook,
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.RerankRequest
 		},
@@ -139,9 +187,10 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Tokenize endpoint (v1/tokenize)
 	routes = append(routes, RouteConfig{
-		Type:   RouteConfigTypeCohere,
-		Path:   pathPrefix + "/v1/tokenize",
-		Method: "POST",
+		Type:        RouteConfigTypeCohere,
+		Path:        pathPrefix + "/v1/tokenize",
+		Method:      "POST",
+		PreCallback: cohereLargePayloadPreHook,
 		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 			return schemas.CountTokensRequest
 		},
