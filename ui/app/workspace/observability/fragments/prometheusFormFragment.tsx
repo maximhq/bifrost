@@ -320,7 +320,8 @@ export function PrometheusFormFragment({
 							<Switch
 								checked={enableToggle.enabled}
 								onCheckedChange={enableToggle.onToggle}
-								disabled={enableToggle.disabled}
+								disabled={enableToggle.disabled || !hasPrometheusAccess}
+								data-testid="prometheus-connector-enable-toggle"
 								title={enableToggle.enabled ? "Enabled" : "Disabled"}
 								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
 							/>
@@ -332,7 +333,8 @@ export function PrometheusFormFragment({
 								type="button"
 								variant="outline"
 								onClick={onDelete}
-								disabled={isDeleting}
+								disabled={isDeleting || !hasPrometheusAccess}
+								data-testid="prometheus-connector-delete-btn"
 								title="Delete connector"
 								aria-label="Delete connector"
 							>

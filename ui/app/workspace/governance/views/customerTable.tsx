@@ -114,7 +114,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 						</Button>
 					</div>
 
-					<div className="rounded-sm border" data-testid="customers-table">
+					<div className="rounded-sm border" data-testid="customer-table-container">
 						<Table>
 							<TableHeader>
 								<TableRow>
@@ -330,6 +330,8 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 														className="h-8 w-8"
 														onClick={() => handleEditCustomer(customer)}
 														disabled={!hasUpdateAccess}
+														aria-label={`Edit customer ${customer.name}`}
+														data-testid={`customer-button-edit-${customer.id}`}
 													>
 														<Edit className="h-4 w-4" />
 													</Button>
@@ -340,6 +342,8 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 																size="icon"
 																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
 																disabled={!hasDeleteAccess}
+																aria-label={`Delete customer ${customer.name}`}
+																data-testid={`customer-button-delete-${customer.id}`}
 															>
 																<Trash2 className="h-4 w-4" />
 															</Button>
@@ -353,8 +357,9 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 																</AlertDialogDescription>
 															</AlertDialogHeader>
 															<AlertDialogFooter>
-																<AlertDialogCancel>Cancel</AlertDialogCancel>
+																<AlertDialogCancel data-testid="customer-button-delete-cancel">Cancel</AlertDialogCancel>
 																<AlertDialogAction
+																	data-testid="customer-button-delete-confirm"
 																	onClick={() => handleDelete(customer.id)}
 																	disabled={isDeleting}
 																	className="bg-red-600 hover:bg-red-700"
