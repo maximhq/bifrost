@@ -84,7 +84,12 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		field: keyof CreateMCPClientRequest,
 		value: string | string[] | boolean | MCPConnectionType | MCPStdioConfig | undefined,
 	) => {
-		setForm((prev) => ({ ...prev, [field]: value }));
+		setForm((prev) => {
+			if (field === "connection_type" && value === "stdio") {
+				return { ...prev, connection_type: "stdio" as MCPConnectionType, auth_type: "none" as MCPAuthType, headers: undefined, oauth_config: undefined };
+			}
+			return { ...prev, [field]: value };
+		});
 	};
 
 	const handleStdioConfigChange = (field: keyof MCPStdioConfig, value: string | string[]) => {

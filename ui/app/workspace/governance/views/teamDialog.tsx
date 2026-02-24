@@ -248,13 +248,13 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 										value={formData.customerId || "__none__"}
 										onValueChange={(value) => updateField("customerId", value === "__none__" ? "" : value)}
 									>
-										<SelectTrigger id="customer" className="w-full">
+										<SelectTrigger id="customer" className="w-full" data-testid="team-customer-select-trigger">
 											<SelectValue placeholder="Select a customer" />
 										</SelectTrigger>
 										<SelectContent>
-											<SelectItem value="__none__">None</SelectItem>
+											<SelectItem value="__none__" data-testid="team-customer-option-none">None</SelectItem>
 											{customers.map((customer) => (
-												<SelectItem key={customer.id} value={customer.id}>
+												<SelectItem key={customer.id} value={customer.id} data-testid={`team-customer-option-${customer.id}`}>
 													{customer.name}
 												</SelectItem>
 											))}

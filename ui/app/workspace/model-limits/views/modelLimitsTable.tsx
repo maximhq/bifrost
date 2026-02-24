@@ -299,6 +299,8 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 														className="h-8 w-8"
 														onClick={(e) => handleEditModelLimit(config, e)}
 														disabled={!hasUpdateAccess}
+														aria-label={`Edit model limit for ${config.model_name}`}
+														data-testid="model-limit-button-edit"
 													>
 														<Edit className="h-4 w-4" />
 													</Button>
@@ -310,6 +312,8 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
 																onClick={(e) => e.stopPropagation()}
 																disabled={!hasDeleteAccess}
+																aria-label={`Delete model limit for ${config.model_name}`}
+																data-testid="model-limit-button-delete"
 															>
 																<Trash2 className="h-4 w-4" />
 															</Button>

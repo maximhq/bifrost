@@ -137,6 +137,7 @@ func (p *LoggerPlugin) updateLogEntry(
 				p.logger.Error("failed to serialize rerank output: %v", err)
 			} else {
 				updates["rerank_output"] = tempEntry.RerankOutput
+				updates["content_summary"] = tempEntry.ContentSummary
 			}
 		}
 

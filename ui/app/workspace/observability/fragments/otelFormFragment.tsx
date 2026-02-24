@@ -372,7 +372,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 							<Switch
 								checked={enableToggle.enabled}
 								onCheckedChange={enableToggle.onToggle}
-								disabled={enableToggle.disabled}
+								disabled={enableToggle.disabled || !hasOtelAccess}
 								data-testid="otel-connector-enable-toggle"
 								title={enableToggle.enabled ? "Enabled" : "Disabled"}
 								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
@@ -385,7 +385,7 @@ export function OtelFormFragment({ currentConfig: initialConfig, onSave, onDelet
 								type="button"
 								variant="outline"
 								onClick={onDelete}
-								disabled={isDeleting}
+								disabled={isDeleting || !hasOtelAccess}
 								data-testid="otel-connector-delete-btn"
 								title="Delete connector"
 								aria-label="Delete connector"

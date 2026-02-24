@@ -237,7 +237,7 @@ export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
 export interface ProviderPricingOverride {
 	model_pattern: string;
 	match_type: PricingOverrideMatchType;
-	request_types?: string[];
+	request_types?: RequestType[];
 	input_cost_per_token?: number;
 	output_cost_per_token?: number;
 	input_cost_per_video_per_second?: number;

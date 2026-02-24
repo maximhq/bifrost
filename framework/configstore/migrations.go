@@ -3910,7 +3910,7 @@ func migrationAddEncryptionColumns(ctx context.Context, db *gorm.DB) error {
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running encryption columns rollback: %s", err.Error())
+		return fmt.Errorf("error running encryption columns migration: %s", err.Error())
 	}
 	return nil
 }

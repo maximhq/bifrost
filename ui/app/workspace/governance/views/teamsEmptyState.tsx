@@ -26,6 +26,7 @@ export function TeamsEmptyState({ onAddClick, canCreate = true }: TeamsEmptyStat
 					<Button
 						variant="outline"
 						aria-label="Read more about teams (opens in new tab)"
+						data-testid="team-button-read-more"
 						onClick={() => {
 							window.open(`${TEAMS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
@@ -36,7 +37,7 @@ export function TeamsEmptyState({ onAddClick, canCreate = true }: TeamsEmptyStat
 						aria-label="Add your first team"
 						onClick={onAddClick}
 						disabled={!canCreate}
-						data-testid="create-team-btn"
+						data-testid="team-button-add"
 					>
 						Add Team
 					</Button>
