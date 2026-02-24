@@ -707,6 +707,11 @@ false
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
 {{- $scConfig := dict }}
 {{- $inputConfig := .Values.bifrost.plugins.semanticCache.config | default dict }}
+{{- if $inputConfig.dimension }}
+{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
+{{- end }}
+{{/* Only include embedding provider config when not in direct cache mode (dimension: 1) */}}
+{{- if ne (int ($inputConfig.dimension | default 1536)) 1 }}
 {{- if $inputConfig.provider }}
 {{- $_ := set $scConfig "provider" $inputConfig.provider }}
 {{- end }}
@@ -716,8 +721,6 @@ false
 {{- if $inputConfig.embedding_model }}
 {{- $_ := set $scConfig "embedding_model" $inputConfig.embedding_model }}
 {{- end }}
-{{- if $inputConfig.dimension }}
-{{- $_ := set $scConfig "dimension" $inputConfig.dimension }}
 {{- end }}
 {{- if $inputConfig.threshold }}
 {{- $_ := set $scConfig "threshold" $inputConfig.threshold }}
@@ -836,14 +839,14 @@ Call this template at the beginning of deployment/stateful templates
 
 {{/* Validate semantic cache plugin when enabled */}}
 {{- if .Values.bifrost.plugins.semanticCache.enabled }}
+{{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
+{{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required when semantic cache is enabled. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface" }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.keys }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required when semantic cache is enabled. Provide at least one API key for the embedding provider." }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.keys is required for semantic caching. Provide at least one API key for the embedding provider. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
-{{- if not .Values.bifrost.plugins.semanticCache.config.dimension }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.dimension is required when semantic cache is enabled. This is the embedding dimension (e.g., 1536 for OpenAI text-embedding-3-small)." }}
 {{- end }}
 {{- end }}
 

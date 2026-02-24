@@ -310,6 +310,8 @@ bifrost:
     semanticCache:
       enabled: false
       config:
+        # Semantic caching mode (dimension > 1): requires provider, keys, and embedding_model
+        # Direct caching mode (dimension: 1): hash-based exact matching, no embedding provider needed
         provider: "openai"
         keys: []
         embedding_model: "text-embedding-3-small"
