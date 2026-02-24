@@ -1,3 +1,4 @@
+- fix: vertex provider now uses prefix matching for beta header filtering to correctly handle version bumps
 - feat: added support for logging headers to capture request headers into log metadata
 - fix: OAuth callback URL now respects X-Forwarded-Proto header for correct HTTPS scheme behind reverse proxies
 - feat: add asynchronous inference support
