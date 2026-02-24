@@ -72,7 +72,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 
 // isModelRequired returns true if the request type requires a model
 func isModelRequired(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest
+	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.VideoGenerationRequest
 }
 
 // Ptr returns a pointer to the given value.
@@ -264,6 +264,17 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileCreateRequest || reqType == schemas.ContainerFileListRequest ||
 		reqType == schemas.ContainerFileRetrieveRequest || reqType == schemas.ContainerFileContentRequest ||
 		reqType == schemas.ContainerFileDeleteRequest
+}
+
+// isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
+func isModellessVideoRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
+		schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.

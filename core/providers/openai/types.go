@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/bytedance/sonic"
@@ -802,3 +803,57 @@ func (r *OpenAIImageVariationRequest) SetExtraParams(params map[string]interface
 func (r *OpenAIImageEditRequest) IsStreamingRequested() bool {
 	return r.Stream != nil && *r.Stream
 }
+
+// OpenAIVideoSize is the output resolution (width x height). Defaults to 720x1280.
+type OpenAIVideoSize string
+
+const (
+	OpenAIVideoSize720x1280  OpenAIVideoSize = "720x1280"
+	OpenAIVideoSize1280x720  OpenAIVideoSize = "1280x720"
+	OpenAIVideoSize1024x1792 OpenAIVideoSize = "1024x1792"
+	OpenAIVideoSize1792x1024 OpenAIVideoSize = "1792x1024"
+)
+
+// Default video size
+const DefaultOpenAIVideoSize = OpenAIVideoSize720x1280
+
+// ValidOpenAIVideoSizes is a map of all valid video sizes
+var ValidOpenAIVideoSizes = map[string]bool{
+	string(OpenAIVideoSize720x1280):  true,
+	string(OpenAIVideoSize1280x720):  true,
+	string(OpenAIVideoSize1024x1792): true,
+	string(OpenAIVideoSize1792x1024): true,
+}
+
+// OpenAIVideoGenerationRequest is the request body for OpenAI video generation.
+type OpenAIVideoGenerationRequest struct {
+	Prompt         string `json:"prompt"`                    // Text prompt that describes the video to generate (max 32000, min 1)
+	InputReference []byte `json:"input_reference,omitempty"` // Optional image reference file that guides generation
+
+	Model string `json:"model"` // Video generation model (defaults to sora-2)
+
+	schemas.VideoGenerationParameters
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (r *OpenAIVideoGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+type OpenAIVideoRemixRequest struct {
+	Prompt string `json:"prompt"`
+	// ID/Provider are populated from URL path params by integration pre-callbacks.
+	ID       string                `json:"-"`
+	Provider schemas.ModelProvider `json:"-"`
+
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+func (r *OpenAIVideoRemixRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+var ErrVideoNotReady = errors.New("Video is not ready yet, use GET /v1/videos/{video_id} to check status")

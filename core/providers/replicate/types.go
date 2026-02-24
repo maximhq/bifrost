@@ -68,7 +68,10 @@ type ReplicatePredictionRequestInput struct {
 	ImageInput   []string `json:"image_input,omitempty"`  // Image input for chat models (openai family)
 	InputImage   *string  `json:"input_image,omitempty"`  // Image input for image-to-image models
 
-	ExtraParams map[string]interface{} `json:"-"` // Additional model-specific parameters
+	// video generation parameters
+	Duration       *int                   `json:"duration,omitempty"`
+	InputReference *string                `json:"input_reference,omitempty"`
+	ExtraParams    map[string]interface{} `json:"-"` // Additional model-specific parameters
 }
 
 // MarshalJSON implements custom JSON marshalling for ReplicatePredictionRequestInput.
@@ -157,6 +160,8 @@ func (r *ReplicatePredictionRequestInput) UnmarshalJSON(data []byte) error {
 		"image_prompt":          true,
 		"input_image":           true,
 		"image_input":           true,
+		"duration":              true,
+		"input_reference":       true,
 	}
 
 	// Collect extra fields

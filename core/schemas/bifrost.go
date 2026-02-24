@@ -55,6 +55,7 @@ const (
 	XAI         ModelProvider = "xai"
 	Replicate   ModelProvider = "replicate"
 	VLLM        ModelProvider = "vllm"
+	Runway      ModelProvider = "runway"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -91,6 +92,7 @@ var StandardProviders = []ModelProvider{
 	XAI,
 	Replicate,
 	VLLM,
+	Runway,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -114,6 +116,12 @@ const (
 	ImageEditRequest             RequestType = "image_edit"
 	ImageEditStreamRequest       RequestType = "image_edit_stream"
 	ImageVariationRequest        RequestType = "image_variation"
+	VideoGenerationRequest       RequestType = "video_generation"
+	VideoRetrieveRequest         RequestType = "video_retrieve"
+	VideoDownloadRequest         RequestType = "video_download"
+	VideoDeleteRequest           RequestType = "video_delete"
+	VideoListRequest             RequestType = "video_list"
+	VideoRemixRequest            RequestType = "video_remix"
 	BatchCreateRequest           RequestType = "batch_create"
 	BatchListRequest             RequestType = "batch_list"
 	BatchRetrieveRequest         RequestType = "batch_retrieve"
@@ -204,6 +212,7 @@ const (
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
+	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 )
 
 // RoutingEngine constants
@@ -260,6 +269,12 @@ type BifrostRequest struct {
 	ImageGenerationRequest       *BifrostImageGenerationRequest
 	ImageEditRequest             *BifrostImageEditRequest
 	ImageVariationRequest        *BifrostImageVariationRequest
+	VideoGenerationRequest       *BifrostVideoGenerationRequest
+	VideoRetrieveRequest         *BifrostVideoRetrieveRequest
+	VideoDownloadRequest         *BifrostVideoDownloadRequest
+	VideoListRequest             *BifrostVideoListRequest
+	VideoRemixRequest            *BifrostVideoRemixRequest
+	VideoDeleteRequest           *BifrostVideoDeleteRequest
 	FileUploadRequest            *BifrostFileUploadRequest
 	FileListRequest              *BifrostFileListRequest
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
@@ -308,6 +323,18 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ImageEditRequest.Provider, br.ImageEditRequest.Model, br.ImageEditRequest.Fallbacks
 	case br.ImageVariationRequest != nil:
 		return br.ImageVariationRequest.Provider, br.ImageVariationRequest.Model, br.ImageVariationRequest.Fallbacks
+	case br.VideoGenerationRequest != nil:
+		return br.VideoGenerationRequest.Provider, br.VideoGenerationRequest.Model, br.VideoGenerationRequest.Fallbacks
+	case br.VideoRetrieveRequest != nil:
+		return br.VideoRetrieveRequest.Provider, "", nil
+	case br.VideoDownloadRequest != nil:
+		return br.VideoDownloadRequest.Provider, "", nil
+	case br.VideoListRequest != nil:
+		return br.VideoListRequest.Provider, "", nil
+	case br.VideoDeleteRequest != nil:
+		return br.VideoDeleteRequest.Provider, "", nil
+	case br.VideoRemixRequest != nil:
+		return br.VideoRemixRequest.Provider, "", nil
 	case br.FileUploadRequest != nil:
 		if br.FileUploadRequest.Model != nil {
 			return br.FileUploadRequest.Provider, *br.FileUploadRequest.Model, nil
@@ -406,6 +433,18 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.ImageEditRequest.Provider = provider
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.Provider = provider
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Provider = provider
+	case br.VideoRetrieveRequest != nil:
+		br.VideoRetrieveRequest.Provider = provider
+	case br.VideoDownloadRequest != nil:
+		br.VideoDownloadRequest.Provider = provider
+	case br.VideoListRequest != nil:
+		br.VideoListRequest.Provider = provider
+	case br.VideoDeleteRequest != nil:
+		br.VideoDeleteRequest.Provider = provider
+	case br.VideoRemixRequest != nil:
+		br.VideoRemixRequest.Provider = provider
 	}
 }
 
@@ -433,6 +472,8 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageEditRequest.Model = model
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.Model = model
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Model = model
 	}
 }
 
@@ -460,6 +501,8 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.ImageEditRequest.Fallbacks = fallbacks
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.Fallbacks = fallbacks
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -487,6 +530,10 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.ImageEditRequest.RawRequestBody = rawRequestBody
 	case br.ImageVariationRequest != nil:
 		br.ImageVariationRequest.RawRequestBody = rawRequestBody
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.RawRequestBody = rawRequestBody
+	case br.VideoRemixRequest != nil:
+		br.VideoRemixRequest.RawRequestBody = rawRequestBody
 	}
 }
 
@@ -550,6 +597,10 @@ type BifrostResponse struct {
 	TranscriptionStreamResponse   *BifrostTranscriptionStreamResponse
 	ImageGenerationResponse       *BifrostImageGenerationResponse
 	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
+	VideoGenerationResponse       *BifrostVideoGenerationResponse
+	VideoDownloadResponse         *BifrostVideoDownloadResponse
+	VideoListResponse             *BifrostVideoListResponse
+	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
@@ -611,6 +662,14 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.VideoGenerationResponse != nil:
+		return &r.VideoGenerationResponse.ExtraFields
+	case r.VideoDownloadResponse != nil:
+		return &r.VideoDownloadResponse.ExtraFields
+	case r.VideoListResponse != nil:
+		return &r.VideoListResponse.ExtraFields
+	case r.VideoDeleteResponse != nil:
+		return &r.VideoDeleteResponse.ExtraFields
 	case r.BatchCreateResponse != nil:
 		return &r.BatchCreateResponse.ExtraFields
 	case r.BatchListResponse != nil:

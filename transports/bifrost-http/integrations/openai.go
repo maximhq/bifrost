@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -910,9 +911,218 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 		})
 	}
+
+	// generate video endpoint
+	for _, path := range []string{
+		"/v1/videos",
+		"/videos",
+		"/openai/videos",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoGenerationRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIVideoGenerationRequest{}
+			},
+			RequestParser: parseOpenAIVideoGenerationMultipartRequest,
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoGenerationReq, ok := req.(*openai.OpenAIVideoGenerationRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoGenerationRequest: videoGenerationReq.ToBifrostVideoGenerationRequest(ctx),
+					}, nil
+				}
+				return nil, errors.New("invalid video generation request type")
+			},
+			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				if isAzureSDKRequest(ctx) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
+				}
+				return nil
+			},
+		})
+	}
+
+	// retrieve video endpoint
+	for _, path := range []string{
+		"/v1/videos/{video_id}",
+		"/videos/{video_id}",
+		"/openai/videos/{video_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostVideoRetrieveRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoRetrieveReq, ok := req.(*schemas.BifrostVideoRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoRetrieveRequest: videoRetrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid video retrieve request type")
+			},
+			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractVideoIDFromPath(handlerStore),
+		})
+	}
+
+	// download video endpoint
+	for _, path := range []string{
+		"/v1/videos/{video_id}/content",
+		"/videos/{video_id}/content",
+		"/openai/videos/{video_id}/content",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoDownloadRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostVideoDownloadRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoDownloadReq, ok := req.(*schemas.BifrostVideoDownloadRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoDownloadRequest: videoDownloadReq,
+					}, nil
+				}
+				return nil, errors.New("invalid video retrieve request type")
+			},
+			VideoDownloadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDownloadResponse) (interface{}, error) {
+				return resp.Content, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractVideoIDFromPath(handlerStore),
+		})
+	}
+
+	// delete video endpoint
+	for _, path := range []string{
+		"/v1/videos/{video_id}",
+		"/videos/{video_id}",
+		"/openai/videos/{video_id}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "DELETE",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoDeleteRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostVideoDeleteRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoDeleteReq, ok := req.(*schemas.BifrostVideoDeleteRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoDeleteRequest: videoDeleteReq,
+					}, nil
+				}
+				return nil, errors.New("invalid video delete request type")
+			},
+			VideoDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDeleteResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractVideoIDFromPath(handlerStore),
+		})
+	}
+
+	// remix video endpoint
+	for _, path := range []string{
+		"/v1/videos/{video_id}/remix",
+		"/videos/{video_id}/remix",
+		"/openai/videos/{video_id}/remix",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoRemixRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIVideoRemixRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoRemixReq, ok := req.(*openai.OpenAIVideoRemixRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoRemixRequest: openai.ToBifrostVideoRemixRequest(videoRemixReq),
+					}, nil
+				}
+				return nil, errors.New("invalid video remix request type")
+			},
+			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractVideoIDFromPath(handlerStore),
+		})
+	}
+
+	// list videos endpoint
+	for _, path := range []string{
+		"/v1/videos",
+		"/videos",
+		"/openai/videos",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.VideoListRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostVideoListRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if videoListReq, ok := req.(*schemas.BifrostVideoListRequest); ok {
+					return &schemas.BifrostRequest{
+						VideoListRequest: videoListReq,
+					}, nil
+				}
+				return nil, errors.New("invalid video list request type")
+			},
+			VideoListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoListResponse) (interface{}, error) {
+				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
 	return routes
 }
-
 func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
 
@@ -1585,6 +1795,52 @@ func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 		case *schemas.BifrostBatchResultsRequest:
 			r.BatchID = batchIDStr
 			r.Provider = provider
+		}
+
+		return nil
+	}
+}
+
+// extractVideoIDFromPath extracts video_id from path parameters in provider:id format.
+func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+		videoID := ctx.UserValue("video_id")
+		if videoID == nil {
+			return errors.New("video_id is required")
+		}
+
+		videoIDStr, ok := videoID.(string)
+		if !ok || videoIDStr == "" {
+			return errors.New("video_id must be a non-empty string")
+		}
+
+		decodedVideoID, err := url.PathUnescape(videoIDStr)
+		if err != nil {
+			return errors.New("invalid video_id encoding")
+		}
+
+		providerName, rawVideoID, err := ParseProviderScopedVideoID(decodedVideoID)
+		if err != nil {
+			return err
+		}
+
+		// extract variant from query parameters
+		variant := string(ctx.QueryArgs().Peek("variant"))
+		if variant == "" {
+			variant = "video"
+		}
+
+		switch r := req.(type) {
+		case *schemas.BifrostVideoReferenceRequest:
+			r.Provider = providerName
+			r.ID = rawVideoID
+		case *schemas.BifrostVideoDownloadRequest:
+			r.Provider = providerName
+			r.ID = rawVideoID
+			r.Variant = schemas.Ptr(schemas.VideoDownloadVariant(variant))
+		case *openai.OpenAIVideoRemixRequest:
+			r.Provider = providerName
+			r.ID = rawVideoID
 		}
 
 		return nil
@@ -2716,6 +2972,106 @@ func parseOpenAIImageVariationMultipartRequest(ctx *fasthttp.RequestCtx, req int
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
 		imageVariationReq.Fallbacks = fallbackValues
 	}
+	return nil
+}
+
+func parseOpenAIVideoGenerationMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	videoGenerationReq, ok := req.(*openai.OpenAIVideoGenerationRequest)
+	if !ok {
+		return errors.New("invalid request type for video generation")
+	}
+
+	contentType := string(ctx.Request.Header.ContentType())
+	if !strings.HasPrefix(contentType, "multipart/form-data") {
+		// For JSON requests (no input_reference file), parse request body directly.
+		rawBody := ctx.Request.Body()
+		if len(rawBody) == 0 {
+			return errors.New("request body is required for video generation")
+		}
+		if err := json.Unmarshal(rawBody, videoGenerationReq); err != nil {
+			return err
+		}
+		if videoGenerationReq.Model == "" {
+			return errors.New("model field is required")
+		}
+		if videoGenerationReq.Prompt == "" {
+			return errors.New("prompt field is required")
+		}
+		return nil
+	}
+
+	// Parse multipart form
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return err
+	}
+
+	// Extract model (required)
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		return errors.New("model field is required")
+	}
+	videoGenerationReq.Model = modelValues[0]
+
+	// Extract prompt (required)
+	promptValues := form.Value["prompt"]
+	if len(promptValues) == 0 || promptValues[0] == "" {
+		return errors.New("prompt field is required")
+	}
+	videoGenerationReq.Prompt = promptValues[0]
+
+	// Extract optional input_reference file (image that guides generation)
+	if inputRefFiles := form.File["input_reference"]; len(inputRefFiles) > 0 {
+		fileHeader := inputRefFiles[0]
+		file, err := fileHeader.Open()
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+
+		// Read file data
+		fileData, err := io.ReadAll(file)
+		if err != nil {
+			return err
+		}
+
+		videoGenerationReq.InputReference = fileData
+	}
+
+	// Extract optional parameters
+	if secondsValues := form.Value["seconds"]; len(secondsValues) > 0 && secondsValues[0] != "" {
+		seconds := secondsValues[0]
+		videoGenerationReq.Seconds = &seconds
+	}
+
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		size := sizeValues[0]
+		videoGenerationReq.Size = size
+	}
+
+	if negativePromptValues := form.Value["negative_prompt"]; len(negativePromptValues) > 0 && negativePromptValues[0] != "" {
+		negativePrompt := negativePromptValues[0]
+		videoGenerationReq.NegativePrompt = &negativePrompt
+	}
+
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			return errors.New("invalid seed value")
+		}
+		videoGenerationReq.Seed = &seed
+	}
+
+	if videoURIValues := form.Value["video_uri"]; len(videoURIValues) > 0 && videoURIValues[0] != "" {
+		videoURI := videoURIValues[0]
+		videoGenerationReq.VideoURI = &videoURI
+	}
+
+	// Extract fallbacks
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		videoGenerationReq.Fallbacks = fallbackValues
+	}
+
 	return nil
 }
 

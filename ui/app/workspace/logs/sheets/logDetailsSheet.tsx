@@ -39,6 +39,7 @@ import LogEntryDetailsView from "../views/logEntryDetailsView";
 import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
+import VideoView from "../views/videoView";
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -79,6 +80,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	// Extract audio format from request params
 	// Format can be in params.audio?.format or params.extra_params?.audio?.format
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
+	const videoOutput =
+		log.video_generation_output || log.video_retrieve_output || log.video_download_output;
+	const videoListOutput = log.video_list_output;
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
@@ -500,6 +504,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 				{(log.image_generation_input || log.image_generation_output) && (
 					<ImageView imageInput={log.image_generation_input} imageOutput={log.image_generation_output} requestType={log.object} />
+				)}
+
+				{(log.video_generation_input || videoOutput || videoListOutput) && (
+					<VideoView
+						videoInput={log.video_generation_input}
+						videoOutput={videoOutput}
+						videoListOutput={videoListOutput}
+						requestType={log.object}
+					/>
 				)}
 
 				{log.list_models_output && (

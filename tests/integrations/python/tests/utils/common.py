@@ -1839,6 +1839,8 @@ def get_api_key(integration: str) -> str:
         "nebius": "NEBIUS_API_KEY",
         "huggingface": "HUGGING_FACE_API_KEY",
         "azure": "AZURE_API_KEY",
+        "replicate": "REPLICATE_API_KEY",
+        "runway": "RUNWAY_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())

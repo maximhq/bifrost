@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -17,7 +18,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	var audioSeconds *int
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 	var imageUsage *schemas.ImageUsage
-
+	var videoSeconds *int
 	//TODO: Detect batch operations
 	isBatch := false
 
@@ -105,12 +106,20 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		imageUsage = result.ImageGenerationResponse.Usage
 	case result.ImageGenerationStreamResponse != nil && result.ImageGenerationStreamResponse.Usage != nil:
 		imageUsage = result.ImageGenerationStreamResponse.Usage
+	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
+		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
+		if err != nil {
+			mc.logger.Warn("failed to convert video seconds to int: %v", err)
+			videoSeconds = nil
+		} else {
+			videoSeconds = &seconds
+		}
 	default:
 		return 0
 	}
 
 	cost := 0.0
-	if usage != nil || audioSeconds != nil || audioTokenDetails != nil || imageUsage != nil {
+	if usage != nil || audioSeconds != nil || audioTokenDetails != nil || imageUsage != nil || videoSeconds != nil {
 		extraFields := result.GetExtraFields()
 		requestType := extraFields.RequestType
 		// Normalize stream request types to their base request type for pricing
@@ -119,7 +128,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		if imageUsage != nil && requestType == schemas.ImageGenerationStreamRequest {
 			requestType = schemas.ImageGenerationRequest
 		}
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage)
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage, videoSeconds)
 	}
 
 	return cost
@@ -140,7 +149,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, nil)
 			}
 
 			// Don't over-bill cache hits if fields are missing.
@@ -153,7 +162,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, nil)
 			}
 
 			return baseCost + semanticCacheCost
@@ -164,9 +173,9 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage) float64 {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage, videoSeconds *int) float64 {
 	// Allow audio-only and image-only flows by only returning early if we have no usage data at all
-	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil {
+	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil && videoSeconds == nil {
 		return 0.0
 	}
 
@@ -424,6 +433,27 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		// Calculate costs: separate text tokens and image tokens with their respective rates
 		inputCost = float64(inputTextTokens)*inputTokenRate + float64(inputImageTokens)*inputImageTokenRate
 		outputCost = float64(outputTextTokens)*outputTokenRate + float64(outputImageTokens)*outputImageTokenRate
+
+		return inputCost + outputCost
+	}
+
+	// Handle video generation if available (for duration-based video generation pricing)
+	if videoSeconds != nil && requestType == schemas.VideoGenerationRequest {
+		// Use duration-based pricing for video output when available
+		if pricing.OutputCostPerVideoPerSecond != nil {
+			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
+		} else if pricing.OutputCostPerSecond != nil {
+			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerSecond
+		} else {
+			mc.logger.Debug("no output cost per video per second found for model %s and provider %s", model, provider)
+			outputCost = 0.0
+		}
+
+		// Input cost is typically zero for video generation, but check if there's input media
+		inputCost = 0.0
+		if usage != nil && promptTokens > 0 {
+			inputCost = float64(promptTokens) * pricing.InputCostPerToken
+		}
 
 		return inputCost + outputCost
 	}

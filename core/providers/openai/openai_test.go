@@ -41,6 +41,7 @@ func TestOpenAI(t *testing.T) {
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
 		ImageVariationModel:  "dall-e-2",
+		VideoGenerationModel: "sora-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        true,
@@ -72,6 +73,12 @@ func TestOpenAI(t *testing.T) {
 			ImageEdit:             true,
 			ImageEditStream:       true,
 			ImageVariation:        true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoRemix:            false,
+			VideoDownload:         false,
+			VideoList:             false,
+			VideoDelete:           false,
 			BatchCreate:           true,
 			BatchList:             true,
 			BatchRetrieve:         true,

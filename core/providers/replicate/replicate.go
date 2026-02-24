@@ -2653,6 +2653,245 @@ func (provider *ReplicateProvider) ImageVariation(ctx *schemas.BifrostContext, k
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
+// VideoGeneration performs a video generation request to Replicate's API.
+func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
+		return nil, err
+	}
+
+	deployment, isDeployment := resolveDeploymentModel(request.Model, key)
+	if isDeployment {
+		request.Model = deployment
+	}
+
+	providerName := provider.GetProviderKey()
+
+	// Convert Bifrost request to Replicate format
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToReplicateVideoGenerationInput(request)
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Create prediction asynchronously and return job ID without polling.
+	predictionURL := buildPredictionURL(
+		ctx,
+		provider.networkConfig.BaseURL,
+		request.Model,
+		provider.customProviderConfig,
+		schemas.VideoGenerationRequest,
+		isDeployment,
+	)
+
+	// Create prediction with appropriate mode
+	prediction, rawResponse, latency, err := createPrediction(
+		ctx,
+		provider.client,
+		jsonData,
+		key,
+		providerUtils.GetPathFromContext(ctx, predictionURL),
+		provider.networkConfig.ExtraHeaders,
+		false,
+		provider.logger,
+		provider.sendBackRawRequest,
+		provider.sendBackRawResponse,
+	)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+
+	// Convert to Bifrost response
+	bifrostResponse, err := ToBifrostVideoGenerationResponse(prediction)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, providerName)
+
+	// Set extra fields
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.RequestType = schemas.VideoGenerationRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
+}
+
+// VideoRetrieve fetches the status/output of a Replicate video generation job.
+func (provider *ReplicateProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	// Build URL to fetch the prediction by ID.
+	predictionURL := provider.buildRequestURL(ctx, "/v1/predictions/"+videoID, schemas.VideoRetrieveRequest)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(predictionURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(
+			ctx,
+			parseReplicateError(resp.Body(), resp.StatusCode()),
+			nil,
+			nil,
+			provider.sendBackRawRequest,
+			provider.sendBackRawResponse,
+		)
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	var prediction ReplicatePredictionResponse
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, &prediction, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	bifrostResponse, convertErr := ToBifrostVideoGenerationResponse(&prediction)
+	if convertErr != nil {
+		return nil, providerUtils.EnrichError(ctx, convertErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	}
+	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, providerName)
+
+	bifrostResponse.ExtraFields.Provider = providerName
+	bifrostResponse.ExtraFields.RequestType = schemas.VideoRetrieveRequest
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawResponse {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
+}
+
+// VideoDownload is not supported by the Replicate provider.
+func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Replicate, provider.customProviderConfig, schemas.VideoDownloadRequest); err != nil {
+		return nil, err
+	}
+	providerName := provider.GetProviderKey()
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	// Retrieve latest status/output first.
+	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{
+		Provider: request.Provider,
+		ID:       request.ID,
+	}
+	videoResp, bifrostErr := provider.VideoRetrieve(ctx, key, bifrostVideoRetrieveRequest)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if videoResp.Status != schemas.VideoStatusCompleted {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("video not ready, current status: %s", videoResp.Status),
+			nil,
+			providerName,
+		)
+	}
+	if len(videoResp.Videos) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil, providerName)
+	}
+	var videoUrl string
+	if videoResp.Videos[0].URL != nil {
+		videoUrl = *videoResp.Videos[0].URL
+	}
+	if videoUrl == "" {
+		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil, providerName)
+	}
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(videoUrl)
+	req.Header.SetMethod(http.MethodGet)
+	// Some output URLs are signed and don't need auth, but keep auth if present.
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
+			nil,
+			providerName,
+		)
+	}
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	content := append([]byte(nil), body...)
+	bifrostResp := &schemas.BifrostVideoDownloadResponse{
+		VideoID:     request.ID,
+		Content:     content,
+		ContentType: contentType,
+	}
+
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.Provider = providerName
+	bifrostResp.ExtraFields.RequestType = schemas.VideoDownloadRequest
+
+	return bifrostResp, nil
+}
+
+// VideoDelete is not supported by replicate provider.
+func (provider *ReplicateProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by replicate provider.
+func (provider *ReplicateProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by replicate provider.
+func (provider *ReplicateProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
+}
+
 // BatchCreate is not supported by replicate provider.
 func (provider *ReplicateProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())

@@ -21,6 +21,8 @@ import (
 
 const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
 
+const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
+
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
 	*GenericRouter
@@ -29,6 +31,35 @@ type GenAIRouter struct {
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
+
+	// Video operation retrieve endpoint
+	// Example: /v1beta/models/veo-3.1-generate-preview/operations/{operation_id:*}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/models/{model}/operations/{operation_id:*}",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.VideoRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostVideoRetrieveRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if videoRetrieveReq, ok := req.(*schemas.BifrostVideoRetrieveRequest); ok {
+				return &schemas.BifrostRequest{
+					VideoRetrieveRequest: videoRetrieveReq,
+				}, nil
+			}
+			return nil, errors.New("invalid video retrieve request type")
+		},
+		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+			return gemini.ToGeminiVideoGenerationResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiVideoOperationFromPath,
+	})
 
 	// Chat completions endpoint
 	routes = append(routes, RouteConfig{
@@ -42,6 +73,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
 				return &gemini.GeminiEmbeddingRequest{}
+			}
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
+				return &gemini.GeminiVideoGenerationRequest{}
 			}
 			return &gemini.GeminiGenerationRequest{}
 		},
@@ -86,6 +120,15 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				return &schemas.BifrostRequest{
 					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
 				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiVideoGenerationRequest); ok {
+				// convert to bifrost video generation request
+				bifrostReq, err := geminiReq.ToBifrostVideoGenerationRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{
+					VideoGenerationRequest: bifrostReq,
+				}, nil
 			}
 			return nil, errors.New("invalid request type")
 		},
@@ -106,6 +149,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
 			return gemini.ToGeminiImageGenerationResponse(ctx, resp)
+		},
+		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+			return gemini.ToGeminiVideoGenerationResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -515,6 +561,11 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.Model = modelStr
 		}
 		return nil
+	case *gemini.GeminiVideoGenerationRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
@@ -535,6 +586,7 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 
 	isPredict := strings.HasSuffix(modelStr, ":predict")
+	isVideoGeneration := strings.HasSuffix(modelStr, ":predictLongRunning")
 
 	// Check if this is an embedding request
 	isEmbedding := false
@@ -549,6 +601,11 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest
+	}
+
+	if isVideoGeneration {
+		ctx.SetUserValue(isGeminiVideoGenerationRequestContextKey, true)
+		return modelStr, schemas.VideoGenerationRequest
 	}
 
 	// Remove Google GenAI API endpoint suffixes if present
@@ -733,4 +790,57 @@ func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 		return nil
 	}
 	return errors.New("invalid request type for Gemini list models")
+}
+
+// extractGeminiVideoOperationFromPath extracts model and operation_id from path
+// and maps them to a Bifrost video retrieve request.
+func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	model := ctx.UserValue("model")
+	if model == nil {
+		return errors.New("model is required")
+	}
+
+	operationID := ctx.UserValue("operation_id")
+	if operationID == nil {
+		return errors.New("operation_id is required")
+	}
+	operationIDStr, ok := operationID.(string)
+	if !ok || operationIDStr == "" {
+		return errors.New("operation_id must be a non-empty string")
+	}
+
+	// check provider from operation id suffix, id:provider, could be any provider
+	parts := strings.Split(operationIDStr, ":")
+	if len(parts) < 2 || parts[len(parts)-1] == "" {
+		return errors.New("provider is required in operation_id format 'id:provider'")
+	}
+	provider := parts[len(parts)-1]
+
+	modelStr, ok := model.(string)
+	if !ok || modelStr == "" {
+		modelStr = provider
+	}
+
+	// if its gemini, set r.ID in format models/model/operations/operation_id:provider
+	// else set r.ID in format operation_id:provider
+
+	switch r := req.(type) {
+	case *schemas.BifrostVideoRetrieveRequest:
+		r.Provider = schemas.ModelProvider(provider)
+
+		if r.Provider == schemas.OpenAI || r.Provider == schemas.Azure {
+			// set a context flag to have video download request after video retrieve request when incoming request is coming from genai integration
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
+		}
+		// Gemini provider expects an operation resource path (without /v1beta prefix).
+		if provider == string(schemas.Gemini) {
+			r.ID = "models/" + modelStr + "/operations/" + operationIDStr
+		} else {
+			r.ID = operationIDStr
+		}
+	default:
+		return errors.New("invalid request type for Gemini video operation")
+	}
+
+	return nil
 }

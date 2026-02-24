@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -3069,6 +3070,554 @@ func HandleOpenAIImageGenerationStreaming(
 	return responseChan, nil
 }
 
+// VideoGeneration performs a video generation request via the OpenAI API.
+func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIVideoGenerationRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/videos", schemas.VideoGenerationRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+}
+
+// VideoRetrieve retrieves a video generation job from the OpenAI API.
+func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	return HandleOpenAIVideoRetrieveRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoRetrieveRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		nil, // OpenAI uses Bearer from key
+		providerName,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.VideoDownload,
+		provider.logger,
+	)
+}
+
+// VideoDownload downloads video content from OpenAI.
+func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDownloadRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Build URL: /v1/videos/{video_id}/content
+	requestURL := provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/content", schemas.VideoDownloadRequest)
+
+	if request.Variant != nil && *request.Variant != "" {
+		// attach variant to url if present
+		requestURL = fmt.Sprintf("%s?variant=%s", requestURL, url.QueryEscape(string(*request.Variant)))
+	}
+
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(http.MethodGet)
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoDownloadRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Get content type from response
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		// Default to video/mp4 if not specified
+		contentType = "video/mp4"
+	}
+
+	// Copy the binary content
+	content := append([]byte(nil), body...)
+
+	return &schemas.BifrostVideoDownloadResponse{
+		VideoID:     providerUtils.AddVideoIDProviderSuffix(videoID, providerName),
+		Content:     content,
+		ContentType: contentType,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.VideoDownloadRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		},
+	}, nil
+}
+
+// VideoDelete deletes a video generation job from the OpenAI API.
+func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDeleteRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	return HandleOpenAIVideoDeleteRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/videos/"+videoID, schemas.VideoDeleteRequest),
+		videoID,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		providerName,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+}
+
+// VideoList lists videos from OpenAI.
+func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoListRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIVideoListRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, "/v1/videos", schemas.VideoListRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
+}
+
+// HandleOpenAIVideoGenerationRequest handles video generation requests for OpenAI-compatible APIs.
+// It creates a multipart form, adds fields, makes the API call, and returns the response.
+func HandleOpenAIVideoGenerationRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostVideoGenerationRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Use centralized converter
+	reqBody, err := ToOpenAIVideoGenerationRequest(request)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to convert video generation request to openai format", err, providerName)
+	}
+	if reqBody == nil {
+		return nil, providerUtils.NewBifrostOperationError("video generation input is not provided", nil, providerName)
+	}
+
+	// Create multipart form
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := parseVideoGenerationFormDataBodyFromRequest(writer, reqBody, providerName); err != nil {
+		return nil, err
+	}
+
+	req.Header.SetContentType(writer.FormDataContentType()) // This sets multipart/form-data with boundary
+	req.SetBody(body.Bytes())
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoGenerationRequest, providerName, request.Model)
+	}
+
+	responseBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Check for empty response
+	trimmed := strings.TrimSpace(string(responseBody))
+	if len(trimmed) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderResponseEmpty,
+			},
+		}
+	}
+
+	// Parse OpenAI's video generation response
+	response := &schemas.BifrostVideoGenerationResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(responseBody, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if response.ID != "" {
+		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:    schemas.VideoGenerationRequest,
+		Provider:       providerName,
+		ModelRequested: request.Model,
+		Latency:        latency.Milliseconds(),
+	}
+
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	return response, nil
+}
+
+// VideoDownloadFunc downloads video content. Used by HandleOpenAIVideoRetrieveRequest for enrichment.
+type VideoDownloadHandler func(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError)
+
+// HandleOpenAIVideoRetrieveRequest handles video retrieve requests for OpenAI-compatible APIs.
+// When authHeaders is non-nil, they are applied for authentication (e.g. Azure api-key); otherwise Bearer from key is used.
+// When videoDownloadFunc is non-nil and ctx has VideoOutputRequested with status completed, the handler fetches video content and appends to response.
+func HandleOpenAIVideoRetrieveRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostVideoRetrieveRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	authHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	videoDownloaddHandler VideoDownloadHandler,
+	logger schemas.Logger,
+) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if len(authHeaders) > 0 {
+		for k, v := range authHeaders {
+			req.Header.Set(k, v)
+		}
+	} else if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoRetrieveRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	response := &schemas.BifrostVideoGenerationResponse{}
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if response.ID != "" {
+		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	}
+	if response.RemixedFromVideoID != nil && *response.RemixedFromVideoID != "" {
+		remixID := providerUtils.AddVideoIDProviderSuffix(*response.RemixedFromVideoID, providerName)
+		response.RemixedFromVideoID = &remixID
+	}
+
+	if videoDownloaddHandler != nil {
+		downloadVideo, ok := ctx.Value(schemas.BifrostContextKeyVideoOutputRequested).(bool)
+		if ok && downloadVideo && response.Status == schemas.VideoStatusCompleted {
+			videoDownloadRequest := &schemas.BifrostVideoDownloadRequest{
+				Provider: providerName,
+				ID:       response.ID,
+			}
+			videoDownloadResponse, bifrostErr := videoDownloaddHandler(ctx, key, videoDownloadRequest)
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			if len(videoDownloadResponse.Content) > 0 {
+				output := schemas.VideoOutput{
+					Type:        schemas.VideoOutputTypeBase64,
+					ContentType: videoDownloadResponse.ContentType,
+				}
+				base64Data := base64.StdEncoding.EncodeToString(videoDownloadResponse.Content)
+				output.Base64Data = &base64Data
+				response.Videos = append(response.Videos, output)
+			} else {
+				logger.Warn("no content found for video download request for %s video retrieve request", providerName)
+			}
+		}
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.VideoRetrieveRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	return response, nil
+}
+
+// HandleOpenAIVideoDeleteRequest handles video deletion requests for OpenAI-compatible APIs.
+func HandleOpenAIVideoDeleteRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	videoID string,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodDelete)
+	req.Header.SetContentType("application/json")
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoDeleteRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Parse OpenAI's video response
+	response := &schemas.BifrostVideoDeleteResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if response.ID != "" {
+		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.VideoDeleteRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	return response, nil
+}
+
+// HandleOpenAIVideoListRequest handles video list requests for OpenAI-compatible APIs.
+func HandleOpenAIVideoListRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	baseURL string,
+	request *schemas.BifrostVideoListRequest,
+	key schemas.Key,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	logger schemas.Logger,
+) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Build URL with query parameters
+	values := url.Values{}
+	if request.After != nil && *request.After != "" {
+		values.Set("after", providerUtils.StripVideoIDProviderSuffix(*request.After, providerName))
+	}
+	if request.Limit != nil {
+		values.Set("limit", fmt.Sprintf("%d", *request.Limit))
+	}
+	if request.Order != nil && *request.Order != "" {
+		values.Set("order", *request.Order)
+	}
+	finalURL := baseURL
+	if encoded := values.Encode(); encoded != "" {
+		finalURL = baseURL + "?" + encoded
+	}
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	req.SetRequestURI(finalURL)
+	req.Header.SetMethod(http.MethodGet)
+	req.Header.SetContentType("application/json")
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoListRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	response := &schemas.BifrostVideoListResponse{}
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, nil, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	for i := range response.Data {
+		if response.Data[i].ID != "" {
+			response.Data[i].ID = providerUtils.AddVideoIDProviderSuffix(response.Data[i].ID, providerName)
+		}
+		if response.Data[i].RemixedFromVideoID != nil && *response.Data[i].RemixedFromVideoID != "" {
+			remixID := providerUtils.AddVideoIDProviderSuffix(*response.Data[i].RemixedFromVideoID, providerName)
+			response.Data[i].RemixedFromVideoID = &remixID
+		}
+	}
+	if response.FirstID != nil && *response.FirstID != "" {
+		firstID := providerUtils.AddVideoIDProviderSuffix(*response.FirstID, providerName)
+		response.FirstID = &firstID
+	}
+	if response.LastID != nil && *response.LastID != "" {
+		lastID := providerUtils.AddVideoIDProviderSuffix(*response.LastID, providerName)
+		response.LastID = &lastID
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.VideoListRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+
+	return response, nil
+}
+
 // CountTokens performs a count tokens request to the OpenAI API.
 func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
@@ -4224,6 +4773,102 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 	}
 
 	return nil, lastErr
+}
+
+// VideoRemix remixes an existing video from the OpenAI provider.
+func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRemixRequest); err != nil {
+		return nil, err
+	}
+
+	providerName := provider.GetProviderKey()
+
+	if request.ID == "" {
+		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil, providerName)
+	}
+	if request.Input == nil || request.Input.Prompt == "" {
+		return nil, providerUtils.NewBifrostOperationError("prompt is required", nil, providerName)
+	}
+
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToOpenAIVideoRemixRequest(request)
+		},
+		providerName)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+
+	// Create request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	// Set headers
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/videos/"+videoID+"/remix", schemas.VideoRemixRequest))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+
+	if key.Value.GetValue() != "" {
+		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+	}
+
+	req.SetBody(jsonData)
+
+	// Make request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Handle error response
+	if resp.StatusCode() != fasthttp.StatusOK {
+		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
+		return nil, ParseOpenAIError(resp, schemas.VideoRemixRequest, providerName, "")
+	}
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, providerName)
+	}
+
+	// Parse OpenAI's video response
+	response := &schemas.BifrostVideoGenerationResponse{}
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if response.ID != "" {
+		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
+	}
+	if response.RemixedFromVideoID != nil && *response.RemixedFromVideoID != "" {
+		remixID := providerUtils.AddVideoIDProviderSuffix(*response.RemixedFromVideoID, providerName)
+		response.RemixedFromVideoID = &remixID
+	}
+
+	response.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.VideoRemixRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
+	}
+
+	if sendBackRawResponse {
+		response.ExtraFields.RawResponse = rawResponse
+	}
+	if sendBackRawRequest {
+		response.ExtraFields.RawRequest = rawRequest
+	}
+
+	return response, nil
 }
 
 // BatchCreate creates a new batch job.

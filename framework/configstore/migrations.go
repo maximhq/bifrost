@@ -277,6 +277,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3609,6 +3612,52 @@ func migrationAddRequiredHeadersJSONColumn(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running required_headers_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddOutputCostPerVideoPerSecond adds output_cost_per_video_per_second column to governance_model_pricing table
+func migrationAddOutputCostPerVideoPerSecond(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_output_cost_per_video_per_second_and_output_cost_per_second_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second") {
+				if err := migrator.AddColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
+					return fmt.Errorf("failed to add output_cost_per_video_per_second column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_second") {
+				if err := migrator.AddColumn(&tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
+					return fmt.Errorf("failed to add output_cost_per_second column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second") {
+				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_video_per_second"); err != nil {
+					return fmt.Errorf("failed to drop output_cost_per_video_per_second column: %w", err)
+				}
+			}
+
+			if migrator.HasColumn(&tables.TableModelPricing{}, "output_cost_per_second") {
+				if err := migrator.DropColumn(&tables.TableModelPricing{}, "output_cost_per_second"); err != nil {
+					return fmt.Errorf("failed to drop output_cost_per_second column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running output_cost_per_video_per_second migration: %s", err.Error())
 	}
 	return nil
 }

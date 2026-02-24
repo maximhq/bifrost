@@ -44,6 +44,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "audio_transcription"
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		baseType = "image_generation"
+	case schemas.VideoGenerationRequest:
+		baseType = "video_generation"
 	}
 
 	// TODO: Check for batch processing indicators
@@ -76,8 +78,9 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		Mode:               entry.Mode,
 
 		// Additional pricing for media
-		InputCostPerVideoPerSecond: entry.InputCostPerVideoPerSecond,
-		InputCostPerAudioPerSecond: entry.InputCostPerAudioPerSecond,
+		InputCostPerVideoPerSecond:  entry.InputCostPerVideoPerSecond,
+		OutputCostPerVideoPerSecond: entry.OutputCostPerVideoPerSecond,
+		InputCostPerAudioPerSecond:  entry.InputCostPerAudioPerSecond,
 
 		// Character-based pricing
 		InputCostPerCharacter:  entry.InputCostPerCharacter,
@@ -123,6 +126,8 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		InputCostPerToken:                          pricing.InputCostPerToken,
 		OutputCostPerToken:                         pricing.OutputCostPerToken,
 		InputCostPerVideoPerSecond:                 pricing.InputCostPerVideoPerSecond,
+		OutputCostPerVideoPerSecond:                pricing.OutputCostPerVideoPerSecond,
+		OutputCostPerSecond:                        pricing.OutputCostPerSecond,
 		InputCostPerAudioPerSecond:                 pricing.InputCostPerAudioPerSecond,
 		InputCostPerCharacter:                      pricing.InputCostPerCharacter,
 		OutputCostPerCharacter:                     pricing.OutputCostPerCharacter,
