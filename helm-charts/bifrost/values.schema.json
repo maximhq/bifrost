@@ -379,8 +379,15 @@
               "type": "object",
               "properties": {
                 "toolExecutionTimeout": {
-                  "type": "integer",
-                  "minimum": 1
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
                 "maxAgentDepth": {
                   "type": "integer",

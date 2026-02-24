@@ -663,7 +663,12 @@ false
 {{- if .Values.bifrost.mcp.toolManagerConfig }}
 {{- $tmConfig := dict }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
-{{- $_ := set $tmConfig "tool_execution_timeout" .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
+{{- $timeout := .Values.bifrost.mcp.toolManagerConfig.toolExecutionTimeout }}
+{{- if kindIs "string" $timeout }}
+{{- $_ := set $tmConfig "tool_execution_timeout" $timeout }}
+{{- else }}
+{{- $_ := set $tmConfig "tool_execution_timeout" (printf "%ds" (int $timeout)) }}
+{{- end }}
 {{- end }}
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- $_ := set $tmConfig "max_agent_depth" .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}

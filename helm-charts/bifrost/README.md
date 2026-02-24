@@ -364,7 +364,7 @@ bifrost:
 |-----------|-------------|---------|
 | `bifrost.mcp.enabled` | Enable MCP (Model Context Protocol) | `false` |
 | `bifrost.mcp.clientConfigs` | Array of MCP client configurations | `[]` |
-| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout in seconds | `30` |
+| `bifrost.mcp.toolManagerConfig.toolExecutionTimeout` | Tool execution timeout (Go duration string like "30s". Helm numeric values are treated as seconds; raw JSON numeric values are interpreted as nanoseconds for legacy compatibility.) | `"30s"` |
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth` | Maximum agent depth | `10` |
 
 ### Ingress Configuration
@@ -616,4 +616,3 @@ kubectl get secret bifrost -o yaml
 This project is licensed under the Apache 2.0 License - see the [LICENSE](../LICENSE) file for details.
 
 Built with ❤️ by [Maxim](https://github.com/maximhq)
-

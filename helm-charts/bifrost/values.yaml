@@ -278,7 +278,7 @@ bifrost:
       #     envs: []
     # Tool manager configuration
     toolManagerConfig:
-      toolExecutionTimeout: 30
+      toolExecutionTimeout: "30s"
       maxAgentDepth: 10
 
   # Plugins configuration
