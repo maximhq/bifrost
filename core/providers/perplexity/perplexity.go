@@ -80,7 +80,9 @@ func (provider *PerplexityProvider) completeRequest(ctx *schemas.BifrostContext,
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Perplexity) {
+		req.SetBody(jsonData)
+	}
 
 	// Send the request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

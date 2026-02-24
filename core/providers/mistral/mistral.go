@@ -2,9 +2,9 @@
 package mistral
 
 import (
-	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -439,6 +439,13 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 	}
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -462,69 +469,45 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(reader)
-		// Increase buffer size to handle large chunks
-		buf := make([]byte, 0, 64*1024) // 64KB initial buffer
-		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		chunkIndex := -1
 
 		startTime := time.Now()
 		lastChunkTime := startTime
 
-		var currentEvent string
-		var currentData string
-
-		for scanner.Scan() {
-
+		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
 				return
 			}
 
-			line := scanner.Text()
-
-			// Skip empty lines (event delimiter)
-			if line == "" {
-				// Process accumulated event if we have both event and data
-				if currentEvent != "" && currentData != "" {
-					chunkIndex++
-					provider.processTranscriptionStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
-					// Break the loop if this was a done event (check both possible event types)
-					eventType := MistralTranscriptionStreamEventType(currentEvent)
-					if eventType == MistralTranscriptionStreamEventDone || currentEvent == "transcript.text.done" {
-						break
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					// If context was cancelled/timed out, let defer handle it
+					if ctx.Err() != nil {
+						return
 					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading stream: %v", readErr)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 				}
-				// Reset for next event
-				currentEvent = ""
-				currentData = ""
+				break
+			}
+
+			currentEvent := eventType
+			currentData := string(eventDataBytes)
+			if currentEvent == "" || currentData == "" {
 				continue
 			}
 
-			// Parse SSE format
-			if strings.HasPrefix(line, "event: ") {
-				currentEvent = strings.TrimPrefix(line, "event: ")
-			} else if strings.HasPrefix(line, "data: ") {
-				currentData = strings.TrimPrefix(line, "data: ")
-			}
-		}
-
-		// Process any remaining event
-		if currentEvent != "" && currentData != "" {
 			chunkIndex++
 			provider.processTranscriptionStreamEvent(ctx, postHookRunner, currentEvent, currentData, request.Model, providerName, chunkIndex, startTime, &lastChunkTime, responseChan)
-			// Note: No need to break here as scanner.Scan() has already finished
-		}
-
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {
-				return
+			// Break on terminal stream indicator (covers both done events and error events
+			// that processTranscriptionStreamEvent signals via context).
+			if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); ended {
+				break
 			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn("Error reading stream: %v", err)
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
 
