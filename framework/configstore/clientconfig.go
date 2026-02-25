@@ -43,7 +43,7 @@ type ClientConfig struct {
 	DisableContentLogging   bool                             `json:"disable_content_logging"` // Disable logging of content
 	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`            // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`           // Require auth (VK, API key, or user token) on inference endpoints
 	EnforceGovernanceHeader bool                             `json:"enforce_governance_header,omitempty"` // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth         bool                             `json:"enforce_scim_auth,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
@@ -57,8 +57,8 @@ type ClientConfig struct {
 	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
 	AsyncJobResultTTL       int                              `json:"async_job_result_ttl"`                // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeaders         []string                         `json:"required_headers,omitempty"`           // Headers that must be present on every request (case-insensitive)
-	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`            // Headers to capture in log metadata
+	RequiredHeaders         []string                         `json:"required_headers,omitempty"`          // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`           // Headers to capture in log metadata
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 

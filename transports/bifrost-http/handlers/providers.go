@@ -933,6 +933,14 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 				}
 			}
 
+			// Handle VLLM config redacted values
+			if updateKey.VLLMKeyConfig != nil && oldRedactedKey.VLLMKeyConfig != nil && oldRawKey.VLLMKeyConfig != nil {
+				if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
+					updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
+					mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
+				}
+			}
+
 			// Preserve ConfigHash from old key (UI doesn't send it back)
 			mergedKey.ConfigHash = oldRawKey.ConfigHash
 
