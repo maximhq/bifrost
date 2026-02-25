@@ -1876,6 +1876,7 @@
             "batch_list": { "type": "boolean" },
             "batch_retrieve": { "type": "boolean" },
             "batch_cancel": { "type": "boolean" },
+            "batch_delete": { "type": "boolean" },
             "batch_results": { "type": "boolean" },
             "file_upload": { "type": "boolean" },
             "file_list": { "type": "boolean" },
@@ -1890,7 +1891,9 @@
             "container_file_list": { "type": "boolean" },
             "container_file_retrieve": { "type": "boolean" },
             "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" }
+            "container_file_delete": { "type": "boolean" },
+            "passthrough": { "type": "boolean" },
+            "passthrough_stream": { "type": "boolean" }
           },
           "additionalProperties": false
         },

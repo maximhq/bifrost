@@ -5,10 +5,10 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -350,34 +350,34 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
 // These are transport-level headers that don't apply when re-serving the response.
 var providerResponseFilterHeaders = map[string]bool{
-	"content-length":                    true,
-	"content-encoding":                  true,
-	"transfer-encoding":                 true,
-	"connection":                        true,
-	"keep-alive":                        true,
-	"proxy-connection":                  true,
-	"proxy-authenticate":                true,
-	"proxy-authorization":               true,
-	"authorization":                     true,
-	"cookie":                            true,
-	"set-cookie":                        true,
-	"set-cookie2":                       true,
-	"www-authenticate":                  true,
-	"te":                                true,
-	"trailer":                           true,
-	"upgrade":                           true,
-	"host":                              true,
-	"date":                              true,
-	"server":                            true,
-	"alt-svc":                           true,
-	"strict-transport-security":         true,
-	"content-type":                      true,
-	"access-control-allow-origin":       true,
-	"access-control-allow-methods":      true,
-	"access-control-allow-headers":      true,
-	"access-control-expose-headers":     true,
-	"access-control-allow-credentials":  true,
-	"access-control-max-age":            true,
+	"content-length":                   true,
+	"content-encoding":                 true,
+	"transfer-encoding":                true,
+	"connection":                       true,
+	"keep-alive":                       true,
+	"proxy-connection":                 true,
+	"proxy-authenticate":               true,
+	"proxy-authorization":              true,
+	"authorization":                    true,
+	"cookie":                           true,
+	"set-cookie":                       true,
+	"set-cookie2":                      true,
+	"www-authenticate":                 true,
+	"te":                               true,
+	"trailer":                          true,
+	"upgrade":                          true,
+	"host":                             true,
+	"date":                             true,
+	"server":                           true,
+	"alt-svc":                          true,
+	"strict-transport-security":        true,
+	"content-type":                     true,
+	"access-control-allow-origin":      true,
+	"access-control-allow-methods":     true,
+	"access-control-allow-headers":     true,
+	"access-control-expose-headers":    true,
+	"access-control-allow-credentials": true,
+	"access-control-max-age":           true,
 }
 
 // ExtractProviderResponseHeaders extracts and filters response headers from a
@@ -1279,6 +1279,16 @@ func compactRawJSON(data []byte) json.RawMessage {
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	if len(jsonBody) > 0 {
 		extraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+}
+
+// ParseAndSetRawRequestIfJSON parses the request body if it's JSON and sets the raw request in the extra fields.
+func ParseAndSetRawRequestIfJSON(fasthttpReq *fasthttp.Request, extraFields *schemas.BifrostResponseExtraFields) {
+	extraFields.RawRequest = nil
+	contentType := strings.ToLower(string(fasthttpReq.Header.ContentType()))
+	if strings.Contains(contentType, "application/json") {
+		body := append([]byte(nil), fasthttpReq.Body()...)
+		ParseAndSetRawRequest(extraFields, body)
 	}
 }
 

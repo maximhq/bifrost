@@ -17,12 +17,12 @@ import (
 // testLogger implements schemas.Logger for testing (all no-ops)
 type testLogger struct{}
 
-func (t *testLogger) Debug(msg string, args ...any) {}
-func (t *testLogger) Info(msg string, args ...any)  {}
-func (t *testLogger) Warn(msg string, args ...any)  {}
-func (t *testLogger) Error(msg string, args ...any) {}
-func (t *testLogger) Fatal(msg string, args ...any) {}
-func (t *testLogger) SetLevel(level schemas.LogLevel) {}
+func (t *testLogger) Debug(msg string, args ...any)                     {}
+func (t *testLogger) Info(msg string, args ...any)                      {}
+func (t *testLogger) Warn(msg string, args ...any)                      {}
+func (t *testLogger) Error(msg string, args ...any)                     {}
+func (t *testLogger) Fatal(msg string, args ...any)                     {}
+func (t *testLogger) SetLevel(level schemas.LogLevel)                   {}
 func (t *testLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
 func (t *testLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
@@ -39,7 +39,7 @@ func strPtr(s string) *string {
 }
 
 func newTestGenericRouter() *GenericRouter {
-	return NewGenericRouter(nil, &mockHandlerStore{}, nil, &testLogger{})
+	return NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, &testLogger{})
 }
 
 func newTestBifrostContext() *schemas.BifrostContext {

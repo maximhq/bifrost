@@ -10,7 +10,9 @@ import (
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -475,4 +477,19 @@ func ParseProviderScopedVideoID(videoID string) (schemas.ModelProvider, string, 
 	}
 
 	return provider, rawID, nil
+}
+
+func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
+	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
+	if providerHeader == "" {
+		return defaultProvider
+	}
+	return schemas.ModelProvider(providerHeader)
+}
+
+func RegisterKVDecoders(store *kvstore.Store) {
+	store.RegisterDecoder("genai_upload_session:", func(data []byte) (any, error) {
+		var v gemini.GeminiResumableUploadSession
+		return &v, sonic.Unmarshal(data, &v)
+	})
 }
