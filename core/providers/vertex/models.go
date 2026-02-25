@@ -192,71 +192,44 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 		}
 	}
 
-	// Second pass: Add non-custom models from deployments
-	// Non-custom models are identified by having non-digit characters in their deployment values
-	for alias, deploymentValue := range deployments {
-		// Skip if deployment value contains only digits (custom model, already processed)
-		if schemas.IsAllDigitsASCII(deploymentValue) {
-			continue
-		}
-
-		// Check if this deployment alias is allowed
-		if !unfiltered && len(allowedModels) > 0 {
-			// If allowedModels is non-empty, only include if alias is in the list
-			if !slices.Contains(allowedModels, alias) {
+	// Second pass: Backfill deployments that were not matched from the API response
+	if !unfiltered && len(deployments) > 0 {
+		for alias, deploymentValue := range deployments {
+			// Check if model already exists in the list
+			modelID := string(schemas.Vertex) + "/" + alias
+			if addedModelIDs[modelID] {
 				continue
 			}
-		}
+			// If allowedModels is non-empty, only include if alias is in the list
+			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
+				continue
+			}
 
-		// Check if model already exists in the list
-		modelID := string(schemas.Vertex) + "/" + alias
-		if addedModelIDs[modelID] {
-			continue
-		}
+			modelName := formatDeploymentName(alias)
+			modelEntry := schemas.Model{
+				ID:         modelID,
+				Name:       schemas.Ptr(modelName),
+				Deployment: schemas.Ptr(deploymentValue),
+			}
 
-		// Create model entry for non-custom model
-		modelName := formatDeploymentName(alias)
-		modelEntry := schemas.Model{
-			ID:          modelID,
-			Name:        schemas.Ptr(modelName),
-			Description: nil, // No description available for non-custom models
-			Created:     nil, // No creation time available for non-custom models
-			Deployment:  schemas.Ptr(deploymentValue),
+			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+			addedModelIDs[modelID] = true
 		}
-
-		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
-		addedModelIDs[modelID] = true
 	}
 
-	// Third pass: Add non-custom models from allowedModels that aren't in deployments
-	// This handles cases where a model is specified in allowedModels but not explicitly mapped in deployments
+	// Third pass: Backfill allowed models that were not in the response or deployments
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
-			// Skip if model is all digits (custom model ID)
-			if schemas.IsAllDigitsASCII(allowedModel) {
-				continue
-			}
-
-			// Skip if model is already in deployments (already processed in second pass)
-			if _, existsInDeployments := deployments[allowedModel]; existsInDeployments {
-				continue
-			}
-
 			// Check if model already exists in the list
 			modelID := string(schemas.Vertex) + "/" + allowedModel
 			if addedModelIDs[modelID] {
 				continue
 			}
 
-			// Create model entry for allowed model
-			// Use the model name itself as the deployment value
 			modelName := formatDeploymentName(allowedModel)
 			modelEntry := schemas.Model{
-				ID:          modelID,
-				Name:        schemas.Ptr(modelName),
-				Description: nil, // No description available for models from allowedModels
-				Created:     nil, // No creation time available for models from allowedModels
-				Deployment:  schemas.Ptr(allowedModel),
+				ID:   modelID,
+				Name: schemas.Ptr(modelName),
 			}
 
 			bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)

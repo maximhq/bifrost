@@ -132,6 +132,25 @@ func (response *AzureListModelsResponse) ToBifrostListModelsResponse(allowedMode
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
 	}
 
+	// Backfill deployments that were not matched from the API response
+	if !unfiltered && len(deployments) > 0 {
+		for alias, deploymentValue := range deployments {
+			if includedModels[alias] {
+				continue
+			}
+			// If allowedModels is non-empty, only include if alias is in the list
+			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
+				continue
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+				ID:         string(schemas.Azure) + "/" + alias,
+				Name:       schemas.Ptr(alias),
+				Deployment: schemas.Ptr(deploymentValue),
+			})
+			includedModels[alias] = true
+		}
+	}
+
 	// Backfill allowed models that were not in the response
 	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
