@@ -92,6 +92,8 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 </Tab>
 </Tabs>
 
+Anthropic also accepts a top-level `"cache_control": {"type": "ephemeral"}` object on `/anthropic/v1/messages` requests to enable automatic prompt caching, and Bifrost now forwards that directive through unchanged.
+
 ### Cache Control
 
 Cache directives can be added to system messages, user messages, and tool definitions to enable prompt caching:

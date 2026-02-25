@@ -1923,6 +1923,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 	if req.InferenceGeo != nil {
 		params.ExtraParams["inference_geo"] = *req.InferenceGeo
 	}
+	if req.CacheControl != nil {
+		params.ExtraParams["cache_control"] = req.CacheControl
+	}
 	if req.TopK != nil {
 		params.ExtraParams["top_k"] = *req.TopK
 	}
@@ -2179,6 +2182,22 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 
 		if bifrostReq.Params.ExtraParams != nil {
 			anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
+			if cacheControlRaw, exists := bifrostReq.Params.ExtraParams["cache_control"]; exists {
+				switch v := cacheControlRaw.(type) {
+				case *schemas.CacheControl:
+					anthropicReq.CacheControl = v
+				case schemas.CacheControl:
+					anthropicReq.CacheControl = &v
+				default:
+					if data, err := json.Marshal(v); err == nil {
+						var parsed schemas.CacheControl
+						if json.Unmarshal(data, &parsed) == nil {
+							anthropicReq.CacheControl = &parsed
+						}
+					}
+				}
+				delete(bifrostReq.Params.ExtraParams, "cache_control")
+			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
 				delete(anthropicReq.ExtraParams, "top_k")

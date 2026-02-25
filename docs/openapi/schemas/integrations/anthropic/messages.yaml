@@ -22,6 +22,9 @@ AnthropicMessageRequest:
     system:
       $ref: '#/AnthropicContent'
       description: System prompt
+    cache_control:
+      $ref: '../../inference/common.yaml#/CacheControl'
+      description: Automatic caching directives for the whole request
     metadata:
       $ref: '#/AnthropicMetadata'
     stream:
