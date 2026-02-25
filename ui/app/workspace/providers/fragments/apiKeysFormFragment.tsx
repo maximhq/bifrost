@@ -54,6 +54,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
+	const isVLLM = providerName === "vllm";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key' or 'entra_id'
@@ -170,7 +171,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					name={`key.value`}
 					render={({ field }) => (
 						<FormItem>
-							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : ""}</FormLabel>
+							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
 							<FormControl>
 								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
 							</FormControl>
@@ -179,33 +180,35 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			)}
-			<FormField
-				control={control}
-				name={`key.models`}
-				render={({ field }) => (
-					<FormItem>
-						<div className="flex items-center gap-2">
-							<FormLabel>Models</FormLabel>
-							<TooltipProvider>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span>
-											<Info className="text-muted-foreground h-3 w-3" />
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>
-										<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
-									</TooltipContent>
-								</Tooltip>
-							</TooltipProvider>
-						</div>
-						<FormControl>
-							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
-						</FormControl>
-						<FormMessage />
-					</FormItem>
-				)}
-			/>
+			{!isVLLM && (
+				<FormField
+					control={control}
+					name={`key.models`}
+					render={({ field }) => (
+						<FormItem>
+							<div className="flex items-center gap-2">
+								<FormLabel>Models</FormLabel>
+								<TooltipProvider>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span>
+												<Info className="text-muted-foreground h-3 w-3" />
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>
+											<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
+							</div>
+							<FormControl>
+								<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
@@ -527,6 +530,39 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 										rows={3}
 										className="max-w-full font-mono text-sm wrap-anywhere"
 									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isVLLM && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name="key.vllm_key_config.url"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Server URL (Required)</FormLabel>
+								<FormDescription>Base URL of the vLLM server (e.g. http://vllm-server:8000 or env.VLLM_URL)</FormDescription>
+								<FormControl>
+									<EnvVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.vllm_key_config.model_name"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Model Name (Required)</FormLabel>
+								<FormDescription>Exact model name served on this vLLM instance</FormDescription>
+								<FormControl>
+									<Input data-testid="key-input-vllm-model-name" placeholder="meta-llama/Llama-3-70b-hf" {...field} />
 								</FormControl>
 								<FormMessage />
 							</FormItem>

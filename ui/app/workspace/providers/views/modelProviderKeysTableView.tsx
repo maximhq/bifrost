@@ -30,9 +30,14 @@ interface Props {
 	provider: ModelProvider;
 	headerActions?: ReactNode;
 	isKeyless?: boolean;
+	providerName?: string;
 }
 
-export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless }: Props) {
+export default function ModelProviderKeysTableView({ provider, className, headerActions, isKeyless, providerName }: Props) {
+	const isVLLM = (providerName ?? "").toLowerCase() === "vllm";
+	const entityLabel = isVLLM ? "model" : "key";
+	const entityLabelPlural = isVLLM ? "models" : "keys";
+	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const [updateProvider, { isLoading: isUpdatingProvider }] = useUpdateProviderMutation();
@@ -49,8 +54,8 @@ export default function ModelProviderKeysTableView({ provider, className, header
 				<AlertDialog open={showDeleteKeyDialog.show}>
 					<AlertDialogContent onClick={(e) => e.stopPropagation()}>
 						<AlertDialogHeader>
-							<AlertDialogTitle>Delete Key</AlertDialogTitle>
-							<AlertDialogDescription>Are you sure you want to delete this key. This action cannot be undone.</AlertDialogDescription>
+							<AlertDialogTitle>Delete {EntityLabel}</AlertDialogTitle>
+							<AlertDialogDescription>Are you sure you want to delete this {entityLabel}. This action cannot be undone.</AlertDialogDescription>
 						</AlertDialogHeader>
 						<AlertDialogFooter className="pt-4">
 							<AlertDialogCancel onClick={() => setShowDeleteKeyDialog(undefined)} disabled={isUpdatingProvider}>
@@ -65,11 +70,11 @@ export default function ModelProviderKeysTableView({ provider, className, header
 									})
 										.unwrap()
 										.then(() => {
-											toast.success("Key deleted successfully");
+											toast.success(`${EntityLabel} deleted successfully`);
 											setShowDeleteKeyDialog(undefined);
 										})
 										.catch((err) => {
-											toast.error("Failed to delete key", {
+											toast.error(`Failed to delete ${entityLabel}`, {
 												description: getErrorMessage(err),
 											});
 										});
@@ -87,11 +92,12 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					onCancel={() => setShowAddNewKeyDialog(undefined)}
 					provider={provider}
 					keyIndex={showAddNewKeyDialog.keyIndex}
+					providerName={providerName}
 				/>
 			)}
 			<CardHeader className="mb-4 px-0">
 				<CardTitle className="flex items-center justify-between">
-					<div className="flex items-center gap-2">Configured keys</div>
+					<div className="flex items-center gap-2">Configured {entityLabelPlural}</div>
 					<div className="flex items-center gap-2">
 						{headerActions}
 						{!isKeyless && (
@@ -103,7 +109,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 								}}
 							>
 								<PlusIcon className="h-4 w-4" />
-								Add new key
+								Add new {entityLabel}
 							</Button>
 						)}
 					</div>
@@ -119,7 +125,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 					<Table className="w-full" data-testid="keys-table">
 						<TableHeader className="w-full">
 							<TableRow>
-								<TableHead>API Key</TableHead>
+								<TableHead>{isVLLM ? "Model" : "API Key"}</TableHead>
 								<TableHead>Weight</TableHead>
 								<TableHead>Enabled</TableHead>
 								<TableHead className="text-right"></TableHead>
@@ -129,7 +135,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 							{provider.keys.length === 0 && (
 								<TableRow>
 									<TableCell colSpan={4} className="py-6 text-center">
-										No keys found.
+										No {entityLabelPlural} found.
 									</TableCell>
 								</TableRow>
 							)}
@@ -172,10 +178,10 @@ export default function ModelProviderKeysTableView({ provider, className, header
 													})
 														.unwrap()
 														.then(() => {
-															toast.success(`Key ${checked ? "enabled" : "disabled"} successfully`);
+															toast.success(`${EntityLabel} ${checked ? "enabled" : "disabled"} successfully`);
 														})
 														.catch((err) => {
-															toast.error("Failed to update key", { description: getErrorMessage(err) });
+															toast.error(`Failed to update ${entityLabel}`, { description: getErrorMessage(err) });
 														});
 												}}
 											/>

@@ -338,29 +338,27 @@ export default function SecurityView() {
 					</div>
 				</div>
 				{/* Required Headers */}
-				{localConfig.enable_governance && (
-					<div>
-						<div className="space-y-2 rounded-lg border p-4">
-							<div className="space-y-0.5">
-								<label htmlFor="required-headers" className="text-sm font-medium">
-									Required Headers
-								</label>
-								<p className="text-muted-foreground text-sm">
-									Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
-									rejected with a 400 error. Header names are case-insensitive. Requires governance to be enabled.
-								</p>
-							</div>
-							<Textarea
-								id="required-headers"
-								data-testid="required-headers-textarea"
-								className="h-24"
-								placeholder="X-Tenant-ID, X-Custom-Header"
-								value={localValues.required_headers}
-								onChange={(e) => handleRequiredHeadersChange(e.target.value)}
-							/>
+				<div>
+					<div className="space-y-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="required-headers" className="text-sm font-medium">
+								Required Headers
+							</label>
+							<p className="text-muted-foreground text-sm">
+								Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
+								rejected with a 400 error. Header names are case-insensitive. Requires governance to be enabled.
+							</p>
 						</div>
+						<Textarea
+							id="required-headers"
+							data-testid="required-headers-textarea"
+							className="h-24"
+							placeholder="X-Tenant-ID, X-Custom-Header"
+							value={localValues.required_headers}
+							onChange={(e) => handleRequiredHeadersChange(e.target.value)}
+						/>
 					</div>
-				)}
+				</div>
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>

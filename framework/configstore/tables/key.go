@@ -56,6 +56,10 @@ type TableKey struct {
 	// Replicate config fields (embedded)
 	ReplicateDeploymentsJSON *string `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
+	// VLLM config fields (embedded)
+	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
+	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -70,6 +74,7 @@ type TableKey struct {
 	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
 	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
+	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -284,6 +289,24 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.ReplicateDeploymentsJSON = nil
 	}
 
+	if k.VLLMKeyConfig != nil {
+		if k.VLLMKeyConfig.URL.GetValue() != "" {
+			u := k.VLLMKeyConfig.URL // Value-copy to prevent shared pointer mutation
+			k.VLLMUrl = &u
+		} else {
+			k.VLLMUrl = nil
+		}
+		if k.VLLMKeyConfig.ModelName != "" {
+			mn := k.VLLMKeyConfig.ModelName
+			k.VLLMModelName = &mn
+		} else {
+			k.VLLMModelName = nil
+		}
+	} else {
+		k.VLLMUrl = nil
+		k.VLLMModelName = nil
+	}
+
 	// Encrypt sensitive fields after serialization
 	if encrypt.IsEnabled() {
 		if err := encryptEnvVar(&k.Value); err != nil {
@@ -339,6 +362,10 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		if err := encryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock batch s3 config: %w", err)
+		}
+		// VLLM
+		if err := encryptEnvVarPtr(&k.VLLMUrl); err != nil {
+			return fmt.Errorf("failed to encrypt vllm url: %w", err)
 		}
 		k.EncryptionStatus = EncryptionStatusEncrypted
 	}
@@ -404,6 +431,10 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptString(k.BedrockBatchS3ConfigJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock batch s3 config: %w", err)
+		}
+		// VLLM
+		if err := decryptEnvVarPtr(&k.VLLMUrl); err != nil {
+			return fmt.Errorf("failed to decrypt vllm url: %w", err)
 		}
 	}
 
@@ -530,6 +561,19 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		replicateConfig.Deployments = deployments
 		k.ReplicateKeyConfig = replicateConfig
+	}
+	// Reconstruct VLLM config if fields are present
+	if k.VLLMUrl != nil || (k.VLLMModelName != nil && *k.VLLMModelName != "") {
+		vllmConfig := &schemas.VLLMKeyConfig{}
+		if k.VLLMUrl != nil {
+			vllmConfig.URL = *k.VLLMUrl
+		}
+		if k.VLLMModelName != nil {
+			vllmConfig.ModelName = *k.VLLMModelName
+		}
+		k.VLLMKeyConfig = vllmConfig
+	} else {
+		k.VLLMKeyConfig = nil
 	}
 	return nil
 }

@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { useGetCoreConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { SettingsIcon, Trash } from "lucide-react";
@@ -18,8 +17,6 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
-	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config?.enable_governance || false;
 	const isCustomProvider = !!provider.custom_provider_config;
 
 	const showApiKeys = useMemo(() => {
@@ -46,8 +43,8 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	return (
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
-			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
-			{hasGovernanceAccess && isGovernanceEnabled ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
+			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} providerName={provider.name} />
+			{hasGovernanceAccess  ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
 		</div>
 	);
 }

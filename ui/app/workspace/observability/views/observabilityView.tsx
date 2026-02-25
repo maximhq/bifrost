@@ -8,6 +8,7 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import { useQueryState } from "nuqs";
 import { useEffect, useMemo } from "react";
+import BigQueryView from "./plugins/bigqueryView";
 import DatadogView from "./plugins/datadogView";
 import MaximView from "./plugins/maximView";
 import NewrelicView from "./plugins/newRelicView";
@@ -53,6 +54,11 @@ const supportedPlatformsList = (resolvedTheme: string): SupportedPlatform[] => [
 		id: "datadog",
 		name: "Datadog",
 		icon: <Image alt="Datadog" src="/images/datadog-logo.png" width={32} height={32} className="-ml-0.5" />,
+	},
+	{
+		id: "bigquery",
+		name: "BigQuery",
+		icon: <Image alt="BigQuery" src="/images/bigquery-logo.svg" width={21} height={21} className="-ml-0.5" />,
 	},
 	{
 		id: "newrelic",
@@ -172,6 +178,7 @@ export default function ObservabilityView() {
 				{selectedPluginId === "otel" && <OtelView />}
 				{selectedPluginId === "maxim" && <MaximView />}
 				{selectedPluginId === "datadog" && <DatadogView />}
+				{selectedPluginId === "bigquery" && <BigQueryView />}
 				{selectedPluginId === "newrelic" && <NewrelicView />}
 			</div>
 		</div>

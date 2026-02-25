@@ -1,11 +1,10 @@
 import Provider from "@/components/provider";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useGetCoreConfigQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, PricingOverridesFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -16,7 +15,7 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, isGovernanceEnabled: boolean) => {
+const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) => {
 	const tabs = [];
 	if (provider?.custom_provider_config) {
 		tabs.push({
@@ -36,11 +35,7 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 		id: "performance",
 		label: "Performance",
 	});
-	tabs.push({
-		id: "pricing-overrides",
-		label: "Pricing Overrides",
-	});
-	if (hasGovernanceAccess && isGovernanceEnabled) {
+	if (hasGovernanceAccess) {
 		tabs.push({
 			id: "governance",
 			label: "Governance",
@@ -56,12 +51,10 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean, is
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config?.enable_governance || false;
-
+	
 	const tabs = useMemo(() => {
-		return availableTabs(provider, hasGovernanceAccess, isGovernanceEnabled);
-	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess, isGovernanceEnabled]);
+		return availableTabs(provider, hasGovernanceAccess);
+	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess]);
 
 	useEffect(() => {
 		setSelectedTab(tabs[0]?.id);
@@ -108,9 +101,6 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="performance">
 							<PerformanceFormFragment provider={provider} />
-						</TabsContent>
-						<TabsContent value="pricing-overrides">
-							<PricingOverridesFormFragment provider={provider} />
 						</TabsContent>
 						<TabsContent value="governance">
 							<GovernanceFormFragment provider={provider} />

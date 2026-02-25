@@ -93,7 +93,7 @@ func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schema
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs..
 func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM
 }
 
 // hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
@@ -232,7 +232,7 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 
 // IsKeylessProvider reports whether providerKey is a keyless provider.
 func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.VLLM
+	return providerKey == schemas.Ollama || providerKey == schemas.SGL
 }
 
 // IsStreamRequestType returns true if the given request type is a stream request.

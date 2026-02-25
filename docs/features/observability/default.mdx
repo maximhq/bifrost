@@ -86,8 +86,7 @@ curl --location 'http://localhost:8080/api/config' \
         "disable_content_logging": false,
         "drop_excess_requests": false,
         "initial_pool_size": 300,
-        "enable_governance": true,
-        "enforce_governance_header": false,
+         "enforce_governance_header": false,
         "allow_direct_keys": false,
         "prometheus_labels": [],
         "allowed_origins": []
@@ -126,7 +125,6 @@ In your `config.json` file, you can enable logging and configure the log store:
         "disable_content_logging": false,
         "drop_excess_requests": false,
         "initial_pool_size": 300,
-        "enable_governance": true,
         "allow_direct_keys": false
     },
     "logs_store": {
@@ -488,7 +486,6 @@ A common pattern is to require a header **and** log it:
 ```json
 {
   "client": {
-    "enable_governance": true,
     "required_headers": ["X-Tenant-ID"],
     "logging_headers": ["X-Tenant-ID"]
   }

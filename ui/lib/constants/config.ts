@@ -74,7 +74,8 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	nebius: true,
 	xai: true,
 	replicate: true,
-	vllm: false,
+	runway: true,
+	vllm: true,
 };
 
 export const DefaultNetworkConfig = {

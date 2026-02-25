@@ -129,7 +129,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 		});
 	}, [form, provider.name, provider.network_config]);
 
-	const baseURLRequired = provider.name === "ollama" || provider.name === "sgl" || provider.name === "vllm" || isCustomProvider;
+	const baseURLRequired = provider.name === "ollama" || provider.name === "sgl" || isCustomProvider;
+	const hideBaseURL = provider.name === "vllm";
 
 	return (
 		<Form {...form}>
@@ -137,24 +138,26 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				{/* Network Configuration */}
 				<div className="space-y-4">
 					<div className="grid grid-cols-1 gap-4">
-						<FormField
-							control={form.control}
-							name="network_config.base_url"
-							render={({ field }) => (
-								<FormItem>
-									<FormLabel>Base URL {baseURLRequired ? "(Required)" : "(Optional)"}</FormLabel>
-									<FormControl>
-										<Input
-											placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
-											{...field}
-											value={field.value || ""}
-											disabled={!hasUpdateProviderAccess}
-										/>
-									</FormControl>
-									<FormMessage />
-								</FormItem>
-							)}
-						/>
+						{!hideBaseURL && (
+							<FormField
+								control={form.control}
+								name="network_config.base_url"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Base URL {baseURLRequired ? "(Required)" : "(Optional)"}</FormLabel>
+										<FormControl>
+											<Input
+												placeholder={isCustomProvider ? "https://api.your-provider.com" : "https://api.example.com"}
+												{...field}
+												value={field.value || ""}
+												disabled={!hasUpdateProviderAccess}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						)}
 						<div className="flex w-full flex-row items-start gap-4">
 							<FormField
 								control={form.control}
@@ -304,25 +307,27 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 
 				{/* Form Actions */}
 				<div className="flex justify-end space-x-2 py-2">
-					<Button
-						type="button"
-						variant="outline"
-						onClick={() => {
-							form.reset({
-								network_config: undefined,
-							});
-							onSubmit(form.getValues());
-						}}
-						disabled={
-							!hasUpdateProviderAccess ||
-							isUpdatingProvider ||
-							!provider.network_config ||
-							!provider.network_config.base_url ||
-							provider.network_config.base_url.trim() === ""
-						}
-					>
-						Remove configuration
-					</Button>
+					{!hideBaseURL && (
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => {
+								form.reset({
+									network_config: undefined,
+								});
+								onSubmit(form.getValues());
+							}}
+							disabled={
+								!hasUpdateProviderAccess ||
+								isUpdatingProvider ||
+								!provider.network_config ||
+								!provider.network_config.base_url ||
+								provider.network_config.base_url.trim() === ""
+							}
+						>
+							Remove configuration
+						</Button>
+					)}
 					<TooltipProvider>
 						<Tooltip>
 							<TooltipTrigger asChild>

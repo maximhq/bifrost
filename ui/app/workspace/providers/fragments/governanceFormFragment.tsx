@@ -10,13 +10,12 @@ import {
 	getErrorMessage,
 	useDeleteProviderGovernanceMutation,
 	useGetProviderGovernanceQuery,
-	useLazyGetCoreConfigQuery,
 	useUpdateProviderGovernanceMutation,
 } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -51,22 +50,9 @@ const DEFAULT_GOVERNANCE_FORM_VALUES: FormData = {
 export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps) {
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-	const [governanceEnabled, setGovernanceEnabled] = useState<boolean | null>(null);
-	const [triggerGetConfig] = useLazyGetCoreConfigQuery();
-
-	// Check if governance is enabled
-	useEffect(() => {
-		triggerGetConfig({ fromDB: true })
-			.then((res) => {
-				setGovernanceEnabled(!!res.data?.client_config?.enable_governance);
-			})
-			.catch(() => {
-				setGovernanceEnabled(false);
-			});
-	}, [triggerGetConfig]);
 
 	const { data: providerGovernanceData, isLoading: isLoadingGovernance } = useGetProviderGovernanceQuery(undefined, {
-		skip: !hasViewAccess || !governanceEnabled,
+		skip: !hasViewAccess,
 		pollingInterval: 5000,
 	});
 	const [updateProviderGovernance, { isLoading: isUpdating }] = useUpdateProviderGovernanceMutation();
@@ -184,23 +170,6 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 			});
 		}
 	};
-
-	if (isLoadingGovernance || governanceEnabled === null) {
-		return (
-			<div className="flex items-center justify-center p-12">
-				<div className="border-primary h-6 w-6 animate-spin rounded-full border-2 border-t-transparent" />
-			</div>
-		);
-	}
-
-	// Governance not enabled at system level
-	if (!governanceEnabled) {
-		return (
-			<div className="text-muted-foreground px-6 py-8 text-center text-sm">
-				Governance is not enabled. Enable it in your configuration to set up budget and rate limits.
-			</div>
-		);
-	}
 
 	// Always show the form
 	return (

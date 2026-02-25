@@ -9,12 +9,17 @@ interface Props {
 	onCancel: () => void;
 	provider: ModelProvider;
 	keyIndex: number;
+	providerName?: string;
 }
 
-export default function AddNewKeySheet({ show, onCancel, provider, keyIndex }: Props) {
+export default function AddNewKeySheet({ show, onCancel, provider, keyIndex, providerName }: Props) {
 	const isEditing = keyIndex < provider.keys.length;
-	const dialogTitle = isEditing ? "Edit key" : "Add new key";
-	const successMessage = isEditing ? "Key updated successfully" : "Key added successfully";
+	const resolvedProviderName = (providerName ?? provider.name).toLowerCase();
+	const isVLLM = resolvedProviderName === "vllm";
+	const entityLabel = isVLLM ? "model" : "key";
+	const EntityLabel = entityLabel.charAt(0).toUpperCase() + entityLabel.slice(1);
+	const dialogTitle = isEditing ? `Edit ${entityLabel}` : `Add new ${entityLabel}`;
+	const successMessage = isEditing ? `${EntityLabel} updated successfully` : `${EntityLabel} added successfully`;
 
 	return (
 		<Sheet

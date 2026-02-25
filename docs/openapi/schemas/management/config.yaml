@@ -31,9 +31,6 @@ ClientConfig:
     disable_content_logging:
       type: boolean
       description: Whether content logging is disabled
-    enable_governance:
-      type: boolean
-      description: Whether governance is enabled
     enforce_governance_header:
       type: boolean
       description: Whether to enforce governance header

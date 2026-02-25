@@ -47,7 +47,7 @@ variable "auth_config" {
 }
 
 variable "client" {
-  description = "Client configuration (initial_pool_size, allowed_origins, enable_logging, enable_governance, max_request_body_size_mb, etc.)."
+  description = "Client configuration (initial_pool_size, allowed_origins, enable_logging, max_request_body_size_mb, etc.)."
   type        = any
   default     = null
 }

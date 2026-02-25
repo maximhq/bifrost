@@ -100,6 +100,18 @@ export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
 	deployments: {},
 } as const satisfies Required<ReplicateKeyConfig>;
 
+// VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
+export interface VLLMKeyConfig {
+	url: EnvVar;
+	model_name: string;
+}
+
+// Default VLLMKeyConfig
+export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
+	url: { value: "", env_var: "", from_env: false },
+	model_name: "",
+} as const satisfies Required<VLLMKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -113,6 +125,7 @@ export interface ModelProviderKey {
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
 	replicate_key_config?: ReplicateKeyConfig;
+	vllm_key_config?: VLLMKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;

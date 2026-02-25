@@ -284,6 +284,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddVLLMKeyConfigColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3932,6 +3935,47 @@ func migrationDropEnableGovernanceColumn(ctx context.Context, db *gorm.DB) error
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running drop enable governance column rollback: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVLLMKeyConfigColumns adds vllm_url and vllm_model_name columns to the key table
+func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_vllm_key_config_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableKey{}, "vllm_url") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "vllm_url"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&tables.TableKey{}, "vllm_model_name") {
+				if err := migrator.AddColumn(&tables.TableKey{}, "vllm_model_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableKey{}, "vllm_url") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_url"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TableKey{}, "vllm_model_name") {
+				if err := migrator.DropColumn(&tables.TableKey{}, "vllm_model_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
 	}
 	return nil
 }

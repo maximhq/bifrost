@@ -47,8 +47,8 @@ type BifrostListModelsResponse struct {
 	ExtraFields   BifrostResponseExtraFields `json:"extra_fields"`
 	NextPageToken string                     `json:"next_page_token,omitempty"` // Token to retrieve next page
 
-	// Key-level status tracking for multi-key providers, internal field
-	KeyStatuses []KeyStatus `json:"-"`
+	// Key-level status tracking for multi-key providers
+	KeyStatuses []KeyStatus `json:"key_statuses,omitempty"`
 
 	// Anthropic specific fields
 	FirstID *string `json:"-"`
@@ -85,6 +85,7 @@ func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageTok
 			Data:          []Model{},
 			ExtraFields:   response.ExtraFields,
 			NextPageToken: "",
+			KeyStatuses:   response.KeyStatuses,
 		}
 	}
 
@@ -98,6 +99,7 @@ func (response *BifrostListModelsResponse) ApplyPagination(pageSize int, pageTok
 	paginatedResponse := &BifrostListModelsResponse{
 		Data:        paginatedData,
 		ExtraFields: response.ExtraFields,
+		KeyStatuses: response.KeyStatuses,
 	}
 
 	if endIndex < totalItems {

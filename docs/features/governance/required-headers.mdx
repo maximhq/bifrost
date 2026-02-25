@@ -73,7 +73,6 @@ curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "enable_governance": true,
       "required_headers": ["X-Tenant-ID", "X-Correlation-ID"]
     }
   }'
@@ -98,8 +97,7 @@ Add `required_headers` to the `client` section:
 
 ```json
 {
-  "client": {
-    "enable_governance": true,
+  "client": {    
     "required_headers": ["X-Tenant-ID", "X-Correlation-ID"]
   }
 }
@@ -123,7 +121,6 @@ Configure a single required header to enforce tenant identification:
 ```json
 {
   "client": {
-    "enable_governance": true,
     "required_headers": ["X-Tenant-ID"]
   }
 }
@@ -152,7 +149,6 @@ Required headers work alongside virtual key enforcement. When both are configure
 ```json
 {
   "client": {
-    "enable_governance": true,
     "enforce_governance_header": true,
     "required_headers": ["X-Tenant-ID"]
   }

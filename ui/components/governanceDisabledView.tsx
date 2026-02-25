@@ -19,7 +19,7 @@ export function GovernanceDisabledView() {
     try {
       await updateCoreConfig({
         ...bifrostConfig,
-        client_config: { ...bifrostConfig.client_config, enable_governance: true },
+        client_config: { ...bifrostConfig.client_config },
       }).unwrap()
       toast.success("Governance enabled.")
     } catch (error) {

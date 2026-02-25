@@ -153,6 +153,14 @@ export const replicateKeyConfigSchema = z.object({
 	deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
 });
 
+// VLLM key config schema
+export const vllmKeyConfigSchema = z.object({
+	url: envVarSchema.refine((v) => !!v.value?.trim() || !!v.env_var?.trim(), {
+		message: "Server URL is required",
+	}),
+	model_name: z.string().trim().min(1, "Model name is required"),
+});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -184,12 +192,13 @@ export const modelProviderKeySchema = z
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
+		vllm_key_config: vllmKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config or azure_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config) {
+			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
+			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
 				return true;
 			}
 			// Otherwise, value is required
@@ -562,7 +571,6 @@ export const coreConfigSchema = z.object({
 	prometheus_labels: z.array(z.string()).default([]),
 	enable_logging: z.boolean().default(true),
 	disable_content_logging: z.boolean().default(false),
-	enable_governance: z.boolean().default(false),
 	enforce_auth_on_inference: z.boolean().default(false),
 	allow_direct_keys: z.boolean().default(false),
 	allowed_origins: z.array(z.string()).default(["*"]),

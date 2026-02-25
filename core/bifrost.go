@@ -5884,6 +5884,11 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				if len(key.ReplicateKeyConfig.Deployments) > 0 {
 					_, deploymentSupported = key.ReplicateKeyConfig.Deployments[model]
 				}
+			} else if baseProviderType == schemas.VLLM && key.VLLMKeyConfig != nil {
+				// For VLLM, check if model name matches the key's configured model
+				if key.VLLMKeyConfig.ModelName != "" {
+					deploymentSupported = (key.VLLMKeyConfig.ModelName == model)
+				}
 			}
 
 			if modelSupported && deploymentSupported {
@@ -5892,7 +5897,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		}
 	}
 	if len(supportedKeys) == 0 {
-		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex || baseProviderType == schemas.Replicate {
+		if baseProviderType == schemas.Azure || baseProviderType == schemas.Bedrock || baseProviderType == schemas.Vertex || baseProviderType == schemas.Replicate || baseProviderType == schemas.VLLM {
 			return schemas.Key{}, fmt.Errorf("no keys found that support model/deployment: %s", model)
 		}
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)

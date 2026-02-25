@@ -23,6 +23,7 @@ type Key struct {
 	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
+	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
@@ -89,6 +90,14 @@ type HuggingFaceKeyConfig struct {
 
 type ReplicateKeyConfig struct {
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+// VLLMKeyConfig represents the vLLM-specific key configuration.
+// It allows each key to target a different vLLM server URL and model name,
+// enabling per-key routing and round-robin load balancing across multiple vLLM instances.
+type VLLMKeyConfig struct {
+	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
+	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

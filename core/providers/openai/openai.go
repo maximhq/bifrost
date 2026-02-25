@@ -92,7 +92,7 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
 		return providerUtils.HandleKeylessListModelsRequest(providerName, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-			return listModelsByKey(
+			return ListModelsByKey(
 				ctx,
 				provider.client,
 				provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
@@ -118,9 +118,9 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 	)
 }
 
-// listModelsByKey performs a list models request for a single key.
-// Returns the response and latency, or an error if the request fails.
-func listModelsByKey(
+// ListModelsByKey performs a list models request for a single key.
+// Returns the list-models response, or an error if the request fails.
+func ListModelsByKey(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
 	url string,
@@ -203,10 +203,10 @@ func HandleOpenAIListModelsRequest(
 	sendBackRawResponse bool,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
-		return listModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, schemas.Key{}, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
 	}
 	listModelsByKeyWrapper := func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
-		return listModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
+		return ListModelsByKey(ctx, client, url, key, request.Unfiltered, extraHeaders, providerName, sendBackRawRequest, sendBackRawResponse)
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,

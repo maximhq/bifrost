@@ -367,6 +367,14 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
 		}
+
+		if key.VLLMKeyConfig != nil {
+			vllmConfig := &schemas.VLLMKeyConfig{
+				ModelName: key.VLLMKeyConfig.ModelName,
+			}
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -445,11 +453,11 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value
+	// Hash Value (prefix with source type to prevent collisions between env and literal)
 	if key.Value.IsFromEnv() {
-		hash.Write([]byte(key.Value.EnvVar))
+		hash.Write([]byte("env:" + key.Value.EnvVar))
 	} else {
-		hash.Write([]byte(key.Value.Val))
+		hash.Write([]byte("val:" + key.Value.Val))
 	}
 	// Hash Models (key-level model restrictions)
 	if len(key.Models) > 0 {
@@ -495,6 +503,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash ReplicateKeyConfig
 	if key.ReplicateKeyConfig != nil {
 		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash VLLMKeyConfig
+	if key.VLLMKeyConfig != nil {
+		data, err := sonic.Marshal(key.VLLMKeyConfig)
 		if err != nil {
 			return "", err
 		}

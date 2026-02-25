@@ -183,6 +183,19 @@ else
   echo "✅ Bedrock key config required fields match: [$CONFIG_BEDROCK_REQUIRED]"
 fi
 
+# Check vllm_key_config required fields
+CONFIG_VLLM_REQUIRED=$(jq -r '."$defs".vllm_key.allOf[1].properties.vllm_key_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VLLM_REQUIRED=$(jq -r '."$defs".providerKey.properties.vllm_key_config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VLLM_REQUIRED" != "$HELM_VLLM_REQUIRED" ]; then
+  echo "❌ VLLM key config required fields mismatch:"
+  echo "   Config: [$CONFIG_VLLM_REQUIRED]"
+  echo "   Helm:   [$HELM_VLLM_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ VLLM key config required fields match: [$HELM_VLLM_REQUIRED]"
+fi
+
 # Check concurrency_config required fields
 CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrencyConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
@@ -373,6 +386,19 @@ if [ "$CONFIG_VKPC_VERTEX_REQUIRED" != "$HELM_VKPC_VERTEX_REQUIRED" ]; then
   ERRORS=$((ERRORS + 1))
 else
   echo "✅ VK provider config key vertex_key_config required fields match: [$CONFIG_VKPC_VERTEX_REQUIRED]"
+fi
+
+# Check VK provider config key vllm_key_config required fields
+CONFIG_VKPC_VLLM_REQUIRED=$(jq -r '."$defs".virtual_key_provider_config.properties.keys.items.properties.vllm_key_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VKPC_VLLM_REQUIRED=$(jq -r '."$defs".virtualKeyProviderConfig.properties.keys.items.properties.vllm_key_config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VKPC_VLLM_REQUIRED" != "$HELM_VKPC_VLLM_REQUIRED" ]; then
+  echo "❌ VK provider config key vllm_key_config required fields mismatch:"
+  echo "   Config: [$CONFIG_VKPC_VLLM_REQUIRED]"
+  echo "   Helm:   [$HELM_VKPC_VLLM_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ VK provider config key vllm_key_config required fields match: [$CONFIG_VKPC_VLLM_REQUIRED]"
 fi
 
 echo ""
