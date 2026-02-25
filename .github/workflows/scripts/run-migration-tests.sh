@@ -720,6 +720,48 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
   fi
 
+  # config_keys.status (added in v1.4.7)
+  if column_exists_postgres "config_keys" "status"; then
+    echo "UPDATE config_keys SET status = 'active' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET status = 'unknown' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.description (added in v1.4.7)
+  if column_exists_postgres "config_keys" "description"; then
+    echo "UPDATE config_keys SET description = 'Migration test key for OpenAI' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET description = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_providers.status (added in v1.4.7)
+  if column_exists_postgres "config_providers" "status"; then
+    echo "UPDATE config_providers SET status = 'active' WHERE name = 'openai';" >> "$output_file"
+    echo "UPDATE config_providers SET status = 'unknown' WHERE name = 'anthropic';" >> "$output_file"
+  fi
+
+  # config_providers.description (added in v1.4.7)
+  if column_exists_postgres "config_providers" "description"; then
+    echo "UPDATE config_providers SET description = 'Migration test OpenAI provider' WHERE name = 'openai';" >> "$output_file"
+    echo "UPDATE config_providers SET description = '' WHERE name = 'anthropic';" >> "$output_file"
+  fi
+
+  # logs.routing_engines_used (renamed from routing_engine_used in v1.4.7)
+  if column_exists_postgres "logs" "routing_engines_used"; then
+    echo "UPDATE logs SET routing_engines_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET routing_engines_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+
+  # logs.list_models_output (added in v1.4.7)
+  if column_exists_postgres "logs" "list_models_output"; then
+    echo "UPDATE logs SET list_models_output = '[{\"id\":\"gpt-4\",\"object\":\"model\"}]' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET list_models_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+
+  # logs.routing_engine_logs (added in v1.4.7)
+  if column_exists_postgres "logs" "routing_engine_logs"; then
+    echo "UPDATE logs SET routing_engine_logs = 'Route matched: gpt-4 -> openai' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET routing_engine_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  fi
+
   # -------------------------------------------------------------------------
   # Dropped columns - columns that existed in older versions but were removed
   # -------------------------------------------------------------------------
@@ -759,6 +801,45 @@ append_dynamic_columns_sqlite() {
   # We always emit them - if the column doesn't exist, the UPDATE will fail silently.
   echo "UPDATE logs SET routing_engine_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
+
+  if [ -f "$config_db" ]; then
+    # config_keys.status (added in v1.4.7)
+    if column_exists_sqlite "$config_db" "config_keys" "status"; then
+      echo "UPDATE config_keys SET status = 'active' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET status = 'unknown' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # config_keys.description (added in v1.4.7)
+    if column_exists_sqlite "$config_db" "config_keys" "description"; then
+      echo "UPDATE config_keys SET description = 'Migration test key for OpenAI' WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET description = '' WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+
+    # config_providers.status (added in v1.4.7)
+    if column_exists_sqlite "$config_db" "config_providers" "status"; then
+      echo "UPDATE config_providers SET status = 'active' WHERE name = 'openai';" >> "$output_file"
+      echo "UPDATE config_providers SET status = 'unknown' WHERE name = 'anthropic';" >> "$output_file"
+    fi
+
+    # config_providers.description (added in v1.4.7)
+    if column_exists_sqlite "$config_db" "config_providers" "description"; then
+      echo "UPDATE config_providers SET description = 'Migration test OpenAI provider' WHERE name = 'openai';" >> "$output_file"
+      echo "UPDATE config_providers SET description = '' WHERE name = 'anthropic';" >> "$output_file"
+    fi
+  fi
+
+  # logs.routing_engines_used (renamed from routing_engine_used in v1.4.7)
+  # Same pattern as routing_engine_used - emitted unconditionally, fails silently on config_db
+  echo "UPDATE logs SET routing_engines_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET routing_engines_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
+
+  # logs.list_models_output (added in v1.4.7)
+  echo "UPDATE logs SET list_models_output = '[{\"id\":\"gpt-4\",\"object\":\"model\"}]' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET list_models_output = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+
+  # logs.routing_engine_logs (added in v1.4.7)
+  echo "UPDATE logs SET routing_engine_logs = 'Route matched: gpt-4 -> openai' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET routing_engine_logs = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
 
   # -------------------------------------------------------------------------
   # Dropped columns - columns that existed in older versions but were removed

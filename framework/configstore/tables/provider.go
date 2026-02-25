@@ -117,8 +117,8 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("rate_limit_id cannot be an empty string")
 	}
 
-	// Encrypt proxy config after serialization
-	if encrypt.IsEnabled() {
+	// Encrypt proxy config after serialization (only if there's data to encrypt)
+	if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
 		encrypted, err := encrypt.Encrypt(p.ProxyConfigJSON)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt proxy config: %w", err)
