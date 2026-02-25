@@ -118,7 +118,7 @@ func (p *TableProvider) BeforeSave(tx *gorm.DB) error {
 	}
 
 	// Encrypt proxy config after serialization
-	if encrypt.IsEnabled() && p.ProxyConfigJSON != "" {
+	if encrypt.IsEnabled() {
 		encrypted, err := encrypt.Encrypt(p.ProxyConfigJSON)
 		if err != nil {
 			return fmt.Errorf("failed to encrypt proxy config: %w", err)

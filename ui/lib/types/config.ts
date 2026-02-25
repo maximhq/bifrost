@@ -427,7 +427,6 @@ export interface CoreConfig {
 	disable_content_logging: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
-	enable_governance: boolean;
 	enforce_auth_on_inference: boolean;
 	allow_direct_keys: boolean;
 	allowed_origins: string[];
@@ -452,7 +451,6 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_content_logging: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
-	enable_governance: true,
 	enforce_auth_on_inference: false,
 	allow_direct_keys: false,
 	allowed_origins: [],
