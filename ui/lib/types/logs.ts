@@ -471,6 +471,8 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
+	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
+	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 }
 

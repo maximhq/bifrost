@@ -37,6 +37,6 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateCohereRouteConfigs("/langchain")...)
 
 	return &LangChainRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }

@@ -68,6 +68,8 @@ export const RequestTypes = [
 	"container_file_retrieve",
 	"container_file_content",
 	"container_file_delete",
+	"passthrough",
+	"passthrough_stream",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -188,6 +190,9 @@ export const RequestTypeLabels = {
 	container_file_retrieve: "Container File Retrieve",
 	container_file_content: "Container File Content",
 	container_file_delete: "Container File Delete",
+
+	passthrough: "Passthrough",
+	passthrough_stream: "Passthrough Stream",
 } as const;
 
 export const RequestTypeColors = {
@@ -248,6 +253,9 @@ export const RequestTypeColors = {
 	container_file_retrieve: "bg-cyan-100 text-cyan-800",
 	container_file_content: "bg-sky-100 text-sky-800",
 	container_file_delete: "bg-rose-100 text-rose-800",
+
+	passthrough: "bg-slate-100 text-slate-800",
+	passthrough_stream: "bg-slate-200 text-slate-800",
 
 	batch_create: "bg-green-100 text-green-800",
 	batch_list: "bg-blue-100 text-blue-800",
