@@ -2181,8 +2181,11 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
 
 		if bifrostReq.Params.ExtraParams != nil {
-			anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
-			if cacheControlRaw, exists := bifrostReq.Params.ExtraParams["cache_control"]; exists {
+			anthropicReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+			for k, v := range bifrostReq.Params.ExtraParams {
+				anthropicReq.ExtraParams[k] = v
+			}
+			if cacheControlRaw, exists := anthropicReq.ExtraParams["cache_control"]; exists {
 				switch v := cacheControlRaw.(type) {
 				case *schemas.CacheControl:
 					anthropicReq.CacheControl = v
@@ -2196,7 +2199,7 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 						}
 					}
 				}
-				delete(bifrostReq.Params.ExtraParams, "cache_control")
+				delete(anthropicReq.ExtraParams, "cache_control")
 			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {

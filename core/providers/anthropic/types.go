@@ -434,6 +434,13 @@ func (req *AnthropicMessageRequest) MarshalJSON() ([]byte, error) {
 		reqCopy := *req
 		reqCopy.stripCacheControlScope = false
 
+		// Strip scope from top-level cache_control
+		if reqCopy.CacheControl != nil && reqCopy.CacheControl.Scope != nil {
+			cc := *reqCopy.CacheControl
+			cc.Scope = nil
+			reqCopy.CacheControl = &cc
+		}
+
 		// Strip scope from tools
 		if len(reqCopy.Tools) > 0 {
 			toolsCopy := make([]AnthropicTool, len(reqCopy.Tools))
