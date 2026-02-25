@@ -1327,6 +1327,10 @@ compare_postgres_snapshots() {
     # routing_engine_used -> routing_engines_used (v1.4.7)
     local renamed_columns="routing_engine_used"
     
+    # Columns that are intentionally dropped during migration should be excluded
+    # enable_governance (dropped in v1.4.8)
+    local dropped_columns="enable_governance"
+    
     local before_col_array
     IFS=',' read -ra before_col_array <<< "$before_columns"
     
@@ -1334,6 +1338,10 @@ compare_postgres_snapshots() {
     for col in "${before_col_array[@]}"; do
       # Skip columns that are intentionally renamed during migration
       if [[ " $renamed_columns " == *" $col "* ]]; then
+        continue
+      fi
+      # Skip columns that are intentionally dropped during migration
+      if [[ " $dropped_columns " == *" $col "* ]]; then
         continue
       fi
       if [[ ! ",$after_columns," == *",$col,"* ]]; then
