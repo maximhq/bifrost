@@ -13,8 +13,9 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
+import { getErrorMessage, useDeleteVirtualKeyMutation, useBulkDeleteVirtualKeysMutation } from "@/lib/store"
 import { Customer, Team, VirtualKey } from "@/lib/types/governance"
 import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/utils/governance"
@@ -37,8 +38,10 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
   const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
   const [showDetailSheet, setShowDetailSheet] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false)
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false)
 
-  // Derive objects from props so they stay in sync with RTK cache updates
   const editingVirtualKey = useMemo(
     () => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
     [editingVirtualKeyId, virtualKeys],
@@ -53,6 +56,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
   const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
 
   const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
+  const [bulkDeleteVirtualKeys] = useBulkDeleteVirtualKeysMutation()
 
 	const handleDelete = async (vkId: string) => {
 		try {
@@ -63,13 +67,46 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 		}
 	};
 
+	const toggleRowSelection = (id: string) => {
+		const newSelected = new Set(selectedIds);
+		if (newSelected.has(id)) {
+			newSelected.delete(id);
+		} else {
+			newSelected.add(id);
+		}
+		setSelectedIds(newSelected);
+	};
+
+	const toggleSelectAll = () => {
+		if (selectedIds.size === virtualKeys.length && virtualKeys.length > 0) {
+			setSelectedIds(new Set());
+		} else {
+			setSelectedIds(new Set(virtualKeys.map(vk => vk.id)));
+		}
+	};
+
+	const handleBulkDelete = async () => {
+		setIsBulkDeleting(true);
+		try {
+			const keysToDelete = Array.from(selectedIds);
+			await bulkDeleteVirtualKeys(keysToDelete).unwrap();
+			toast.success(`${keysToDelete.length} virtual key(s) deleted successfully`);
+			setSelectedIds(new Set());
+			setShowBulkDeleteDialog(false);
+		} catch (error) {
+			toast.error(getErrorMessage(error));
+		} finally {
+			setIsBulkDeleting(false);
+		}
+	};
+
 	const handleAddVirtualKey = () => {
 		setEditingVirtualKeyId(null);
 		setShowVirtualKeySheet(true);
 	};
 
 	const handleEditVirtualKey = (vk: VirtualKey, e: React.MouseEvent) => {
-		e.stopPropagation(); // Prevent row click
+		e.stopPropagation();
 		setEditingVirtualKeyId(vk.id);
 		setShowVirtualKeySheet(true);
 	};
@@ -109,6 +146,8 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 		toast.success("Copied to clipboard");
 	};
 
+	const isAllSelected = selectedIds.size === virtualKeys.length && virtualKeys.length > 0;
+
 	return (
 		<>
 			{showVirtualKeySheet && (
@@ -135,10 +174,57 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 					</Button>
 				</div>
 
+				{selectedIds.size > 0 && (
+					<div className="flex items-center justify-between bg-secondary border border-border rounded-md px-4 py-3">
+						<span className="text-sm font-medium">
+							{selectedIds.size} key{selectedIds.size !== 1 ? 's' : ''} selected
+						</span>
+						<AlertDialog open={showBulkDeleteDialog} onOpenChange={setShowBulkDeleteDialog}>
+							<AlertDialogTrigger asChild>
+								<Button 
+									variant="destructive" 
+									size="sm" 
+									disabled={!hasDeleteAccess}
+									data-testid="bulk-delete-btn"
+								>
+									<Trash2 className="h-4 w-4 mr-2" />
+									Delete
+								</Button>
+							</AlertDialogTrigger>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Delete Virtual Keys</AlertDialogTitle>
+									<AlertDialogDescription>
+										Are you sure you want to delete {selectedIds.size} virtual key{selectedIds.size !== 1 ? 's' : ''}? This action cannot be undone.
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel>Cancel</AlertDialogCancel>
+									<AlertDialogAction 
+										onClick={handleBulkDelete} 
+										disabled={isBulkDeleting}
+										data-testid="confirm-bulk-delete-btn"
+									>
+										{isBulkDeleting ? "Deleting..." : "Delete"}
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
+					</div>
+				)}
+
 				<div className="rounded-sm border">
 					<Table data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
+								<TableHead className="w-12">
+									<Checkbox
+										checked={isAllSelected}
+										onCheckedChange={toggleSelectAll}
+										aria-label="Select all virtual keys"
+										data-testid="vk-select-all-checkbox"
+									/>
+								</TableHead>
 								<TableHead>Name</TableHead>
 								<TableHead>Key</TableHead>
 								<TableHead>Budget</TableHead>
@@ -149,13 +235,14 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 						<TableBody>
 							{virtualKeys?.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
+									<TableCell colSpan={6} className="text-muted-foreground py-8 text-center">
 										No virtual keys found. Create your first virtual key to get started.
 									</TableCell>
 								</TableRow>
 							) : (
 								virtualKeys?.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
+									const isSelected = selectedIds.has(vk.id);
 									const isExhausted =
 										(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
 										(vk.rate_limit?.token_current_usage &&
@@ -169,10 +256,29 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 										<TableRow
 											key={vk.id}
 											data-testid={`vk-row-${vk.name}`}
-											className="hover:bg-muted/50 cursor-pointer transition-colors"
-											onClick={() => handleRowClick(vk)}
+											className={cn(
+												"hover:bg-muted/50 transition-colors",
+												isSelected && "bg-secondary"
+											)}
 										>
-											<TableCell className="max-w-[200px]">
+											<TableCell 
+												className="w-12" 
+												onClick={(e) => {
+													e.stopPropagation();
+													toggleRowSelection(vk.id);
+												}}
+											>
+												<Checkbox
+													checked={isSelected}
+													onCheckedChange={() => toggleRowSelection(vk.id)}
+													aria-label={`Select ${vk.name}`}
+													data-testid={`vk-checkbox-${vk.name}`}
+												/>
+											</TableCell>
+											<TableCell 
+												className="max-w-[200px] cursor-pointer" 
+												onClick={() => handleRowClick(vk)}
+											>
 												<div className="truncate font-medium">{vk.name}</div>
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>

@@ -128,6 +128,31 @@ export const governanceApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		bulkDeleteVirtualKeys: builder.mutation<{ message: string; deleted_count: number; failed_ids: string[]; total: number }, string[]>({
+			query: (ids) => ({
+				url: "/governance/virtual-keys",
+				method: "DELETE",
+				body: { ids },
+			}),
+			async onQueryStarted(ids, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
+								if (!draft.virtual_keys) return;
+								draft.virtual_keys = draft.virtual_keys.filter((vk) => !ids.includes(vk.id));
+								draft.count = Math.max(0, draft.virtual_keys.length);
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
+		}),
+
 		// Teams
 		getTeams: builder.query<GetTeamsResponse, { customerId?: string }>({
 			query: ({ customerId } = {}) => ({
@@ -619,6 +644,7 @@ export const {
 	useCreateVirtualKeyMutation,
 	useUpdateVirtualKeyMutation,
 	useDeleteVirtualKeyMutation,
+	useBulkDeleteVirtualKeysMutation,
 
 	// Teams
 	useGetTeamsQuery,
