@@ -12,3 +12,4 @@
 - fix: backfill allowed models that were not in the list models response
 - feat: support for video generation requests
 - feat: add runway provider support
+- enhancement: improved model matching logic in model catalog

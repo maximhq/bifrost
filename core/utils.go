@@ -87,7 +87,7 @@ func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schema
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return providerKey != schemas.Ollama && providerKey != schemas.SGL && providerKey != schemas.VLLM
+	return !IsKeylessProvider(providerKey)
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
@@ -228,6 +228,11 @@ var standardProvidersSet = func() map[schemas.ModelProvider]struct{} {
 func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	_, ok := standardProvidersSet[providerKey]
 	return ok
+}
+
+// IsKeylessProvider reports whether providerKey is a keyless provider.
+func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.Ollama || providerKey == schemas.SGL || providerKey == schemas.VLLM
 }
 
 // IsStreamRequestType returns true if the given request type is a stream request.

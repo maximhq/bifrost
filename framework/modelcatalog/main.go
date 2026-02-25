@@ -330,7 +330,14 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 
 	providers := make([]schemas.ModelProvider, 0)
 	for provider, models := range mc.modelPool {
-		if slices.Contains(models, model) {
+		isModelMatch := false
+		for _, m := range models {
+			if m == model || mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) {
+				isModelMatch = true
+				break
+			}
+		}
+		if isModelMatch {
 			providers = append(providers, provider)
 		}
 	}
@@ -469,7 +476,14 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 func (mc *ModelCatalog) GetBaseModelName(model string) string {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
+	return mc.getBaseModelNameUnsafe(model)
+}
 
+// getBaseModelNameUnsafe returns the canonical base model name for a given model string without locking.
+// This is used to avoid locking overhead when getting the base model name for many models.
+// Make sure the caller function is holding the read lock before calling this function.
+// It is not safe to use this function when the model pool is being updated.
+func (mc *ModelCatalog) getBaseModelNameUnsafe(model string) string {
 	// Step 1: Direct lookup in base model index
 	if base, ok := mc.baseModelIndex[model]; ok {
 		return base
