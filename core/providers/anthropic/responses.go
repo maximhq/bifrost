@@ -2186,20 +2186,26 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				anthropicReq.ExtraParams[k] = v
 			}
 			if cacheControlRaw, exists := anthropicReq.ExtraParams["cache_control"]; exists {
+				parsed := false
 				switch v := cacheControlRaw.(type) {
 				case *schemas.CacheControl:
 					anthropicReq.CacheControl = v
+					parsed = true
 				case schemas.CacheControl:
 					anthropicReq.CacheControl = &v
+					parsed = true
 				default:
 					if data, err := json.Marshal(v); err == nil {
-						var parsed schemas.CacheControl
-						if json.Unmarshal(data, &parsed) == nil {
-							anthropicReq.CacheControl = &parsed
+						var cc schemas.CacheControl
+						if json.Unmarshal(data, &cc) == nil {
+							anthropicReq.CacheControl = &cc
+							parsed = true
 						}
 					}
 				}
-				delete(anthropicReq.ExtraParams, "cache_control")
+				if parsed {
+					delete(anthropicReq.ExtraParams, "cache_control")
+				}
 			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
