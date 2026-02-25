@@ -1,2 +1,3 @@
 - feat: added support for capturing configured logging headers and x-bf-lh-* prefixed headers into log metadata for both LLM and MCP requests
 - feat: add metadata column to logging table for async request tracking
+- chore: bump core version to 1.4.4 and framework to 1.2.22

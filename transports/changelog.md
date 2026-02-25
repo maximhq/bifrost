@@ -14,3 +14,4 @@
 - feat: add runway provider support
 - enhancement: improved model matching logic in model catalog
 - feat: support for preserving JSON key order in tool function parameters
+- chore: bump core version to 1.4.4 and framework to 1.2.22
