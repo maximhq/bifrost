@@ -241,7 +241,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</FormControl>
 											<SelectContent>
 												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders.map((provider) => (
+												{availableProviders.filter((p) => p.name).map((provider) => (
 													<SelectItem key={provider.name} value={provider.name}>
 														<RenderProviderIcon
 															provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}

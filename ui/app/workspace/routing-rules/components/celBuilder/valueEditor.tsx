@@ -211,6 +211,7 @@ export function ValueEditor({ value, handleOnChange, operator, fieldData, type, 
 					{fieldData.values.map((option) => {
 						if ("options" in option) return null; // Skip option groups
 						const optName = (option as any).name || "";
+						if (!optName) return null; // Skip empty values — SelectItem requires non-empty value
 						const optLabel = (option as any).label || optName;
 						const optDisabled = (option as any).disabled || false;
 

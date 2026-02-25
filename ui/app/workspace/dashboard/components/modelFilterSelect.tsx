@@ -17,7 +17,7 @@ export function ModelFilterSelect({ models, selectedModel, onModelChange, "data-
 			</SelectTrigger>
 			<SelectContent>
 				<SelectItem value="all">All Models</SelectItem>
-				{models.map((model) => (
+				{models.filter(Boolean).map((model) => (
 					<SelectItem key={model} value={model} className="text-xs">
 						{model}
 					</SelectItem>

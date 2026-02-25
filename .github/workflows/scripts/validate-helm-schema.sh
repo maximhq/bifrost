@@ -226,6 +226,32 @@ else
   echo "✅ MCP client config required fields match: [$HELM_MCP_REQUIRED]"
 fi
 
+# Check provider $def required fields
+CONFIG_PROVIDER_REQUIRED=$(jq -r '."$defs".provider.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PROVIDER_REQUIRED=$(jq -r '."$defs".provider.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PROVIDER_REQUIRED" != "$HELM_PROVIDER_REQUIRED" ]; then
+  echo "❌ Provider def required fields mismatch:"
+  echo "   Config: [$CONFIG_PROVIDER_REQUIRED]"
+  echo "   Helm:   [$HELM_PROVIDER_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Provider def required fields match: [$CONFIG_PROVIDER_REQUIRED]"
+fi
+
+# Check routing_rule required fields
+CONFIG_ROUTING_REQUIRED=$(jq -r '."$defs".routing_rule.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_ROUTING_REQUIRED=$(jq -r '.properties.bifrost.properties.governance.properties.routingRules.items.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_ROUTING_REQUIRED" != "$HELM_ROUTING_REQUIRED" ]; then
+  echo "❌ Routing rule required fields mismatch:"
+  echo "   Config: [$CONFIG_ROUTING_REQUIRED]"
+  echo "   Helm:   [$HELM_ROUTING_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Routing rule required fields match: [$CONFIG_ROUTING_REQUIRED]"
+fi
+
 echo ""
 echo "🔍 Checking required fields in guardrails..."
 
@@ -265,7 +291,20 @@ fi
 echo ""
 echo "🔍 Checking required fields in cluster config..."
 
-# Check cluster gossip config required fields
+# Check cluster gossip required fields (port, config)
+CONFIG_GOSSIP_TOP_REQUIRED=$(jq -r '."$defs".cluster_config.properties.gossip.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_GOSSIP_TOP_REQUIRED=$(jq -r '.properties.bifrost.properties.cluster.properties.gossip.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_GOSSIP_TOP_REQUIRED" != "$HELM_GOSSIP_TOP_REQUIRED" ]; then
+  echo "❌ Cluster gossip required fields mismatch:"
+  echo "   Config: [$CONFIG_GOSSIP_TOP_REQUIRED]"
+  echo "   Helm:   [$HELM_GOSSIP_TOP_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Cluster gossip required fields match: [$CONFIG_GOSSIP_TOP_REQUIRED]"
+fi
+
+# Check cluster gossip config required fields (timeout_seconds, success_threshold, failure_threshold)
 CONFIG_GOSSIP_REQUIRED=$(jq -r '."$defs".cluster_config.properties.gossip.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_GOSSIP_REQUIRED=$(jq -r '.properties.bifrost.properties.cluster.properties.gossip.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
@@ -295,6 +334,216 @@ if [ "$CONFIG_VKPC_REQUIRED" != "$HELM_VKPC_REQUIRED" ]; then
   ERRORS=$((ERRORS + 1))
 else
   echo "✅ Virtual key provider config required fields match: [$CONFIG_VKPC_REQUIRED]"
+fi
+
+# Check virtual_key_provider_config keys items required fields (key_id, name, value)
+CONFIG_VKPC_KEY_REQUIRED=$(jq -r '."$defs".virtual_key_provider_config.properties.keys.items.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VKPC_KEY_REQUIRED=$(jq -r '."$defs".virtualKeyProviderConfig.properties.keys.items.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VKPC_KEY_REQUIRED" != "$HELM_VKPC_KEY_REQUIRED" ]; then
+  echo "❌ VK provider config key items required fields mismatch:"
+  echo "   Config: [$CONFIG_VKPC_KEY_REQUIRED]"
+  echo "   Helm:   [$HELM_VKPC_KEY_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ VK provider config key items required fields match: [$CONFIG_VKPC_KEY_REQUIRED]"
+fi
+
+# Check VK provider config key azure_key_config required fields
+CONFIG_VKPC_AZURE_REQUIRED=$(jq -r '."$defs".virtual_key_provider_config.properties.keys.items.properties.azure_key_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VKPC_AZURE_REQUIRED=$(jq -r '."$defs".virtualKeyProviderConfig.properties.keys.items.properties.azure_key_config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VKPC_AZURE_REQUIRED" != "$HELM_VKPC_AZURE_REQUIRED" ]; then
+  echo "❌ VK provider config key azure_key_config required fields mismatch:"
+  echo "   Config: [$CONFIG_VKPC_AZURE_REQUIRED]"
+  echo "   Helm:   [$HELM_VKPC_AZURE_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ VK provider config key azure_key_config required fields match: [$CONFIG_VKPC_AZURE_REQUIRED]"
+fi
+
+# Check VK provider config key vertex_key_config required fields
+CONFIG_VKPC_VERTEX_REQUIRED=$(jq -r '."$defs".virtual_key_provider_config.properties.keys.items.properties.vertex_key_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VKPC_VERTEX_REQUIRED=$(jq -r '."$defs".virtualKeyProviderConfig.properties.keys.items.properties.vertex_key_config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VKPC_VERTEX_REQUIRED" != "$HELM_VKPC_VERTEX_REQUIRED" ]; then
+  echo "❌ VK provider config key vertex_key_config required fields mismatch:"
+  echo "   Config: [$CONFIG_VKPC_VERTEX_REQUIRED]"
+  echo "   Helm:   [$HELM_VKPC_VERTEX_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ VK provider config key vertex_key_config required fields match: [$CONFIG_VKPC_VERTEX_REQUIRED]"
+fi
+
+echo ""
+echo "🔍 Checking required fields in virtual key MCP config..."
+
+# Check virtual_key_mcp_config required fields
+CONFIG_VK_MCP_REQUIRED=$(jq -r '."$defs".virtual_key_mcp_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_VK_MCP_REQUIRED=$(jq -r '.properties.bifrost.properties.governance.properties.virtualKeys.items.properties.mcp_configs.items.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_VK_MCP_REQUIRED" != "$HELM_VK_MCP_REQUIRED" ]; then
+  echo "❌ Virtual key MCP config required fields mismatch:"
+  echo "   Config: [$CONFIG_VK_MCP_REQUIRED]"
+  echo "   Helm:   [$HELM_VK_MCP_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Virtual key MCP config required fields match: [$CONFIG_VK_MCP_REQUIRED]"
+fi
+
+echo ""
+echo "🔍 Checking required fields in MCP sub-configs..."
+
+# Check MCP stdio_config required fields
+CONFIG_MCP_STDIO_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.stdio_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_MCP_STDIO_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.stdioConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_MCP_STDIO_REQUIRED" != "$HELM_MCP_STDIO_REQUIRED" ]; then
+  echo "❌ MCP stdio config required fields mismatch:"
+  echo "   Config: [$CONFIG_MCP_STDIO_REQUIRED]"
+  echo "   Helm:   [$HELM_MCP_STDIO_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ MCP stdio config required fields match: [$CONFIG_MCP_STDIO_REQUIRED]"
+fi
+
+# Check MCP websocket_config required fields
+CONFIG_MCP_WS_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.websocket_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_MCP_WS_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.websocketConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_MCP_WS_REQUIRED" != "$HELM_MCP_WS_REQUIRED" ]; then
+  echo "❌ MCP websocket config required fields mismatch:"
+  echo "   Config: [$CONFIG_MCP_WS_REQUIRED]"
+  echo "   Helm:   [$HELM_MCP_WS_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ MCP websocket config required fields match: [$CONFIG_MCP_WS_REQUIRED]"
+fi
+
+# Check MCP http_config required fields
+CONFIG_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcp_client_config.properties.http_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_MCP_HTTP_REQUIRED=$(jq -r '."$defs".mcpClientConfig.properties.httpConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_MCP_HTTP_REQUIRED" != "$HELM_MCP_HTTP_REQUIRED" ]; then
+  echo "❌ MCP http config required fields mismatch:"
+  echo "   Config: [$CONFIG_MCP_HTTP_REQUIRED]"
+  echo "   Helm:   [$HELM_MCP_HTTP_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ MCP http config required fields match: [$CONFIG_MCP_HTTP_REQUIRED]"
+fi
+
+echo ""
+echo "🔍 Checking required fields in SAML/SCIM config..."
+
+# Check okta_config required fields
+CONFIG_OKTA_REQUIRED=$(jq -r '."$defs".okta_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_OKTA_REQUIRED" != "$HELM_OKTA_REQUIRED" ]; then
+  echo "❌ Okta config required fields mismatch:"
+  echo "   Config: [$CONFIG_OKTA_REQUIRED]"
+  echo "   Helm:   [$HELM_OKTA_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Okta config required fields match: [$CONFIG_OKTA_REQUIRED]"
+fi
+
+# Check entra_config required fields
+CONFIG_ENTRA_REQUIRED=$(jq -r '."$defs".entra_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.saml.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_ENTRA_REQUIRED" != "$HELM_ENTRA_REQUIRED" ]; then
+  echo "❌ Entra config required fields mismatch:"
+  echo "   Config: [$CONFIG_ENTRA_REQUIRED]"
+  echo "   Helm:   [$HELM_ENTRA_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Entra config required fields match: [$CONFIG_ENTRA_REQUIRED]"
+fi
+
+echo ""
+echo "🔍 Checking required fields in plugin configs..."
+
+# Check semantic cache plugin required fields (dimension)
+# Config uses an allOf pattern on plugins array items; Helm uses conditional on semanticCache.enabled
+CONFIG_SEMCACHE_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "semanticcache") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_SEMCACHE_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.semanticCache.then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_SEMCACHE_REQUIRED" != "$HELM_SEMCACHE_REQUIRED" ]; then
+  echo "❌ Semantic cache plugin config required fields mismatch:"
+  echo "   Config: [$CONFIG_SEMCACHE_REQUIRED]"
+  echo "   Helm:   [$HELM_SEMCACHE_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Semantic cache plugin config required fields match: [$CONFIG_SEMCACHE_REQUIRED]"
+fi
+
+# Check OTEL plugin required fields (collector_url, trace_type, protocol)
+CONFIG_OTEL_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "otel") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_OTEL_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.otel.then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_OTEL_REQUIRED" != "$HELM_OTEL_REQUIRED" ]; then
+  echo "❌ OTEL plugin config required fields mismatch:"
+  echo "   Config: [$CONFIG_OTEL_REQUIRED]"
+  echo "   Helm:   [$HELM_OTEL_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ OTEL plugin config required fields match: [$CONFIG_OTEL_REQUIRED]"
+fi
+
+# Check telemetry push_gateway required fields
+CONFIG_PUSHGW_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "telemetry") | .then.properties.config.properties.push_gateway.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PUSHGW_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.telemetry.properties.config.properties.push_gateway.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PUSHGW_REQUIRED" != "$HELM_PUSHGW_REQUIRED" ]; then
+  echo "❌ Telemetry push_gateway required fields mismatch:"
+  echo "   Config: [$CONFIG_PUSHGW_REQUIRED]"
+  echo "   Helm:   [$HELM_PUSHGW_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Telemetry push_gateway required fields match: [$CONFIG_PUSHGW_REQUIRED]"
+fi
+
+# Check telemetry push_gateway basic_auth required fields
+CONFIG_PUSHGW_AUTH_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "telemetry") | .then.properties.config.properties.push_gateway.properties.basic_auth.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PUSHGW_AUTH_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.telemetry.properties.config.properties.push_gateway.properties.basic_auth.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PUSHGW_AUTH_REQUIRED" != "$HELM_PUSHGW_AUTH_REQUIRED" ]; then
+  echo "❌ Telemetry push_gateway basic_auth required fields mismatch:"
+  echo "   Config: [$CONFIG_PUSHGW_AUTH_REQUIRED]"
+  echo "   Helm:   [$HELM_PUSHGW_AUTH_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Telemetry push_gateway basic_auth required fields match: [$CONFIG_PUSHGW_AUTH_REQUIRED]"
+fi
+
+# Check plugin array items required fields (enabled, name)
+# Config defines plugins as an array; Helm splits into named plugins + a "custom" array
+CONFIG_PLUGIN_ITEMS_REQUIRED=$(jq -r '.properties.plugins.items.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_PLUGIN_ITEMS_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.custom.items.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_PLUGIN_ITEMS_REQUIRED" != "$HELM_PLUGIN_ITEMS_REQUIRED" ]; then
+  echo "❌ Plugin items required fields mismatch:"
+  echo "   Config (plugins.items): [$CONFIG_PLUGIN_ITEMS_REQUIRED]"
+  echo "   Helm (plugins.custom.items): [$HELM_PLUGIN_ITEMS_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Plugin items required fields match: [$CONFIG_PLUGIN_ITEMS_REQUIRED]"
+fi
+
+# Check maxim plugin config required fields (api_key)
+# Note: Helm allows either config.api_key OR secretRef.name via anyOf
+CONFIG_MAXIM_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "maxim") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+HELM_MAXIM_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.maxim.then.anyOf[0].properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+
+if [ "$CONFIG_MAXIM_REQUIRED" != "$HELM_MAXIM_REQUIRED" ]; then
+  echo "❌ Maxim plugin config required fields mismatch:"
+  echo "   Config: [$CONFIG_MAXIM_REQUIRED]"
+  echo "   Helm (anyOf[0]): [$HELM_MAXIM_REQUIRED]"
+  ERRORS=$((ERRORS + 1))
+else
+  echo "✅ Maxim plugin config required fields match: [$CONFIG_MAXIM_REQUIRED]"
 fi
 
 echo ""
