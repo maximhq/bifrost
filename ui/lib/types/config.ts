@@ -184,6 +184,7 @@ export type RequestType =
 	| "responses"
 	| "responses_stream"
 	| "embedding"
+	| "rerank"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
@@ -193,6 +194,12 @@ export type RequestType =
 	| "image_edit"
 	| "image_edit_stream"
 	| "image_variation"
+	| "video_generation"
+	| "video_retrieve"
+	| "video_download"
+	| "video_delete"
+	| "video_list"
+	| "video_remix"
 	| "count_tokens"
 	| "batch_create"
 	| "batch_list"
@@ -235,6 +242,13 @@ export interface AllowedRequests {
 	image_variation: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
+	rerank: boolean;
+	video_generation: boolean;
+	video_retrieve: boolean;
+	video_download: boolean;
+	video_delete: boolean;
+	video_list: boolean;
+	video_remix: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

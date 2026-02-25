@@ -43,8 +43,8 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	return (
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
-			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} providerName={provider.name} />
-			{hasGovernanceAccess  ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
+			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
+			{hasGovernanceAccess ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
 		</div>
 	);
 }

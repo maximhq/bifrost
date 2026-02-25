@@ -156,7 +156,6 @@ function MetricCard({
 
 export default function ProviderGovernanceTable({ provider, className }: Props) {
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-
 	const { data: providerGovernanceData, isLoading } = useGetProviderGovernanceQuery(undefined, {
 		skip: !hasViewAccess,
 		pollingInterval: 5000,

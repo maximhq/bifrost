@@ -123,11 +123,11 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 
 			let rateLimitPayload:
 				| {
-						token_max_limit?: number | null;
-						token_reset_duration?: string | null;
-						request_max_limit?: number | null;
-						request_reset_duration?: string | null;
-				  }
+					token_max_limit?: number | null;
+					token_reset_duration?: string | null;
+					request_max_limit?: number | null;
+					request_reset_duration?: string | null;
+				}
 				| undefined;
 			if (hasRateLimit) {
 				rateLimitPayload = {

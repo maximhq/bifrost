@@ -346,7 +346,7 @@ export default function SecurityView() {
 							</label>
 							<p className="text-muted-foreground text-sm">
 								Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
-								rejected with a 400 error. Header names are case-insensitive. Requires governance to be enabled.
+								rejected with a 400 error. Header names are case-insensitive.
 							</p>
 						</div>
 						<Textarea

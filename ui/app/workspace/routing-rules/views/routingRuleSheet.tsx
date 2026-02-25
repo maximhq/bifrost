@@ -86,7 +86,6 @@ export function RoutingRuleSheet({
 	// State to track the query structure for the rule builder
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
 	const [builderKey, setBuilderKey] = useState(0);
-	const [showCELFallbackNotice, setShowCELFallbackNotice] = useState(false);
 
 	const {
 		register,

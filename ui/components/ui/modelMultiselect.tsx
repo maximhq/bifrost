@@ -19,8 +19,6 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
-	/** Allow users to enter custom values not in the predefined list */
-	allowCustomValuesForSingleSelect?: boolean;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -58,10 +56,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
-		allowCustomValuesForSingleSelect = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
-	const allowCreate = allowCustomValuesForSingleSelect || !isSingleSelect;
 
 	const [getModels, { data: modelsData, isLoading }] = useLazyGetModelsQuery();
 	const [getBaseModels, { data: baseModelsData, isLoading: isLoadingBaseModels }] = useLazyGetBaseModelsQuery();
@@ -194,10 +190,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	// Handle input change - track in both state and ref
 	// Per react-select docs: ignore input clear on blur, menu close, and set-value (selection)
 	const handleInputChange = useCallback((newValue: string, actionMeta: { action: string }) => {
-		// Don't clear input when selecting an option, blurring, or closing menu
-		if (actionMeta.action === "set-value") {
-			return;
-		}
+		// Don't clear input on blur or menu close (preserves search while browsing)
 		if (!isSingleSelect && (actionMeta.action === "input-blur" || actionMeta.action === "menu-close")) {
 			return;
 		}
@@ -230,9 +223,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			onChange={handleChange}
 			reload={loadOptions}
 			debounce={300}
-			isCreatable={allowCreate}
-			dynamicOptionCreation={allowCreate}
-			createOptionText={allowCreate ? "Press enter to add new model" : undefined}
+			isCreatable={true}
+			dynamicOptionCreation={true}
+			createOptionText={"Press enter to add new model"}
 			defaultOptions={defaultOptions.length > 0 ? defaultOptions : [] as Option<ModelOption>[]}
 			isLoading={shouldUseBaseModels ? isLoadingBaseModels : isLoading}
 			placeholder={placeholder}

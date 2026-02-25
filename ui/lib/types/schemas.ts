@@ -365,6 +365,13 @@ export const allowedRequestsSchema = z.object({
 	image_edit: z.boolean(),
 	image_edit_stream: z.boolean(),
 	image_variation: z.boolean(),
+	rerank: z.boolean(),
+	video_generation: z.boolean(),
+	video_retrieve: z.boolean(),
+	video_download: z.boolean(),
+	video_delete: z.boolean(),
+	video_list: z.boolean(),
+	video_remix: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
 });

@@ -51,7 +51,7 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-	
+
 	const tabs = useMemo(() => {
 		return availableTabs(provider, hasGovernanceAccess);
 	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess]);
