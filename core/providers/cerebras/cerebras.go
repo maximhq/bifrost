@@ -322,6 +322,11 @@ func (provider *CerebrasProvider) BatchCancel(_ *schemas.BifrostContext, _ []sch
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by Cerebras provider.
+func (provider *CerebrasProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by Cerebras provider.
 func (provider *CerebrasProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
@@ -375,4 +380,9 @@ func (provider *CerebrasProvider) ContainerFileContent(_ *schemas.BifrostContext
 // ContainerFileDelete is not supported by the Cerebras provider.
 func (provider *CerebrasProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Cerebras provider.
+func (provider *CerebrasProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.PassthroughRequest) (*fasthttp.Response, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughOperationRequest, provider.GetProviderKey())
 }

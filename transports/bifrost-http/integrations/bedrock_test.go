@@ -7,6 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,10 @@ func (m *mockHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor {
 
 func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
 	return 3600
+}
+
+func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
+	return nil
 }
 
 // Ensure mockHandlerStore implements lib.HandlerStore

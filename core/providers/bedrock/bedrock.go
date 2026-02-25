@@ -25,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // BedrockProvider implements the Provider interface for AWS Bedrock.
@@ -3240,6 +3241,11 @@ func (provider *BedrockProvider) BatchCancel(ctx *schemas.BifrostContext, keys [
 	return nil, lastErr
 }
 
+// BatchDelete is not supported by the Bedrock provider.
+func (provider *BedrockProvider) BatchDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults retrieves batch results from AWS Bedrock by trying each key until successful.
 // For Bedrock, results are stored in S3 at the output S3 URI prefix.
 // The output includes JSONL files with results (*.jsonl.out) and a manifest file.
@@ -3492,4 +3498,9 @@ func (provider *BedrockProvider) ContainerFileContent(_ *schemas.BifrostContext,
 // ContainerFileDelete is not supported by the Bedrock provider.
 func (provider *BedrockProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Bedrock provider.
+func (provider *BedrockProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.PassthroughRequest) (*fasthttp.Response, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughOperationRequest, provider.GetProviderKey())
 }

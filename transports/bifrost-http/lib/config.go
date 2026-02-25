@@ -26,6 +26,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -69,6 +70,9 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
+	// GetKVStore returns the shared in-memory kvstore instance.
+	// Returns nil if not initialized.
+	GetKVStore() *kvstore.Store
 }
 
 // Retry backoff constants for validation
@@ -295,6 +299,8 @@ type Config struct {
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
+	// Shared in-memory kvstore for transport-level protocol coordination.
+	KVStore *kvstore.Store
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -2481,6 +2487,11 @@ func (c *Config) GetAsyncJobResultTTL() int {
 		return c.ClientConfig.AsyncJobResultTTL
 	}
 	return logstore.DefaultAsyncJobResultTTL
+}
+
+// GetKVStore returns the shared in-memory kvstore instance.
+func (c *Config) GetKVStore() *kvstore.Store {
+	return c.KVStore
 }
 
 // GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.

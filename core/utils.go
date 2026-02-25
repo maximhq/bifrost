@@ -254,7 +254,7 @@ func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, 
 
 // isBatchRequestType returns true if the given request type is a batch API operation.
 func isBatchRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchResultsRequest
+	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchDeleteRequest || reqType == schemas.BatchResultsRequest
 }
 
 // isFileRequestType returns true if the given request type is a file API operation.

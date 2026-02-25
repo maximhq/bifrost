@@ -2636,7 +2636,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,9 @@ type VertexError struct {
 // This avoids creating and authenticating clients for every request.
 // Uses sync.Map for atomic operations without explicit locking.
 var vertexClientPool sync.Map
+
+// vertexLocationsPathRe matches /locations/{region} in Vertex API paths for region replacement.
+var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
 
 // getClientKey generates a unique key for caching authenticated clients.
 // It uses a hash of the auth credentials for security.
@@ -2466,6 +2470,11 @@ func (provider *VertexProvider) BatchCancel(_ *schemas.BifrostContext, _ []schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by Vertex AI provider.
 func (provider *VertexProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
@@ -2751,4 +2760,97 @@ func (provider *VertexProvider) ContainerFileContent(_ *schemas.BifrostContext, 
 // ContainerFileDelete is not supported by the Vertex provider.
 func (provider *VertexProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+func (provider *VertexProvider) Passthrough(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	req *schemas.PassthroughRequest,
+) (*fasthttp.Response, *schemas.BifrostError) {
+
+	keyRegion := key.VertexKeyConfig.Region.GetValue()
+	var baseURL string
+	if keyRegion == "global" {
+		baseURL = "https://aiplatform.googleapis.com/v1"
+	} else {
+		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", keyRegion)
+	}
+
+	// Replace region in path with key's configured region (client path may have different region)
+	path := req.Path
+	if strings.Contains(path, "/locations/") {
+		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
+	}
+
+	requestURL := baseURL + path
+	if req.RawQuery != "" {
+		requestURL += "?" + req.RawQuery
+	}
+
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	}
+
+	// Prepare fasthttp request
+	fasthttpReq := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+
+	fasthttpReq.Header.SetMethod(req.Method)
+
+	// If auth query is set, add it to the URL; otherwise use OAuth2
+	if authQuery != "" {
+		if strings.Contains(requestURL, "?") {
+			requestURL += "&" + authQuery
+		} else {
+			requestURL += "?" + authQuery
+		}
+	} else {
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			fasthttp.ReleaseRequest(fasthttpReq)
+			providerUtils.ReleaseStreamingResponse(resp)
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			fasthttp.ReleaseRequest(fasthttpReq)
+			providerUtils.ReleaseStreamingResponse(resp)
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	fasthttpReq.SetRequestURI(requestURL)
+
+	// Set extra headers from provider network config
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+
+	// Set safe headers from client request
+	for k, v := range req.SafeHeaders {
+		fasthttpReq.Header.Set(k, v)
+	}
+
+	// Set request body if present
+	if len(req.Body) > 0 {
+		fasthttpReq.SetBody(req.Body)
+	}
+
+	// Execute request
+	if err := provider.client.Do(fasthttpReq, resp); err != nil {
+		fasthttp.ReleaseRequest(fasthttpReq)
+		providerUtils.ReleaseStreamingResponse(resp)
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+	}
+
+	// Remove client from pool for authentication/authorization errors
+	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+	}
+
+	fasthttp.ReleaseRequest(fasthttpReq)
+	return resp, nil
 }

@@ -675,7 +675,7 @@ func NewBedrockRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, lo
 	routes = append(routes, createBedrockFilesRouteConfigs("/bedrock/files", handlerStore)...)
 
 	return &BedrockRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
 

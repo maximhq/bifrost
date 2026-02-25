@@ -2914,6 +2914,11 @@ func (provider *ReplicateProvider) BatchCancel(_ *schemas.BifrostContext, _ []sc
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by replicate provider.
+func (provider *ReplicateProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by replicate provider.
 func (provider *ReplicateProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
@@ -3407,4 +3412,9 @@ func (provider *ReplicateProvider) ContainerFileContent(_ *schemas.BifrostContex
 // ContainerFileDelete is not supported by replicate provider.
 func (provider *ReplicateProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the Replicate provider.
+func (provider *ReplicateProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.PassthroughRequest) (*fasthttp.Response, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughOperationRequest, provider.GetProviderKey())
 }

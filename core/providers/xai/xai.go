@@ -323,6 +323,11 @@ func (provider *XAIProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by xAI provider.
+func (provider *XAIProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by xAI provider.
 func (provider *XAIProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
@@ -400,4 +405,9 @@ func (provider *XAIProvider) ContainerFileContent(_ *schemas.BifrostContext, _ [
 // ContainerFileDelete is not supported by the xAI provider.
 func (provider *XAIProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+// Passthrough is not supported by the xAI provider.
+func (provider *XAIProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.PassthroughRequest) (*fasthttp.Response, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughOperationRequest, provider.GetProviderKey())
 }

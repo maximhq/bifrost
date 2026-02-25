@@ -1351,8 +1351,11 @@ func toFloat64(v interface{}) (float64, bool) {
 }
 
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
-func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfig {
-	config := ToolConfig{}
+func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) *ToolConfig {
+	if toolChoice == nil || (toolChoice.ChatToolChoiceStr == nil && toolChoice.ChatToolChoiceStruct == nil) {
+		return nil
+	}
+	config := &ToolConfig{}
 	functionCallingConfig := FunctionCallingConfig{}
 
 	if toolChoice.ChatToolChoiceStr != nil {

@@ -127,6 +127,7 @@ const (
 	BatchRetrieveRequest         RequestType = "batch_retrieve"
 	BatchCancelRequest           RequestType = "batch_cancel"
 	BatchResultsRequest          RequestType = "batch_results"
+	BatchDeleteRequest           RequestType = "batch_delete"
 	FileUploadRequest            RequestType = "file_upload"
 	FileListRequest              RequestType = "file_list"
 	FileRetrieveRequest          RequestType = "file_retrieve"
@@ -144,6 +145,7 @@ const (
 	RerankRequest                RequestType = "rerank"
 	CountTokensRequest           RequestType = "count_tokens"
 	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
+	PassthroughOperationRequest  RequestType = "passthrough"
 	UnknownRequest               RequestType = "unknown"
 )
 
@@ -285,6 +287,7 @@ type BifrostRequest struct {
 	BatchRetrieveRequest         *BifrostBatchRetrieveRequest
 	BatchCancelRequest           *BifrostBatchCancelRequest
 	BatchResultsRequest          *BifrostBatchResultsRequest
+	BatchDeleteRequest           *BifrostBatchDeleteRequest
 	ContainerCreateRequest       *BifrostContainerCreateRequest
 	ContainerListRequest         *BifrostContainerListRequest
 	ContainerRetrieveRequest     *BifrostContainerRetrieveRequest
@@ -385,6 +388,11 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.BatchResultsRequest.Provider, *br.BatchResultsRequest.Model, nil
 		}
 		return br.BatchResultsRequest.Provider, "", nil
+	case br.BatchDeleteRequest != nil:
+		if br.BatchDeleteRequest.Model != nil {
+			return br.BatchDeleteRequest.Provider, *br.BatchDeleteRequest.Model, nil
+		}
+		return br.BatchDeleteRequest.Provider, "", nil
 	case br.ContainerCreateRequest != nil:
 		return br.ContainerCreateRequest.Provider, "", nil
 	case br.ContainerListRequest != nil:
@@ -611,6 +619,7 @@ type BifrostResponse struct {
 	BatchRetrieveResponse         *BifrostBatchRetrieveResponse
 	BatchCancelResponse           *BifrostBatchCancelResponse
 	BatchResultsResponse          *BifrostBatchResultsResponse
+	BatchDeleteResponse           *BifrostBatchDeleteResponse
 	ContainerCreateResponse       *BifrostContainerCreateResponse
 	ContainerListResponse         *BifrostContainerListResponse
 	ContainerRetrieveResponse     *BifrostContainerRetrieveResponse
@@ -678,6 +687,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.BatchRetrieveResponse.ExtraFields
 	case r.BatchCancelResponse != nil:
 		return &r.BatchCancelResponse.ExtraFields
+	case r.BatchDeleteResponse != nil:
+		return &r.BatchDeleteResponse.ExtraFields
 	case r.BatchResultsResponse != nil:
 		return &r.BatchResultsResponse.ExtraFields
 	case r.ContainerCreateResponse != nil:

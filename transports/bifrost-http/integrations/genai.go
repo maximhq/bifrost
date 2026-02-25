@@ -2,9 +2,10 @@ package integrations
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
 	"strings"
 
@@ -22,6 +23,8 @@ import (
 const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
 
 const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
+
+const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
 
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
@@ -76,6 +79,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
 				return &gemini.GeminiVideoGenerationRequest{}
+			}
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.BatchCreateRequest && ctx.Value(isGeminiBatchCreateRequestContextKey) != nil {
+				return &gemini.GeminiBatchCreateRequest{}
 			}
 			return &gemini.GeminiGenerationRequest{}
 		},
@@ -132,6 +138,61 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			return nil, errors.New("invalid request type")
 		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if geminiReq, ok := req.(*gemini.GeminiBatchCreateRequest); ok {
+				// Get provider from context
+				provider, ok := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+				if !ok {
+					provider = schemas.Gemini
+				}
+
+				// Convert Gemini batch request items directly to Bifrost format
+				var requests []schemas.BatchRequestItem
+				if geminiReq.Batch.InputConfig.Requests != nil && len(geminiReq.Batch.InputConfig.Requests.Requests) > 0 {
+					requests = make([]schemas.BatchRequestItem, len(geminiReq.Batch.InputConfig.Requests.Requests))
+					for i, geminiItem := range geminiReq.Batch.InputConfig.Requests.Requests {
+						requestMap := make(map[string]interface{})
+						if geminiItem.Request.Contents != nil {
+							requestMap["contents"] = geminiItem.Request.Contents
+						}
+						if geminiItem.Request.GenerationConfig != nil {
+							requestMap["generationConfig"] = geminiItem.Request.GenerationConfig
+						}
+						if len(geminiItem.Request.SafetySettings) > 0 {
+							requestMap["safetySettings"] = geminiItem.Request.SafetySettings
+						}
+						if geminiItem.Request.SystemInstruction != nil {
+							requestMap["systemInstruction"] = geminiItem.Request.SystemInstruction
+						}
+
+						requests[i] = schemas.BatchRequestItem{
+							CustomID: "",
+							Body:     requestMap,
+						}
+						// Extract custom_id from metadata
+						if geminiItem.Metadata != nil && geminiItem.Metadata.Key != "" {
+							requests[i].CustomID = geminiItem.Metadata.Key
+						}
+					}
+				}
+
+				bifrostBatchReq := &schemas.BifrostBatchCreateRequest{
+					Provider: provider,
+					Requests: requests,
+				}
+
+				// Handle file-based input
+				if geminiReq.Batch.InputConfig.FileName != "" {
+					bifrostBatchReq.InputFileID = geminiReq.Batch.InputConfig.FileName
+				}
+
+				return &BatchRequest{
+					Type:          schemas.BatchCreateRequest,
+					CreateRequest: bifrostBatchReq,
+				}, nil
+			}
+			return nil, errors.New("invalid batch create request type")
+		},
 		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			return gemini.ToGeminiEmbeddingResponse(resp), nil
 		},
@@ -152,6 +213,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
 			return gemini.ToGeminiVideoGenerationResponse(resp), nil
+		},
+		BatchCreateResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCreateResponse) (interface{}, error) {
+			return gemini.ToGeminiBatchJobResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -227,27 +291,122 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			return schemas.FileUploadRequest
 		},
 		GetRequestTypeInstance: func(ctx context.Context) interface{} {
-			return &schemas.BifrostFileUploadRequest{}
+			return &gemini.GeminiFileUploadHandlerReq{}
 		},
-		RequestParser: parseGeminiFileUploadRequest,
-		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
-			if uploadReq, ok := req.(*schemas.BifrostFileUploadRequest); ok {
-				uploadReq.Provider = schemas.Gemini
-				return &FileRequest{
-					Type:          schemas.FileUploadRequest,
-					UploadRequest: uploadReq,
-				}, nil
+		// RequestParser detects which step we are in and populates the request
+		// object accordingly without trying to JSON-decode binary payloads.
+		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
+			r := req.(*gemini.GeminiFileUploadHandlerReq)
+			uploadID := string(ctx.QueryArgs().Peek("upload_id"))
+			if uploadID != "" {
+				// Step 2: body is raw binary — do not JSON-decode.
+				r.UploadID = uploadID
+				r.FileData = ctx.Request.Body()
+				return nil
 			}
-			return nil, errors.New("invalid file upload request type")
+			// Step 1: body is JSON metadata.
+			if body := ctx.Request.Body(); len(body) > 0 {
+				return sonic.Unmarshal(body, r)
+			}
+			return nil
+		},
+		// ShortCircuit handles step 1 for non-Gemini providers: it acknowledges
+		// the initiation by returning a synthetic upload URL and exits early so
+		// that no Bifrost call is made.
+		ShortCircuit: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error) {
+			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
+			if !ok || r.UploadID != "" {
+				return false, nil
+			}
+
+			uploadID, err := generateUploadID()
+			if err != nil {
+				return true, fmt.Errorf("failed to generate upload ID: %w", err)
+			}
+
+			kvStore := handlerStore.GetKVStore()
+			if kvStore == nil {
+				return true, errors.New("kvstore not initialized")
+			}
+
+			session := &gemini.GeminiResumableUploadSession{
+				DisplayName: r.File.DisplayName,
+				MimeType:    r.MimeType,
+				Provider:    r.Provider,
+			}
+			if err := kvStore.Set(uploadID, session); err != nil {
+				return true, fmt.Errorf("failed to store upload session: %w", err)
+			}
+
+			scheme := "http"
+			if ctx.IsTLS() {
+				scheme = "https"
+			}
+			uploadURL := scheme + "://" + string(ctx.Host()) + pathPrefix + "/upload/v1beta/files?upload_id=" + uploadID
+
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			ctx.Response.Header.Set("X-Goog-Upload-URL", uploadURL)
+			ctx.Response.Header.Set("X-Goog-Upload-Status", "active")
+			ctx.SetContentType("application/json")
+			ctx.SetBody([]byte("{}"))
+			return true, nil
+		},
+		// FileRequestConverter handles step 2: retrieves the saved session from
+		// the KV store and builds a full BifrostFileUploadRequest.
+		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
+			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
+			if !ok {
+				return nil, errors.New("invalid file upload request type")
+			}
+			if r.UploadID == "" {
+				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
+			}
+
+			kvStore := handlerStore.GetKVStore()
+			if kvStore == nil {
+				return nil, errors.New("kvstore not initialized")
+			}
+
+			val, err := kvStore.GetAndDelete(r.UploadID)
+			if err != nil {
+				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
+			}
+
+			session, ok := val.(*gemini.GeminiResumableUploadSession)
+			if !ok {
+				return nil, errors.New("invalid upload session type in kvstore")
+			}
+
+			filename := session.DisplayName
+			if filename == "" {
+				filename = "upload"
+			}
+			contentType := session.MimeType
+
+			return &FileRequest{
+				Type: schemas.FileUploadRequest,
+				UploadRequest: &schemas.BifrostFileUploadRequest{
+					Provider:    session.Provider,
+					File:        r.FileData,
+					Filename:    filename,
+					ContentType: &contentType,
+					Purpose:     schemas.FilePurposeBatch,
+				},
+			}, nil
 		},
 		FileUploadResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileUploadResponse) (interface{}, error) {
-			if resp.ExtraFields.RawResponse != nil {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileUploadResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiFileUploadParams,
+		PostCallback: func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error {
+			ctx.Response.Header.Set("X-Goog-Upload-Status", "final")
+			return nil
 		},
 	})
 
@@ -264,7 +423,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
-				listReq.Provider = schemas.Gemini
 				return &FileRequest{
 					Type:        schemas.FileListRequest,
 					ListRequest: listReq,
@@ -273,7 +431,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			return nil, errors.New("invalid file list request type")
 		},
 		FileListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileListResponse) (interface{}, error) {
-			if resp.ExtraFields.RawResponse != nil {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileListResponse(resp), nil
@@ -297,7 +455,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if retrieveReq, ok := req.(*schemas.BifrostFileRetrieveRequest); ok {
-				retrieveReq.Provider = schemas.Gemini
 				return &FileRequest{
 					Type:            schemas.FileRetrieveRequest,
 					RetrieveRequest: retrieveReq,
@@ -306,7 +463,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			return nil, errors.New("invalid file retrieve request type")
 		},
 		FileRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileRetrieveResponse) (interface{}, error) {
-			if resp.ExtraFields.RawResponse != nil {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return gemini.ToGeminiFileRetrieveResponse(resp), nil
@@ -330,7 +487,6 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			if deleteReq, ok := req.(*schemas.BifrostFileDeleteRequest); ok {
-				deleteReq.Provider = schemas.Gemini
 				return &FileRequest{
 					Type:          schemas.FileDeleteRequest,
 					DeleteRequest: deleteReq,
@@ -339,7 +495,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			return nil, errors.New("invalid file delete request type")
 		},
 		FileDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostFileDeleteResponse) (interface{}, error) {
-			if resp.ExtraFields.RawResponse != nil {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
 				return resp.ExtraFields.RawResponse, nil
 			}
 			return map[string]interface{}{}, nil // Gemini returns empty response on delete
@@ -353,54 +509,188 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 	return routes
 }
 
-// parseGeminiFileUploadRequest parses multipart/form-data for Gemini file upload requests
-func parseGeminiFileUploadRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
-	uploadReq, ok := req.(*schemas.BifrostFileUploadRequest)
-	if !ok {
-		return errors.New("invalid request type for file upload")
+func CreateGenAIBatchRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+	// List batches endpoint - GET /v1beta/batches
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/batches",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchListRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchListRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+				return &BatchRequest{
+					Type:        schemas.BatchListRequest,
+					ListRequest: listReq,
+				}, nil
+			}
+			return nil, errors.New("invalid batch list request type")
+		},
+		BatchListResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchListResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return gemini.ToGeminiBatchListResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiFileListQueryParams,
+	})
+	// Retrieve batch endpoint - GET /v1beta/batches/{batch_id}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/batches/{batch_id}",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchRetrieveRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if retrieveReq, ok := req.(*schemas.BifrostBatchRetrieveRequest); ok {
+				return &BatchRequest{
+					Type:            schemas.BatchRetrieveRequest,
+					RetrieveRequest: retrieveReq,
+				}, nil
+			}
+			return nil, errors.New("invalid batch retrieve request type")
+		},
+		BatchRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchRetrieveResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return gemini.ToGeminiBatchRetrieveResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiBatchIDFromPath,
+	})
+	// Retrieve batch endpoint - POST /v1beta/batches/{batch_id}:cancel
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/batches/{batch_id}",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCancelRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchCancelRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if cancelReq, ok := req.(*schemas.BifrostBatchCancelRequest); ok {
+				return &BatchRequest{
+					Type:          schemas.BatchCancelRequest,
+					CancelRequest: cancelReq,
+				}, nil
+			}
+			return nil, errors.New("invalid batch cancel request type")
+		},
+		BatchCancelResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchCancelResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return map[string]interface{}{}, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiBatchIDFromPath,
+	})
+	// Delete batch endpoint - DELETE /v1beta/batches/{batch_id}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/batches/{batch_id}",
+		Method: "DELETE",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchDeleteRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostBatchDeleteRequest{}
+		},
+		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
+			if deleteReq, ok := req.(*schemas.BifrostBatchDeleteRequest); ok {
+				return &BatchRequest{
+					Type:          schemas.BatchDeleteRequest,
+					DeleteRequest: deleteReq,
+				}, nil
+			}
+			return nil, errors.New("invalid batch delete request type")
+		},
+		BatchDeleteResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchDeleteResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Gemini && resp.ExtraFields.RawResponse != nil {
+				return resp.ExtraFields.RawResponse, nil
+			}
+			return map[string]interface{}{}, nil // Gemini returns empty response on delete
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiBatchIDFromPath,
+	})
+
+	return routes
+}
+
+// extractGeminiBatchIDFromPath extracts batch_id from path parameters for Gemini
+func extractGeminiBatchIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+
+	batchID := ctx.UserValue("batch_id")
+	if batchID == nil {
+		return errors.New("batch_id is required")
 	}
 
-	// Parse multipart form
-	form, err := ctx.MultipartForm()
-	if err != nil {
-		return err
+	batchIDStr, ok := batchID.(string)
+	if !ok || batchIDStr == "" {
+		return errors.New("batch_id must be a non-empty string")
 	}
 
-	// Extract metadata (optional JSON with displayName)
-	if metadataValues := form.Value["metadata"]; len(metadataValues) > 0 && metadataValues[0] != "" {
-		// Could parse JSON metadata to extract displayName
-		// For now, just use filename from file header
-	}
+	// strip :cancel from batchID
+	batchIDStr = strings.TrimSuffix(batchIDStr, ":cancel")
 
-	// Extract file (required)
-	fileHeaders := form.File["file"]
-	if len(fileHeaders) == 0 {
-		return errors.New("file field is required")
+	switch r := req.(type) {
+	case *schemas.BifrostBatchCancelRequest:
+		r.BatchID = batchIDStr
+		r.Provider = provider
+	case *schemas.BifrostBatchRetrieveRequest:
+		r.BatchID = batchIDStr
+		r.Provider = provider
+	case *schemas.BifrostBatchDeleteRequest:
+		r.BatchID = batchIDStr
+		r.Provider = provider
 	}
-
-	fileHeader := fileHeaders[0]
-	file, err := fileHeader.Open()
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	// Read file data
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		return err
-	}
-
-	uploadReq.File = fileData
-	uploadReq.Filename = fileHeader.Filename
 
 	return nil
 }
 
 // extractGeminiFileListQueryParams extracts query parameters for Gemini file list requests
 func extractGeminiFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+
 	if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
-		listReq.Provider = schemas.Gemini
+		listReq.Provider = provider
+
+		// Extract pageSize from query parameters
+		if pageSizeStr := string(ctx.QueryArgs().Peek("pageSize")); pageSizeStr != "" {
+			if pageSize, err := strconv.Atoi(pageSizeStr); err == nil {
+				listReq.Limit = pageSize
+			}
+		}
+
+		// Extract pageToken from query parameters
+		if pageToken := string(ctx.QueryArgs().Peek("pageToken")); pageToken != "" {
+			listReq.After = &pageToken
+		}
+	} else if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
+		listReq.Provider = provider
 
 		// Extract pageSize from query parameters
 		if pageSizeStr := string(ctx.QueryArgs().Peek("pageSize")); pageSizeStr != "" {
@@ -420,6 +710,8 @@ func extractGeminiFileListQueryParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 
 // extractGeminiFileIDFromPath extracts file_id from path parameters for Gemini
 func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+
 	fileID := ctx.UserValue("file_id")
 	if fileID == nil {
 		return errors.New("file_id is required")
@@ -433,10 +725,23 @@ func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	switch r := req.(type) {
 	case *schemas.BifrostFileRetrieveRequest:
 		r.FileID = fileIDStr
-		r.Provider = schemas.Gemini
+		r.Provider = provider
 	case *schemas.BifrostFileDeleteRequest:
 		r.FileID = fileIDStr
-		r.Provider = schemas.Gemini
+		r.Provider = provider
+	}
+
+	return nil
+}
+
+// extractGeminiFileUploadParams populates provider and MIME-type fields on the
+// upload handler request from HTTP headers.
+func extractGeminiFileUploadParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+
+	if r, ok := req.(*gemini.GeminiFileUploadHandlerReq); ok {
+		r.Provider = provider
+		r.MimeType = string(ctx.Request.Header.Peek("x-goog-upload-header-content-type"))
 	}
 
 	return nil
@@ -481,9 +786,16 @@ func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
 func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
 	routes = append(routes, CreateGenAIFileRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
+
+	passThroughCfg := &PassthroughConfig{
+		Provider:         schemas.Gemini,
+		ProviderDetector: detectProviderFromGenAIRequest,
+		StripPrefix:      []string{"/genai/v1beta1", "/genai/v1beta", "/genai/v1", "/genai"},
+	}
 
 	return &GenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, passThroughCfg, logger),
 	}
 }
 
@@ -498,6 +810,10 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	if model == nil {
 		return fmt.Errorf("model parameter is required")
 	}
+
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+	// set in context
+	bifrostCtx.SetValue(bifrostContextKeyProvider, provider)
 
 	modelStr := model.(string)
 
@@ -566,6 +882,8 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 			r.Model = modelStr
 		}
 		return nil
+	case *gemini.GeminiBatchCreateRequest:
+		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
@@ -587,6 +905,7 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 
 	isPredict := strings.HasSuffix(modelStr, ":predict")
 	isVideoGeneration := strings.HasSuffix(modelStr, ":predictLongRunning")
+	isBatchCreate := strings.HasSuffix(modelStr, ":batchGenerateContent")
 
 	// Check if this is an embedding request
 	isEmbedding := false
@@ -606,6 +925,11 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	if isVideoGeneration {
 		ctx.SetUserValue(isGeminiVideoGenerationRequestContextKey, true)
 		return modelStr, schemas.VideoGenerationRequest
+	}
+
+	if isBatchCreate {
+		ctx.SetUserValue(isGeminiBatchCreateRequestContextKey, true)
+		return modelStr, schemas.BatchCreateRequest
 	}
 
 	// Remove Google GenAI API endpoint suffixes if present
@@ -843,4 +1167,46 @@ func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *s
 	}
 
 	return nil
+}
+
+// detectProviderFromGenAIRequest determines if the request is for Vertex AI or Gemini
+// based on URL path, model name format, and authorization type
+func detectProviderFromGenAIRequest(ctx *fasthttp.RequestCtx) schemas.ModelProvider {
+	path := string(ctx.Path())
+
+	// Primary detection: URL contains /projects/{PROJECT_ID}/locations/{LOCATION}/
+	if strings.Contains(path, "/projects/") && strings.Contains(path, "/locations/") {
+		return schemas.Vertex
+	}
+
+	// Fallback detection: Check model name in request body
+	body := ctx.Request.Body()
+	if len(body) > 0 {
+		var reqBody struct {
+			Model string `json:"model,omitempty"`
+		}
+		if err := sonic.Unmarshal(body, &reqBody); err == nil {
+			if reqBody.Model != "" && strings.Contains(reqBody.Model, "projects/") && strings.Contains(reqBody.Model, "/locations/") {
+				return schemas.Vertex
+			}
+		}
+	}
+
+	// Tertiary check: OAuth2 token (ya29.) indicates Vertex
+	authHeader := string(ctx.Request.Header.Peek("authorization"))
+	if strings.HasPrefix(strings.TrimPrefix(authHeader, "Bearer "), "ya29.") {
+		return schemas.Vertex
+	}
+
+	// Default to Gemini
+	return schemas.Gemini
+}
+
+func generateUploadID() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(b)
+	return "bf_" + encoded, nil
 }
