@@ -719,6 +719,15 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET routing_engine_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # Dropped columns - columns that existed in older versions but were removed
+  # -------------------------------------------------------------------------
+
+  # config_client.enable_governance (dropped in v1.4.8)
+  if column_exists_postgres "config_client" "enable_governance"; then
+    echo "UPDATE config_client SET enable_governance = true WHERE id = 1;" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -750,6 +759,17 @@ append_dynamic_columns_sqlite() {
   # We always emit them - if the column doesn't exist, the UPDATE will fail silently.
   echo "UPDATE logs SET routing_engine_used = 'routing-rule' WHERE id = 'log-migration-test-001';" >> "$output_file"
   echo "UPDATE logs SET routing_engine_used = 'loadbalancing' WHERE id = 'log-migration-test-002';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # Dropped columns - columns that existed in older versions but were removed
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_client.enable_governance (dropped in v1.4.8)
+    if column_exists_sqlite "$config_db" "config_client" "enable_governance"; then
+      echo "UPDATE config_client SET enable_governance = true WHERE id = 1;" >> "$output_file"
+    fi
+  fi
 }
 
 # ============================================================================

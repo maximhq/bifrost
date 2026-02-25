@@ -1522,14 +1522,12 @@ func loadAuthConfigFromFile(ctx context.Context, config *Config, configData *Con
 	if authConfig == nil {
 		return
 	}
-	// File config present: validate env vars
+	// File config present: warn about empty env vars but continue processing
 	if authConfig.AdminUserName != nil && authConfig.AdminUserName.GetValue() == "" && authConfig.AdminUserName.IsFromEnv() {
 		logger.Warn("username set with env var but value is empty: %s", authConfig.AdminUserName.EnvVar)
-		return
 	}
 	if authConfig.AdminPassword != nil && authConfig.AdminPassword.GetValue() == "" && authConfig.AdminPassword.IsFromEnv() {
 		logger.Warn("password set with env var but value is empty: %s", authConfig.AdminPassword.EnvVar)
-		return
 	}
 	if authConfig.AdminPassword == nil || authConfig.AdminUserName == nil {
 		logger.Warn("auth config is missing admin_username or admin_password, skipping auth config processing")

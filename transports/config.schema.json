@@ -77,6 +77,14 @@
           "type": "boolean",
           "description": "Enforce governance header. This will require every incoming request to include x-bf-vk header."
         },
+        "enforce_auth_on_inference": {
+          "type": "boolean",
+          "description": "Require auth (VK, API key, or user token) on inference endpoints"
+        },
+        "enforce_scim_auth": {
+          "type": "boolean",
+          "description": "Deprecated: use enforce_auth_on_inference"
+        },
         "allow_direct_keys": {
           "type": "boolean",
           "description": "Allow provider keys"
@@ -1061,6 +1069,8 @@
                     }
                   },
                   "required": [
+                    "provider",
+                    "keys",
                     "dimension"
                   ],
                   "additionalProperties": false

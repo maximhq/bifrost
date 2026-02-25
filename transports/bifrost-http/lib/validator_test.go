@@ -1,9 +1,28 @@
 package lib
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// loadLocalSchema reads the local config.schema.json for use in tests,
+// avoiding remote fetches during test execution.
+func loadLocalSchema(t *testing.T) []byte {
+	t.Helper()
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to get current file path")
+	}
+	schemaPath := filepath.Join(filepath.Dir(filename), "..", "..", "config.schema.json")
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("failed to read config.schema.json: %v", err)
+	}
+	return data
+}
 
 func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	// Minimal valid config matching the schema
@@ -22,7 +41,7 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid config to pass validation, got error: %v", err)
 	}
@@ -32,7 +51,7 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	// Empty object should be valid (all properties are optional)
 	emptyConfig := `{}`
 
-	err := ValidateConfigSchema([]byte(emptyConfig))
+	err := ValidateConfigSchema([]byte(emptyConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected empty config to pass validation, got error: %v", err)
 	}
@@ -41,7 +60,7 @@ func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 func TestValidateConfigSchema_InvalidJSON(t *testing.T) {
 	invalidJSON := `{invalid json`
 
-	err := ValidateConfigSchema([]byte(invalidJSON))
+	err := ValidateConfigSchema([]byte(invalidJSON), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected invalid JSON to fail validation")
 	}
@@ -58,7 +77,7 @@ func TestValidateConfigSchema_InvalidType(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config with wrong type to fail validation")
 	}
@@ -73,7 +92,7 @@ func TestValidateConfigSchema_InvalidEnum(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config with invalid enum value to fail validation")
 	}
@@ -91,7 +110,7 @@ func TestValidateConfigSchema_MissingRequiredField(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing required fields to fail validation")
 	}
@@ -117,7 +136,7 @@ func TestValidateConfigSchema_ValidGovernanceConfig(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid governance config to pass validation, got error: %v", err)
 	}
@@ -135,7 +154,7 @@ func TestValidateConfigSchema_ValidClientConfig(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid client config to pass validation, got error: %v", err)
 	}
@@ -149,7 +168,7 @@ func TestValidateConfigSchema_InvalidMinimum(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config with value below minimum to fail validation")
 	}
@@ -175,7 +194,7 @@ func TestValidateConfigSchema_ProviderKey_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid provider key config to pass validation, got error: %v", err)
 	}
@@ -196,7 +215,7 @@ func TestValidateConfigSchema_ProviderKey_MissingName(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in provider key to fail validation")
 	}
@@ -217,7 +236,7 @@ func TestValidateConfigSchema_ProviderKey_MissingWeight(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'weight' in provider key to fail validation")
 	}
@@ -241,7 +260,7 @@ func TestValidateConfigSchema_Budget_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid budget config to pass validation, got error: %v", err)
 	}
@@ -260,7 +279,7 @@ func TestValidateConfigSchema_Budget_MissingId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'id' in budget to fail validation")
 	}
@@ -279,7 +298,7 @@ func TestValidateConfigSchema_Budget_MissingMaxLimit(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'max_limit' in budget to fail validation")
 	}
@@ -298,7 +317,7 @@ func TestValidateConfigSchema_Budget_MissingResetDuration(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'reset_duration' in budget to fail validation")
 	}
@@ -322,7 +341,7 @@ func TestValidateConfigSchema_RateLimit_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid rate limit config to pass validation, got error: %v", err)
 	}
@@ -341,7 +360,7 @@ func TestValidateConfigSchema_RateLimit_MissingId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'id' in rate limit to fail validation")
 	}
@@ -364,7 +383,7 @@ func TestValidateConfigSchema_Customer_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid customer config to pass validation, got error: %v", err)
 	}
@@ -382,7 +401,7 @@ func TestValidateConfigSchema_Customer_MissingId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'id' in customer to fail validation")
 	}
@@ -400,7 +419,7 @@ func TestValidateConfigSchema_Customer_MissingName(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in customer to fail validation")
 	}
@@ -423,7 +442,7 @@ func TestValidateConfigSchema_Team_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid team config to pass validation, got error: %v", err)
 	}
@@ -441,7 +460,7 @@ func TestValidateConfigSchema_Team_MissingId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'id' in team to fail validation")
 	}
@@ -459,7 +478,7 @@ func TestValidateConfigSchema_Team_MissingName(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in team to fail validation")
 	}
@@ -483,7 +502,7 @@ func TestValidateConfigSchema_VirtualKey_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid virtual key config to pass validation, got error: %v", err)
 	}
@@ -502,7 +521,7 @@ func TestValidateConfigSchema_VirtualKey_MissingId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'id' in virtual key to fail validation")
 	}
@@ -521,7 +540,7 @@ func TestValidateConfigSchema_VirtualKey_MissingName(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in virtual key to fail validation")
 	}
@@ -550,7 +569,7 @@ func TestValidateConfigSchema_VirtualKeyProviderConfig_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid virtual key provider config to pass validation, got error: %v", err)
 	}
@@ -575,7 +594,7 @@ func TestValidateConfigSchema_VirtualKeyProviderConfig_MissingProvider(t *testin
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'provider' in virtual key provider config to fail validation")
 	}
@@ -604,7 +623,7 @@ func TestValidateConfigSchema_VirtualKeyMCPConfig_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid virtual key MCP config to pass validation, got error: %v", err)
 	}
@@ -629,7 +648,7 @@ func TestValidateConfigSchema_VirtualKeyMCPConfig_MissingMCPClientId(t *testing.
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'mcp_client_id' in virtual key MCP config to fail validation")
 	}
@@ -655,7 +674,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Stdio(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (stdio) to pass validation, got error: %v", err)
 	}
@@ -677,7 +696,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Websocket(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (websocket) to pass validation, got error: %v", err)
 	}
@@ -699,7 +718,7 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Http(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (http) to pass validation, got error: %v", err)
 	}
@@ -720,7 +739,7 @@ func TestValidateConfigSchema_MCPClientConfig_MissingName(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in MCP client config to fail validation")
 	}
@@ -741,7 +760,7 @@ func TestValidateConfigSchema_MCPClientConfig_MissingConnectionType(t *testing.T
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'connection_type' in MCP client config to fail validation")
 	}
@@ -760,7 +779,7 @@ func TestValidateConfigSchema_MCPClientConfig_MissingStdioConfig(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'stdio_config' for stdio connection type to fail validation")
 	}
@@ -779,7 +798,7 @@ func TestValidateConfigSchema_MCPClientConfig_MissingWebsocketConfig(t *testing.
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'websocket_config' for websocket connection type to fail validation")
 	}
@@ -798,7 +817,7 @@ func TestValidateConfigSchema_MCPClientConfig_MissingHttpConfig(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'http_config' for http connection type to fail validation")
 	}
@@ -820,7 +839,7 @@ func TestValidateConfigSchema_MCPClientConfig_StdioConfig_MissingCommand(t *test
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'command' in stdio_config to fail validation")
 	}
@@ -840,7 +859,7 @@ func TestValidateConfigSchema_MCPClientConfig_WebsocketConfig_MissingUrl(t *test
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'url' in websocket_config to fail validation")
 	}
@@ -860,7 +879,7 @@ func TestValidateConfigSchema_MCPClientConfig_HttpConfig_MissingUrl(t *testing.T
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'url' in http_config to fail validation")
 	}
@@ -890,7 +909,7 @@ func TestValidateConfigSchema_ConcurrencyConfig_Valid(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid concurrency config to pass validation, got error: %v", err)
 	}
@@ -915,7 +934,7 @@ func TestValidateConfigSchema_ConcurrencyConfig_MissingConcurrency(t *testing.T)
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'concurrency' in concurrency config to fail validation")
 	}
@@ -940,7 +959,7 @@ func TestValidateConfigSchema_ConcurrencyConfig_MissingBufferSize(t *testing.T) 
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'buffer_size' in concurrency config to fail validation")
 	}
@@ -963,7 +982,7 @@ func TestValidateConfigSchema_Plugin_Valid(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid plugin config to pass validation, got error: %v", err)
 	}
@@ -979,7 +998,7 @@ func TestValidateConfigSchema_Plugin_MissingEnabled(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'enabled' in plugin to fail validation")
 	}
@@ -995,7 +1014,7 @@ func TestValidateConfigSchema_Plugin_MissingName(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'name' in plugin to fail validation")
 	}
@@ -1021,7 +1040,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid semantic cache plugin config to pass validation, got error: %v", err)
 	}
@@ -1042,7 +1061,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) 
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'provider' in semantic cache plugin to fail validation")
 	}
@@ -1063,7 +1082,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'keys' in semantic cache plugin to fail validation")
 	}
@@ -1084,7 +1103,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingDimension(t *testing.T)
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'dimension' in semantic cache plugin to fail validation")
 	}
@@ -1110,7 +1129,7 @@ func TestValidateConfigSchema_OtelPlugin_Valid(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid OTEL plugin config to pass validation, got error: %v", err)
 	}
@@ -1131,7 +1150,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingCollectorUrl(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'collector_url' in OTEL plugin to fail validation")
 	}
@@ -1152,7 +1171,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingTraceType(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'trace_type' in OTEL plugin to fail validation")
 	}
@@ -1173,7 +1192,7 @@ func TestValidateConfigSchema_OtelPlugin_MissingProtocol(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'protocol' in OTEL plugin to fail validation")
 	}
@@ -1197,7 +1216,7 @@ func TestValidateConfigSchema_MaximPlugin_Valid(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(validConfig))
+	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid Maxim plugin config to pass validation, got error: %v", err)
 	}
@@ -1217,7 +1236,7 @@ func TestValidateConfigSchema_MaximPlugin_MissingApiKey(t *testing.T) {
 		]
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'api_key' in Maxim plugin to fail validation")
 	}
@@ -1249,7 +1268,7 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingEndpoint(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'endpoint' in Azure key config to fail validation")
 	}
@@ -1274,7 +1293,7 @@ func TestValidateConfigSchema_AzureKeyConfig_MissingApiVersion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'api_version' in Azure key config to fail validation")
 	}
@@ -1304,7 +1323,7 @@ func TestValidateConfigSchema_VertexKeyConfig_MissingProjectId(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'project_id' in Vertex key config to fail validation")
 	}
@@ -1329,7 +1348,7 @@ func TestValidateConfigSchema_VertexKeyConfig_MissingRegion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'region' in Vertex key config to fail validation")
 	}
@@ -1359,7 +1378,7 @@ func TestValidateConfigSchema_BedrockKeyConfig_MissingRegion(t *testing.T) {
 		}
 	}`
 
-	err := ValidateConfigSchema([]byte(invalidConfig))
+	err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t))
 	if err == nil {
 		t.Error("expected config missing 'region' in Bedrock key config to fail validation")
 	}
