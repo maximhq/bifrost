@@ -201,6 +201,9 @@ func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string]
 			// Split comma-separated beta headers
 			for beta := range strings.SplitSeq(headerValue, ",") {
 				beta = strings.TrimSpace(beta)
+				if beta == "" {
+					continue
+				}
 				// Skip unsupported headers for Vertex.
 				// Use prefix matching so that future date bumps
 				// (e.g. structured-outputs-2025-12-15) are still caught.

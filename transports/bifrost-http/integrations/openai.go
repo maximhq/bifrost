@@ -415,7 +415,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		PreCallback: AzureEndpointPreHook(handlerStore),
 	})
 
-	// Text completions endpoint
+	// Chat completions endpoint
 	for _, path := range []string{
 		"/v1/chat/completions",
 		"/chat/completions",
@@ -425,20 +425,20 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			Path:   pathPrefix + path,
 			Method: "POST",
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
-				return schemas.TextCompletionRequest
+				return schemas.ChatCompletionRequest
 			},
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
-				return &openai.OpenAITextCompletionRequest{}
+				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
-				if openaiReq, ok := req.(*openai.OpenAITextCompletionRequest); ok {
+				if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 					return &schemas.BifrostRequest{
-						TextCompletionRequest: openaiReq.ToBifrostTextCompletionRequest(ctx),
+						ChatRequest: openaiReq.ToBifrostChatRequest(ctx),
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
 			},
-			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
+			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
 					if resp.ExtraFields.RawResponse != nil {
 						return resp.ExtraFields.RawResponse, nil
@@ -450,7 +450,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
+				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
 					if resp.ExtraFields.Provider == schemas.OpenAI {
 						if resp.ExtraFields.RawResponse != nil {
 							return "", resp.ExtraFields.RawResponse, nil

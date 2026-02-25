@@ -10,3 +10,5 @@
 - fix: added replicate and huggingface model allowlist on list models response
 - fix: added support for unfiltered list models response when updating keys' allowed models field
 - fix: backfill allowed models that were not in the list models response
+- feat: support for video generation requests
+- feat: add runway provider support
