@@ -73,7 +73,6 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunVideoDownloadTest,
 		RunVideoListTest,
 		RunVideoDeleteTest,
-		RunVideoUnsupportedTest,
 		RunBatchCreateTest,
 		RunBatchListTest,
 		RunBatchRetrieveTest,

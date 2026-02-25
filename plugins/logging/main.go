@@ -363,9 +363,17 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 				VideoID: req.VideoRemixRequest.ID,
 			}
 			initialData.VideoGenerationInput = req.VideoRemixRequest.Input
-		case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoDeleteRequest:
+		case schemas.VideoRetrieveRequest:
 			initialData.Params = &schemas.VideoLogParams{
 				VideoID: req.VideoRetrieveRequest.ID,
+			}
+		case schemas.VideoDownloadRequest:
+			initialData.Params = &schemas.VideoLogParams{
+				VideoID: req.VideoDownloadRequest.ID,
+			}
+		case schemas.VideoDeleteRequest:
+			initialData.Params = &schemas.VideoLogParams{
+				VideoID: req.VideoDeleteRequest.ID,
 			}
 		}
 	}

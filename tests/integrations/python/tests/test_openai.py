@@ -1323,7 +1323,7 @@ class TestOpenAIIntegration:
             model=format_provider_model(provider, model),
             prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
             n=1,
-            size="512x512",
+            size="1024x1024",
             quality="low",
         )
 

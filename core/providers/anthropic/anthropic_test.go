@@ -29,7 +29,7 @@ func TestAnthropic(t *testing.T) {
 			{Provider: schemas.Anthropic, Model: "claude-3-7-sonnet-20250219"},
 			{Provider: schemas.Anthropic, Model: "claude-sonnet-4-20250514"},
 		},
-		VisionModel:        "claude-3-7-sonnet-20250219", // Same model supports vision
+		VisionModel:        "claude-sonnet-4-5", // Same model supports vision
 		ReasoningModel:     "claude-opus-4-5",
 		PromptCachingModel: "claude-sonnet-4-20250514",
 		Scenarios: llmtests.TestScenarios{

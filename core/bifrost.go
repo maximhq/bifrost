@@ -431,6 +431,9 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
 
+			providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+
 			providerModels := make([]schemas.Model, 0)
 			var providerKeyStatuses []schemas.KeyStatus
 			var providerErr *schemas.BifrostError
@@ -458,7 +461,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 					break
 				}
 
-				response, bifrostErr := bifrost.ListModelsRequest(ctx, providerRequest)
+				response, bifrostErr := bifrost.ListModelsRequest(providerCtx, providerRequest)
 				if bifrostErr != nil {
 					// Skip logging "no keys found" and "not supported" errors as they are expected when a provider is not configured
 					if !strings.Contains(bifrostErr.Error.Message, "no keys found") &&
