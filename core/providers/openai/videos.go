@@ -96,8 +96,8 @@ func ToBifrostVideoRemixRequest(openaiReq *OpenAIVideoRemixRequest) *schemas.Bif
 	}
 }
 
-func (request *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *schemas.BifrostContext) *schemas.BifrostVideoGenerationRequest {
-	if request == nil {
+func (req *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx *schemas.BifrostContext) *schemas.BifrostVideoGenerationRequest {
+	if req == nil {
 		return nil
 	}
 
@@ -110,21 +110,21 @@ func (request *OpenAIVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 		}
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
 
 	input := &schemas.VideoGenerationInput{
-		Prompt: request.Prompt,
+		Prompt: req.Prompt,
 	}
-	if request.InputReference != nil {
-		input.InputReference = schemas.Ptr(providerUtils.FileBytesToBase64DataURL(request.InputReference))
+	if req.InputReference != nil {
+		input.InputReference = schemas.Ptr(providerUtils.FileBytesToBase64DataURL(req.InputReference))
 	}
 
 	return &schemas.BifrostVideoGenerationRequest{
 		Provider:  provider,
 		Model:     model,
 		Input:     input,
-		Params:    &request.VideoGenerationParameters,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Params:    &req.VideoGenerationParameters,
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 }
 

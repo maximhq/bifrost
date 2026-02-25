@@ -27,18 +27,18 @@ func ToOpenAITextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionRequ
 }
 
 // ToBifrostTextCompletionRequest converts an OpenAI text completion request to Bifrost format
-func (request *OpenAITextCompletionRequest) ToBifrostTextCompletionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTextCompletionRequest {
-	if request == nil {
+func (req *OpenAITextCompletionRequest) ToBifrostTextCompletionRequest(ctx *schemas.BifrostContext) *schemas.BifrostTextCompletionRequest {
+	if req == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
 	return &schemas.BifrostTextCompletionRequest{
 		Provider:  provider,
 		Model:     model,
-		Input:     request.Prompt,
-		Params:    &request.TextCompletionParameters,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Input:     req.Prompt,
+		Params:    &req.TextCompletionParameters,
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 }

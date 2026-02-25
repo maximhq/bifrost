@@ -8,8 +8,8 @@ import (
 )
 
 // ToBifrostResponsesRequest converts an OpenAI responses request to Bifrost format
-func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
-	if request == nil {
+func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
+	if resp == nil {
 		return nil
 	}
 
@@ -22,14 +22,14 @@ func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		}
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
 
-	input := request.Input.OpenAIResponsesRequestInputArray
+	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
 		input = []schemas.ResponsesMessage{
 			{
 				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{ContentStr: request.Input.OpenAIResponsesRequestInputStr},
+				Content: &schemas.ResponsesMessageContent{ContentStr: resp.Input.OpenAIResponsesRequestInputStr},
 			},
 		}
 	}
@@ -38,8 +38,8 @@ func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		Provider:  provider,
 		Model:     model,
 		Input:     input,
-		Params:    &request.ResponsesParameters,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Params:    &resp.ResponsesParameters,
+		Fallbacks: schemas.ParseFallbacks(resp.Fallbacks),
 	}
 }
 
@@ -228,8 +228,8 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
-func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
-	if len(req.Tools) == 0 {
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+	if len(resp.Tools) == 0 {
 		return
 	}
 
@@ -248,8 +248,8 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 	}
 
 	// Filter tools to only include supported types
-	filteredTools := make([]schemas.ResponsesTool, 0, len(req.Tools))
-	for _, tool := range req.Tools {
+	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
+	for _, tool := range resp.Tools {
 		if supportedTypes[tool.Type] {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
@@ -298,5 +298,5 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 			}
 		}
 	}
-	req.Tools = filteredTools
+	resp.Tools = filteredTools
 }
