@@ -13,3 +13,4 @@
 - feat: support for video generation requests
 - feat: add runway provider support
 - enhancement: improved model matching logic in model catalog
+- feat: support for preserving JSON key order in tool function parameters

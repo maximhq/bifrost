@@ -835,7 +835,8 @@ func DeepCopyChatTool(original ChatTool) ChatTool {
 
 		if original.Function.Parameters != nil {
 			copyParams := &ToolFunctionParameters{
-				Type: original.Function.Parameters.Type,
+				Type:     original.Function.Parameters.Type,
+				keyOrder: original.Function.Parameters.keyOrder,
 			}
 
 			if original.Function.Parameters.Description != nil {

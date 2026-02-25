@@ -311,6 +311,11 @@ type ChatToolFunction struct {
 // ToolFunctionParameters represents the parameters for a function definition.
 // It supports JSON Schema fields used by various providers (OpenAI, Anthropic, Gemini, etc.).
 // Field order follows JSON Schema / OpenAI conventions for consistent serialization.
+//
+// IMPORTANT: When marshalling to JSON, key order is preserved from the original input
+// (captured during UnmarshalJSON). When constructing programmatically, the default
+// struct field declaration order is used. This is critical because LLMs are
+// sensitive to JSON key ordering in tool schemas.
 type ToolFunctionParameters struct {
 	Type                 string                      `json:"type"`                           // Type of the parameters
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
@@ -348,53 +353,53 @@ type ToolFunctionParameters struct {
 	Title    *string     `json:"title,omitempty"`    // Schema title
 	Default  interface{} `json:"default,omitempty"`  // Default value
 	Nullable *bool       `json:"nullable,omitempty"` // Nullable indicator (OpenAPI 3.0 style)
+
+	// keyOrder preserves the JSON key order from the original input so that
+	// MarshalJSON can emit keys in the same order the client sent them.
+	keyOrder JSONKeyOrder `json:"-"`
 }
 
-// MarshalJSON ensures properties is always an object, never null.
+// MarshalJSON serializes ToolFunctionParameters to JSON, preserving the original key
+// order from the input JSON. If no original order was captured (programmatic construction),
+// it falls back to the default struct field declaration order.
+// Properties is always emitted as an object, never null.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
-	type Alias ToolFunctionParameters
-	tmp := Alias(t)
-	if tmp.Properties == nil {
-		tmp.Properties = &OrderedMap{}
+	if t.Properties == nil {
+		t.Properties = &OrderedMap{}
 	}
-	return Marshal(tmp)
+	type Alias ToolFunctionParameters
+	data, err := Marshal(Alias(t))
+	if err != nil {
+		return nil, err
+	}
+	return t.keyOrder.Apply(data)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
 // It handles both JSON object format (standard) and JSON string format (used by some providers like xAI).
+// It captures the original key order for order-preserving re-serialization.
 func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a JSON string (xAI format)
+	// Try to unmarshal as a JSON string first (xAI sends parameters as a string)
 	var jsonStr string
 	if err := Unmarshal(data, &jsonStr); err == nil {
-		// It's a string, so parse the string as JSON
-		type Alias ToolFunctionParameters
-		var temp Alias
-		if err := Unmarshal([]byte(jsonStr), &temp); err != nil {
-			return fmt.Errorf("failed to unmarshal parameters string: %w", err)
-		}
-		*t = ToolFunctionParameters(temp)
-		// Normalize additionalProperties: null to omitted field
-		if t.AdditionalProperties != nil &&
-			t.AdditionalProperties.AdditionalPropertiesBool == nil &&
-			t.AdditionalProperties.AdditionalPropertiesMap == nil {
-			t.AdditionalProperties = nil
-		}
-		return nil
+		data = []byte(jsonStr)
 	}
 
-	// Otherwise, unmarshal as a normal JSON object
 	type Alias ToolFunctionParameters
 	var temp Alias
 	if err := Unmarshal(data, &temp); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal ToolFunctionParameters: %w", err)
 	}
 	*t = ToolFunctionParameters(temp)
+
 	// Normalize additionalProperties: null to omitted field
 	if t.AdditionalProperties != nil &&
 		t.AdditionalProperties.AdditionalPropertiesBool == nil &&
 		t.AdditionalProperties.AdditionalPropertiesMap == nil {
 		t.AdditionalProperties = nil
 	}
+
+	t.keyOrder.Capture(data)
 	return nil
 }
 
@@ -454,7 +459,6 @@ func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
 	// If both fail, return an error
 	return fmt.Errorf("additionalProperties must be either a boolean or an object")
 }
-
 
 type ChatToolCustom struct {
 	Format *ChatToolCustomFormat `json:"format,omitempty"` // The input format
