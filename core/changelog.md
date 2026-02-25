@@ -8,3 +8,4 @@
 - feat: support for video generation requests
 - feat: add runway provider support
 - feat: support for preserving JSON key order in tool function parameters
+- fix: empty json marshalling fixes for tool choice struct

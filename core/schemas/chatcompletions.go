@@ -495,10 +495,10 @@ const (
 
 // ChatToolChoiceStruct represents a tool choice.
 type ChatToolChoiceStruct struct {
-	Type         ChatToolChoiceType         `json:"type"`                    // Type of tool choice
-	Function     ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
-	Custom       ChatToolChoiceCustom       `json:"custom,omitempty"`        // Custom tool to call if type is ToolChoiceTypeCustom
-	AllowedTools ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
+	Type         ChatToolChoiceType          `json:"type"`                    // Type of tool choice
+	Function     *ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
+	Custom       *ChatToolChoiceCustom       `json:"custom,omitempty"`        // Custom tool to call if type is ToolChoiceTypeCustom
+	AllowedTools *ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
 }
 
 type ChatToolChoice struct {

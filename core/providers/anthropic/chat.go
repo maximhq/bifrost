@@ -160,7 +160,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				switch bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Type {
 				case schemas.ChatToolChoiceTypeFunction:
 					toolChoice.Type = "tool"
-					toolChoice.Name = bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function.Name
+					if bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function != nil {
+						toolChoice.Name = bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function.Name
+					}
 				case schemas.ChatToolChoiceTypeAllowedTools:
 					toolChoice.Type = "any"
 				case schemas.ChatToolChoiceTypeCustom:

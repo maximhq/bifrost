@@ -1102,7 +1102,10 @@ func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
 	if toolChoice.ChatToolChoiceStruct != nil {
 		switch toolChoice.ChatToolChoiceStruct.Type {
 		case schemas.ChatToolChoiceTypeFunction:
-			name := toolChoice.ChatToolChoiceStruct.Function.Name
+			name := ""
+			if toolChoice.ChatToolChoiceStruct.Function != nil {
+				name = toolChoice.ChatToolChoiceStruct.Function.Name
+			}
 			if name != "" {
 				return &BedrockToolChoice{
 					Tool: &BedrockToolChoiceTool{Name: name},

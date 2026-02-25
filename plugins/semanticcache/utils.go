@@ -651,7 +651,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	if params.ToolChoice != nil {
 		if params.ToolChoice.ChatToolChoiceStr != nil {
 			metadata["tool_choice"] = *params.ToolChoice.ChatToolChoiceStr
-		} else if params.ToolChoice.ChatToolChoiceStruct != nil && params.ToolChoice.ChatToolChoiceStruct.Function.Name != "" {
+		} else if params.ToolChoice.ChatToolChoiceStruct != nil && params.ToolChoice.ChatToolChoiceStruct.Function != nil && params.ToolChoice.ChatToolChoiceStruct.Function.Name != "" {
 			metadata["tool_choice"] = params.ToolChoice.ChatToolChoiceStruct.Function.Name
 		}
 	}

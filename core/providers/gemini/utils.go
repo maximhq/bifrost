@@ -1380,7 +1380,7 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfi
 		}
 
 		// Handle specific function selection
-		if toolChoice.ChatToolChoiceStruct.Function.Name != "" {
+		if toolChoice.ChatToolChoiceStruct.Function != nil && toolChoice.ChatToolChoiceStruct.Function.Name != "" {
 			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ChatToolChoiceStruct.Function.Name}
 		}
 	}

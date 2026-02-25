@@ -115,7 +115,7 @@ func ToHuggingFaceChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) 
 					hfToolChoice.EnumValue = &required
 				}
 			} else if params.ToolChoice.ChatToolChoiceStruct != nil {
-				if params.ToolChoice.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeFunction {
+				if params.ToolChoice.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeFunction && params.ToolChoice.ChatToolChoiceStruct.Function != nil {
 					hfToolChoice.Function = &schemas.ChatToolChoiceFunction{
 						Name: params.ToolChoice.ChatToolChoiceStruct.Function.Name,
 					}
