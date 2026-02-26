@@ -346,10 +346,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	semanticEnabled := config.DefaultCacheType == nil || *config.DefaultCacheType == CacheTypeSemantic
-	if !semanticEnabled {
-		logger.Debug(PluginLoggerPrefix + " Default cache type is 'direct', skipping embedding provider initialization")
-	} else if config.Provider == "" || len(config.Keys) == 0 {
+	if config.Provider == "" || len(config.Keys) == 0 {
 		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
