@@ -1221,6 +1221,9 @@
     },
     "audit_logs": {
       "$ref": "#/$defs/audit_logs_config"
+    },
+    "websocket": {
+      "$ref": "#/$defs/websocket_config"
     }
   },
   "additionalProperties": false,
@@ -2909,6 +2912,56 @@
         "hmac_key": {
           "type": "string",
           "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+        }
+      },
+      "additionalProperties": false
+    },
+    "websocket_config": {
+      "type": "object",
+      "description": "Optional tuning for the WebSocket gateway (Responses API WebSocket Mode, Realtime API). WebSocket is always enabled; these fields override the high defaults.",
+      "properties": {
+        "max_connections_per_user": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum concurrent WebSocket connections per user",
+          "default": 100
+        },
+        "transcript_buffer_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of transcript entries to buffer for Realtime API mid-session fallback",
+          "default": 100
+        },
+        "pool": {
+          "type": "object",
+          "description": "Upstream WebSocket connection pool configuration",
+          "properties": {
+            "max_idle_per_key": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum idle connections per provider/key combination",
+              "default": 50
+            },
+            "max_total_connections": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum total idle connections across all providers",
+              "default": 1000
+            },
+            "idle_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Seconds before an idle connection is evicted",
+              "default": 600
+            },
+            "max_connection_lifetime_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum lifetime of a connection in seconds",
+              "default": 7200
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

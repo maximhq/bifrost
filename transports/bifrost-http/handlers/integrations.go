@@ -12,11 +12,13 @@ import (
 
 // IntegrationHandler manages HTTP requests for AI provider integrations
 type IntegrationHandler struct {
-	extensions []integrations.ExtensionRouter
+	extensions  []integrations.ExtensionRouter
+	wsResponses *WSResponsesHandler
 }
 
-// NewIntegrationHandler creates a new integration handler instance
-func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore) *IntegrationHandler {
+// NewIntegrationHandler creates a new integration handler instance.
+// wsResponses may be nil if WebSocket support is not configured.
+func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStore, wsResponses *WSResponsesHandler) *IntegrationHandler {
 	// Initialize all available integration routers
 	extensions := []integrations.ExtensionRouter{
 		integrations.NewOpenAIRouter(client, handlerStore, logger),
@@ -29,7 +31,8 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 	}
 
 	return &IntegrationHandler{
-		extensions: extensions,
+		extensions:  extensions,
+		wsResponses: wsResponses,
 	}
 }
 
@@ -38,5 +41,9 @@ func (h *IntegrationHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	// Register routes for each integration extension
 	for _, extension := range h.extensions {
 		extension.RegisterRoutes(r, middlewares...)
+	}
+	// Register WebSocket routes (base path + integration paths)
+	if h.wsResponses != nil {
+		h.wsResponses.RegisterRoutes(r, middlewares...)
 	}
 }

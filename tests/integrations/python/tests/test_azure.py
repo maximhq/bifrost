@@ -63,6 +63,7 @@ Tests all core scenarios using AzureOpenAI SDK directly:
 50. Batch API - end-to-end with Files API
 51. Count tokens (Cross-Provider)
 52. Image Generation - simple prompt
+60. WebSocket Responses API - integration paths
 """
 
 import json
@@ -138,6 +139,10 @@ from .utils.common import (
     get_provider_voices,
     mock_tool_response,
     skip_if_no_api_key,
+    # WebSocket utilities
+    WS_RESPONSES_SIMPLE_INPUT,
+    get_ws_base_url,
+    run_ws_responses_test,
 )
 from .utils.config_loader import get_config, get_model, get_integration_url
 from .utils.parametrize import (
@@ -2361,3 +2366,68 @@ class TestAzureIntegration:
 
         # Verify we got exactly 1 image
         assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    # =========================================================================
+    # WEBSOCKET RESPONSES API TESTS
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled",
+        get_cross_provider_params_with_vk_for_scenario(
+            "responses", include_providers=["azure"]
+        ),
+    )
+    def test_60_ws_responses_integration_paths(self, provider, model, vk_enabled):
+        """Test Case 60: WebSocket Responses API via integration paths using Azure model.
+
+        Connects via raw WebSocket to the OpenAI integration paths that the
+        AzureOpenAI SDK would use. The model is specified in the event body with
+        the azure/ prefix (since there is no AzureEndpointPreHook for WS events).
+        """
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        ws_base = get_ws_base_url()
+        api_key = get_api_key(provider)
+        # WS handler uses ParseModelString — model must be in provider/model format
+        full_model = f"azure/{model}"
+
+        extra_headers = {}
+        if vk_enabled:
+            config = get_config()
+            vk = config.get_virtual_key()
+            if vk:
+                extra_headers["x-bf-vk"] = vk
+
+        # Test each integration path matching Azure SDK URL patterns
+        integration_paths = [
+            "/openai/v1/responses",   # Azure GA: wss://{endpoint}/openai/v1/responses
+            "/openai/responses",      # Azure Preview: wss://{endpoint}/openai/responses
+        ]
+
+        for path in integration_paths:
+            ws_url = f"{ws_base}{path}"
+
+            result = run_ws_responses_test(
+                ws_url=ws_url,
+                model=full_model,
+                api_key=api_key,
+                max_output_tokens=64,
+                timeout=30,
+                extra_headers=extra_headers if extra_headers else None,
+            )
+
+            assert result["error"] is None, (
+                f"WebSocket error at {path}: {result['error']}"
+            )
+            assert result["got_delta"], (
+                f"Expected delta events at {path}. "
+                f"Events: {[e.get('type') for e in result['events']]}"
+            )
+            assert result["got_completed"], (
+                f"Expected terminal event at {path}. "
+                f"Events: {[e.get('type') for e in result['events']]}"
+            )
+            assert len(result["content"]) > 0, (
+                f"Should receive non-empty content at {path}"
+            )

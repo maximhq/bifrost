@@ -22,10 +22,14 @@ func TestElevenlabs(t *testing.T) {
 	}
 	defer cancel()
 
+	realtimeAgentID := os.Getenv("ELEVENLABS_AGENT_ID")
+	hasRealtimeAgent := strings.TrimSpace(realtimeAgentID) != ""
+
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Elevenlabs,
 		SpeechSynthesisModel: "eleven_turbo_v2_5",
 		TranscriptionModel:   "scribe_v1",
+		RealtimeModel:        realtimeAgentID,
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -47,6 +51,7 @@ func TestElevenlabs(t *testing.T) {
 			Embedding:             false,
 			Reasoning:             false,
 			ListModels:            false,
+			Realtime:              hasRealtimeAgent,
 		},
 	}
 

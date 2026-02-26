@@ -233,7 +233,7 @@ func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
 
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.WebSocketResponsesRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -302,7 +302,10 @@ func GetResponseFields(result *schemas.BifrostResponse, err *schemas.BifrostErro
 		extraFields := result.GetExtraFields()
 		return extraFields.RequestType, extraFields.Provider, extraFields.ModelRequested
 	}
-	return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+	if err != nil && err.ExtraFields != nil {
+		return err.ExtraFields.RequestType, err.ExtraFields.Provider, err.ExtraFields.ModelRequested
+	}
+	return
 }
 
 // MarshalUnsafe marshals the given value to a JSON string without escaping HTML characters.

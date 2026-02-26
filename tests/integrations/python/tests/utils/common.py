@@ -3222,6 +3222,128 @@ def validate_domain_filter(sources, allowed=None, blocked=None):
         if blocked:
             # Check if domain matches any blocked pattern
             for blocked_pattern in blocked:
-                is_blocked = (domain == blocked_pattern or 
+                is_blocked = (domain == blocked_pattern or
                             domain.endswith('.' + blocked_pattern))
                 assert not is_blocked, f"Domain {domain} should be blocked by {blocked_pattern}"
+
+
+# =========================================================================
+# WebSocket Responses API Helpers
+# =========================================================================
+
+# Simple input for WebSocket Responses tests
+WS_RESPONSES_SIMPLE_INPUT = [
+    {"role": "user", "content": "Say hello in exactly two words."}
+]
+
+
+def get_ws_base_url():
+    """Get the WebSocket base URL from config (converts http:// to ws://).
+
+    Returns:
+        WebSocket base URL, e.g. "ws://localhost:8080"
+    """
+    from .config_loader import get_config
+
+    config = get_config()
+    base_url = config._config["bifrost"]["base_url"]
+    return base_url.replace("https://", "wss://").replace("http://", "ws://")
+
+
+def run_ws_responses_test(
+    ws_url,
+    model,
+    api_key,
+    input_messages=None,
+    max_output_tokens=64,
+    timeout=30,
+    extra_headers=None,
+):
+    """Connect to a WebSocket Responses endpoint, send a response.create event,
+    and collect streaming events until a terminal event is received.
+
+    Follows the same protocol as the Go-side RunWebSocketResponsesTest:
+      1. Open WebSocket connection with auth headers
+      2. Send {"type": "response.create", "model": "provider/model", "input": [...]}
+      3. Read events until response.completed / response.failed / error
+
+    Args:
+        ws_url: Full WebSocket URL (e.g. ws://localhost:8080/openai/v1/responses)
+        model: Model string in provider/model format (e.g. openai/gpt-4o)
+        api_key: API key for Bearer auth
+        input_messages: Input messages list (defaults to WS_RESPONSES_SIMPLE_INPUT)
+        max_output_tokens: Max output tokens (default 64)
+        timeout: Connection and read timeout in seconds
+        extra_headers: Additional headers dict (e.g. {"x-bf-vk": "..."})
+
+    Returns:
+        dict with keys:
+            events (list): All received event dicts
+            got_delta (bool): Whether a response.output_text.delta was received
+            got_completed (bool): Whether a terminal event was received
+            event_count (int): Total number of events received
+            content (str): Concatenated text deltas
+            error (dict|None): Error event if one was received
+    """
+    import websocket as ws_client
+
+    if input_messages is None:
+        input_messages = WS_RESPONSES_SIMPLE_INPUT
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if extra_headers:
+        headers.update(extra_headers)
+
+    # websocket-client expects headers as list of "Key: Value" strings
+    header_list = [f"{k}: {v}" for k, v in headers.items()]
+
+    conn = ws_client.create_connection(ws_url, header=header_list, timeout=timeout)
+
+    try:
+        event_payload = {
+            "type": "response.create",
+            "model": model,
+            "input": input_messages,
+            "max_output_tokens": max_output_tokens,
+        }
+        conn.send(json.dumps(event_payload))
+
+        events = []
+        got_delta = False
+        got_completed = False
+        content = ""
+        error = None
+
+        while True:
+            result = conn.recv()
+            data = json.loads(result)
+            events.append(data)
+
+            event_type = data.get("type", "")
+
+            if event_type == "response.output_text.delta":
+                got_delta = True
+                content += data.get("delta", "")
+            elif event_type in (
+                "response.completed",
+                "response.failed",
+                "response.incomplete",
+            ):
+                got_completed = True
+                break
+            elif event_type == "error":
+                error = data
+                break
+
+        return {
+            "events": events,
+            "got_delta": got_delta,
+            "got_completed": got_completed,
+            "event_count": len(events),
+            "content": content,
+            "error": error,
+        }
+    finally:
+        conn.close()

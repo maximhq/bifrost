@@ -28,6 +28,7 @@ import (
 	"github.com/maximhq/bifrost/plugins/telemetry"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
@@ -120,6 +121,8 @@ type BifrostHTTPServer struct {
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
+
+	wsPool *bfws.Pool
 }
 
 var logger schemas.Logger
@@ -917,8 +920,12 @@ func (s *BifrostHTTPServer) RemovePlugin(ctx context.Context, displayName string
 
 // RegisterInferenceRoutes initializes the routes for the inference handler
 func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlewares ...schemas.BifrostHTTPMiddleware) error {
+	// Initialize WebSocket pool and handler before integrations so it can be wired through
+	s.wsPool = bfws.NewPool(s.Config.WebSocketConfig.Pool)
+	wsResponsesHandler := handlers.NewWSResponsesHandler(s.Client, s.Config, s.wsPool)
+
 	inferenceHandler := handlers.NewInferenceHandler(s.Client, s.Config)
-	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config)
+	integrationHandler := handlers.NewIntegrationHandler(s.Client, s.Config, wsResponsesHandler)
 	mcpInferenceHandler := handlers.NewMCPInferenceHandler(s.Client, s.Config)
 	mcpServerHandler, err := handlers.NewMCPServerHandler(ctx, s.Config, s)
 	if err != nil {
@@ -1374,6 +1381,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")
 				s.devPprofHandler.Cleanup()
+			}
+			if s.wsPool != nil {
+				logger.Info("closing websocket connection pool...")
+				s.wsPool.Close()
 			}
 			if s.Config != nil && s.Config.LogsStore != nil {
 				s.Config.LogsStore.Close(shutdownCtx)

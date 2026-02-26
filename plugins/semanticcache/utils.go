@@ -100,7 +100,7 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		hashInput.Params = req.TextCompletionRequest.Params
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		hashInput.Params = req.ChatRequest.Params
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		hashInput.Params = req.ResponsesRequest.Params
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest != nil {
@@ -151,7 +151,7 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
@@ -468,7 +468,7 @@ func (plugin *Plugin) getInputForCaching(req *schemas.BifrostRequest) interface{
 			filteredMessages = append(filteredMessages, msg)
 		}
 		return filteredMessages
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		originalMessages := req.ResponsesRequest.Input
 		filteredMessages := make([]schemas.ResponsesMessage, 0, len(originalMessages))
 		for _, msg := range originalMessages {
@@ -554,7 +554,7 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
 		}
 		return normalizedMessages
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		originalMessages := req.ResponsesRequest.Input
 		normalizedMessages := make([]schemas.ResponsesMessage, 0, len(originalMessages))
 
