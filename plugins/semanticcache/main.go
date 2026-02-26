@@ -36,12 +36,12 @@ type Config struct {
 	Dimension            int           `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
-	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
-	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
-	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool      `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
+	DefaultCacheKey              string     `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
 	DefaultCacheType             *CacheType `json:"default_cache_type,omitempty"`              // Default cache type for lookups and storage: "direct", "semantic", or unset for both (default: unset — tries direct first, then semantic)
+	ConversationHistoryThreshold int        `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
+	CacheByModel                 *bool      `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
+	CacheByProvider              *bool      `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool      `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
