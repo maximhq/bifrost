@@ -106,6 +106,11 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	@if [ -n "$(DEBUG)" ]; then \
 		echo "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
 	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		echo "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
 	@if [ -n "$(DISABLE_PROFILER)" ]; then \

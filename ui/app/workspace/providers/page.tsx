@@ -146,10 +146,12 @@ export default function Providers() {
 		try {
 			await createProvider({ provider: name as ModelProviderName, keys: [] }).unwrap();
 			setAddedProviderNames((prev) => new Set(prev).add(name));
+			setProvider(name);
 		} catch (err: any) {
 			if (err?.status === 409) {
-				// Provider already exists — still add it to the sidebar
+				// Provider already exists — still add it to the sidebar and select it
 				setAddedProviderNames((prev) => new Set(prev).add(name));
+				setProvider(name);
 				return;
 			}
 			toast.error("Failed to add provider", {

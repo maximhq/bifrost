@@ -28,6 +28,7 @@ node_modules
 !examples/mcps/temperature/
 tmp/
 tmp-*
+.tmp
 private
 **/bin
 build/

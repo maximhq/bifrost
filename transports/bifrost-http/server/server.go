@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -545,7 +546,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 // RemoveProvider removes a provider from the in-memory store
 func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	err := s.Client.RemoveProvider(provider)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "not found") {
 		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
