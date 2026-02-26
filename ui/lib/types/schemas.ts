@@ -160,7 +160,8 @@ export const vllmKeyConfigSchema = z.object({
 	}),
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
-// Helper to check if an envVar has a value
+
+// Helper to check if an env var has a value
 const hasEnvVarValue = (envVar: { value?: string; env_var?: string; from_env?: boolean } | undefined): boolean => {
 	if (!envVar) return false;
 	if (envVar.from_env && envVar.env_var && envVar.env_var.length > 0) return true;
@@ -168,7 +169,6 @@ const hasEnvVarValue = (envVar: { value?: string; env_var?: string; from_env?: b
 	return false;
 };
 
-// SAP AI Core key config schema
 export const sapaicoreKeyConfigSchema = z
 	.object({
 		client_id: envVarSchema.optional(),
@@ -246,8 +246,6 @@ export const modelProviderKeySchema = z
 		(data) => {
 			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
 			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
-			// If provider-specific config is present with actual values, value (API key) is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config) {
 				return true;
 			}
 			// For SAP AI Core, check if required fields are filled

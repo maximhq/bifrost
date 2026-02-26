@@ -938,7 +938,9 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 				if updateKey.VLLMKeyConfig.URL.IsRedacted() &&
 					updateKey.VLLMKeyConfig.URL.Equals(&oldRedactedKey.VLLMKeyConfig.URL) {
 					mergedKey.VLLMKeyConfig.URL = oldRawKey.VLLMKeyConfig.URL
-			// Handle SAP AI Core config redacted values
+				}
+			}
+
 			if updateKey.SAPAICoreKeyConfig != nil && oldRedactedKey.SAPAICoreKeyConfig != nil && oldRawKey.SAPAICoreKeyConfig != nil {
 				if updateKey.SAPAICoreKeyConfig.ClientID.IsRedacted() &&
 					updateKey.SAPAICoreKeyConfig.ClientID.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ClientID) {

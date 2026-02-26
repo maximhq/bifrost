@@ -165,8 +165,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-		{/* Hide API Key field for Azure when using Entra ID, for Bedrock when using IAM Role, and for SAP AI Core (uses OAuth2) */}
-		{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && !isSAPAICore && (
+			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
+			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && !isSAPAICore && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -495,35 +495,36 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
-		{isReplicate && (
-			<div className="space-y-4">
-				<Separator className="my-6" />
-				<FormField
-					control={control}
-					name={`key.replicate_key_config.deployments`}
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>Deployments (Optional)</FormLabel>
-							<FormDescription>JSON object mapping model names to deployment names</FormDescription>
-							<FormControl>
-								<Textarea
-									placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
-									value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
-									onChange={(e) => {
-										// Store as string during editing to allow intermediate invalid states
-										field.onChange(e.target.value);
-									}}
-									onBlur={(e) => {
-										// Try to parse as JSON on blur, but keep as string if invalid
-										const value = e.target.value.trim();
-										if (value) {
-											try {
-												const parsed = JSON.parse(value);
-												if (typeof parsed === "object" && parsed !== null) {
-													field.onChange(parsed);
+			{isReplicate && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name={`key.replicate_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
 												}
-											} catch {
-												// Keep as string for validation on submit
 											}
 											field.onBlur();
 										}}
@@ -570,20 +571,6 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
-			{isBedrock && (
-										}
-										field.onBlur();
-									}}
-									rows={3}
-									className="max-w-full font-mono text-sm wrap-anywhere"
-								/>
-							</FormControl>
-							<FormMessage />
-						</FormItem>
-					)}
-				/>
-			</div>
-		)}
 		{isSAPAICore && (
 			<div className="space-y-4">
 				<Separator className="my-6" />
@@ -702,7 +689,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 		)}
-		{isBedrock && (
+			{isBedrock && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
 					<div className="space-y-2">
