@@ -35,7 +35,7 @@ type BifrostListModelsRequest struct {
 	PageToken string `json:"page_token"`
 
 	// Unfiltered: If true, the response will include all models for the provider, regardless of the allowed models (internal bifrost use only, not sent to the provider)
-	Unfiltered bool `json:"unfiltered"`
+	Unfiltered bool `json:"-"`
 
 	// ExtraParams: Additional provider-specific query parameters
 	// This allows for flexibility to pass any custom parameters that specific providers might support

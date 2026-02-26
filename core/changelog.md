@@ -1,0 +1,1 @@
+- fix: filter openrouter list models response based on allowed models on key
