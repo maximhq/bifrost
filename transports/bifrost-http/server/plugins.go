@@ -99,6 +99,19 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal otel plugin config: %w", err)
 		}
+		if otelConfig.MetricsEnabled {
+			// Nil registry is handled during OTEL plugin init
+			telemetryPlugin, err := lib.FindPluginAs[telemetry.PrometheusRegistryProvider](bifrostConfig, telemetry.PluginName)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get telemetry plugin when metrics export is enabled: %w", err)
+			} else {
+				otelConfig.PrometheusRegistry = telemetryPlugin.GetRegistry()
+			}
+		}
+		otelConfig, err = otel.ValidateConfig(otelConfig)
+		if err != nil {
+			return nil, fmt.Errorf("otel plugin config validation failed: %w", err)
+		}
 		return otel.Init(ctx, otelConfig, logger, bifrostConfig.ModelCatalog, handlers.GetVersion())
 
 	case litellmcompat.PluginName:
