@@ -843,16 +843,16 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 
 | Metric | Type | Description |
 |--------|------|-------------|
-| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers |
+| `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
 | `bifrost_success_requests_total` | Counter | Successful upstream requests |
-| `bifrost_error_requests_total` | Counter | Failed upstream requests (extra label: `reason`) |
-| `bifrost_input_tokens_total` | Counter | Total input/prompt tokens consumed |
-| `bifrost_output_tokens_total` | Counter | Total output/completion tokens consumed |
-| `bifrost_cache_hits_total` | Counter | Cache hits, by `cache_type` (`direct`/`semantic`) |
+| `bifrost_error_requests_total` | Counter | Error requests with reason labels |
+| `bifrost_input_tokens_total` | Counter | Total input tokens |
+| `bifrost_output_tokens_total` | Counter | Total output tokens |
+| `bifrost_cache_hits_total` | Counter | Cache hits |
 | `bifrost_cost_total` | Counter | Total cost in USD |
-| `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency (extra label: `is_success`) |
-| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token for streaming responses |
-| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency for streaming responses |
+| `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
+| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 
 **HTTP server metrics** (labels: `path`, `method`, `status`):
 
