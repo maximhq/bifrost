@@ -397,17 +397,14 @@ type ProviderPricingOverride struct {
 	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
 
 	// Character-based pricing
-	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+	InputCostPerCharacter *float64 `json:"input_cost_per_character,omitempty"`
 
 	// Pricing above 128k tokens
 	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
 	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
 	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
 	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
 	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
 
 	// Pricing above 200k tokens
 	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`

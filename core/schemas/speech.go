@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"unicode/utf8"
 )
 
 type BifrostSpeechRequest struct {
@@ -24,6 +25,16 @@ type BifrostSpeechResponse struct {
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
+	if r == nil || request == nil || request.Input == nil {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &SpeechUsage{}
+	}
+	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -135,12 +146,23 @@ type BifrostSpeechStreamResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {
+	if r == nil || request == nil || request.Input == nil {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &SpeechUsage{}
+	}
+	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+}
+
 type SpeechUsageInputTokenDetails struct {
 	TextTokens  int `json:"text_tokens,omitempty"`
 	AudioTokens int `json:"audio_tokens,omitempty"`
 }
 type SpeechUsage struct {
 	InputTokens       int                           `json:"input_tokens"`
+	InputChars        int                           `json:"input_chars,omitempty"`
 	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
 	OutputTokens      int                           `json:"output_tokens"`
 	TotalTokens       int                           `json:"total_tokens"`

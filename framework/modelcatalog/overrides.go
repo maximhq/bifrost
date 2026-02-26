@@ -232,33 +232,6 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.
 	if override.InputCostPerAudioPerSecond != nil {
 		patched.InputCostPerAudioPerSecond = override.InputCostPerAudioPerSecond
 	}
-	if override.InputCostPerCharacter != nil {
-		patched.InputCostPerCharacter = override.InputCostPerCharacter
-	}
-	if override.OutputCostPerCharacter != nil {
-		patched.OutputCostPerCharacter = override.OutputCostPerCharacter
-	}
-	if override.InputCostPerTokenAbove128kTokens != nil {
-		patched.InputCostPerTokenAbove128kTokens = override.InputCostPerTokenAbove128kTokens
-	}
-	if override.InputCostPerCharacterAbove128kTokens != nil {
-		patched.InputCostPerCharacterAbove128kTokens = override.InputCostPerCharacterAbove128kTokens
-	}
-	if override.InputCostPerImageAbove128kTokens != nil {
-		patched.InputCostPerImageAbove128kTokens = override.InputCostPerImageAbove128kTokens
-	}
-	if override.InputCostPerVideoPerSecondAbove128kTokens != nil {
-		patched.InputCostPerVideoPerSecondAbove128kTokens = override.InputCostPerVideoPerSecondAbove128kTokens
-	}
-	if override.InputCostPerAudioPerSecondAbove128kTokens != nil {
-		patched.InputCostPerAudioPerSecondAbove128kTokens = override.InputCostPerAudioPerSecondAbove128kTokens
-	}
-	if override.OutputCostPerTokenAbove128kTokens != nil {
-		patched.OutputCostPerTokenAbove128kTokens = override.OutputCostPerTokenAbove128kTokens
-	}
-	if override.OutputCostPerCharacterAbove128kTokens != nil {
-		patched.OutputCostPerCharacterAbove128kTokens = override.OutputCostPerCharacterAbove128kTokens
-	}
 	if override.InputCostPerTokenAbove200kTokens != nil {
 		patched.InputCostPerTokenAbove200kTokens = override.InputCostPerTokenAbove200kTokens
 	}
@@ -283,20 +256,11 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.
 	if override.OutputCostPerTokenBatches != nil {
 		patched.OutputCostPerTokenBatches = override.OutputCostPerTokenBatches
 	}
-	if override.InputCostPerImageToken != nil {
-		patched.InputCostPerImageToken = override.InputCostPerImageToken
-	}
-	if override.OutputCostPerImageToken != nil {
-		patched.OutputCostPerImageToken = override.OutputCostPerImageToken
-	}
 	if override.InputCostPerImage != nil {
 		patched.InputCostPerImage = override.InputCostPerImage
 	}
 	if override.OutputCostPerImage != nil {
 		patched.OutputCostPerImage = override.OutputCostPerImage
-	}
-	if override.CacheReadInputImageTokenCost != nil {
-		patched.CacheReadInputImageTokenCost = override.CacheReadInputImageTokenCost
 	}
 
 	return patched

@@ -66,6 +66,13 @@ The system uses a provider-agnostic approach with well-defined interfaces in `co
 
 ### Quick Start (Recommended)
 
+<Note>
+If you're setting up the repo for the first time, you may need to build the project at least once:
+```bash
+make build LOCAL=1
+```
+</Note>
+
 The fastest way to get started is using the complete development environment:
 
 ```bash
@@ -79,12 +86,6 @@ This command will:
 3. Set up the Go workspace with local modules
 4. Start the Next.js development server (port 3000)
 5. Start the API server with UI proxy (port 8080)
-
-
-If you're setting up the repo for the first time, you may need to build the project at least once:
-```bash
-make build
-```
 
 **Access the application at:** http://localhost:8080
 

@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
@@ -4118,6 +4121,101 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPricingRefactorColumns adds all new pricing columns introduced in the pricing module refactor
+func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_pricing_refactor_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_priority",
+				"output_cost_per_token_priority",
+				"cache_creation_input_token_cost_above_1hr",
+				"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+				"cache_creation_input_audio_token_cost",
+				"cache_read_input_token_cost_priority",
+				"input_cost_per_pixel",
+				"output_cost_per_pixel",
+				"output_cost_per_image_premium_image",
+				"output_cost_per_image_above_512_and_512_pixels",
+				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_1024_and_1024_pixels",
+				"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image",
+				"input_cost_per_audio_token",
+				"input_cost_per_second",
+				"input_cost_per_video_per_second",
+				"input_cost_per_audio_per_second",
+				"output_cost_per_audio_token",
+				"search_context_cost_per_query",
+				"code_interpreter_cost_per_session",
+				"input_cost_per_character",
+				"input_cost_per_token_above_128k_tokens",
+				"input_cost_per_image_above_128k_tokens",
+				"input_cost_per_video_per_second_above_128k_tokens",
+				"input_cost_per_audio_per_second_above_128k_tokens",
+				"output_cost_per_token_above_128k_tokens",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_priority",
+				"output_cost_per_token_priority",
+				"cache_creation_input_token_cost_above_1hr",
+				"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+				"cache_creation_input_audio_token_cost",
+				"cache_read_input_token_cost_priority",
+				"input_cost_per_pixel",
+				"output_cost_per_pixel",
+				"output_cost_per_image_premium_image",
+				"output_cost_per_image_above_512_and_512_pixels",
+				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_1024_and_1024_pixels",
+				"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image",
+				"input_cost_per_audio_token",
+				"input_cost_per_second",
+				"input_cost_per_video_per_second",
+				"input_cost_per_audio_per_second",
+				"output_cost_per_audio_token",
+				"search_context_cost_per_query",
+				"code_interpreter_cost_per_session",
+				"input_cost_per_character",
+				"input_cost_per_token_above_128k_tokens",
+				"input_cost_per_image_above_128k_tokens",
+				"input_cost_per_video_per_second_above_128k_tokens",
+				"input_cost_per_audio_per_second_above_128k_tokens",
+				"output_cost_per_token_above_128k_tokens",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing refactor columns migration: %s", err.Error())
 	}
 	return nil
 }

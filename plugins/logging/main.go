@@ -756,8 +756,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		cost := p.pricingManager.CalculateCostWithCacheDebug(result)
-		entry.Cost = &cost
+		if cost := p.pricingManager.CalculateCost(result); cost > 0 {
+			entry.Cost = &cost
+		}
 	}
 
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(func(updatedEntry *logstore.Log) {
