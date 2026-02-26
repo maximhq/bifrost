@@ -745,7 +745,13 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 |-------|------|----------|-------------|
 | `metrics_enabled` | `boolean` | ❌ No | Enable push-based metrics export (default: `false`) |
 | `metrics_endpoint` | `string` | ✅ Yes (if enabled) | OTLP metrics endpoint URL |
+| `metrics_protocol` | `string` | ✅ Yes (if enabled) | Protocol for the metrics exporter: `http` or `grpc` |
+| `metrics_tls_ca_cert` | `string` | ❌ No | Path to CA certificate for metrics TLS. Uses system root CAs if omitted |
+| `metrics_insecure` | `boolean` | ❌ No | Skip TLS verification for metrics endpoint (default: `true`). Ignored if `metrics_tls_ca_cert` is set |
 | `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
+| `metrics_exporter_timeout` | `integer` | ❌ No | Export request timeout in seconds (default: `10`, range: 1-60) |
+| `metrics_extra_labels` | `object` | ❌ No | Additional key-value labels attached to all metrics as OTEL resource attributes |
+| `metrics_headers` | `object` | ❌ No | Custom HTTP headers to include in metrics export requests |
 
 ### Example Configuration
 
@@ -765,6 +771,7 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
         "protocol": "http",
         "metrics_enabled": true,
         "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+        "metrics_protocol": "http",
         "metrics_push_interval": 15
       }
     }
@@ -788,7 +795,37 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
         "protocol": "grpc",
         "metrics_enabled": true,
         "metrics_endpoint": "otel-collector:4317",
+        "metrics_protocol": "grpc",
         "metrics_push_interval": 15
+      }
+    }
+  ]
+}
+```
+
+</Tab>
+<Tab title="With Extra Static Metrics Labels">
+
+```json
+{
+  "plugins": [
+    {
+      "enabled": true,
+      "name": "otel",
+      "config": {
+        "service_name": "bifrost",
+        "collector_url": "http://otel-collector:4318/v1/traces",
+        "trace_type": "genai_extension",
+        "protocol": "http",
+        "metrics_enabled": true,
+        "metrics_endpoint": "http://otel-collector:4318/v1/metrics",
+        "metrics_protocol": "http",
+        "metrics_push_interval": 15,
+        "metrics_extra_labels": {
+          "environment": "production",
+          "region": "us-east-1",
+          "cluster": "bifrost-cluster-1"
+        }
       }
     }
   ]
@@ -802,20 +839,36 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 
 These are the same **Prometheus-style metrics** from the telemetry plugin, pushed via OTLP protocol to a central collector:
 
+**Bifrost upstream metrics** (labels: `provider`, `model`, `method`, `virtual_key_id`, `virtual_key_name`, `routing_engine_used`, `routing_rule_id`, `routing_rule_name`, `selected_key_id`, `selected_key_name`, `number_of_retries`, `fallback_index`, `team_id`, `team_name`, `customer_id`, `customer_name`):
+
 | Metric | Type | Description |
 |--------|------|-------------|
-| `bifrost_upstream_requests_total` | Counter | Total requests to upstream providers |
+| `bifrost_upstream_requests_total` | Counter | Total requests forwarded to upstream providers |
 | `bifrost_success_requests_total` | Counter | Successful upstream requests |
-| `bifrost_error_requests_total` | Counter | Error requests with reason labels |
-| `bifrost_input_tokens_total` | Counter | Total input tokens |
-| `bifrost_output_tokens_total` | Counter | Total output tokens |
-| `bifrost_cache_hits_total` | Counter | Cache hits |
+| `bifrost_error_requests_total` | Counter | Failed upstream requests (extra label: `reason`) |
+| `bifrost_input_tokens_total` | Counter | Total input/prompt tokens consumed |
+| `bifrost_output_tokens_total` | Counter | Total output/completion tokens consumed |
+| `bifrost_cache_hits_total` | Counter | Cache hits, by `cache_type` (`direct`/`semantic`) |
 | `bifrost_cost_total` | Counter | Total cost in USD |
-| `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
-| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token |
-| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
-| `http_requests_total` | Counter | Total HTTP requests |
+| `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency (extra label: `is_success`) |
+| `bifrost_stream_first_token_latency_seconds` | Histogram | Time to first token for streaming responses |
+| `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency for streaming responses |
+
+**HTTP server metrics** (labels: `path`, `method`, `status`):
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_requests_total` | Counter | Total HTTP requests received |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
+| `http_request_size_bytes` | Histogram | Size of incoming HTTP request bodies |
+| `http_response_size_bytes` | Histogram | Size of outgoing HTTP response bodies |
+
+**Go runtime & process metrics** (standard Prometheus collectors):
+
+| Metric prefix | Description |
+|---------------|-------------|
+| `go_*` | Go runtime metrics (goroutines, GC, memory, etc.) |
+| `process_*` | OS process metrics (CPU, memory, file descriptors, etc.) |
 
 ### OTEL Collector Configuration
 

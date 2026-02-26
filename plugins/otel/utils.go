@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/attribute"
@@ -78,6 +79,22 @@ func validateCACertPath(certPath string) error {
 		return fmt.Errorf("TLS CA cert path is not a regular file: %s", certPath)
 	}
 
+	return nil
+}
+
+// resolveEnvHeaders resolves header values that use the "env." prefix by substituting
+// with the corresponding environment variable. Returns an error if a referenced
+// environment variable is empty or not set.
+func resolveEnvHeaders(headers map[string]string) error {
+	for key, value := range headers {
+		if envVar, ok := strings.CutPrefix(value, "env."); ok {
+			resolved, exists := os.LookupEnv(envVar)
+			if !exists {
+				return fmt.Errorf("environment variable %s not found", envVar)
+			}
+			headers[key] = resolved
+		}
+	}
 	return nil
 }
 

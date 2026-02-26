@@ -677,12 +677,47 @@
                       "type": "string",
                       "description": "OTLP metrics endpoint URL (e.g., http://otel-collector:4318/v1/metrics for HTTP or otel-collector:4317 for gRPC)"
                     },
+                    "metrics_protocol": {
+                      "type": "string",
+                      "description": "Protocol for the metrics exporter (http or grpc). Required when metrics_enabled is true.",
+                      "enum": ["http", "grpc"]
+                    },
+                    "metrics_tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to a CA certificate file for TLS verification of the metrics endpoint. Leave empty to use system root CAs."
+                    },
+                    "metrics_insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification for the metrics endpoint. Ignored if metrics_tls_ca_cert is set.",
+                      "default": true
+                    },
                     "metrics_push_interval": {
                       "type": "integer",
                       "description": "Metrics push interval in seconds",
                       "default": 15,
                       "minimum": 1,
                       "maximum": 300
+                    },
+                    "metrics_exporter_timeout": {
+                      "type": "integer",
+                      "description": "Timeout in seconds for each metrics export request",
+                      "default": 10,
+                      "minimum": 1,
+                      "maximum": 60
+                    },
+                    "metrics_extra_labels": {
+                      "type": "object",
+                      "description": "Additional key-value labels attached to all exported metrics as OTEL resource attributes",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "metrics_headers": {
+                      "type": "object",
+                      "description": "Custom HTTP headers to include in metrics export requests",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "if": {

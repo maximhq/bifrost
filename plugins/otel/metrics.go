@@ -58,6 +58,12 @@ func initOTELGRPCExporter(ctx context.Context, config *Config) (metric.Exporter,
 // initOTELMeterProvider create and set the background meter provider that periodically read
 // from the input prometheus registry and submit metrics to a collector.
 func initOTELMeterProvider(ctx context.Context, serviceName string, config *Config) (*metric.MeterProvider, error) {
+	// Resolve env. prefixed header values from environment variables
+	if config.MetricsHeaders != nil {
+		if err := resolveEnvHeaders(config.MetricsHeaders); err != nil {
+			return nil, err
+		}
+	}
 	// The producer mirrors prometheus registry
 	promtRegistryOpt := promb.WithGatherer(config.PrometheusRegistry)
 	producer := promb.NewMetricProducer(promtRegistryOpt)
