@@ -1355,6 +1355,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 				providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonBody)
 			}
 
+			finalResponse.BackfillParams(request)
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &finalResponse, nil, nil), responseChan)
 		}

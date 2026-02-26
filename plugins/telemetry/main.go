@@ -447,7 +447,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCostWithCacheDebug(result)
+			cost = p.pricingManager.CalculateCost(result)
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()

@@ -4971,6 +4971,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		speechResponse.BackfillParams(req.BifrostRequest.SpeechRequest)
 		response.SpeechResponse = speechResponse
 	case schemas.TranscriptionRequest:
 		transcriptionResponse, bifrostError := provider.Transcription(req.Context, key, req.BifrostRequest.TranscriptionRequest)
@@ -4983,18 +4984,21 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		imageResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageResponse
 	case schemas.ImageEditRequest:
 		imageEditResponse, bifrostError := provider.ImageEdit(req.Context, key, req.BifrostRequest.ImageEditRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		imageEditResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageEditResponse
 	case schemas.ImageVariationRequest:
 		imageVariationResponse, bifrostError := provider.ImageVariation(req.Context, key, req.BifrostRequest.ImageVariationRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		imageVariationResponse.BackfillParams(&req.BifrostRequest)
 		response.ImageGenerationResponse = imageVariationResponse
 	case schemas.VideoGenerationRequest:
 		videoGenerationResponse, bifrostError := provider.VideoGeneration(req.Context, key, req.BifrostRequest.VideoGenerationRequest)

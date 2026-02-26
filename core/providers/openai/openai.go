@@ -1976,11 +1976,6 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
-// Rerank is not supported by the OpenAI provider.
-func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
-}
-
 // HandleOpenAISpeechRequest handles speech requests for OpenAI-compatible APIs.
 // This shared function reduces code duplication between providers that use the same speech request format.
 func HandleOpenAISpeechRequest(
@@ -2345,6 +2340,7 @@ func HandleOpenAISpeechStreamRequest(
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
 				}
+				response.BackfillParams(request)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, &response, nil, nil), responseChan)
 				return
@@ -3081,9 +3077,6 @@ func HandleOpenAIImageGenerationStreaming(
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
 
-	// Capture start time before making the HTTP request for latency calculation
-	startTime := time.Now()
-
 	// Make the request
 	err := activeClient.Do(req, resp)
 	if err != nil {
@@ -3154,6 +3147,7 @@ func HandleOpenAIImageGenerationStreaming(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
+		startTime := time.Now()
 		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
@@ -3364,6 +3358,9 @@ func HandleOpenAIImageGenerationStreaming(
 				}
 				// For completed chunk, use total latency from start
 				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				chunk.BackfillParams(&schemas.BifrostRequest{
+					ImageGenerationRequest: request,
+				})
 				// Set raw request only on final chunk if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&chunk.ExtraFields, jsonBody)
@@ -3383,6 +3380,11 @@ func HandleOpenAIImageGenerationStreaming(
 	}()
 
 	return responseChan, nil
+}
+
+// Rerank is not supported by the OpenAI provider.
+func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
 // VideoGeneration performs a video generation request via the OpenAI API.
@@ -4393,7 +4395,8 @@ func HandleOpenAIImageEditStreamRequest(
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
-		lastChunkTime := time.Now()
+		startTime := time.Now()
+		lastChunkTime := startTime
 		var collectedUsage *schemas.ImageUsage
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
 		imageChunkIndices := make(map[int]int) // image index -> chunk index
@@ -4602,7 +4605,10 @@ func HandleOpenAIImageEditStreamRequest(
 					chunk.Usage = collectedUsage
 				}
 				// For completed chunk, use total latency from start
-				chunk.ExtraFields.Latency = time.Since(lastChunkTime).Milliseconds()
+				chunk.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+				chunk.BackfillParams(&schemas.BifrostRequest{
+					ImageEditRequest: request,
+				})
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 			}
 
@@ -7000,7 +7006,6 @@ func (provider *OpenAIProvider) PassthroughStream(
 	if req.RawQuery != "" {
 		url += "?" + req.RawQuery
 	}
-	startTime := time.Now()
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -7025,6 +7030,9 @@ func (provider *OpenAIProvider) PassthroughStream(
 	fasthttpReq.SetBody(req.Body)
 
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+
+	startTime := time.Now()
+
 	if err := activeClient.Do(fasthttpReq, resp); err != nil {
 		providerUtils.ReleaseStreamingResponse(resp)
 		if errors.Is(err, context.Canceled) {

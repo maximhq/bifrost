@@ -1647,6 +1647,7 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				Latency:        time.Since(startTime).Milliseconds(),
 			},
 		}
+		response.BackfillParams(request)
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
