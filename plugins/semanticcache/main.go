@@ -266,6 +266,29 @@ const (
 	CacheTypeSemantic CacheType = "semantic"
 )
 
+func (ct CacheType) IsValid() bool {
+	return ct == CacheTypeDirect || ct == CacheTypeSemantic
+}
+
+// resolveEffectiveCacheType determines the cache type to use for a request.
+// Per-request context value takes precedence over the config default.
+// Invalid per-request values are logged and ignored, falling back to config default.
+func (plugin *Plugin) resolveEffectiveCacheType(ctx *schemas.BifrostContext) *CacheType {
+	if ctx.Value(CacheTypeKey) != nil {
+		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
+		if !ok {
+			plugin.logger.Warn(PluginLoggerPrefix + " Cache type context value is not a CacheType, using default cache type")
+			return plugin.config.DefaultCacheType
+		}
+		if !cacheTypeVal.IsValid() {
+			plugin.logger.Warn(PluginLoggerPrefix + " Invalid cache type '" + string(cacheTypeVal) + "', using default cache type")
+			return plugin.config.DefaultCacheType
+		}
+		return &cacheTypeVal
+	}
+	return plugin.config.DefaultCacheType
+}
+
 // Init creates a new semantic cache plugin instance with the provided configuration.
 // It uses the VectorStore abstraction for cache operations and returns a configured plugin.
 //
@@ -423,15 +446,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
 
-	effectiveCacheType := plugin.config.DefaultCacheType
-	if ctx.Value(CacheTypeKey) != nil {
-		if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok {
-			effectiveCacheType = &cacheTypeVal
-		} else {
-			plugin.logger.Warn(PluginLoggerPrefix + " Cache type is not a CacheType, using default cache type")
-		}
-	}
-
+	effectiveCacheType := plugin.resolveEffectiveCacheType(ctx)
 	performDirectSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
 	performSemanticSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
 
@@ -558,15 +573,9 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if !ok {
 		return res, nil, nil
 	}
-	// Resolve effective cache type: per-request override > config default > both
 	var embedding []float32
 	var hash string
-	effectiveCacheType := plugin.config.DefaultCacheType
-	if ctx.Value(CacheTypeKey) != nil {
-		if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok {
-			effectiveCacheType = &cacheTypeVal
-		}
-	}
+	effectiveCacheType := plugin.resolveEffectiveCacheType(ctx)
 
 	shouldStoreHash := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
 	shouldStoreEmbeddings := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
