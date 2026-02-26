@@ -1690,12 +1690,11 @@ func TestEncryptedColumns_BedrockRegion_FitsAfterWidening(t *testing.T) {
 // Postgres-only: verify actual column types via information_schema
 // ============================================================================
 
-func TestPostgres_EncryptedColumns_AreVarchar255(t *testing.T) {
+func TestPostgres_EncryptedColumns_AreText(t *testing.T) {
 	db := setupTestPostgresDB(t) // skips if Postgres is unavailable
 
 	type colInfo struct {
-		DataType               string `gorm:"column:data_type"`
-		CharacterMaximumLength int    `gorm:"column:character_maximum_length"`
+		DataType string `gorm:"column:data_type"`
 	}
 
 	columns := []string{"azure_api_version", "vertex_region", "bedrock_region"}
@@ -1704,15 +1703,13 @@ func TestPostgres_EncryptedColumns_AreVarchar255(t *testing.T) {
 		t.Run(col, func(t *testing.T) {
 			var info colInfo
 			err := db.Raw(`
-				SELECT data_type, character_maximum_length
+				SELECT data_type
 				FROM information_schema.columns
 				WHERE table_name = 'config_keys' AND column_name = ?`, col).
 				Scan(&info).Error
 			require.NoError(t, err)
-			assert.Equal(t, "character varying", info.DataType,
-				"column %s should be character varying", col)
-			assert.Equal(t, 255, info.CharacterMaximumLength,
-				"column %s should have max length 255", col)
+			assert.Equal(t, "text", info.DataType,
+				"column %s should be text", col)
 		})
 	}
 }
