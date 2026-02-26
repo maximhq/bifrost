@@ -107,6 +107,14 @@ func RunImageURLTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			}
 			t.Fatalf("❌ ImageURL dual API test failed: %v", errors)
 		}
+		defer func() {
+			if result.ChatCompletionsResponse != nil {
+				schemas.ReleaseBifrostChatResponse(result.ChatCompletionsResponse)
+			}
+			if result.ResponsesAPIResponse != nil {
+				schemas.ReleaseBifrostResponsesResponse(result.ResponsesAPIResponse)
+			}
+		}()
 
 		// Additional vision-specific validation using universal content extraction
 		validateChatImageProcessing := func(response *schemas.BifrostChatResponse, apiName string) {

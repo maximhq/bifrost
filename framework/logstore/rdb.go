@@ -146,6 +146,18 @@ func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 	}).Create(entry).Error
 }
 
+// BatchCreateIfNotExists inserts multiple log entries in a single transaction.
+// Uses ON CONFLICT DO NOTHING for idempotency.
+func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&entries).Error
+}
+
 // Ping checks if the database is reachable.
 func (s *RDBLogStore) Ping(ctx context.Context) error {
 	return s.db.WithContext(ctx).Exec("SELECT 1").Error
@@ -938,6 +950,28 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
 	if err := s.db.WithContext(ctx).Select(fields).Where(query).Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []*Log{}, nil
+		}
+		return nil, err
+	}
+	return logs, nil
+}
+
+// FindAllDistinct finds all distinct log entries for the given fields.
+// Uses SQL DISTINCT to return only unique combinations, avoiding loading
+// all rows when only unique values are needed (e.g., for filter dropdowns).
+func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error) {
+	var logs []*Log
+	db := s.db.WithContext(ctx).Where(query)
+	if len(fields) > 0 {
+		args := make([]interface{}, len(fields))
+		for i, f := range fields {
+			args[i] = f
+		}
+		db = db.Distinct(args...)
+	}
+	if err := db.Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}

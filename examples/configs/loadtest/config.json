@@ -1,0 +1,262 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "config_store": {
+        "type": "sqlite",
+        "enabled": true,
+        "config": {
+            "path": "../../examples/configs/loadtest/config.db"
+        }
+    },
+    "logs_store": {
+        "type": "sqlite",
+        "enabled": true,
+        "config": {
+            "path": "../../examples/configs/loadtest/logs.db"
+        }
+    },
+    "providers": {
+        "openai": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "openai-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "anthropic": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "anthropic-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "bedrock": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "bedrock-key-1",
+                    "value": "sk-123",
+                    "weight": 1,
+                    "bedrock_key_config": {
+                        "region": "us-east-1"
+                    }
+                }
+            ]
+        },
+        "gemini": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "gemini-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "vertex": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "vertex-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "cohere": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "cohere-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "xai": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "xai-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "groq": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "groq-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "perplexity": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "perplexity-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "cerebras": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "cerebras-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "mistral": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "mistral-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "elevenlabs": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "elevenlabs-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "azure": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "azure-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "huggingface": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "huggingface-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "ollama": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "ollama-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "openrouter": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "openrouter-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "parasail": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "parasail-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "replicate": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "replicate-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "sgl": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "sgl-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        },
+        "vllm": {
+            "network_config": {
+                "base_url": "http://localhost:8000"
+            },
+            "keys": [
+                {
+                    "name": "vllm-key-1",
+                    "value": "sk-123",
+                    "weight": 1
+                }
+            ]
+        }
+    }
+}

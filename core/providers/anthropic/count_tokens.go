@@ -12,12 +12,11 @@ func (resp *AnthropicCountTokensResponse) ToBifrostCountTokensResponse(model str
 
 	totalTokens := resp.InputTokens
 
-	bifrostResp := &schemas.BifrostCountTokensResponse{
-		Model:       model,
-		InputTokens: resp.InputTokens,
-		TotalTokens: &totalTokens,
-		Object:      "response.input_tokens",
-	}
+	bifrostResp := schemas.AcquireBifrostCountTokensResponse()
+	bifrostResp.Model = model
+	bifrostResp.InputTokens = resp.InputTokens
+	bifrostResp.TotalTokens = &totalTokens
+	bifrostResp.Object = "response.input_tokens"
 
 	return bifrostResp
 }

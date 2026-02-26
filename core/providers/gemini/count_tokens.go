@@ -49,14 +49,14 @@ func (resp *GeminiCountTokensResponse) ToBifrostCountTokensResponse(model string
 
 	total := int(resp.TotalTokens)
 
-	return &schemas.BifrostCountTokensResponse{
-		Model:              model,
-		Object:             "response.input_tokens",
-		InputTokens:        inputTokens,
-		InputTokensDetails: inputDetails,
-		TotalTokens:        &total,
-		ExtraFields:        schemas.BifrostResponseExtraFields{},
-	}
+	r := schemas.AcquireBifrostCountTokensResponse()
+	r.Model = model
+	r.Object = "response.input_tokens"
+	r.InputTokens = inputTokens
+	r.InputTokensDetails = inputDetails
+	r.TotalTokens = &total
+	r.ExtraFields = schemas.BifrostResponseExtraFields{}
+	return r
 }
 
 // ToGeminiCountTokensResponse converts a Bifrost count tokens response to Gemini format.

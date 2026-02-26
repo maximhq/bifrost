@@ -83,23 +83,20 @@ func ToBifrostBatchStatus(status string) schemas.BatchStatus {
 
 // ToBifrostBatchCreateResponse converts OpenAI batch response to Bifrost batch response.
 func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchCreateResponse {
-	resp := &schemas.BifrostBatchCreateResponse{
-		ID:               r.ID,
-		Object:           r.Object,
-		Endpoint:         r.Endpoint,
-		InputFileID:      r.InputFileID,
-		CompletionWindow: r.CompletionWindow,
-		Status:           ToBifrostBatchStatus(r.Status),
-		Metadata:         r.Metadata,
-		CreatedAt:        r.CreatedAt,
-		OutputFileID:     r.OutputFileID,
-		ErrorFileID:      r.ErrorFileID,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchCreateRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	resp := schemas.AcquireBifrostBatchCreateResponse()
+	resp.ID = r.ID
+	resp.Object = r.Object
+	resp.Endpoint = r.Endpoint
+	resp.InputFileID = r.InputFileID
+	resp.CompletionWindow = r.CompletionWindow
+	resp.Status = ToBifrostBatchStatus(r.Status)
+	resp.Metadata = r.Metadata
+	resp.CreatedAt = r.CreatedAt
+	resp.OutputFileID = r.OutputFileID
+	resp.ErrorFileID = r.ErrorFileID
+	resp.ExtraFields.RequestType = schemas.BatchCreateRequest
+	resp.ExtraFields.Provider = providerName
+	resp.ExtraFields.Latency = latency.Milliseconds()
 
 	if sendBackRawRequest {
 		resp.ExtraFields.RawRequest = rawRequest
@@ -126,31 +123,28 @@ func (r *OpenAIBatchResponse) ToBifrostBatchCreateResponse(providerName schemas.
 
 // ToBifrostBatchRetrieveResponse converts OpenAI batch response to Bifrost batch retrieve response.
 func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostBatchRetrieveResponse {
-	resp := &schemas.BifrostBatchRetrieveResponse{
-		ID:               r.ID,
-		Object:           r.Object,
-		Endpoint:         r.Endpoint,
-		InputFileID:      r.InputFileID,
-		CompletionWindow: r.CompletionWindow,
-		Status:           ToBifrostBatchStatus(r.Status),
-		Metadata:         r.Metadata,
-		CreatedAt:        r.CreatedAt,
-		InProgressAt:     r.InProgressAt,
-		FinalizingAt:     r.FinalizingAt,
-		CompletedAt:      r.CompletedAt,
-		FailedAt:         r.FailedAt,
-		ExpiredAt:        r.ExpiredAt,
-		CancellingAt:     r.CancellingAt,
-		CancelledAt:      r.CancelledAt,
-		OutputFileID:     r.OutputFileID,
-		ErrorFileID:      r.ErrorFileID,
-		Errors:           r.Errors,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	resp := schemas.AcquireBifrostBatchRetrieveResponse()
+	resp.ID = r.ID
+	resp.Object = r.Object
+	resp.Endpoint = r.Endpoint
+	resp.InputFileID = r.InputFileID
+	resp.CompletionWindow = r.CompletionWindow
+	resp.Status = ToBifrostBatchStatus(r.Status)
+	resp.Metadata = r.Metadata
+	resp.CreatedAt = r.CreatedAt
+	resp.InProgressAt = r.InProgressAt
+	resp.FinalizingAt = r.FinalizingAt
+	resp.CompletedAt = r.CompletedAt
+	resp.FailedAt = r.FailedAt
+	resp.ExpiredAt = r.ExpiredAt
+	resp.CancellingAt = r.CancellingAt
+	resp.CancelledAt = r.CancelledAt
+	resp.OutputFileID = r.OutputFileID
+	resp.ErrorFileID = r.ErrorFileID
+	resp.Errors = r.Errors
+	resp.ExtraFields.RequestType = schemas.BatchRetrieveRequest
+	resp.ExtraFields.Provider = providerName
+	resp.ExtraFields.Latency = latency.Milliseconds()
 
 	if sendBackRawRequest {
 		resp.ExtraFields.RawRequest = rawRequest

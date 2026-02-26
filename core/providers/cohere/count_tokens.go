@@ -75,14 +75,14 @@ func (resp *CohereCountTokensResponse) ToBifrostCountTokensResponse(model string
 	}
 	totalTokens := inputTokens
 
-	return &schemas.BifrostCountTokensResponse{
-		Model:        model,
-		InputTokens:  inputTokens,
-		TotalTokens:  &totalTokens,
-		TokenStrings: resp.TokenStrings,
-		Tokens:       resp.Tokens,
-		Object:       "response.input_tokens",
-	}
+	r := schemas.AcquireBifrostCountTokensResponse()
+	r.Model = model
+	r.InputTokens = inputTokens
+	r.TotalTokens = &totalTokens
+	r.TokenStrings = resp.TokenStrings
+	r.Tokens = resp.Tokens
+	r.Object = "response.input_tokens"
+	return r
 }
 
 // buildCohereCountTokensText flattens Responses messages into a plain text payload for tokenization.

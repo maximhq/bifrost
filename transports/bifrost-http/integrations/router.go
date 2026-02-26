@@ -2040,14 +2040,19 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Check if streaming is configured for this route
 	if config.StreamConfig == nil {
-		// Cancel stream context since we're not proceeding, and close the stream channel to prevent goroutine leaks
-		cancel()
-		// Drain the stream channel to prevent goroutine leaks
-		go func() {
-			for range stream {
-			}
-		}()
+		// Signal provider to stop but don't release context yet (provider goroutine still needs it)
+		bifrostCtx.Cancel()
 		g.sendStreamError(ctx, bifrostCtx, config, newBifrostError(nil, "streaming is not supported for this integration"))
+		// Drain the stream channel in background, releasing chunks properly.
+		// Release context only after drain completes (provider goroutine finished cleanup).
+		go func() {
+			for chunk := range stream {
+				if chunk != nil {
+					schemas.ReleaseBifrostStreamChunk(chunk)
+				}
+			}
+			cancel()
+		}()
 		return
 	}
 
@@ -2123,7 +2128,36 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Use streaming response writer
 	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		// clientDisconnected tracks whether a write error (client disconnect) terminated streaming early.
+		// When true, the defer drains remaining stream chunks before releasing the context.
+		// This is critical: the provider's streaming goroutine needs the BifrostContext alive to run
+		// HandleStreamCancellation → completeDeferredSpan → PostHookSpanFinalizer, which releases
+		// the PluginPipeline back to the pool. Without draining, cancel() returns the pooled context
+		// immediately; the context gets reused (reset clears userValues), and the goroutine finds a
+		// nil finalizer — leaking the pipeline.
+		clientDisconnected := false
+
 		defer func() {
+			if clientDisconnected {
+				// Drain remaining chunks so the provider goroutine can finish cleanup
+				// (HandleStreamCancellation → completeDeferredSpan → pipeline release).
+				// After bifrostCtx.Cancel(), SetupStreamCancellation closes the HTTP body,
+				// the scanner unblocks, and the goroutine exits quickly.
+				for chunk := range streamChan {
+					if chunk != nil {
+						schemas.ReleaseBifrostStreamChunk(chunk)
+					}
+				}
+			}
+			// Defensive finalization: if a provider stream exits without emitting a terminal chunk,
+			// complete deferred post-hook span finalization here to ensure PluginPipeline release.
+			if finalizer, ok := bifrostCtx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context)); ok && finalizer != nil {
+				finalizer(bifrostCtx)
+			}
+			// Release context (cancel + return to pool) ONLY after stream is fully consumed.
+			// This prevents the pooled BifrostContext from being reused while the provider
+			// goroutine still accesses it for cleanup (reading PostHookSpanFinalizer, etc.).
+			cancel()
 			schemas.ReleaseHTTPRequest(httpReq)
 			w.Flush()
 			// Complete the trace after streaming finishes
@@ -2152,7 +2186,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 			// Note: We no longer check ctx.Done() here because fasthttp.RequestCtx.Done()
 			// only closes when the whole server shuts down, not when an individual client disconnects.
-			// Client disconnects are detected via write errors, which trigger the defer cancel() above.
+			// Client disconnects are detected via write errors, which trigger cancel via the defer above.
 
 			// Handle errors
 			if chunk.BifrostError != nil {
@@ -2181,7 +2215,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					// This is used by providers like Anthropic that need custom event types
 					// Example: "event: error\ndata: {...}\n\n"
 					if _, err := fmt.Fprint(w, sseErrorString); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
+						bifrostCtx.Cancel()
+						clientDisconnected = true
 						return
 					}
 				} else {
@@ -2198,43 +2233,53 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							},
 						}
 						if errorJSON, err = sonic.Marshal(basicError); err != nil {
-							cancel() // Can't send error (client likely disconnected), cancel upstream stream
+							bifrostCtx.Cancel()
+							clientDisconnected = true
 							return
 						}
 					}
 
 					// Send error as SSE data
 					if _, err := fmt.Fprintf(w, "data: %s\n\n", errorJSON); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
+						bifrostCtx.Cancel()
+						clientDisconnected = true
 						return
 					}
 				}
 
 				// Flush and return on error
 				if err := w.Flush(); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
+					bifrostCtx.Cancel()
+					clientDisconnected = true
 					return
 				}
+				schemas.ReleaseBifrostStreamChunk(chunk)
 				return // End stream on error, Bifrost handles cleanup internally
 			} else {
 				// Allow plugins to modify/filter the chunk via StreamChunkInterceptor
 				if interceptor != nil {
+					originalChunk := chunk
 					var err error
 					chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 					if err != nil {
 						if chunk == nil {
+							// Interceptor consumed/dropped the chunk; release original before returning.
+							schemas.ReleaseBifrostStreamChunk(originalChunk)
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
-								cancel()
+								bifrostCtx.Cancel()
+								clientDisconnected = true
 								return
 							}
 							// Return error event and stopping the streaming
 							if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", errorJSON); err != nil {
-								cancel()
+								bifrostCtx.Cancel()
+								clientDisconnected = true
 								return
 							}
 							_ = w.Flush()
-							cancel()
+							bifrostCtx.Cancel()
+							clientDisconnected = true
 							return
 						}
 						// Else add warn log and continue
@@ -2242,6 +2287,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					}
 					if chunk == nil {
 						// Skip chunk if plugin wants to skip it
+						schemas.ReleaseBifrostStreamChunk(originalChunk)
 						continue
 					}
 				}
@@ -2271,19 +2317,22 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 				if convertedResponse == nil && err == nil {
 					// Skip streaming chunk if no response is available and no error is returned
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					continue
 				}
 
 				if err != nil {
 					// Log conversion error but continue processing
 					log.Printf("Failed to convert streaming response: %v", err)
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					continue
 				}
 
 				if eventType != "" {
 					// OPENAI RESPONSES FORMAT: Use event: and data: lines for OpenAI responses API compatibility
 					if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
+						bifrostCtx.Cancel()
+						clientDisconnected = true
 						return
 					}
 				}
@@ -2325,29 +2374,36 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 							if err := eventStreamEncoder.Encode(w, message); err != nil {
 								log.Printf("[Bedrock Stream] Failed to encode message: %v", err)
-								cancel()
+								bifrostCtx.Cancel()
+								clientDisconnected = true
 								return
 							}
 
 							// Flush each message to ensure proper delivery
 							if err := w.Flush(); err != nil {
 								log.Printf("[Bedrock Stream] Failed to flush writer: %v", err)
-								cancel()
+								bifrostCtx.Cancel()
+								clientDisconnected = true
 								return
 							}
 						}
 					}
+					// Release the pooled chunk after bedrock encoding is complete
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					// Continue to next chunk (we handled flushing internally)
 					continue
 				} else if sseString, ok := convertedResponse.(string); ok {
 					// CUSTOM SSE FORMAT: The converter returned a complete SSE string
 					// This is used by providers like Anthropic that need custom event types
 					// Example: "event: content_block_delta\ndata: {...}\n\n"
+					// Release the pooled chunk - the string is a separate copy, not referencing chunk data
+					schemas.ReleaseBifrostStreamChunk(chunk)
 					if !strings.HasPrefix(sseString, "data: ") && !strings.HasPrefix(sseString, "event: ") {
 						sseString = fmt.Sprintf("data: %s\n\n", sseString)
 					}
 					if _, err := fmt.Fprint(w, sseString); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
+						bifrostCtx.Cancel()
+						clientDisconnected = true
 						return
 					}
 				} else {
@@ -2355,6 +2411,13 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					// This will be JSON marshaled and wrapped as "data: {json}\n\n"
 					// Used by most providers (OpenAI chat/completions, Google, etc.)
 					responseJSON, err := sonic.Marshal(convertedResponse)
+
+					// Release the pooled chunk after marshaling - convertedResponse data has been
+					// serialized to responseJSON bytes, so the original struct is no longer needed.
+					// NOTE: Some converters (e.g. OpenAI) return the BifrostChatResponse pointer
+					// directly as convertedResponse, so release MUST happen after sonic.Marshal.
+					schemas.ReleaseBifrostStreamChunk(chunk)
+
 					if err != nil {
 						// Log JSON marshaling error but continue processing
 						log.Printf("Failed to marshal streaming response: %v", err)
@@ -2363,14 +2426,16 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 					// Send as SSE data
 					if _, err := fmt.Fprintf(w, "data: %s\n\n", responseJSON); err != nil {
-						cancel() // Client disconnected (write error), cancel upstream stream
+						bifrostCtx.Cancel()
+						clientDisconnected = true
 						return
 					}
 				}
 
 				// Flush immediately to send the chunk
 				if err := w.Flush(); err != nil {
-					cancel() // Client disconnected (write error), cancel upstream stream
+					bifrostCtx.Cancel()
+					clientDisconnected = true
 					return
 				}
 			}
@@ -2384,9 +2449,11 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		if shouldSendDoneMarker && config.Type != RouteConfigTypeGenAI && config.Type != RouteConfigTypeBedrock {
 			if _, err := fmt.Fprint(w, "data: [DONE]\n\n"); err != nil {
 				g.logger.Warn("Failed to write SSE done marker: %v", err)
-				cancel()
+				bifrostCtx.Cancel()
+				clientDisconnected = true
 				return // End stream on error, Bifrost handles cleanup internally
 			}
 		}
+		// Stream completed normally — cancel() is called by the defer above
 	})
 }

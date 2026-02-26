@@ -550,8 +550,9 @@ func HandleAnthropicChatCompletionStreaming(
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		chunkIndex := 0
 
@@ -685,27 +686,26 @@ func HandleAnthropicChatCompletionStreaming(
 					if event.Delta != nil && event.Delta.Type == AnthropicStreamDeltaTypeInputJSON && event.Delta.PartialJSON != nil {
 						// Convert tool use delta to content delta
 						content := *event.Delta.PartialJSON
-						response := &schemas.BifrostChatResponse{
-							ID:     messageID,
-							Object: "chat.completion.chunk",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: &content,
-										},
-									},
+					response := schemas.AcquireBifrostChatResponse()
+					response.ID = messageID
+					response.Object = "chat.completion.chunk"
+					response.Choices = []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									Content: &content,
 								},
 							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       providerName,
-								ModelRequested: modelName,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
+						},
+					}
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionStreamRequest,
+						Provider:       providerName,
+						ModelRequested: modelName,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					}
 						lastChunkTime = time.Now()
 						chunkIndex++
 
@@ -727,11 +727,12 @@ func HandleAnthropicChatCompletionStreaming(
 
 			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ChatCompletionStreamRequest,
-					Provider:       providerName,
-					ModelRequested: modelName,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = modelName
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
 				break
@@ -1099,11 +1100,12 @@ func HandleAnthropicResponsesStream(
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(ctx, chunkIndex, streamState)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       providerName,
-					ModelRequested: modelName,
-				}
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+				}	
+				bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = modelName
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
 					return
@@ -1139,7 +1141,7 @@ func HandleAnthropicResponsesStream(
 
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
-							response.Response = &schemas.BifrostResponsesResponse{}
+							response.Response = schemas.AcquireBifrostResponsesResponse()
 						}
 						response.Response.Usage = usage
 						// Set raw request if enabled
@@ -1273,15 +1275,13 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostBatchListResponse{
-			Object:  "list",
-			Data:    []schemas.BifrostBatchRetrieveResponse{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostBatchListResponse()
+		r.Object = "list"
+		r.Data = []schemas.BifrostBatchRetrieveResponse{}
+		r.HasMore = false
+		r.ExtraFields.RequestType = schemas.BatchListRequest
+		r.ExtraFields.Provider = providerName
+		return r, nil
 	}
 
 	// Create request
@@ -1355,16 +1355,13 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 	nextCursor, hasMore := helper.BuildNextCursor(anthropicResp.HasMore, lastBatchID)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostBatchListResponse{
-		Object:  "list",
-		Data:    batches,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.BatchListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	bifrostResp := schemas.AcquireBifrostBatchListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = batches
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields.RequestType = schemas.BatchListRequest
+	bifrostResp.ExtraFields.Provider = providerName
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if nextCursor != "" {
 		bifrostResp.NextCursor = &nextCursor
 	}
@@ -1524,16 +1521,13 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		result := &schemas.BifrostBatchCancelResponse{
-			ID:     anthropicResp.ID,
-			Object: anthropicResp.Type,
-			Status: ToBifrostBatchStatus(anthropicResp.ProcessingStatus),
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchCancelRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}
+		result := schemas.AcquireBifrostBatchCancelResponse()
+		result.ID = anthropicResp.ID
+		result.Object = anthropicResp.Type
+		result.Status = ToBifrostBatchStatus(anthropicResp.ProcessingStatus)
+		result.ExtraFields.RequestType = schemas.BatchCancelRequest
+		result.ExtraFields.Provider = providerName
+		result.ExtraFields.Latency = latency.Milliseconds()
 
 		if sendBackRawRequest {
 			result.ExtraFields.RawRequest = rawRequest
@@ -1649,15 +1643,12 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 			return nil
 		})
 
-		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID: request.BatchID,
-			Results: results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.BatchResultsRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}
+		batchResultsResp := schemas.AcquireBifrostBatchResultsResponse()
+		batchResultsResp.BatchID = request.BatchID
+		batchResultsResp.Results = results
+		batchResultsResp.ExtraFields.RequestType = schemas.BatchResultsRequest
+		batchResultsResp.ExtraFields.Provider = providerName
+		batchResultsResp.ExtraFields.Latency = latency.Milliseconds()
 
 		if len(parseResult.Errors) > 0 {
 			batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
@@ -1844,15 +1835,13 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	key, nativeCursor, ok := helper.GetCurrentKey()
 	if !ok {
 		// All keys exhausted
-		return &schemas.BifrostFileListResponse{
-			Object:  "list",
-			Data:    []schemas.FileObject{},
-			HasMore: false,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileListRequest,
-				Provider:    providerName,
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileListResponse()
+		r.Object = "list"
+		r.Data = []schemas.FileObject{}
+		r.HasMore = false
+		r.ExtraFields.RequestType = schemas.FileListRequest
+		r.ExtraFields.Provider = providerName
+		return r, nil
 	}
 
 	// Create request
@@ -1931,16 +1920,13 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 	nextCursor, hasMore := helper.BuildNextCursor(anthropicResp.HasMore, lastFileID)
 
 	// Convert to Bifrost response
-	bifrostResp := &schemas.BifrostFileListResponse{
-		Object:  "list",
-		Data:    files,
-		HasMore: hasMore,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileListRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
-	}
+	bifrostResp := schemas.AcquireBifrostFileListResponse()
+	bifrostResp.Object = "list"
+	bifrostResp.Data = files
+	bifrostResp.HasMore = hasMore
+	bifrostResp.ExtraFields.RequestType = schemas.FileListRequest
+	bifrostResp.ExtraFields.Provider = providerName
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if nextCursor != "" {
 		bifrostResp.After = &nextCursor
 	}
@@ -2084,16 +2070,16 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		if resp.StatusCode() == fasthttp.StatusNoContent {
 			fasthttp.ReleaseRequest(req)
 			fasthttp.ReleaseResponse(resp)
-			return &schemas.BifrostFileDeleteResponse{
-				ID:      request.FileID,
-				Object:  "file",
-				Deleted: true,
-				ExtraFields: schemas.BifrostResponseExtraFields{
-					RequestType: schemas.FileDeleteRequest,
-					Provider:    providerName,
-					Latency:     latency.Milliseconds(),
-				},
-			}, nil
+			r := schemas.AcquireBifrostFileDeleteResponse()
+			r.ID = request.FileID
+			r.Object = "file"
+			r.Deleted = true
+			r.ExtraFields = schemas.BifrostResponseExtraFields{
+				RequestType: schemas.FileDeleteRequest,
+				Provider:    providerName,
+				Latency:     latency.Milliseconds(),
+			}
+			return r, nil
 		}
 
 		body, err := providerUtils.CheckAndDecodeBody(resp)
@@ -2116,15 +2102,14 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		result := &schemas.BifrostFileDeleteResponse{
-			ID:      anthropicResp.ID,
-			Object:  "file",
-			Deleted: anthropicResp.Type == "file_deleted",
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileDeleteRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
+		result := schemas.AcquireBifrostFileDeleteResponse()
+		result.ID = anthropicResp.ID
+		result.Object = "file"
+		result.Deleted = anthropicResp.Type == "file_deleted"
+		result.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileDeleteRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
 		}
 
 		if sendBackRawRequest {
@@ -2206,16 +2191,16 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 		fasthttp.ReleaseRequest(req)
 		fasthttp.ReleaseResponse(resp)
 
-		return &schemas.BifrostFileContentResponse{
-			FileID:      request.FileID,
-			Content:     content,
-			ContentType: contentType,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType: schemas.FileContentRequest,
-				Provider:    providerName,
-				Latency:     latency.Milliseconds(),
-			},
-		}, nil
+		r := schemas.AcquireBifrostFileContentResponse()
+		r.FileID = request.FileID
+		r.Content = content
+		r.ContentType = contentType
+		r.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType: schemas.FileContentRequest,
+			Provider:    providerName,
+			Latency:     latency.Milliseconds(),
+		}
+		return r, nil
 	}
 
 	return nil, lastErr

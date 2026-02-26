@@ -108,21 +108,21 @@ func TestEnrichError_PreservesExistingRawResponse(t *testing.T) {
 		},
 	}
 
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     schemas.Ptr(401),
-		Error: &schemas.ErrorField{
-			Message: "Authentication failed",
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RawResponse: existingRawResponse,
-		},
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.StatusCode = schemas.Ptr(401)
+	bfErr.Error.Message = "Authentication failed"
+	if bfErr.Error == nil {
+		bfErr.Error = schemas.AcquireBifrostErrorField()
 	}
+	bfErr.Error.Message = "Authentication failed"
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.RawResponse = existingRawResponse
 
 	requestBody := []byte(`{"model": "gpt-4", "messages": []}`)
 
 	// Call EnrichError with nil responseBody - should preserve existing RawResponse
-	enrichedErr := EnrichError(ctx, bifrostErr, requestBody, nil, true, true)
+	enrichedErr := EnrichError(ctx, bfErr, requestBody, nil, true, true)
 
 	if enrichedErr == nil {
 		t.Fatal("EnrichError() returned nil")
@@ -149,19 +149,20 @@ func TestEnrichError_PreservesExistingRawResponse(t *testing.T) {
 func TestEnrichError_OverwritesWithProvidedResponse(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	bifrostErr := &schemas.BifrostError{
-		IsBifrostError: false,
-		StatusCode:     schemas.Ptr(400),
-		Error: &schemas.ErrorField{
-			Message: "Bad request",
-		},
-		ExtraFields: schemas.BifrostErrorExtraFields{},
+	bfErr := schemas.AcquireBifrostError()
+	bfErr.IsBifrostError = false
+	bfErr.StatusCode = schemas.Ptr(400)
+	if bfErr.Error == nil {
+		bfErr.Error = schemas.AcquireBifrostErrorField()
 	}
+	bfErr.Error.Message = "Bad request"
+	bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	bfErr.ExtraFields.RawResponse = nil
 
 	requestBody := []byte(`{"model": "gpt-4"}`)
 	responseBody := []byte(`{"error": {"message": "Model not found"}}`)
 
-	enrichedErr := EnrichError(ctx, bifrostErr, requestBody, responseBody, true, true)
+	enrichedErr := EnrichError(ctx, bfErr, requestBody, responseBody, true, true)
 
 	if enrichedErr == nil {
 		t.Fatal("EnrichError() returned nil")
@@ -222,17 +223,21 @@ func TestEnrichError_RespectsFlags(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-			bifrostErr := &schemas.BifrostError{
-				IsBifrostError: false,
-				StatusCode:     schemas.Ptr(500),
-				Error:          &schemas.ErrorField{Message: "Error"},
-				ExtraFields:    schemas.BifrostErrorExtraFields{},
+			bfErr := schemas.AcquireBifrostError()
+			bfErr.IsBifrostError = false
+			bfErr.StatusCode = schemas.Ptr(500)
+			if bfErr.Error == nil {
+				bfErr.Error = schemas.AcquireBifrostErrorField()
 			}
+			bfErr.Error.Message = "Error"
+			bfErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+			bfErr.ExtraFields.RawRequest = nil
+			bfErr.ExtraFields.RawResponse = nil
 
 			requestBody := []byte(`{"model": "test"}`)
 			responseBody := []byte(`{"error": "test error"}`)
 
-			enrichedErr := EnrichError(ctx, bifrostErr, requestBody, responseBody, tt.sendBackRawRequest, tt.sendBackRawResponse)
+			enrichedErr := EnrichError(ctx, bfErr, requestBody, responseBody, tt.sendBackRawRequest, tt.sendBackRawResponse)
 
 			hasRequest := enrichedErr.ExtraFields.RawRequest != nil
 			hasResponse := enrichedErr.ExtraFields.RawResponse != nil

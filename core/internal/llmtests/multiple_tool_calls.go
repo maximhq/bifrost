@@ -109,6 +109,15 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 			chatOperation,
 			responsesOperation)
 
+		defer func() {
+			if result.ChatCompletionsResponse != nil {
+				schemas.ReleaseBifrostChatResponse(result.ChatCompletionsResponse)
+			}
+			if result.ResponsesAPIResponse != nil {
+				schemas.ReleaseBifrostResponsesResponse(result.ResponsesAPIResponse)
+			}
+		}()
+
 		// Validate both APIs succeeded
 		if !result.BothSucceeded {
 			var errors []string

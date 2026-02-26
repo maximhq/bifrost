@@ -434,13 +434,199 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	return nil
 }
 
-// getLogEntry retrieves a log entry by ID using GORM
-func (p *LoggerPlugin) getLogEntry(ctx context.Context, requestID string) (*logstore.Log, error) {
-	entry, err := p.store.FindFirst(ctx, map[string]interface{}{"id": requestID})
-	if err != nil {
-		return nil, err
+// makePostWriteCallback creates a callback function for use after the batch writer commits.
+// It receives the already-inserted entry directly (no DB re-read needed).
+func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(entry *logstore.Log) {
+	return func(entry *logstore.Log) {
+		p.mu.Lock()
+		callback := p.logCallback
+		p.mu.Unlock()
+		if callback == nil {
+			return
+		}
+		if entry == nil {
+			return
+		}
+		if enrichFn != nil {
+			enrichFn(entry)
+		}
+		callback(p.ctx, entry)
 	}
-	return entry, nil
+}
+
+// applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
+func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse) {
+	// Handle error case first
+	if streamResponse.Data.ErrorDetails != nil {
+		entry.Status = "error"
+		// Serialize error details immediately to avoid use-after-free with pooled errors
+		if data, err := sonic.Marshal(streamResponse.Data.ErrorDetails); err == nil {
+			entry.ErrorDetails = string(data)
+		}
+		latF := float64(streamResponse.Data.Latency)
+		entry.Latency = &latF
+		return
+	}
+
+	entry.Status = "success"
+	latF := float64(streamResponse.Data.Latency)
+	entry.Latency = &latF
+
+	// Update model if provided
+	if streamResponse.Data.Model != "" {
+		entry.Model = streamResponse.Data.Model
+	}
+
+	// Token usage
+	if streamResponse.Data.TokenUsage != nil {
+		entry.TokenUsageParsed = streamResponse.Data.TokenUsage
+		entry.PromptTokens = streamResponse.Data.TokenUsage.PromptTokens
+		entry.CompletionTokens = streamResponse.Data.TokenUsage.CompletionTokens
+		entry.TotalTokens = streamResponse.Data.TokenUsage.TotalTokens
+	}
+
+	// Cost
+	if streamResponse.Data.Cost != nil {
+		entry.Cost = streamResponse.Data.Cost
+	}
+
+	if p.disableContentLogging == nil || !*p.disableContentLogging {
+		// Transcription output
+		if streamResponse.Data.TranscriptionOutput != nil {
+			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
+		}
+		// Speech output
+		if streamResponse.Data.AudioOutput != nil {
+			entry.SpeechOutputParsed = streamResponse.Data.AudioOutput
+		}
+		// Image generation output
+		if streamResponse.Data.ImageGenerationOutput != nil {
+			entry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
+		}
+		// Cache debug
+		if streamResponse.Data.CacheDebug != nil {
+			entry.CacheDebugParsed = streamResponse.Data.CacheDebug
+		}
+		// Output message
+		if streamResponse.Data.OutputMessage != nil {
+			entry.OutputMessageParsed = streamResponse.Data.OutputMessage
+		}
+		// Responses output
+		if streamResponse.Data.OutputMessages != nil {
+			entry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
+		}
+		// Raw request
+		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
+			rawRequestBytes, err := sonic.Marshal(*streamResponse.RawRequest)
+			if err == nil {
+				entry.RawRequest = string(rawRequestBytes)
+			}
+		}
+		// Raw response
+		if streamResponse.Data.RawResponse != nil {
+			entry.RawResponse = *streamResponse.Data.RawResponse
+		}
+	}
+}
+
+// applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
+func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+	// Token usage
+	var usage *schemas.BifrostLLMUsage
+	switch {
+	case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
+		usage = result.TextCompletionResponse.Usage
+	case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
+		usage = result.ChatResponse.Usage
+	case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
+		usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
+	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
+		usage = result.EmbeddingResponse.Usage
+	case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{}
+		if result.TranscriptionResponse.Usage.InputTokens != nil {
+			usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
+		}
+		if result.TranscriptionResponse.Usage.OutputTokens != nil {
+			usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
+		}
+		if result.TranscriptionResponse.Usage.TotalTokens != nil {
+			usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
+		} else {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+	case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
+		usage = &schemas.BifrostLLMUsage{}
+		usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
+		usage.CompletionTokens = result.ImageGenerationResponse.Usage.OutputTokens
+		if result.ImageGenerationResponse.Usage.TotalTokens > 0 {
+			usage.TotalTokens = result.ImageGenerationResponse.Usage.TotalTokens
+		} else {
+			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+		}
+	}
+	if usage != nil {
+		entry.TokenUsageParsed = usage
+		entry.PromptTokens = usage.PromptTokens
+		entry.CompletionTokens = usage.CompletionTokens
+		entry.TotalTokens = usage.TotalTokens
+	}
+
+	// Extract raw request/response and output content
+	extraFields := result.GetExtraFields()
+	if p.disableContentLogging == nil || !*p.disableContentLogging {
+		if extraFields.RawRequest != nil {
+			rawRequestBytes, err := sonic.Marshal(extraFields.RawRequest)
+			if err == nil {
+				entry.RawRequest = string(rawRequestBytes)
+			}
+		}
+		if extraFields.RawResponse != nil {
+			rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
+			if err == nil {
+				entry.RawResponse = string(rawRespBytes)
+			}
+		}
+		if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
+			entry.ListModelsOutputParsed = result.ListModelsResponse.Data
+		}
+		if result.TextCompletionResponse != nil {
+			if len(result.TextCompletionResponse.Choices) > 0 {
+				choice := result.TextCompletionResponse.Choices[0]
+				if choice.TextCompletionResponseChoice != nil {
+					entry.OutputMessageParsed = &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: choice.TextCompletionResponseChoice.Text,
+						},
+					}
+				}
+			}
+		}
+		if result.ChatResponse != nil {
+			if len(result.ChatResponse.Choices) > 0 {
+				choice := result.ChatResponse.Choices[0]
+				if choice.ChatNonStreamResponseChoice != nil {
+					entry.OutputMessageParsed = choice.ChatNonStreamResponseChoice.Message
+				}
+			}
+		}
+		if result.ResponsesResponse != nil {
+			entry.ResponsesOutputParsed = result.ResponsesResponse.Output
+		}
+		if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
+			entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data
+		}
+		if result.SpeechResponse != nil {
+			entry.SpeechOutputParsed = result.SpeechResponse
+		}
+		if result.TranscriptionResponse != nil {
+			entry.TranscriptionOutputParsed = result.TranscriptionResponse
+		}
+		if result.ImageGenerationResponse != nil {
+			entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
+		}
+	}
 }
 
 // SearchLogs searches logs with filters and pagination using GORM
@@ -484,7 +670,8 @@ func (p *LoggerPlugin) GetModelHistogram(ctx context.Context, filters logstore.S
 	return p.store.GetModelHistogram(ctx, filters, bucketSizeSeconds)
 }
 
-// GetAvailableModels returns all unique models from logs
+// GetAvailableModels returns all unique models from logs.
+// Uses DISTINCT to avoid loading all rows (28K+) when only unique values are needed.
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	models, err := p.store.GetDistinctModels(ctx)
 	if err != nil {
@@ -521,7 +708,8 @@ func (p *LoggerPlugin) GetAvailableRoutingRules(ctx context.Context) []KeyPair {
 	return keyPairResultsToKeyPairs(results)
 }
 
-// GetAvailableRoutingEngines returns all unique routing engine types used in logs
+// GetAvailableRoutingEngines returns all unique routing engine types used in logs.
+// Uses DISTINCT to avoid loading all rows when only unique values are needed.
 func (p *LoggerPlugin) GetAvailableRoutingEngines(ctx context.Context) []string {
 	engines, err := p.store.GetDistinctRoutingEngines(ctx)
 	if err != nil {

@@ -478,8 +478,9 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 		chunkIndex := 0
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -522,11 +523,12 @@ func (provider *CohereProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 
 				response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream()
 				if bifrostErr != nil {
-					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-						RequestType:    schemas.ChatCompletionStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
+					if bifrostErr.ExtraFields == nil {
+						bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 					}
+					bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					bifrostErr.ExtraFields.Provider = providerName
+					bifrostErr.ExtraFields.ModelRequested = request.Model
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 					break
@@ -739,8 +741,9 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 		defer stopCancellation()
 
 		scanner := bufio.NewScanner(resp.BodyStream())
-		buf := make([]byte, 0, 1024*1024)
-		scanner.Buffer(buf, 10*1024*1024)
+		bufPtr := providerUtils.AcquireScannerBuf()
+		scanner.Buffer((*bufPtr)[:0], 10*1024*1024)
+		defer providerUtils.ReleaseScannerBuf(bufPtr)
 
 		chunkIndex := 0
 
@@ -797,11 +800,12 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 			responses, bifrostErr, isLastChunk := event.ToBifrostResponsesStream(chunkIndex, streamState)
 			if bifrostErr != nil {
-				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-					RequestType:    schemas.ResponsesStreamRequest,
-					Provider:       providerName,
-					ModelRequested: request.Model,
+				if bifrostErr.ExtraFields == nil {
+					bifrostErr.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
 				}
+				bifrostErr.ExtraFields.RequestType = schemas.ResponsesStreamRequest
+				bifrostErr.ExtraFields.Provider = providerName
+				bifrostErr.ExtraFields.ModelRequested = request.Model
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 				break
@@ -825,7 +829,7 @@ func (provider *CohereProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
-							response.Response = &schemas.BifrostResponsesResponse{}
+							response.Response = schemas.AcquireBifrostResponsesResponse()
 						}
 						// Set raw request if enabled
 						if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {

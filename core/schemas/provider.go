@@ -14,7 +14,7 @@ const (
 	DefaultRequestTimeoutInSeconds = 30
 	DefaultBufferSize              = 5000
 	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 5000
+	DefaultStreamBufferSize        = 64
 )
 
 // Pre-defined errors for provider operations
@@ -127,6 +127,28 @@ var DefaultNetworkConfig = NetworkConfig{
 	RetryBackoffMax:                DefaultRetryBackoffMax,
 }
 
+// CheckAndSetDefaults fills zero-valued fields with their default values.
+// This is safe to call multiple times; already-set fields are not overwritten.
+func (nc *NetworkConfig) CheckAndSetDefaults() {
+	if nc.DefaultRequestTimeoutInSeconds == 0 {
+		nc.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
+	}
+	if nc.RetryBackoffInitial == 0 {
+		nc.RetryBackoffInitial = DefaultRetryBackoffInitial
+	}
+	if nc.RetryBackoffMax == 0 {
+		nc.RetryBackoffMax = DefaultRetryBackoffMax
+	}
+	if nc.MaxRetries == 0 {
+		nc.MaxRetries = DefaultMaxRetries
+	}
+	if nc.ExtraHeaders != nil {
+		headersCopy := make(map[string]string, len(nc.ExtraHeaders))
+		maps.Copy(headersCopy, nc.ExtraHeaders)
+		nc.ExtraHeaders = headersCopy
+	}
+}
+
 // ConcurrencyAndBufferSize represents configuration for concurrent operations and buffer sizes.
 type ConcurrencyAndBufferSize struct {
 	Concurrency int `json:"concurrency"` // Number of concurrent operations. Also used as the initial pool size for the provider reponses.
@@ -137,6 +159,16 @@ type ConcurrencyAndBufferSize struct {
 var DefaultConcurrencyAndBufferSize = ConcurrencyAndBufferSize{
 	Concurrency: DefaultConcurrency,
 	BufferSize:  DefaultBufferSize,
+}
+
+// CheckAndSetDefaults fills zero-valued fields with their default values.
+func (c *ConcurrencyAndBufferSize) CheckAndSetDefaults() {
+	if c.Concurrency == 0 {
+		c.Concurrency = DefaultConcurrency
+	}
+	if c.BufferSize == 0 {
+		c.BufferSize = DefaultBufferSize
+	}
 }
 
 // ProxyType defines the type of proxy to use for connections.
@@ -417,36 +449,8 @@ type ProviderConfig struct {
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
-	if config.ConcurrencyAndBufferSize.Concurrency == 0 {
-		config.ConcurrencyAndBufferSize.Concurrency = DefaultConcurrency
-	}
-
-	if config.ConcurrencyAndBufferSize.BufferSize == 0 {
-		config.ConcurrencyAndBufferSize.BufferSize = DefaultBufferSize
-	}
-
-	if config.NetworkConfig.DefaultRequestTimeoutInSeconds == 0 {
-		config.NetworkConfig.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
-	}
-
-	if config.NetworkConfig.MaxRetries == 0 {
-		config.NetworkConfig.MaxRetries = DefaultMaxRetries
-	}
-
-	if config.NetworkConfig.RetryBackoffInitial == 0 {
-		config.NetworkConfig.RetryBackoffInitial = DefaultRetryBackoffInitial
-	}
-
-	if config.NetworkConfig.RetryBackoffMax == 0 {
-		config.NetworkConfig.RetryBackoffMax = DefaultRetryBackoffMax
-	}
-
-	// Create a defensive copy of ExtraHeaders to prevent data races
-	if config.NetworkConfig.ExtraHeaders != nil {
-		headersCopy := make(map[string]string, len(config.NetworkConfig.ExtraHeaders))
-		maps.Copy(headersCopy, config.NetworkConfig.ExtraHeaders)
-		config.NetworkConfig.ExtraHeaders = headersCopy
-	}
+	config.ConcurrencyAndBufferSize.CheckAndSetDefaults()
+	config.NetworkConfig.CheckAndSetDefaults()
 }
 
 type PostHookRunner func(ctx *BifrostContext, result *BifrostResponse, err *BifrostError) (*BifrostResponse, *BifrostError)

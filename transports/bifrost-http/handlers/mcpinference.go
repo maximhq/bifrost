@@ -70,6 +70,7 @@ func (h *MCPInferenceHandler) executeChatMCPTool(ctx *fasthttp.RequestCtx) {
 	// Execute MCP tool
 	toolMessage, bifrostErr := h.client.ExecuteChatMCPTool(bifrostCtx, &req)
 	if bifrostErr != nil {
+		defer schemas.ReleaseBifrostError(bifrostErr)
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
@@ -103,6 +104,7 @@ func (h *MCPInferenceHandler) executeResponsesMCPTool(ctx *fasthttp.RequestCtx) 
 	// Execute MCP tool
 	toolMessage, bifrostErr := h.client.ExecuteResponsesMCPTool(bifrostCtx, &req)
 	if bifrostErr != nil {
+		defer schemas.ReleaseBifrostError(bifrostErr)
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}

@@ -104,8 +104,8 @@ func ToBifrostImageResponse(nebiusResponse *NebiusImageGenerationResponse) *sche
 			Index:         i,
 		}
 	}
-	return &schemas.BifrostImageGenerationResponse{
-		ID:   nebiusResponse.Id,
-		Data: data,
-	}
+	r := schemas.AcquireBifrostImageGenerationResponse()
+	r.ID = nebiusResponse.Id
+	r.Data = data
+	return r
 }

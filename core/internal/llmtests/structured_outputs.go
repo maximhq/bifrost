@@ -141,6 +141,9 @@ func testStructuredOutputChatWithValue(t *testing.T, client *bifrost.Bifrost, ct
 	if chatError != nil {
 		t.Fatalf("❌ Chat Completions API with structured output failed: %s", GetErrorMessage(chatError))
 	}
+	if chatResponse != nil {
+		defer schemas.ReleaseBifrostChatResponse(chatResponse)
+	}
 
 	// Validate the response is valid JSON matching our schema
 	if chatResponse != nil {
@@ -476,6 +479,9 @@ func RunStructuredOutputResponsesTest(t *testing.T, client *bifrost.Bifrost, ctx
 
 		if responsesError != nil {
 			t.Fatalf("❌ Responses API with structured output failed: %s", GetErrorMessage(responsesError))
+		}
+		if responsesResponse != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(responsesResponse)
 		}
 
 		// Validate the response is valid JSON matching our schema

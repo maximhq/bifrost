@@ -908,17 +908,20 @@ func (p *MockerPlugin) generateErrorShortCircuit(req *schemas.BifrostRequest, re
 	allowFallbacks := response.AllowFallbacks
 
 	// Create mock error
-	mockError := &schemas.BifrostError{
-		Error: &schemas.ErrorField{
-			Message: errorContent.Message,
-		},
-		AllowFallbacks: allowFallbacks,
-		ExtraFields: schemas.BifrostErrorExtraFields{
-			RequestType:    req.RequestType,
-			Provider:       provider,
-			ModelRequested: model,
-		},
+	mockError := schemas.AcquireBifrostError()
+	if mockError.Error == nil {
+		mockError.Error = schemas.AcquireBifrostErrorField()
 	}
+	mockError.Error.Message = errorContent.Message
+	if allowFallbacks != nil {
+		mockError.AllowFallbacks = allowFallbacks
+	}
+	if mockError.ExtraFields == nil {
+		mockError.ExtraFields = schemas.AcquireBifrostErrorExtraFields()
+	}
+	mockError.ExtraFields.RequestType = req.RequestType
+	mockError.ExtraFields.Provider = provider
+	mockError.ExtraFields.ModelRequested = model
 
 	// Set error type
 	if errorContent.Type != nil {

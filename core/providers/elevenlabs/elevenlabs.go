@@ -253,14 +253,13 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	}
 
 	// Create response based on whether timestamps were requested
-	bifrostResponse := &schemas.BifrostSpeechResponse{
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:             schemas.SpeechRequest,
-			Provider:                providerName,
-			ModelRequested:          request.Model,
-			Latency:                 latency.Milliseconds(),
-			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
-		},
+	bifrostResponse := schemas.AcquireBifrostSpeechResponse()
+	bifrostResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType:             schemas.SpeechRequest,
+		Provider:                providerName,
+		ModelRequested:          request.Model,
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -429,16 +428,15 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 				audioChunk := make([]byte, n)
 				copy(audioChunk, buffer[:n])
 
-				response := &schemas.BifrostSpeechStreamResponse{
-					Type:  schemas.SpeechStreamResponseTypeDelta,
-					Audio: audioChunk,
-					ExtraFields: schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.SpeechStreamRequest,
-						Provider:       providerName,
-						ModelRequested: request.Model,
-						ChunkIndex:     chunkIndex,
-						Latency:        time.Since(lastChunkTime).Milliseconds(),
-					},
+				response := schemas.AcquireBifrostSpeechStreamResponse()
+				response.Type = schemas.SpeechStreamResponseTypeDelta
+				response.Audio = audioChunk
+				response.ExtraFields = schemas.BifrostResponseExtraFields{
+					RequestType:    schemas.SpeechStreamRequest,
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					ChunkIndex:     chunkIndex,
+					Latency:        time.Since(lastChunkTime).Milliseconds(),
 				}
 
 				lastChunkTime = time.Now()
@@ -452,16 +450,15 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		}
 
 		// Send final response after natural loop termination (similar to Gemini pattern)
-		finalResponse := &schemas.BifrostSpeechStreamResponse{
-			Type:  schemas.SpeechStreamResponseTypeDone,
-			Audio: []byte{},
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.SpeechStreamRequest,
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				ChunkIndex:     chunkIndex + 1,
-				Latency:        time.Since(startTime).Milliseconds(),
-			},
+		finalResponse := schemas.AcquireBifrostSpeechStreamResponse()
+		finalResponse.Type = schemas.SpeechStreamResponseTypeDone
+		finalResponse.Audio = []byte{}
+		finalResponse.ExtraFields = schemas.BifrostResponseExtraFields{
+			RequestType:    schemas.SpeechStreamRequest,
+			Provider:       providerName,
+			ModelRequested: request.Model,
+			ChunkIndex:     chunkIndex + 1,
+			Latency:        time.Since(startTime).Milliseconds(),
 		}
 
 		// Set raw request if enabled

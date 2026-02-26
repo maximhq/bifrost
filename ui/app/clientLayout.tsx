@@ -11,15 +11,11 @@ import { WebSocketProvider } from "@/hooks/useWebSocket";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
 import { RbacProvider } from "@enterprise/lib/contexts/rbacContext";
-import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { useEffect } from "react";
 import { CookiesProvider } from "react-cookie";
 import { toast, Toaster } from "sonner";
-
-// Dynamic import - only loaded in development, completely excluded from prod bundle
-const DevProfiler = dynamic(() => import("@/components/devProfiler").then((mod) => ({ default: mod.DevProfiler })), { ssr: false });
 
 function StoreSyncInitializer() {
 	useStoreSync();
@@ -72,7 +68,6 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 					<NuqsAdapter>
 						<RbacProvider>
 							<AppContent>{children}</AppContent>
-							{process.env.NODE_ENV === "development" && !process.env.NEXT_PUBLIC_DISABLE_PROFILER && <DevProfiler />}
 						</RbacProvider>
 					</NuqsAdapter>
 				</ReduxProvider>

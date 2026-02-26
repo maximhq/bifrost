@@ -20,9 +20,6 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 	}
 
 	if errorResp.Error != nil {
-		if bifrostErr.Error == nil {
-			bifrostErr.Error = &schemas.ErrorField{}
-		}
 		bifrostErr.Error.Type = errorResp.Error.Type
 		bifrostErr.Error.Code = errorResp.Error.Code
 		bifrostErr.Error.Message = errorResp.Error.Message

@@ -1030,20 +1030,19 @@ type AnthropicFileDeleteResponse struct {
 
 // ToBifrostFileUploadResponse converts an Anthropic file response to Bifrost file upload response.
 func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileUploadResponse {
-	resp := &schemas.BifrostFileUploadResponse{
-		ID:             r.ID,
-		Object:         r.Type,
-		Bytes:          r.SizeBytes,
-		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
-		Filename:       r.Filename,
-		Purpose:        schemas.FilePurposeBatch, // We hardcode as purpose is not supported by Anthropic
-		Status:         schemas.FileStatusProcessed,
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileUploadRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileUploadResponse()
+	resp.ID = r.ID
+	resp.Object = r.Type
+	resp.Bytes = r.SizeBytes
+	resp.CreatedAt = parseAnthropicFileTimestamp(r.CreatedAt)
+	resp.Filename = r.Filename
+	resp.Purpose = schemas.FilePurposeBatch // We hardcode as purpose is not supported by Anthropic
+	resp.Status = schemas.FileStatusProcessed
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileUploadRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if sendBackRawRequest {
@@ -1059,20 +1058,19 @@ func (r *AnthropicFileResponse) ToBifrostFileUploadResponse(providerName schemas
 
 // ToBifrostFileRetrieveResponse converts an Anthropic file response to Bifrost file retrieve response.
 func (r *AnthropicFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.ModelProvider, latency time.Duration, sendBackRawRequest bool, sendBackRawResponse bool, rawRequest interface{}, rawResponse interface{}) *schemas.BifrostFileRetrieveResponse {
-	resp := &schemas.BifrostFileRetrieveResponse{
-		ID:             r.ID,
-		Object:         r.Type,
-		Bytes:          r.SizeBytes,
-		CreatedAt:      parseAnthropicFileTimestamp(r.CreatedAt),
-		Filename:       r.Filename,
-		Purpose:        schemas.FilePurposeBatch,
-		Status:         schemas.FileStatusProcessed,
-		StorageBackend: schemas.FileStorageAPI,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType: schemas.FileRetrieveRequest,
-			Provider:    providerName,
-			Latency:     latency.Milliseconds(),
-		},
+	resp := schemas.AcquireBifrostFileRetrieveResponse()
+	resp.ID = r.ID
+	resp.Object = r.Type
+	resp.Bytes = r.SizeBytes
+	resp.CreatedAt = parseAnthropicFileTimestamp(r.CreatedAt)
+	resp.Filename = r.Filename
+	resp.Purpose = schemas.FilePurposeBatch
+	resp.Status = schemas.FileStatusProcessed
+	resp.StorageBackend = schemas.FileStorageAPI
+	resp.ExtraFields = schemas.BifrostResponseExtraFields{
+		RequestType: schemas.FileRetrieveRequest,
+		Provider:    providerName,
+		Latency:     latency.Milliseconds(),
 	}
 
 	if sendBackRawRequest {

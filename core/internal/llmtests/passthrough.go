@@ -72,6 +72,7 @@ func RunPassthroughExtraParamsTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		if response == nil {
 			t.Fatalf("❌ Chat completion response is nil")
 		}
+		defer schemas.ReleaseBifrostChatResponse(response)
 
 		// Verify the response is valid
 		chatContent := GetChatContent(response)

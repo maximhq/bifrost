@@ -376,15 +376,15 @@ func UnmarshalHuggingFaceImageGenerationResponse(data []byte, model string) (*sc
 	case hfInference:
 		// Handle raw byte data - encode to base64
 		b64Data := base64.StdEncoding.EncodeToString(data)
-		return &schemas.BifrostImageGenerationResponse{
-			Model: model,
-			Data: []schemas.ImageData{
-				{
-					B64JSON: b64Data,
-					Index:   0,
-				},
+		r := schemas.AcquireBifrostImageGenerationResponse()
+		r.Model = model
+		r.Data = []schemas.ImageData{
+			{
+				B64JSON: b64Data,
+				Index:   0,
 			},
-		}, nil
+		}
+		return r, nil
 
 	case falAI:
 		// Handle fal-ai JSON response
@@ -403,10 +403,10 @@ func UnmarshalHuggingFaceImageGenerationResponse(data []byte, model string) (*sc
 			}
 		}
 
-		return &schemas.BifrostImageGenerationResponse{
-			Model: model,
-			Data:  imageData,
-		}, nil
+		r := schemas.AcquireBifrostImageGenerationResponse()
+		r.Model = model
+		r.Data = imageData
+		return r, nil
 
 	case together:
 		// Handle together JSON response
@@ -424,10 +424,10 @@ func UnmarshalHuggingFaceImageGenerationResponse(data []byte, model string) (*sc
 			}
 		}
 
-		return &schemas.BifrostImageGenerationResponse{
-			Model: model,
-			Data:  imageData,
-		}, nil
+		r := schemas.AcquireBifrostImageGenerationResponse()
+		r.Model = model
+		r.Data = imageData
+		return r, nil
 
 	default:
 		return nil, fmt.Errorf("unsupported inference provider: %s", inferenceProvider)

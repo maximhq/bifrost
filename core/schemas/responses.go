@@ -3,6 +3,7 @@ package schemas
 import (
 	"fmt"
 	"reflect"
+	"sync"
 	"time"
 )
 
@@ -86,6 +87,71 @@ type BifrostResponsesResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// bifrostResponsesResponsePool provides a pool for BifrostResponsesResponse objects.
+var bifrostResponsesResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostResponsesResponse{}
+	},
+}
+
+// AcquireBifrostResponsesResponse gets a BifrostResponsesResponse from the pool and resets it.
+func AcquireBifrostResponsesResponse() *BifrostResponsesResponse {
+	r := bifrostResponsesResponsePool.Get().(*BifrostResponsesResponse)
+	*r = BifrostResponsesResponse{}
+	return r
+}
+
+// ReleaseBifrostResponsesResponse returns a BifrostResponsesResponse to the pool after clearing all fields.
+// The caller must ensure no other goroutine holds a reference to this response.
+// Do NOT use the response after calling ReleaseBifrostResponsesResponse().
+func ReleaseBifrostResponsesResponse(resp *BifrostResponsesResponse) {
+	if resp == nil {
+		return
+	}
+	// Nil all pointer and slice fields to break references and allow GC
+	resp.ID = nil
+	resp.Object = ""
+	resp.Background = nil
+	resp.Conversation = nil
+	resp.CreatedAt = 0
+	resp.CompletedAt = nil
+	resp.Error = nil
+	resp.Include = nil
+	resp.IncompleteDetails = nil
+	resp.Instructions = nil
+	resp.MaxOutputTokens = nil
+	resp.MaxToolCalls = nil
+	resp.Metadata = nil
+	resp.Model = ""
+	resp.Output = nil
+	resp.ParallelToolCalls = nil
+	resp.PreviousResponseID = nil
+	resp.Prompt = nil
+	resp.PromptCacheKey = nil
+	resp.PresencePenalty = nil
+	resp.FrequencyPenalty = nil
+	resp.Reasoning = nil
+	resp.SafetyIdentifier = nil
+	resp.ServiceTier = nil
+	resp.Status = nil
+	resp.StreamOptions = nil
+	resp.StopReason = nil
+	resp.Store = nil
+	resp.Temperature = nil
+	resp.Text = nil
+	resp.TopLogProbs = nil
+	resp.TopP = nil
+	resp.ToolChoice = nil
+	resp.Tools = nil
+	resp.Truncation = nil
+	resp.Usage = nil
+	resp.ExtraFields = BifrostResponseExtraFields{}
+	resp.SearchResults = nil
+	resp.Videos = nil
+	resp.Citations = nil
+	bifrostResponsesResponsePool.Put(resp)
 }
 
 func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
@@ -2077,6 +2143,57 @@ type BifrostResponsesStreamResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+}
+
+// bifrostResponsesStreamResponsePool provides a pool for BifrostResponsesStreamResponse objects.
+var bifrostResponsesStreamResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostResponsesStreamResponse{}
+	},
+}
+
+// AcquireBifrostResponsesStreamResponse gets a BifrostResponsesStreamResponse from the pool and resets it.
+func AcquireBifrostResponsesStreamResponse() *BifrostResponsesStreamResponse {
+	r := bifrostResponsesStreamResponsePool.Get().(*BifrostResponsesStreamResponse)
+	*r = BifrostResponsesStreamResponse{}
+	return r
+}
+
+// ReleaseBifrostResponsesStreamResponse returns a BifrostResponsesStreamResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostResponsesStreamResponse(r *BifrostResponsesStreamResponse) {
+	if r == nil {
+		return
+	}
+	if r.Response != nil {
+		ReleaseBifrostResponsesResponse(r.Response)
+	}
+	r.Type = ""
+	r.SequenceNumber = 0
+	r.Response = nil
+	r.OutputIndex = nil
+	r.Item = nil
+	r.ContentIndex = nil
+	r.ItemID = nil
+	r.Part = nil
+	r.Delta = nil
+	r.Signature = nil
+	r.LogProbs = nil
+	r.Text = nil
+	r.Refusal = nil
+	r.Arguments = nil
+	r.PartialImageB64 = nil
+	r.PartialImageIndex = nil
+	r.Annotation = nil
+	r.AnnotationIndex = nil
+	r.Code = nil
+	r.Message = nil
+	r.Param = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	r.SearchResults = nil
+	r.Videos = nil
+	r.Citations = nil
+	bifrostResponsesStreamResponsePool.Put(r)
 }
 
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {

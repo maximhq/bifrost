@@ -17,11 +17,11 @@ func (resp *VertexCountTokensResponse) ToBifrostCountTokensResponse(model string
 		inputDetails.CachedTokens = int(resp.CachedContentTokenCount)
 	}
 
-	return &schemas.BifrostCountTokensResponse{
-		Model:              model,
-		Object:             "response.input_tokens",
-		InputTokens:        inputTokens,
-		InputTokensDetails: inputDetails,
-		TotalTokens:        &total,
-	}
+	r := schemas.AcquireBifrostCountTokensResponse()
+	r.Model = model
+	r.Object = "response.input_tokens"
+	r.InputTokens = inputTokens
+	r.InputTokensDetails = inputDetails
+	r.TotalTokens = &total
+	return r
 }

@@ -364,7 +364,7 @@ func ToBifrostImageGenerationResponse(response *BedrockImageGenerationResponse) 
 		return nil
 	}
 
-	bifrostResponse := &schemas.BifrostImageGenerationResponse{}
+	bifrostResponse := schemas.AcquireBifrostImageGenerationResponse()
 
 	for index, image := range response.Images {
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.ImageData{

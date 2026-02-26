@@ -6,9 +6,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/maximhq/bifrost/core/pool"
 )
 
 var NoDeadline time.Time
+
+// bifrostContextPool is a typed pool for BifrostContext objects.
+// In debug builds (-tags=pooldebug), it tracks double-release, use-after-release, and leaks.
+var bifrostContextPool = pool.New("BifrostContext", func() *BifrostContext {
+	return &BifrostContext{
+		done:       make(chan struct{}),
+		userValues: make(map[any]any),
+	}
+})
 
 var reservedKeys = []any{
 	BifrostContextKeyVirtualKey,
@@ -91,6 +102,71 @@ func NewBifrostContextWithTimeout(parent context.Context, timeout time.Duration)
 func NewBifrostContextWithCancel(parent context.Context) (*BifrostContext, context.CancelFunc) {
 	ctx := NewBifrostContext(parent, NoDeadline)
 	return ctx, func() { ctx.Cancel() }
+}
+
+// AcquireBifrostContext gets a BifrostContext from the pool and initializes it.
+// This is more efficient than NewBifrostContext for high-throughput scenarios.
+// The caller MUST call Release() when done to return it to the pool.
+func AcquireBifrostContext(parent context.Context, deadline time.Time) *BifrostContext {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx := bifrostContextPool.Get()
+	ctx.reset(parent, deadline)
+
+	_, parentHasDeadline := parent.Deadline()
+	parentCanCancel := parent.Done() != nil && !isNonCancellingContext(parent)
+	if ctx.hasDeadline || parentCanCancel || parentHasDeadline {
+		go ctx.watchCancellation()
+	}
+	return ctx
+}
+
+// AcquireBifrostContextWithCancel is like AcquireBifrostContext but returns a cancel function.
+// The cancel function cancels the context AND releases it back to the pool.
+// This is the preferred way to acquire a pooled context for request handling.
+func AcquireBifrostContextWithCancel(parent context.Context) (*BifrostContext, context.CancelFunc) {
+	ctx := AcquireBifrostContext(parent, NoDeadline)
+	return ctx, func() { ReleaseBifrostContext(ctx) }
+}
+
+// Release cancels the context and returns it to the pool.
+// After calling Release, the context must not be used.
+func ReleaseBifrostContext(bc *BifrostContext) {
+	// Cancel first to stop any running goroutine
+	bc.Cancel()
+	bifrostContextPool.Put(bc)
+}
+
+// reset reinitializes the context for reuse from the pool.
+func (bc *BifrostContext) reset(parent context.Context, deadline time.Time) {
+	bc.parent = parent
+	bc.deadline = deadline
+	bc.hasDeadline = !deadline.IsZero()
+
+	// Recreate channel if it was closed
+	select {
+	case <-bc.done:
+		// Channel was closed, recreate it
+		bc.done = make(chan struct{})
+	default:
+		// Channel still open, reuse it
+	}
+
+	// Reset sync.Once by creating new one (zero value is valid)
+	bc.doneOnce = sync.Once{}
+
+	// Clear error
+	bc.errMu.Lock()
+	bc.err = nil
+	bc.errMu.Unlock()
+
+	// Clear userValues map (reuse allocation)
+	bc.valuesMu.Lock()
+	clear(bc.userValues)
+	bc.valuesMu.Unlock()
+
+	bc.blockRestrictedWrites.Store(false)
 }
 
 // WithValue returns a new context with the given value set.

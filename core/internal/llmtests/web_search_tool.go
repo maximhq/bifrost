@@ -79,6 +79,9 @@ func RunWebSearchToolTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		if err != nil {
 			t.Fatalf("❌ WebSearchTool test failed: %s", GetErrorMessage(err))
 		}
+		if response != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(response)
+		}
 
 		require.NotNil(t, response, "Response should not be nil")
 
@@ -400,6 +403,9 @@ func RunWebSearchToolWithDomainsTest(t *testing.T, client *bifrost.Bifrost, ctx 
 		if err != nil {
 			t.Fatalf("❌ WebSearchToolWithDomains test failed: %s", GetErrorMessage(err))
 		}
+		if response != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(response)
+		}
 
 		require.NotNil(t, response, "Response should not be nil")
 
@@ -504,6 +510,9 @@ func RunWebSearchToolContextSizesTest(t *testing.T, client *bifrost.Bifrost, ctx
 				if err != nil {
 					t.Fatalf("❌ WebSearchToolContextSize (%s) test failed: %s", size, GetErrorMessage(err))
 				}
+				if response != nil {
+					defer schemas.ReleaseBifrostResponsesResponse(response)
+				}
 
 				require.NotNil(t, response, "Response should not be nil")
 
@@ -598,6 +607,9 @@ func RunWebSearchToolMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx co
 		if err != nil {
 			t.Fatalf("❌ First turn failed: %s", GetErrorMessage(err))
 		}
+		if firstResponse != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(firstResponse)
+		}
 
 		require.NotNil(t, firstResponse, "First response should not be nil")
 
@@ -652,6 +664,9 @@ func RunWebSearchToolMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx co
 
 		if err != nil {
 			t.Fatalf("❌ Second turn failed: %s", GetErrorMessage(err))
+		}
+		if secondResponse != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(secondResponse)
 		}
 
 		require.NotNil(t, secondResponse, "Second response should not be nil")
@@ -740,6 +755,9 @@ func RunWebSearchToolMaxUsesTest(t *testing.T, client *bifrost.Bifrost, ctx cont
 
 		if err != nil {
 			t.Fatalf("❌ WebSearchToolMaxUses test failed: %s", GetErrorMessage(err))
+		}
+		if response != nil {
+			defer schemas.ReleaseBifrostResponsesResponse(response)
 		}
 
 		require.NotNil(t, response, "Response should not be nil")

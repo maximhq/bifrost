@@ -79,9 +79,10 @@ import (
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
-	// Create cancellable context for all requests
+	// Create cancellable context for all requests using the pool for efficiency
 	// This enables proper cleanup when clients disconnect or requests are cancelled
-	bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	// The cancel function also releases the context back to the pool
+	bifrostCtx, cancel := schemas.AcquireBifrostContextWithCancel(ctx)
 
 	// First, check if x-request-id header exists
 	requestID := string(ctx.Request.Header.Peek("x-request-id"))

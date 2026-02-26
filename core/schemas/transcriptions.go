@@ -1,5 +1,7 @@
 package schemas
 
+import "sync"
+
 type BifrostTranscriptionRequest struct {
 	Provider       ModelProvider            `json:"provider"`
 	Model          string                   `json:"model"`
@@ -23,6 +25,38 @@ type BifrostTranscriptionResponse struct {
 	Usage       *TranscriptionUsage        `json:"usage,omitempty"`
 	Words       []TranscriptionWord        `json:"words,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// bifrostTranscriptionResponsePool provides a pool for BifrostTranscriptionResponse objects.
+var bifrostTranscriptionResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostTranscriptionResponse{}
+	},
+}
+
+// AcquireBifrostTranscriptionResponse gets a BifrostTranscriptionResponse from the pool and resets it.
+func AcquireBifrostTranscriptionResponse() *BifrostTranscriptionResponse {
+	r := bifrostTranscriptionResponsePool.Get().(*BifrostTranscriptionResponse)
+	*r = BifrostTranscriptionResponse{}
+	return r
+}
+
+// ReleaseBifrostTranscriptionResponse returns a BifrostTranscriptionResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostTranscriptionResponse(r *BifrostTranscriptionResponse) {
+	if r == nil {
+		return
+	}
+	r.Duration = nil
+	r.Language = nil
+	r.LogProbs = nil
+	r.Segments = nil
+	r.Task = nil
+	r.Text = ""
+	r.Usage = nil
+	r.Words = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostTranscriptionResponsePool.Put(r)
 }
 
 type TranscriptionInput struct {
@@ -130,4 +164,33 @@ type BifrostTranscriptionStreamResponse struct {
 	Type        TranscriptionStreamResponseType `json:"type"`
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
+}
+
+// bifrostTranscriptionStreamResponsePool provides a pool for BifrostTranscriptionStreamResponse objects.
+var bifrostTranscriptionStreamResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &BifrostTranscriptionStreamResponse{}
+	},
+}
+
+// AcquireBifrostTranscriptionStreamResponse gets a BifrostTranscriptionStreamResponse from the pool and resets it.
+func AcquireBifrostTranscriptionStreamResponse() *BifrostTranscriptionStreamResponse {
+	r := bifrostTranscriptionStreamResponsePool.Get().(*BifrostTranscriptionStreamResponse)
+	*r = BifrostTranscriptionStreamResponse{}
+	return r
+}
+
+// ReleaseBifrostTranscriptionStreamResponse returns a BifrostTranscriptionStreamResponse to the pool.
+// The caller must ensure no other goroutine holds a reference to this response.
+func ReleaseBifrostTranscriptionStreamResponse(r *BifrostTranscriptionStreamResponse) {
+	if r == nil {
+		return
+	}
+	r.Delta = nil
+	r.LogProbs = nil
+	r.Text = ""
+	r.Type = ""
+	r.Usage = nil
+	r.ExtraFields = BifrostResponseExtraFields{}
+	bifrostTranscriptionStreamResponsePool.Put(r)
 }
