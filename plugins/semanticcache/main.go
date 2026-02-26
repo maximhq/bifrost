@@ -40,7 +40,8 @@ type Config struct {
 	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
 	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
 	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
+	ExcludeSystemPrompt          *bool      `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
+	DefaultCacheType             *CacheType `json:"default_cache_type,omitempty"`              // Default cache type for lookups and storage: "direct", "semantic", or unset for both (default: unset — tries direct first, then semantic)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -60,6 +61,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		CacheByModel                 *bool         `json:"cache_by_model,omitempty"`
 		CacheByProvider              *bool         `json:"cache_by_provider,omitempty"`
 		ExcludeSystemPrompt          *bool         `json:"exclude_system_prompt,omitempty"`
+		DefaultCacheType             *CacheType    `json:"default_cache_type,omitempty"`
 	}
 
 	var temp TempConfig
@@ -79,6 +81,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConversationHistoryThreshold = temp.ConversationHistoryThreshold
 	c.Threshold = temp.Threshold
 	c.ExcludeSystemPrompt = temp.ExcludeSystemPrompt
+	c.DefaultCacheType = temp.DefaultCacheType
 	// Handle TTL field with custom parsing for VectorStore-backed cache behavior
 	if temp.TTL != nil {
 		switch v := temp.TTL.(type) {
@@ -309,6 +312,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 	if config.CacheByProvider == nil {
 		config.CacheByProvider = bifrost.Ptr(true)
 	}
+	if config.DefaultCacheType != nil && *config.DefaultCacheType != CacheTypeDirect && *config.DefaultCacheType != CacheTypeSemantic {
+		return nil, fmt.Errorf("invalid default_cache_type '%s': must be 'direct', 'semantic', or omitted for both", *config.DefaultCacheType)
+	}
 
 	plugin := &Plugin{
 		store:     store,
@@ -317,7 +323,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 		waitGroup: sync.WaitGroup{},
 	}
 
-	if config.Provider == "" || len(config.Keys) == 0 {
+	semanticEnabled := config.DefaultCacheType == nil || *config.DefaultCacheType == CacheTypeSemantic
+	if !semanticEnabled {
+		logger.Debug(PluginLoggerPrefix + " Default cache type is 'direct', skipping embedding provider initialization")
+	} else if config.Provider == "" || len(config.Keys) == 0 {
 		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
 	} else {
 		// Validate that the provider supports embeddings
@@ -414,16 +423,17 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
 
-	performDirectSearch, performSemanticSearch := true, true
+	effectiveCacheType := plugin.config.DefaultCacheType
 	if ctx.Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
-		if !ok {
-			plugin.logger.Warn(PluginLoggerPrefix + " Cache type is not a CacheType, using all available cache types")
+		if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok {
+			effectiveCacheType = &cacheTypeVal
 		} else {
-			performDirectSearch = cacheTypeVal == CacheTypeDirect
-			performSemanticSearch = cacheTypeVal == CacheTypeSemantic
+			plugin.logger.Warn(PluginLoggerPrefix + " Cache type is not a CacheType, using default cache type")
 		}
 	}
+
+	performDirectSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
+	performSemanticSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
 
 	if performDirectSearch {
 		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
@@ -548,31 +558,22 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if !ok {
 		return res, nil, nil
 	}
-	// Check cache type to optimize embedding handling
+	// Resolve effective cache type: per-request override > config default > both
 	var embedding []float32
 	var hash string
-	var shouldStoreEmbeddings = true
-	var shouldStoreHash = true
-
+	effectiveCacheType := plugin.config.DefaultCacheType
 	if ctx.Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
-		if ok {
-			if cacheTypeVal == CacheTypeDirect {
-				// For direct-only caching, skip embedding operations entirely
-				// unless the vector store requires vectors for all entries
-				if plugin.store.RequiresVectors() {
-					// Vector stores like Qdrant and Pinecone require vectors for all entries
-					// Keep embeddings enabled for storage, but lookups will still use direct hash matching
-					plugin.logger.Debug(PluginLoggerPrefix + " Vector store requires vectors, keeping embedding generation enabled for storage")
-				} else {
-					shouldStoreEmbeddings = false
-					plugin.logger.Debug(PluginLoggerPrefix + " Skipping embedding operations for direct-only cache type")
-				}
-			} else if cacheTypeVal == CacheTypeSemantic {
-				shouldStoreHash = false
-				plugin.logger.Debug(PluginLoggerPrefix + " Skipping hash operations for semantic cache type")
-			}
+		if cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType); ok {
+			effectiveCacheType = &cacheTypeVal
 		}
+	}
+
+	shouldStoreHash := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
+	shouldStoreEmbeddings := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
+
+	if !shouldStoreEmbeddings && plugin.store.RequiresVectors() {
+		shouldStoreEmbeddings = true
+		plugin.logger.Debug(PluginLoggerPrefix + " Vector store requires vectors, keeping embedding generation enabled for storage")
 	}
 
 	if shouldStoreHash {
