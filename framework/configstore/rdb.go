@@ -341,11 +341,12 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 
 			if result.Error == nil {
 				// Update existing key with new data
-				dbKey.ID = existingKey.ID                 // Keep the same database ID
-				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
-				dbKey.Enabled = existingKey.Enabled       // Preserve the existing Enabled status
-				dbKey.Status = existingKey.Status
-				dbKey.Description = existingKey.Description
+				dbKey.ID = existingKey.ID                           // Keep the same database ID
+				dbKey.ProviderID = existingKey.ProviderID           // Preserve the existing ProviderID
+				dbKey.Enabled = existingKey.Enabled                 // Preserve the existing Enabled status
+				dbKey.Status = existingKey.Status                   // Preserve status (UI-managed)
+				dbKey.Description = existingKey.Description         // Preserve description (UI-managed)
+				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -354,12 +355,13 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				result = txDB.WithContext(ctx).Where("name = ?", dbKey.Name).First(&existingKey)
 				if result.Error == nil {
 					// Found by name - update existing key, preserve original KeyID
-					dbKey.ID = existingKey.ID
-					dbKey.KeyID = existingKey.KeyID // Preserve original KeyID
-					dbKey.ProviderID = existingKey.ProviderID
-					dbKey.Enabled = existingKey.Enabled
-					dbKey.Status = existingKey.Status
-					dbKey.Description = existingKey.Description
+					dbKey.ID = existingKey.ID                           // Keep the same database ID
+					dbKey.KeyID = existingKey.KeyID                     // Preserve original KeyID
+					dbKey.ProviderID = existingKey.ProviderID           // Preserve the existing ProviderID
+					dbKey.Enabled = existingKey.Enabled                 // Preserve the existing Enabled status
+					dbKey.Status = existingKey.Status                   // Preserve status (UI-managed)
+					dbKey.Description = existingKey.Description         // Preserve description (UI-managed)
+					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -494,10 +496,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 
 		// Check if this key already exists
 		if existingKey, exists := existingKeysMap[key.ID]; exists {
-			dbKey.ID = existingKey.ID
-			dbKey.ConfigHash = existingKey.ConfigHash
-			dbKey.Status = existingKey.Status
-			dbKey.Description = existingKey.Description
+			dbKey.ID = existingKey.ID                             // Keep the same database ID
+			dbKey.ConfigHash = existingKey.ConfigHash             // Preserve config hash
+			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
+			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
+			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}

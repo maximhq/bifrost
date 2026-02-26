@@ -1,0 +1,1 @@
+- hotfix: widened encrypted varchar columns (azure_api_version, vertex_region, bedrock_region) from varchar to TEXT to accommodate AES-256-GCM encryption overhead

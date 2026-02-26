@@ -1,1 +1,5 @@
+- fix: widened encrypted varchar columns (azure_api_version, vertex_region, bedrock_region) to prevent truncation of AES-256-GCM encrypted values
+- feat: support top-level cache_control for Anthropic automatic prompt caching
+- fix: plugins/semanticcache: fix DefaultCacheKey dropped during JSON unmarshal
 - fix: filter openrouter list models response based on allowed models on key
+- chore: bump framework to 1.2.23

@@ -287,6 +287,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVLLMKeyConfigColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationWidenEncryptedVarcharColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -3976,6 +3979,49 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationWidenEncryptedVarcharColumns widens varchar columns that store AES-256-GCM
+// encrypted values to TEXT. Encryption adds ~28 bytes of overhead plus base64 expansion (4/3x),
+// so a varchar(255) can only hold ~153-char plaintext. Using TEXT removes any size constraints.
+// SQLite does not enforce varchar(n) size constraints, so no migration is needed there.
+func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "widen_encrypted_varchar_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			stmts := []string{
+				// config_keys table - all encrypted EnvVar fields
+				"ALTER TABLE config_keys ALTER COLUMN azure_api_version TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN azure_client_id TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN azure_tenant_id TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN vertex_project_id TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN vertex_project_number TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN vertex_region TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN bedrock_access_key TYPE TEXT",
+				"ALTER TABLE config_keys ALTER COLUMN bedrock_region TYPE TEXT",
+				// sessions table
+				"ALTER TABLE sessions ALTER COLUMN token TYPE TEXT",
+				// governance_virtual_keys table
+				"ALTER TABLE governance_virtual_keys ALTER COLUMN value TYPE TEXT",
+				// oauth_configs table
+				"ALTER TABLE oauth_configs ALTER COLUMN code_verifier TYPE TEXT",
+			}
+			for _, stmt := range stmts {
+				if err := tx.Exec(stmt).Error; err != nil {
+					return fmt.Errorf("failed to widen column (%s): %w", stmt, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running widen encrypted varchar columns migration: %s", err.Error())
 	}
 	return nil
 }

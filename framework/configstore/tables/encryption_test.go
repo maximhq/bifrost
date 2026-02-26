@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -1471,4 +1472,247 @@ func TestTableVectorStoreConfig_EncryptionDisabled_StoresPlaintext(t *testing.T)
 	require.NoError(t, db.First(&found, vs.ID).Error)
 	require.NotNil(t, found.Config)
 	assert.Contains(t, *found.Config, "redis-secret")
+}
+
+// ============================================================================
+// Multi-backend helpers — run the same tests on SQLite and Postgres
+// ============================================================================
+
+// postgresDSN matches the postgres service in tests/docker-compose.yml and
+// framework/docker-compose.yml.
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+
+// namedDB pairs a backend name with its GORM connection for use in subtests.
+type namedDB struct {
+	name string
+	db   *gorm.DB
+}
+
+// createTestProvider inserts a minimal TableProvider and returns its auto-generated ID.
+// Postgres enforces the config_keys.provider_id FK; SQLite does not. Using this helper
+// ensures both backends stay consistent.
+func createTestProvider(t *testing.T, db *gorm.DB, name string) uint {
+	t.Helper()
+	provider := &TableProvider{Name: name}
+	require.NoError(t, db.Create(provider).Error)
+	return provider.ID
+}
+
+// trySetupPostgresDB attempts to connect to Postgres and auto-migrate all tables.
+// Returns nil (without skipping the test) if Postgres is unavailable, so callers
+// can decide whether to skip or simply omit the Postgres subtest.
+func trySetupPostgresDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		return nil
+	}
+
+	// Verify the connection is actually live before proceeding.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// Order matters on Postgres: referenced tables must be created before
+	// tables that FK-reference them (SQLite defers FK checks; Postgres does not).
+	// TableProvider must precede TableKey (config_keys.provider_id → config_providers).
+	// TableOauthConfig must precede TableMCPClient (config_mcp_clients.oauth_config_id → oauth_configs).
+	err = db.AutoMigrate(
+		&TableProvider{},
+		&TableOauthConfig{},
+		&TableOauthToken{},
+		&TableKey{},
+		&TableMCPClient{},
+		&TablePlugin{},
+		&TableVirtualKey{},
+		&SessionsTable{},
+		&TableVectorStoreConfig{},
+	)
+	if err != nil {
+		return nil
+	}
+
+	// Clean up all rows after the test so each test starts with an empty DB.
+	t.Cleanup(func() {
+		db.Exec("DELETE FROM config_keys")
+		db.Exec("DELETE FROM config_providers")
+		db.Exec("DELETE FROM config_mcp_clients")
+		db.Exec("DELETE FROM config_plugins")
+		db.Exec("DELETE FROM governance_virtual_keys")
+		db.Exec("DELETE FROM sessions")
+		db.Exec("DELETE FROM oauth_configs")
+		db.Exec("DELETE FROM oauth_tokens")
+		db.Exec("DELETE FROM config_vector_store")
+	})
+
+	return db
+}
+
+// setupTestPostgresDB connects to Postgres and skips the test if unavailable.
+func setupTestPostgresDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres unavailable — skipping Postgres-specific test (start tests/docker-compose.yml to run it)")
+	}
+	return db
+}
+
+// forEachDB returns a SQLite backend always, and a Postgres backend when available.
+// Tests use t.Run(ndb.name, ...) to get per-backend subtest names and failure isolation.
+func forEachDB(t *testing.T) []namedDB {
+	t.Helper()
+	dbs := []namedDB{{"sqlite", setupTestDB(t)}}
+	if pgDB := trySetupPostgresDB(t); pgDB != nil {
+		dbs = append(dbs, namedDB{"postgres", pgDB})
+	}
+	return dbs
+}
+
+// ============================================================================
+// Encrypted column width regression tests (SQLite + Postgres via forEachDB)
+//
+// These tests guard against the SQLSTATE 22001 overflow that occurred when
+// AES-256-GCM encrypted values were stored in varchar columns that were too
+// narrow to hold the base64-encoded ciphertext:
+//   - azure_api_version was varchar(50)  — any API version string overflowed
+//   - vertex_region     was varchar(100) — longer region names overflowed
+//   - bedrock_region    was varchar(100) — same
+//
+// All three are now varchar(255), which can hold up to ~163-char plaintext
+// after encryption overhead.
+// ============================================================================
+
+func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
+	// "2024-02-01-preview" is 18 chars — encrypts to ~62 chars.
+	// This overflowed the old varchar(50) column.
+	apiVersion := schemas.NewEnvVar("2024-02-01-preview")
+
+	for _, ndb := range forEachDB(t) {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			providerID := createTestProvider(t, ndb.db, "azure-av-provider-"+ndb.name)
+			key := &TableKey{
+				Name:       "azure-apiversion-width-" + ndb.name,
+				ProviderID: providerID,
+				Provider:   "azure",
+				KeyID:      "az-av-width-" + ndb.name,
+				Value:      *schemas.NewEnvVar("sk-azure-key"),
+				AzureKeyConfig: &schemas.AzureKeyConfig{
+					Endpoint:   *schemas.NewEnvVar("https://my-azure.openai.azure.com"),
+					APIVersion: apiVersion,
+				},
+			}
+
+			require.NoError(t, ndb.db.Create(key).Error,
+				"expected no overflow error — azure_api_version should be varchar(255)")
+
+			var found TableKey
+			require.NoError(t, ndb.db.First(&found, key.ID).Error)
+			require.NotNil(t, found.AzureKeyConfig)
+			require.NotNil(t, found.AzureKeyConfig.APIVersion)
+			assert.Equal(t, "2024-02-01-preview", found.AzureKeyConfig.APIVersion.GetValue())
+		})
+	}
+}
+
+func TestEncryptedColumns_VertexRegion_FitsAfterWidening(t *testing.T) {
+	// "northamerica-northeast1" is 23 chars — encrypts to ~68 chars.
+	// Longer regions would have overflowed the old varchar(100).
+	for _, ndb := range forEachDB(t) {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			providerID := createTestProvider(t, ndb.db, "vertex-region-provider-"+ndb.name)
+			key := &TableKey{
+				Name:       "vertex-region-width-" + ndb.name,
+				ProviderID: providerID,
+				Provider:   "vertex",
+				KeyID:      "vx-region-width-" + ndb.name,
+				Value:      *schemas.NewEnvVar("vertex-api-key"),
+				VertexKeyConfig: &schemas.VertexKeyConfig{
+					ProjectID: *schemas.NewEnvVar("my-project"),
+					Region:    *schemas.NewEnvVar("northamerica-northeast1"),
+				},
+			}
+
+			require.NoError(t, ndb.db.Create(key).Error,
+				"expected no overflow error — vertex_region should be varchar(255)")
+
+			var found TableKey
+			require.NoError(t, ndb.db.First(&found, key.ID).Error)
+			require.NotNil(t, found.VertexKeyConfig)
+			assert.Equal(t, "northamerica-northeast1", found.VertexKeyConfig.Region.GetValue())
+		})
+	}
+}
+
+func TestEncryptedColumns_BedrockRegion_FitsAfterWidening(t *testing.T) {
+	// "ap-southeast-2" is 14 chars — encrypts to ~58 chars.
+	// Previously borderline against varchar(100).
+	region := schemas.NewEnvVar("ap-southeast-2")
+
+	for _, ndb := range forEachDB(t) {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			providerID := createTestProvider(t, ndb.db, "bedrock-region-provider-"+ndb.name)
+			key := &TableKey{
+				Name:       "bedrock-region-width-" + ndb.name,
+				ProviderID: providerID,
+				Provider:   "bedrock",
+				KeyID:      "bk-region-width-" + ndb.name,
+				Value:      *schemas.NewEnvVar("bedrock-val"),
+				BedrockKeyConfig: &schemas.BedrockKeyConfig{
+					AccessKey: *schemas.NewEnvVar("AKIAIOSFODNN7EXAMPLE"),
+					SecretKey: *schemas.NewEnvVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+					Region:    region,
+				},
+			}
+
+			require.NoError(t, ndb.db.Create(key).Error,
+				"expected no overflow error — bedrock_region should be varchar(255)")
+
+			var found TableKey
+			require.NoError(t, ndb.db.First(&found, key.ID).Error)
+			require.NotNil(t, found.BedrockKeyConfig)
+			require.NotNil(t, found.BedrockKeyConfig.Region)
+			assert.Equal(t, "ap-southeast-2", found.BedrockKeyConfig.Region.GetValue())
+		})
+	}
+}
+
+// ============================================================================
+// Postgres-only: verify actual column types via information_schema
+// ============================================================================
+
+func TestPostgres_EncryptedColumns_AreVarchar255(t *testing.T) {
+	db := setupTestPostgresDB(t) // skips if Postgres is unavailable
+
+	type colInfo struct {
+		DataType               string `gorm:"column:data_type"`
+		CharacterMaximumLength int    `gorm:"column:character_maximum_length"`
+	}
+
+	columns := []string{"azure_api_version", "vertex_region", "bedrock_region"}
+	for _, col := range columns {
+		col := col
+		t.Run(col, func(t *testing.T) {
+			var info colInfo
+			err := db.Raw(`
+				SELECT data_type, character_maximum_length
+				FROM information_schema.columns
+				WHERE table_name = 'config_keys' AND column_name = ?`, col).
+				Scan(&info).Error
+			require.NoError(t, err)
+			assert.Equal(t, "character varying", info.DataType,
+				"column %s should be character varying", col)
+			assert.Equal(t, 255, info.CharacterMaximumLength,
+				"column %s should have max length 255", col)
+		})
+	}
 }

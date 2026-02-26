@@ -30,25 +30,25 @@ type TableKey struct {
 
 	// Azure config fields (embedded instead of separate table for simplicity)
 	AzureEndpoint        *schemas.EnvVar `gorm:"type:text" json:"azure_endpoint,omitempty"`
-	AzureAPIVersion      *schemas.EnvVar `gorm:"type:varchar(50)" json:"azure_api_version,omitempty"`
+	AzureAPIVersion      *schemas.EnvVar `gorm:"type:text" json:"azure_api_version,omitempty"`
 	AzureDeploymentsJSON *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
-	AzureClientID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_client_id,omitempty"`
+	AzureClientID        *schemas.EnvVar `gorm:"type:text" json:"azure_client_id,omitempty"`
 	AzureClientSecret    *schemas.EnvVar `gorm:"type:text" json:"azure_client_secret,omitempty"`
-	AzureTenantID        *schemas.EnvVar `gorm:"type:varchar(255)" json:"azure_tenant_id,omitempty"`
+	AzureTenantID        *schemas.EnvVar `gorm:"type:text" json:"azure_tenant_id,omitempty"`
 	AzureScopesJSON      *string         `gorm:"column:azure_scopes;type:text" json:"-"` // JSON serialized []string
 
 	// Vertex config fields (embedded)
-	VertexProjectID       *schemas.EnvVar `gorm:"type:varchar(255)" json:"vertex_project_id,omitempty"`
-	VertexProjectNumber   *schemas.EnvVar `gorm:"type:varchar(255)" json:"vertex_project_number,omitempty"`
-	VertexRegion          *schemas.EnvVar `gorm:"type:varchar(100)" json:"vertex_region,omitempty"`
+	VertexProjectID       *schemas.EnvVar `gorm:"type:text" json:"vertex_project_id,omitempty"`
+	VertexProjectNumber   *schemas.EnvVar `gorm:"type:text" json:"vertex_project_number,omitempty"`
+	VertexRegion          *schemas.EnvVar `gorm:"type:text" json:"vertex_region,omitempty"`
 	VertexAuthCredentials *schemas.EnvVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 	VertexDeploymentsJSON *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 
 	// Bedrock config fields (embedded)
-	BedrockAccessKey         *schemas.EnvVar `gorm:"type:varchar(255)" json:"bedrock_access_key,omitempty"`
+	BedrockAccessKey         *schemas.EnvVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
 	BedrockSecretKey         *schemas.EnvVar `gorm:"type:text" json:"bedrock_secret_key,omitempty"`
 	BedrockSessionToken      *schemas.EnvVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
-	BedrockRegion            *schemas.EnvVar `gorm:"type:varchar(100)" json:"bedrock_region,omitempty"`
+	BedrockRegion            *schemas.EnvVar `gorm:"type:text" json:"bedrock_region,omitempty"`
 	BedrockARN               *schemas.EnvVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
 	BedrockDeploymentsJSON   *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config

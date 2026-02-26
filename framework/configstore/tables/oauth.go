@@ -20,7 +20,7 @@ type TableOauthConfig struct {
 	RedirectURI     string    `gorm:"type:text;not null" json:"redirect_uri"`           // Callback URL
 	Scopes          string    `gorm:"type:text" json:"scopes"`                          // JSON array of scopes (optional, can be discovered)
 	State           string    `gorm:"type:varchar(255);uniqueIndex;not null" json:"-"`  // CSRF state token
-	CodeVerifier    string    `gorm:"type:varchar(255)" json:"-"`                       // PKCE code verifier (generated, kept secret)
+	CodeVerifier    string    `gorm:"type:text" json:"-"`                               // PKCE code verifier (generated, kept secret)
 	CodeChallenge   string    `gorm:"type:varchar(255)" json:"code_challenge"`          // PKCE code challenge (sent to provider)
 	Status          string    `gorm:"type:varchar(50);not null;index" json:"status"`    // "pending", "authorized", "failed", "expired", "revoked"
 	TokenID         *string   `gorm:"type:varchar(255);index" json:"token_id"`          // Foreign key to oauth_tokens.ID (set after callback)
