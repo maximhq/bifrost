@@ -1036,7 +1036,7 @@ export default function AppSidebar() {
 							setFocusedIndex(-1);
 						}}
 						onKeyDown={handleSearchKeyDown}
-						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-white"
+						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-transparent"
 					/>
 					<kbd className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 flex -translate-y-1/2 gap-0.5 text-[10px]">
 						<span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">⌘</span>

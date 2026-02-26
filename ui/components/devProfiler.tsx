@@ -84,6 +84,8 @@ function getGoroutineId (g: GoroutineGroup): string {
 
 // localStorage key for skipped goroutine file paths
 const SKIPPED_GOROUTINE_FILES_KEY = 'devProfiler.skippedGoroutineFiles'
+const PROFILER_VISIBLE_KEY = 'devProfiler.isVisible'
+const PROFILER_EXPANDED_KEY = 'devProfiler.isExpanded'
 
 // Load skipped goroutine file paths from localStorage
 function loadSkippedGoroutineFiles (): Set<string> {
@@ -101,6 +103,28 @@ function saveSkippedGoroutineFiles (skipped: Set<string>): void {
   if (typeof window === 'undefined') return
   try {
     localStorage.setItem(SKIPPED_GOROUTINE_FILES_KEY, JSON.stringify([...skipped]))
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function loadBooleanFromStorage (key: string, defaultValue: boolean): boolean {
+  if (typeof window === 'undefined') return defaultValue
+  try {
+    const stored = localStorage.getItem(key)
+    if (stored === null) return defaultValue
+    if (stored === 'true') return true
+    if (stored === 'false') return false
+    return defaultValue
+  } catch {
+    return defaultValue
+  }
+}
+
+function saveBooleanToStorage (key: string, value: boolean): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(key, value ? 'true' : 'false')
   } catch {
     // Ignore storage errors
   }
@@ -319,8 +343,8 @@ function GoroutineHealthSection ({
 }
 
 export function DevProfiler (): React.ReactNode {
-  const [isVisible, setIsVisible] = useState(true)
-  const [isExpanded, setIsExpanded] = useState(true)
+  const [isVisible, setIsVisible] = useState<boolean>(() => loadBooleanFromStorage(PROFILER_VISIBLE_KEY, true))
+  const [isExpanded, setIsExpanded] = useState<boolean>(() => loadBooleanFromStorage(PROFILER_EXPANDED_KEY, true))
   const [isDismissed, setIsDismissed] = useState(false)
   const [expandedGoroutines, setExpandedGoroutines] = useState<Set<string>>(new Set())
   const [skippedGoroutines, setSkippedGoroutines] = useState<Set<string>>(() => loadSkippedGoroutineFiles())
@@ -329,6 +353,14 @@ export function DevProfiler (): React.ReactNode {
   useEffect(() => {
     saveSkippedGoroutineFiles(skippedGoroutines)
   }, [skippedGoroutines])
+
+  useEffect(() => {
+    saveBooleanToStorage(PROFILER_VISIBLE_KEY, isVisible)
+  }, [isVisible])
+
+  useEffect(() => {
+    saveBooleanToStorage(PROFILER_EXPANDED_KEY, isExpanded)
+  }, [isExpanded])
 
   // Only fetch in development mode and when not dismissed
   const shouldFetch = isDevelopmentMode() && !isDismissed
@@ -398,6 +430,7 @@ export function DevProfiler (): React.ReactNode {
 
   const handleDismiss = useCallback(() => {
     setIsDismissed(true)
+    saveBooleanToStorage(PROFILER_VISIBLE_KEY, false)
   }, [])
 
   const toggleGoroutineExpand = useCallback((id: string) => {
