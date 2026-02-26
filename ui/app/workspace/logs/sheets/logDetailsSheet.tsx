@@ -262,6 +262,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
+									<LogEntryDetailsView className="w-full" label="Cost" value={log.cost != null ? `$${log.cost}` : "-"} />
 									{log.token_usage?.prompt_tokens_details && (
 										<>
 											{(log.token_usage.prompt_tokens_details.cached_read_tokens || log.token_usage.prompt_tokens_details.cached_write_tokens) && (

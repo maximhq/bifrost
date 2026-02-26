@@ -646,7 +646,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		cost := p.pricingManager.CalculateCostWithCacheDebug(result)
+		cost := p.pricingManager.CalculateCost(result)
 		entry.Cost = &cost
 	}
 
