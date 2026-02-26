@@ -206,7 +206,7 @@ const (
 	BedrockCachePointTypeDefault BedrockCachePointType = "default"
 )
 
-// BedrockCachePoint
+// BedrockCachePoint represents a cache point for the content block
 type BedrockCachePoint struct {
 	Type BedrockCachePointType `json:"type"`
 }
@@ -498,6 +498,64 @@ type BedrockCountTokensRequest struct {
 // BedrockCountTokensResponse represents a Bedrock CountTokens API response
 type BedrockCountTokensResponse struct {
 	InputTokens int `json:"inputTokens"`
+}
+
+// ==================== INVOKE MODEL RESPONSE TYPES ====================
+
+// BedrockInvokeMessagesResponse represents the Anthropic Messages API response
+// format returned by Bedrock's InvokeModel endpoint for Claude 3+ models.
+type BedrockInvokeMessagesResponse struct {
+	ID           string                              `json:"id"`
+	Type         string                              `json:"type"`
+	Role         string                              `json:"role"`
+	Content      []BedrockInvokeMessagesContentBlock `json:"content"`
+	Model        string                              `json:"model"`
+	StopReason   string                              `json:"stop_reason,omitempty"`
+	StopSequence *string                             `json:"stop_sequence,omitempty"`
+	Usage        *BedrockInvokeMessagesUsage         `json:"usage,omitempty"`
+}
+
+// BedrockInvokeMessagesContentBlock represents a content block in an Anthropic Messages response.
+type BedrockInvokeMessagesContentBlock struct {
+	Type     string      `json:"type"`
+	Text     string      `json:"text,omitempty"`
+	ID       string      `json:"id,omitempty"`
+	Name     string      `json:"name,omitempty"`
+	Input    interface{} `json:"input,omitempty"`
+	Thinking string      `json:"thinking,omitempty"`
+}
+
+// BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
+type BedrockInvokeMessagesUsage struct {
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
+// BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.
+type BedrockInvokeAI21Response struct {
+	ID      string                    `json:"id"`
+	Choices []BedrockInvokeAI21Choice `json:"choices"`
+	Usage   *BedrockInvokeAI21Usage   `json:"usage,omitempty"`
+}
+
+// BedrockInvokeAI21Choice represents a single choice in an AI21 response.
+type BedrockInvokeAI21Choice struct {
+	Index        int                      `json:"index"`
+	Message      BedrockInvokeAI21Message `json:"message"`
+	FinishReason string                   `json:"finish_reason"`
+}
+
+// BedrockInvokeAI21Message represents a message in an AI21 response choice.
+type BedrockInvokeAI21Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// BedrockInvokeAI21Usage represents token usage in an AI21 response.
+type BedrockInvokeAI21Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // ==================== ERROR TYPES ====================
@@ -815,4 +873,88 @@ type BedrockFileContentResponse struct {
 	Content     []byte `json:"-"`                     // File content (not serialized to JSON)
 	ContentType string `json:"contentType,omitempty"` // MIME content type
 	SizeBytes   int64  `json:"sizeBytes"`             // File size in bytes
+}
+
+// ==================== INVOKE REQUEST TYPES ====================
+
+// BedrockInvokeRequest is a union struct covering ALL model families' InvokeModel request formats.
+// It uses detection methods (IsMessagesRequest, IsCohereCommandRRequest) to determine correct routing:
+// messages-based requests (Anthropic Messages, Nova, AI21) go through the Responses path,
+// while prompt-based requests (Anthropic legacy, Mistral, Llama, Cohere) go through Text Completions.
+type BedrockInvokeRequest struct {
+	ModelID string `json:"-"` // From URL path
+
+	// ==================== COMMON FIELDS ====================
+
+	// Messages array (Anthropic Messages, Nova, AI21 Jamba)
+	// Custom UnmarshalJSON normalizes AI21's string content to []BedrockContentBlock
+	Messages []BedrockMessage `json:"messages,omitempty"`
+	System   interface{}      `json:"system,omitempty"` // string | []BedrockSystemMessage | []map[string]interface{}
+
+	// Text prompt (Anthropic legacy, Mistral, Llama, Cohere Command)
+	Prompt string `json:"prompt,omitempty"`
+
+	// Sampling parameters (most families)
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	TopK        *int     `json:"top_k,omitempty"`
+
+	// Token limits (different names per family)
+	MaxTokens         *int `json:"max_tokens,omitempty"`           // Anthropic Messages, Mistral, Cohere, AI21
+	MaxTokensToSample *int `json:"max_tokens_to_sample,omitempty"` // Anthropic legacy
+	MaxGenLen         *int `json:"max_gen_len,omitempty"`          // Meta Llama
+
+	// Stop sequences (different names per family)
+	Stop          []string `json:"stop,omitempty"`           // Mistral, AI21
+	StopSequences []string `json:"stop_sequences,omitempty"` // Anthropic, Cohere
+
+	// ==================== ANTHROPIC MESSAGES API ====================
+
+	AnthropicVersion  string      `json:"anthropic_version,omitempty"`
+	AnthropicBeta     interface{} `json:"anthropic_beta,omitempty"` // string or []string
+	Tools             interface{} `json:"tools,omitempty"`
+	ToolChoice        interface{} `json:"tool_choice,omitempty"`
+	Thinking          interface{} `json:"thinking,omitempty"`
+	OutputConfig      interface{} `json:"output_config,omitempty"`
+	AnthropicMetadata interface{} `json:"metadata,omitempty"`
+
+	// ==================== AMAZON NOVA ====================
+
+	SchemaVersion                string                  `json:"schemaVersion,omitempty"`
+	InferenceConfig              *BedrockInferenceConfig `json:"inferenceConfig,omitempty"`
+	ToolConfig                   *BedrockToolConfig      `json:"toolConfig,omitempty"`
+	AdditionalModelRequestFields interface{}             `json:"additionalModelRequestFields,omitempty"`
+
+	// ==================== META LLAMA ====================
+
+	Images []string `json:"images,omitempty"` // Base64-encoded images (Llama 3.2+)
+
+	// ==================== COHERE ====================
+
+	CohereP           *float64           `json:"p,omitempty"`
+	CohereK           *int               `json:"k,omitempty"`
+	ReturnLikelihoods *string            `json:"return_likelihoods,omitempty"`
+	NumGenerations    *int               `json:"num_generations,omitempty"`
+	LogitBias         map[string]float64 `json:"logit_bias,omitempty"`
+	Truncate          *string            `json:"truncate,omitempty"`
+
+	// Cohere Command R/R+ specific
+	Message     string                  `json:"message,omitempty"`
+	ChatHistory []BedrockCohereRMessage `json:"chat_history,omitempty"`
+
+	// ==================== AI21 JAMBA ====================
+
+	N                *int     `json:"n,omitempty"`
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64 `json:"presence_penalty,omitempty"`
+
+	// ==================== INTERNAL ====================
+	Stream      bool                   `json:"-"`
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// BedrockCohereRMessage represents a Cohere Command R/R+ chat history message
+type BedrockCohereRMessage struct {
+	Role    string `json:"role"`    // "USER" or "CHATBOT"
+	Message string `json:"message"` // Message content
 }

@@ -170,11 +170,12 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.TextResponseConverter)
+	assert.NotNil(t, route.ResponsesResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
@@ -186,11 +187,12 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
+	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
 func Test_createBedrockRerankRouteConfig(t *testing.T) {
