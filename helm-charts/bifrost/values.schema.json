@@ -612,6 +612,15 @@
                     },
                     "vector_store_namespace": {
                       "type": "string"
+                    },
+                    "default_cache_key": {
+                      "type": "string",
+                      "description": "Default cache key used when no per-request key is provided (caching is disabled when empty and no per-request key is set)"
+                    },
+                    "default_cache_type": {
+                      "type": "string",
+                      "enum": ["direct", "semantic"],
+                      "description": "Default cache type for lookups and storage: 'direct' for hash matching only, 'semantic' for similarity search only, or omit for both"
                     }
                   }
                 }
