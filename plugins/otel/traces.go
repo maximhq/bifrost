@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -137,16 +136,10 @@ func (c *OtelClientHTTP) Close() error {
 
 // initOTELTraceExportClient init OTEL client for exporting traces to an OTEL collector endpoint.
 func initOTELTraceExportClient(config *Config) (OtelClient, error) {
-	// If headers are present, and any of them start with env., we will replace the value with the environment variable
+	// Resolve env. prefixed header values from environment variables
 	if config.Headers != nil {
-		for key, value := range config.Headers {
-			if newValue, ok := strings.CutPrefix(value, "env."); ok {
-				config.Headers[key] = os.Getenv(newValue)
-				if config.Headers[key] == "" {
-					logger.Warn("environment variable %s not found", newValue)
-					return nil, fmt.Errorf("environment variable %s not found", newValue)
-				}
-			}
+		if err := resolveEnvHeaders(config.Headers); err != nil {
+			return nil, err
 		}
 	}
 	var (
