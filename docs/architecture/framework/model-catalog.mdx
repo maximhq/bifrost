@@ -27,9 +27,11 @@ This ensures that cost calculations always use the latest pricing information fr
 
 ### **2. Multi-Modal Cost Calculation**
 It supports diverse pricing models across different AI operation types:
-- **Text Operations**: Token-based and character-based pricing for chat completions, text completions, and embeddings.
-- **Audio Processing**: Token-based and duration-based pricing for speech synthesis and transcription.
-- **Image Processing**: Per-image costs with tiered pricing for high-token contexts.
+- **Text Operations**: Token-based pricing for chat completions, text completions, responses, and embeddings with provider-level cache token support.
+- **Audio Processing**: Token-based and duration-based pricing for speech synthesis and transcription, with audio token detail breakdown.
+- **Image Processing**: Per-image and token-based pricing with text/image token breakdown.
+- **Video Processing**: Duration-based output pricing with optional token-based input.
+- **Reranking**: Input/output token pricing with search query cost support.
 
 ### **3. Model Information Management**
 The Model Catalog maintains a pool of available models for each provider, populated from both pricing data and provider list models APIs. This enables:
@@ -43,7 +45,7 @@ It integrates with semantic caching to provide accurate cost calculations:
 - **Cache Misses**: Combined cost of the base model usage plus the embedding generation cost for cache storage.
 
 ### **5. Tiered Pricing Support**
-The system automatically applies different pricing rates for high-token contexts (e.g., above 128k tokens), reflecting real provider pricing models for various modalities.
+The system automatically applies different pricing rates for high-token contexts (above 200k tokens), reflecting real provider pricing models.
 
 ## Configuration
 
@@ -102,34 +104,53 @@ Each model's pricing information includes comprehensive cost metrics, supporting
 ```go
 // PricingEntry represents a single model's pricing information
 type PricingEntry struct {
-    // Basic pricing
-    InputCostPerToken  float64 `json:"input_cost_per_token"`
-    OutputCostPerToken float64 `json:"output_cost_per_token"`
-    Provider           string  `json:"provider"`
-    Mode               string  `json:"mode"`
+    BaseModel string `json:"base_model,omitempty"`
+    Provider  string `json:"provider"`
+    Mode      string `json:"mode"`
 
-    // Additional pricing for media
-    InputCostPerImage          *float64 `json:"input_cost_per_image,omitempty"`
-    InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-    InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+    // Costs - Text
+    InputCostPerToken                 float64  `json:"input_cost_per_token"`
+    OutputCostPerToken                float64  `json:"output_cost_per_token"`
+    InputCostPerTokenBatches          *float64 `json:"input_cost_per_token_batches,omitempty"`
+    OutputCostPerTokenBatches         *float64 `json:"output_cost_per_token_batches,omitempty"`
+    InputCostPerTokenPriority         *float64 `json:"input_cost_per_token_priority,omitempty"`
+    OutputCostPerTokenPriority        *float64 `json:"output_cost_per_token_priority,omitempty"`
+    InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+    OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
 
-    // Character-based pricing
-    InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-    OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+    // Costs - Cache
+    CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+    CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+    CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+    CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+    CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+    CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+    CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+    CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
 
-    // Pricing above 128k tokens
-    InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-    InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
-    InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-    InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-    InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-    OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-    OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+    // Costs - Image
+    InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+    InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+    OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+    OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+    OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+    OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+    OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+    OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+    OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
 
-    // Cache and batch pricing
-    CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
-    InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
-    OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
+    // Costs - Audio/Video
+    InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+    InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+    InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+    InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+    OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
+    OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+    OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+    // Costs - Other
+    SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+    CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 }
 ```
 
@@ -166,40 +187,16 @@ cost := modelCatalog.CalculateCost(
 logger.Info("Request cost: $%.6f", cost)
 ```
 
-### Advanced Cost Calculation with Usage Details
-For more granular cost calculation with custom usage data:
+### Unified Cost Calculation
+`CalculateCost` is the single entry point for all cost calculations. It handles all request types, semantic cache billing, and tiered pricing automatically:
 
 ```go
-// Custom usage calculation
-usage := &schemas.BifrostLLMUsage{
-    PromptTokens:     1500,
-    CompletionTokens: 800,
-    TotalTokens:      2300,
-}
-
-cost := modelCatalog.CalculateCostFromUsage(
-    "openai",                       // provider
-    "gpt-4",                        // model
-    usage,                          // usage data
-    schemas.ChatCompletionRequest,  // request type
-    false,                          // is cache read
-    false,                          // is batch
-    nil,                            // audio seconds (for audio models)
-    nil,                            // audio token details
-)
-```
-
-### Cache Aware Cost Calculation
-For workflows that implement semantic caching, use cache-aware cost calculation:
-
-```go
-// This automatically handles cache hits/misses and embedding costs
-cost := modelCatalog.CalculateCostWithCacheDebug(
-    result, // *schemas.BifrostResponse with cache debug info
-)
+// CalculateCost handles all cost scenarios including cache-aware pricing
+cost := modelCatalog.CalculateCost(result) // *schemas.BifrostResponse
 
 // Cache hits return 0 for direct hits, embedding cost for semantic matches
 // Cache misses return base model cost + embedding generation cost
+// Returns 0.0 if pricing data is not found (logs a warning)
 ```
 
 ### Model Discovery
@@ -319,28 +316,57 @@ err := modelCatalog.ReloadPricing(ctx, newConfig)
 The Model Catalog handles missing pricing data gracefully with intelligent fallbacks:
 
 ```go
-// getPricing returns pricing information for a model (thread-safe)
+// resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
+func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
+	pricing, exists := mc.getPricing(model, provider, requestType)
+	if exists {
+		return pricing
+	}
+	// If pricing not found for model, try the deployment name
+	if deployment != "" {
+		pricing, exists = mc.getPricing(deployment, provider, requestType)
+		if exists {
+			return pricing
+		}
+	}
+	return nil
+}
+
+// getPricing returns pricing information for a model (thread-safe).
+// It implements a multi-step fallback chain:
+//   1. Direct lookup by model + provider + mode
+//   2. Gemini → Vertex provider fallback
+//   3. Vertex "provider/model" prefix stripping
+//   4. Bedrock "anthropic." prefix addition for Claude models
+//   5. Responses → Chat mode fallback (at each step)
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	defer mc.mu.RUnlock()
 
-	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
-	if !ok {
-		// Example fallback: if a gemini model is not found, try looking it up under the vertex provider
-		if provider == string(schemas.Gemini) {
-			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
-			if ok {
-				return &pricing, true
-			}
-        }
-		return nil, false
+	mode := normalizeRequestType(requestType)
+
+	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
+	if ok {
+		return &pricing, true
 	}
-	return &pricing, true
+
+	// Provider-specific fallbacks (Gemini→Vertex, Vertex prefix strip, Bedrock anthropic. prefix)
+	// Each fallback also tries Responses→Chat mode if applicable
+	// ...
+
+	// Final fallback: Responses → Chat mode for any provider
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		if ok {
+			return &pricing, true
+		}
+	}
+
+	return nil, false
 }
 
-// When pricing is not found, CalculateCost returns 0.0 and logs a warning
-// This ensures operations continue smoothly without billing failures
+// When pricing is not found, CalculateCost returns 0.0 and logs a debug message.
+// This ensures operations continue smoothly without billing failures.
 ```
 
 
@@ -366,7 +392,7 @@ All `ModelCatalog` operations are thread-safe, making it suitable for concurrent
 1. **Shared Instance**: Use a single `ModelCatalog` instance across all plugins to avoid redundant data synchronization.
 2. **Error Handling**: Always handle the case where pricing returns 0.0 due to missing model data.
 3. **Logging**: Monitor pricing sync failures and missing model warnings in production.
-4. **Cache Awareness**: Use `CalculateCostWithCacheDebug` when implementing caching features.
+4. **Cache Awareness**: Use `CalculateCost` which automatically handles cache hits/misses and embedding costs.
 5. **Resource Cleanup**: Always call `Cleanup()` during application shutdown to prevent resource leaks.
 
 The Model Catalog provides a robust, production-ready foundation for implementing billing, budgeting, and cost monitoring features in Bifrost plugins.

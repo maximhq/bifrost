@@ -1145,7 +1145,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCostWithCacheDebug(result)
+			cost = p.modelCatalog.CalculateCost(result)
 		}
 		tokensUsed := 0
 		if result != nil {

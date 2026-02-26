@@ -16,7 +16,6 @@ import (
 
 // Default sync interval and config key
 const (
-	TokenTierAbove128K = 128000
 	TokenTierAbove200K = 200000
 )
 
@@ -54,47 +53,56 @@ type ModelCatalog struct {
 	syncCancel context.CancelFunc
 }
 
-// PricingEntry represents a single model's pricing information
+// PricingEntry represents a single model's pricing information.
+// Field names and JSON tags match the datasheet schema exactly.
 type PricingEntry struct {
-	// Base model name (pre-computed canonical name, e.g., "gpt-4o" for "gpt-4o-2024-08-06")
 	BaseModel string `json:"base_model,omitempty"`
-	// Basic pricing
-	InputCostPerToken  float64 `json:"input_cost_per_token"`
-	OutputCostPerToken float64 `json:"output_cost_per_token"`
-	Provider           string  `json:"provider"`
-	Mode               string  `json:"mode"`
-	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
-	// Character-based pricing
-	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
-	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
-	// Pricing above 128k tokens
-	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
-	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
-	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
-	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
-	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
-	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
-	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
-	//Pricing above 200k tokens
-	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
-	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
-	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
-	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
-	// Cache and batch pricing
-	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
-	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
-	// Image generation pricing
-	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
-	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
-	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
-	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
-	// Video generation pricing
+	Provider  string `json:"provider"`
+	Mode      string `json:"mode"`
+
+	// Costs - Text
+	InputCostPerToken                 float64  `json:"input_cost_per_token"`
+	OutputCostPerToken                float64  `json:"output_cost_per_token"`
+	InputCostPerTokenBatches          *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches         *float64 `json:"output_cost_per_token_batches,omitempty"`
+	InputCostPerTokenPriority         *float64 `json:"input_cost_per_token_priority,omitempty"`
+	OutputCostPerTokenPriority        *float64 `json:"output_cost_per_token_priority,omitempty"`
+	InputCostPerTokenAbove200kTokens  *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+
+	// Costs - Cache
+	CacheCreationInputTokenCost                        *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	CacheReadInputTokenCost                            *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens         *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens             *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove1hr                *float64 `json:"cache_creation_input_token_cost_above_1hr,omitempty"`
+	CacheCreationInputTokenCostAbove1hrAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_1hr_above_200k_tokens,omitempty"`
+	CacheCreationInputAudioTokenCost                   *float64 `json:"cache_creation_input_audio_token_cost,omitempty"`
+	CacheReadInputTokenCostPriority                    *float64 `json:"cache_read_input_token_cost_priority,omitempty"`
+
+	// Costs - Image
+	InputCostPerImage                             *float64 `json:"input_cost_per_image,omitempty"`
+	InputCostPerPixel                             *float64 `json:"input_cost_per_pixel,omitempty"`
+	OutputCostPerImage                            *float64 `json:"output_cost_per_image,omitempty"`
+	OutputCostPerPixel                            *float64 `json:"output_cost_per_pixel,omitempty"`
+	OutputCostPerImagePremiumImage                *float64 `json:"output_cost_per_image_premium_image,omitempty"`
+	OutputCostPerImageAbove512x512Pixels          *float64 `json:"output_cost_per_image_above_512_and_512_pixels,omitempty"`
+	OutputCostPerImageAbove512x512PixelsPremium   *float64 `json:"output_cost_per_image_above_512_and_512_pixels_and_premium_image,omitempty"`
+	OutputCostPerImageAbove1024x1024Pixels        *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels,omitempty"`
+	OutputCostPerImageAbove1024x1024PixelsPremium *float64 `json:"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image,omitempty"`
+
+	// Costs - Audio/Video
+	InputCostPerAudioToken      *float64 `json:"input_cost_per_audio_token,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerSecond          *float64 `json:"input_cost_per_second,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerAudioToken     *float64 `json:"output_cost_per_audio_token,omitempty"`
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
+
+	// Costs - Other
+	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
+	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced
