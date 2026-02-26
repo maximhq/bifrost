@@ -17,7 +17,6 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
-	const isCustomProvider = !!provider.custom_provider_config;
 
 	const showApiKeys = useMemo(() => {
 		if (provider.custom_provider_config) {
@@ -28,7 +27,7 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 
 	const editConfigButton = (
 		<div className="flex items-center gap-2">
-			{isCustomProvider && onRequestDelete && hasDeleteProviderAccess && (
+			{onRequestDelete && hasDeleteProviderAccess && (
 				<Button variant="outline" onClick={onRequestDelete} className="text-destructive hover:bg-destructive/10 hover:text-destructive" aria-label="Delete provider" data-testid="provider-delete-btn">
 					<Trash className="h-4 w-4" />
 				</Button>
