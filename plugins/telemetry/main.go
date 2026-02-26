@@ -54,6 +54,12 @@ type BasicAuthConfig struct {
 	Password string `json:"password"`
 }
 
+// Allow matching correct plugin and get the prometheus registry out
+// for exporting to OTEL.
+type PrometheusRegistryProvider interface {
+	GetRegistry() *prometheus.Registry
+}
+
 // PrometheusPlugin implements the schemas.LLMPlugin interface for Prometheus metrics.
 // It tracks metrics for upstream provider requests, including:
 //   - Total number of requests
