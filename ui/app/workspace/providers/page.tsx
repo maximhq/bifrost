@@ -36,7 +36,6 @@ export default function Providers() {
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
-	
 
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
@@ -52,42 +51,25 @@ export default function Providers() {
 	const [showDeleteProviderDialog, setShowDeleteProviderDialog] = useState(false);
 	const [pendingRedirection, setPendingRedirection] = useState<string | undefined>(undefined);
 	const [showCustomProviderSheet, setShowCustomProviderSheet] = useState(false);
-	const [addedProviderNames, setAddedProviderNames] = useState<Set<string>>(new Set());
 	const [provider, setProvider] = useQueryState("provider");
 
 	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 	const [createProvider] = useCreateProviderMutation();
 
-	const allProviders = ProviderNames.map(
-		(p) => savedProviders?.find((provider) => provider.name === p) ?? { name: p, keys: [], provider_status: "active" as ProviderStatus },
-	).sort((a, b) => a.name.localeCompare(b.name));
-
-	const isProviderConfigured = (p: (typeof allProviders)[number]) =>
-		(p.keys?.length ?? 0) > 0 || (p.network_config?.base_url ?? "").trim() !== "";
-	const configuredStandardProviders = allProviders.filter(isProviderConfigured);
-
-	const customProviders =
-		savedProviders
-			?.filter((provider) => !ProviderNames.includes(provider.name as KnownProvider))
-			.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
-
-	// Providers added from dropdown but not yet configured (keys/base_url); show in sidebar so user can configure
-	const addedOnly = allProviders.filter((p) => addedProviderNames.has(p.name) && !isProviderConfigured(p));
-	const configuredProviders = [...configuredStandardProviders, ...customProviders, ...addedOnly].sort((a, b) =>
-		a.name.localeCompare(b.name),
-	);
-	// Stable string key derived from configured providers to avoid excessive useEffect firing
-	const configuredProviderNames = configuredProviders.map((p) => p.name).join(",");
+	const configuredProviders = (savedProviders ?? []).slice().sort((a, b) => a.name.localeCompare(b.name));
+	const configuredProviderNamesArr = configuredProviders.map((p) => p.name);
+	const configuredProviderNamesKey = JSON.stringify(configuredProviderNamesArr);
 	const existingInSidebarNames = new Set(configuredProviders.map((p) => p.name));
+
+	const knownProviders = ProviderNames.map((name) => ({ name }));
 
 	useEffect(() => {
 		if (!provider) return;
-		const newSelectedProvider = allProviders.find((p) => p.name === provider) ?? customProviders.find((p) => p.name === provider);
+		const newSelectedProvider = configuredProviders.find((p) => p.name === provider);
 		if (newSelectedProvider) {
 			dispatch(setSelectedProvider(newSelectedProvider));
 		}
-		// We also try to fetch the latest version
 		getProvider(provider)
 			.unwrap()
 			.then((providerInfo) => {
@@ -95,7 +77,6 @@ export default function Providers() {
 			})
 			.catch((err) => {
 				if (err.status === 404) {
-					// Initializing provider config with default values
 					dispatch(
 						setSelectedProvider({
 							name: provider as ModelProviderName,
@@ -115,25 +96,23 @@ export default function Providers() {
 					description: `We encountered an error while getting provider config: ${getErrorMessage(err)}`,
 				});
 			});
-		return;
 	}, [provider, isLoadingProviders]);
 
 	useEffect(() => {
-		if (selectedProvider || !allProviders || allProviders.length === 0 || provider) return;
-		setProvider(allProviders[0].name);
+		if (selectedProvider || configuredProviders.length === 0 || provider) return;
+		setProvider(configuredProviders[0].name);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [selectedProvider, allProviders]);
+	}, [selectedProvider, configuredProviderNamesKey]);
 
 	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
 	useEffect(() => {
-		if (!provider || configuredProviderNames === "") return;
-		const names = configuredProviderNames.split(",");
-		const isCurrentConfigured = names.includes(provider);
+		if (!provider || configuredProviderNamesArr.length === 0) return;
+		const isCurrentConfigured = configuredProviderNamesArr.includes(provider);
 		if (!isCurrentConfigured) {
-			setProvider(names[0]);
+			setProvider(configuredProviderNamesArr[0]);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [provider, configuredProviderNames]);
+	}, [provider, configuredProviderNamesKey]);
 
 	if (!hasProvidersAccess && hasSettingsOnly) {
 		return <FullPageLoader />;
@@ -145,12 +124,9 @@ export default function Providers() {
 	const handleSelectKnownProvider = async (name: string) => {
 		try {
 			await createProvider({ provider: name as ModelProviderName, keys: [] }).unwrap();
-			setAddedProviderNames((prev) => new Set(prev).add(name));
 			setProvider(name);
 		} catch (err: any) {
 			if (err?.status === 409) {
-				// Provider already exists — still add it to the sidebar and select it
-				setAddedProviderNames((prev) => new Set(prev).add(name));
 				setProvider(name);
 				return;
 			}
@@ -168,7 +144,7 @@ export default function Providers() {
 						<AddProviderDropdown
 							disabled={!hasProviderCreateAccess}
 							existingInSidebar={existingInSidebarNames}
-							knownProviders={allProviders}
+							knownProviders={knownProviders}
 							onSelectKnownProvider={handleSelectKnownProvider}
 							onAddCustomProvider={() => setShowCustomProviderSheet(true)}
 							variant="empty"
@@ -270,7 +246,7 @@ export default function Providers() {
 								<AddProviderDropdown
 									disabled={!hasProviderCreateAccess}
 									existingInSidebar={existingInSidebarNames}
-									knownProviders={allProviders}
+									knownProviders={knownProviders}
 									onSelectKnownProvider={handleSelectKnownProvider}
 									onAddCustomProvider={() => setShowCustomProviderSheet(true)}
 								/>

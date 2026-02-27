@@ -637,6 +637,7 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	// Store the budget and rate limit IDs before deleting
 	budgetID := dbProvider.BudgetID
 	rateLimitID := dbProvider.RateLimitID
+	
 	// Delete the provider first (keys will be deleted due to CASCADE constraint)
 	if err := txDB.WithContext(ctx).Delete(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

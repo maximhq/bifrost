@@ -146,12 +146,21 @@ export default function ModelProviderKeysTableView({ provider, className, header
 										<TableCell>
 											<div className="flex items-center space-x-2">
 												{key.status === "success" && (
-													<CheckCircle2 className="text-green-600 h-4 w-4 flex-shrink-0" />
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<button type="button" aria-label="Key status: list models working" data-testid={`key-status-success-${key.name}`} className="inline-flex">
+																<CheckCircle2 aria-hidden className="text-green-600 h-4 w-4 flex-shrink-0" />
+															</button>
+														</TooltipTrigger>
+														<TooltipContent>List models working</TooltipContent>
+													</Tooltip>
 												)}
 												{key.status === "list_models_failed" && (
 													<Tooltip>
-														<TooltipTrigger>
-															<AlertCircle className="text-destructive h-4 w-4 flex-shrink-0" />
+														<TooltipTrigger asChild>
+															<button type="button" aria-label="Key status: list models failed" data-testid={`key-status-error-${key.name}`} className="inline-flex">
+																<AlertCircle aria-hidden className="text-destructive h-4 w-4 flex-shrink-0" />
+															</button>
 														</TooltipTrigger>
 														<TooltipContent className="max-w-xs break-words">
 															{key.description || "Model discovery failed for this key"}
