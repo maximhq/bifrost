@@ -200,7 +200,7 @@ func ValidateConfig(config *Config) (*Config, error) {
 		if config.MetricsExporterTimeout == 0 {
 			config.MetricsExporterTimeout = 10 // default 10 seconds
 		} else if config.MetricsExporterTimeout > 60 {
-			return nil, fmt.Errorf("metrics_exporter_timeout must be between 1 and 60 seconds, got %d", config.MetricsPushInterval)
+			return nil, fmt.Errorf("metrics_exporter_timeout must be between 1 and 60 seconds, got %d", config.MetricsExporterTimeout)
 		}
 	}
 	return config, nil

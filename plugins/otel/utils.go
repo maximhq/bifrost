@@ -26,7 +26,9 @@ func createTLSConfig(caCertPath string, insecure bool) (*tls.Config, error) {
 			return nil, err
 		}
 		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("invalid cert provided")
+		}
 		tlsConfig = &tls.Config{
 			RootCAs:    caCertPool,
 			MinVersion: tls.VersionTLS12,
