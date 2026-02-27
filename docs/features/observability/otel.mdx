@@ -747,7 +747,7 @@ The OTel plugin supports **push-based metrics export** via OTLP, which is essent
 | `metrics_endpoint` | `string` | ✅ Yes (if enabled) | OTLP metrics endpoint URL |
 | `metrics_protocol` | `string` | ✅ Yes (if enabled) | Protocol for the metrics exporter: `http` or `grpc` |
 | `metrics_tls_ca_cert` | `string` | ❌ No | Path to CA certificate for metrics TLS. Uses system root CAs if omitted |
-| `metrics_insecure` | `boolean` | ❌ No | Skip TLS verification for metrics endpoint (default: `true`). Ignored if `metrics_tls_ca_cert` is set |
+| `metrics_insecure` | `boolean` | ❌ No | Skip TLS verification for metrics endpoint (default: `false`). Ignored if `metrics_tls_ca_cert` is set |
 | `metrics_push_interval` | `integer` | ❌ No | Push interval in seconds (default: `15`, range: 1-300) |
 | `metrics_exporter_timeout` | `integer` | ❌ No | Export request timeout in seconds (default: `10`, range: 1-60) |
 | `metrics_extra_labels` | `object` | ❌ No | Additional key-value labels attached to all metrics as OTEL resource attributes |

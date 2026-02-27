@@ -1156,7 +1156,7 @@
                     "metrics_insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification for the metrics endpoint. Ignored if metrics_tls_ca_cert is set.",
-                      "default": true
+                      "default": false
                     },
                     "metrics_push_interval": {
                       "type": "integer",

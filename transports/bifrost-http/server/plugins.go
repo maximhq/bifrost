@@ -104,9 +104,8 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			telemetryPlugin, err := lib.FindPluginAs[telemetry.PrometheusRegistryProvider](bifrostConfig, telemetry.PluginName)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get telemetry plugin when metrics export is enabled: %w", err)
-			} else {
-				otelConfig.PrometheusRegistry = telemetryPlugin.GetRegistry()
 			}
+			otelConfig.PrometheusRegistry = telemetryPlugin.GetRegistry()
 		}
 		otelConfig, err = otel.ValidateConfig(otelConfig)
 		if err != nil {

@@ -689,7 +689,7 @@
                     "metrics_insecure": {
                       "type": "boolean",
                       "description": "Skip TLS verification for the metrics endpoint. Ignored if metrics_tls_ca_cert is set.",
-                      "default": true
+                      "default": false
                     },
                     "metrics_push_interval": {
                       "type": "integer",
@@ -729,7 +729,7 @@
                     "required": ["metrics_enabled"]
                   },
                   "then": {
-                    "required": ["metrics_endpoint"]
+                    "required": ["metrics_endpoint", "metrics_protocol"]
                   }
                 }
               },
