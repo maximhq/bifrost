@@ -2875,9 +2875,10 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 			// but not in the in-memory map, sync it to memory and return ErrAlreadyExists
 			// so the caller can proceed with an update instead of failing.
 			if errors.Is(err, configstore.ErrAlreadyExists) {
+				// Provider already exists in DB but not in memory - sync and return
 				c.Providers[provider] = config
 				logger.Info("provider %s already exists in DB, synced to memory", provider)
-				return fmt.Errorf("provider %s: %w", provider, ErrAlreadyExists)
+				return fmt.Errorf("provider/provider key name %s: %w", provider, ErrAlreadyExists)
 			}
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
@@ -2977,7 +2978,7 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 // RemoveProvider removes a provider configuration from memory.
 func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	c.Mu.Lock()
-	defer c.Mu.Unlock()	
+	defer c.Mu.Unlock()
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	skipDBUpdate := false
 	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {

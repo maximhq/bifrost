@@ -75,6 +75,16 @@ ENV APP_PORT=$ARG_APP_PORT \
   LOG_STYLE=$ARG_LOG_STYLE \
   APP_DIR=$ARG_APP_DIR
 
+# Go runtime performance tuning (override at runtime for your workload)
+# GOGC: GC target percentage. Higher = less frequent GC, more memory usage.
+#       Default: 100. For high-throughput with available memory, try 200-400.
+# GOMEMLIMIT: Soft memory limit for Go runtime. Set to ~90% of container memory limit.
+#             Example: "1800MiB" for a 2GB container, "3600MiB" for 4GB.
+#             When set, Go will be more aggressive about GC as it approaches this limit.
+# Note: GOMAXPROCS is automatically detected from cgroup CPU limits via automaxprocs.
+ENV GOGC="" \
+  GOMEMLIMIT=""
+
 
 RUN mkdir -p $APP_DIR/logs && \
   adduser -D -s /bin/sh appuser && \

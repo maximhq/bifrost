@@ -11,6 +11,23 @@ services:
       - APP_HOST=0.0.0.0
       - LOG_LEVEL=info
       - LOG_STYLE=json
+      # Go runtime performance tuning (uncomment and adjust for your workload):
+      # - GOGC=200                  # Higher = less GC, more memory (default: 100)
+      # - GOMEMLIMIT=3600MiB        # Set to ~90% of container memory limit
+    # File descriptor limits for high-concurrency workloads
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Resource limits (uncomment and adjust based on your infrastructure)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4'
+    #       memory: 4G
+    #     reservations:
+    #       cpus: '2'
+    #       memory: 2G
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost:8080/health"]
       interval: 30s
