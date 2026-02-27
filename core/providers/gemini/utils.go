@@ -202,7 +202,7 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 	}
 
 	if len(schema.Properties) > 0 {
-		params.Properties = schemas.Ptr(convertSchemaToMap(schema))
+		params.Properties = convertSchemaToMap(schema)
 	}
 
 	if len(schema.Enum) > 0 {
@@ -211,8 +211,7 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 
 	// Array schema fields
 	if schema.Items != nil {
-		itemsMap := convertSchemaToOrderedMap(schema.Items)
-		params.Items = &itemsMap
+		params.Items = convertSchemaToOrderedMap(schema.Items)
 	}
 	if schema.MinItems != nil {
 		params.MinItems = schema.MinItems
@@ -225,7 +224,7 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 	if len(schema.AnyOf) > 0 {
 		anyOf := make([]schemas.OrderedMap, len(schema.AnyOf))
 		for i, s := range schema.AnyOf {
-			anyOf[i] = convertSchemaToOrderedMap(s)
+			anyOf[i] = *convertSchemaToOrderedMap(s)
 		}
 		params.AnyOf = anyOf
 	}
@@ -267,98 +266,98 @@ func convertSchemaToFunctionParameters(schema *Schema) schemas.ToolFunctionParam
 }
 
 // convertSchemaToOrderedMap converts a Gemini Schema to an OrderedMap
-func convertSchemaToOrderedMap(schema *Schema) schemas.OrderedMap {
+func convertSchemaToOrderedMap(schema *Schema) *schemas.OrderedMap {
 	if schema == nil {
-		return schemas.OrderedMap{}
+		return schemas.NewOrderedMap()
 	}
 
-	result := schemas.OrderedMap{}
+	result := schemas.NewOrderedMap()
 
 	if schema.Type != "" {
-		result["type"] = strings.ToLower(string(schema.Type))
+		result.Set("type", strings.ToLower(string(schema.Type)))
 	}
 	if schema.Description != "" {
-		result["description"] = schema.Description
+		result.Set("description", schema.Description)
 	}
 	if len(schema.Enum) > 0 {
-		result["enum"] = schema.Enum
+		result.Set("enum", schema.Enum)
 	}
 	if len(schema.Required) > 0 {
-		result["required"] = schema.Required
+		result.Set("required", schema.Required)
 	}
 	if len(schema.Properties) > 0 {
 		props := make(map[string]interface{})
 		for k, v := range schema.Properties {
 			props[k] = convertSchemaToOrderedMap(v)
 		}
-		result["properties"] = props
+		result.Set("properties", props)
 	}
 	if schema.Items != nil {
-		result["items"] = convertSchemaToOrderedMap(schema.Items)
+		result.Set("items", convertSchemaToOrderedMap(schema.Items))
 	}
 	if len(schema.AnyOf) > 0 {
 		anyOf := make([]interface{}, len(schema.AnyOf))
 		for i, s := range schema.AnyOf {
 			anyOf[i] = convertSchemaToOrderedMap(s)
 		}
-		result["anyOf"] = anyOf
+		result.Set("anyOf", anyOf)
 	}
 	if schema.Format != "" {
-		result["format"] = schema.Format
+		result.Set("format", schema.Format)
 	}
 	if schema.Pattern != "" {
-		result["pattern"] = schema.Pattern
+		result.Set("pattern", schema.Pattern)
 	}
 	if schema.MinLength != nil {
-		result["minLength"] = *schema.MinLength
+		result.Set("minLength", *schema.MinLength)
 	}
 	if schema.MaxLength != nil {
-		result["maxLength"] = *schema.MaxLength
+		result.Set("maxLength", *schema.MaxLength)
 	}
 	if schema.MinItems != nil {
-		result["minItems"] = *schema.MinItems
+		result.Set("minItems", *schema.MinItems)
 	}
 	if schema.MaxItems != nil {
-		result["maxItems"] = *schema.MaxItems
+		result.Set("maxItems", *schema.MaxItems)
 	}
 	if schema.Minimum != nil {
-		result["minimum"] = *schema.Minimum
+		result.Set("minimum", *schema.Minimum)
 	}
 	if schema.Maximum != nil {
-		result["maximum"] = *schema.Maximum
+		result.Set("maximum", *schema.Maximum)
 	}
 	if schema.Title != "" {
-		result["title"] = schema.Title
+		result.Set("title", schema.Title)
 	}
 	if schema.Default != nil {
-		result["default"] = schema.Default
+		result.Set("default", schema.Default)
 	}
 	if schema.Nullable != nil {
-		result["nullable"] = *schema.Nullable
+		result.Set("nullable", *schema.Nullable)
 	}
 
 	return result
 }
 
-func convertSchemaToMap(schema *Schema) schemas.OrderedMap {
+func convertSchemaToMap(schema *Schema) *schemas.OrderedMap {
 	// Convert map[string]*Schema to map[string]interface{} using JSON marshaling
 	data, err := sonic.Marshal(schema.Properties)
 	if err != nil {
-		return make(map[string]interface{})
+		return schemas.NewOrderedMap()
 	}
 
 	var properties map[string]interface{}
 	if err := sonic.Unmarshal(data, &properties); err != nil {
-		return make(map[string]interface{})
+		return schemas.NewOrderedMap()
 	}
 
 	result := convertTypeToLowerCase(properties)
 
 	// Type assert back to map[string]interface{}
 	if resultMap, ok := result.(map[string]interface{}); ok {
-		return resultMap
+		return schemas.OrderedMapFromMap(resultMap)
 	}
-	return make(map[string]interface{})
+	return schemas.NewOrderedMap()
 }
 
 // convertTypeToLowerCase recursively converts all 'type' fields to lowercase in a schema
@@ -497,21 +496,8 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 	return string(providerReason)
 }
 
-// extractUsageMetadata extracts usage metadata from the Gemini response
-func (r *GenerateContentResponse) extractUsageMetadata() (int, int, int, int, int) {
-	var inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens int
-	if r.UsageMetadata != nil {
-		inputTokens = int(r.UsageMetadata.PromptTokenCount)
-		outputTokens = int(r.UsageMetadata.CandidatesTokenCount)
-		totalTokens = int(r.UsageMetadata.TotalTokenCount)
-		cachedTokens = int(r.UsageMetadata.CachedContentTokenCount)
-		reasoningTokens = int(r.UsageMetadata.ThoughtsTokenCount)
-	}
-	return inputTokens, outputTokens, totalTokens, cachedTokens, reasoningTokens
-}
-
-// convertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
-func convertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
+// ConvertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
+func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
 	if metadata == nil {
 		return nil
 	}
@@ -522,25 +508,276 @@ func convertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 		TotalTokens:      int(metadata.TotalTokenCount),
 	}
 
-	// Add cached tokens if present
-	if metadata.CachedContentTokenCount > 0 {
-		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-			CachedTokens: int(metadata.CachedContentTokenCount),
+	// Process prompt token details (modality breakdown + cached tokens)
+	if len(metadata.PromptTokensDetails) > 0 || metadata.CachedContentTokenCount > 0 {
+		if usage.PromptTokensDetails == nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+
+		// Map modality breakdowns from PromptTokensDetails
+		for _, detail := range metadata.PromptTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				usage.PromptTokensDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				usage.PromptTokensDetails.AudioTokens = int(detail.TokenCount)
+			case ModalityImage:
+				usage.PromptTokensDetails.ImageTokens = int(detail.TokenCount)
+			}
+		}
+
+		// Add cached tokens if present
+		if metadata.CachedContentTokenCount > 0 {
+			usage.PromptTokensDetails.CachedTokens = int(metadata.CachedContentTokenCount)
 		}
 	}
 
-	// Add reasoning tokens if present
-	if metadata.ThoughtsTokenCount > 0 {
-		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-			ReasoningTokens: int(metadata.ThoughtsTokenCount),
+	// Process completion token details (modality breakdown + reasoning tokens)
+	if len(metadata.CandidatesTokensDetails) > 0 || metadata.ThoughtsTokenCount > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+
+		// Map modality breakdowns from CandidatesTokensDetails
+		for _, detail := range metadata.CandidatesTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				usage.CompletionTokensDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				usage.CompletionTokensDetails.AudioTokens = int(detail.TokenCount)
+			case ModalityImage:
+				usage.CompletionTokensDetails.ImageTokens = schemas.Ptr(int(detail.TokenCount))
+			}
+		}
+
+		// Add reasoning tokens if present
+		if metadata.ThoughtsTokenCount > 0 {
+			usage.CompletionTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
 		}
 	}
 
 	return usage
 }
 
-// convertGeminiUsageMetadataToResponsesUsage converts Gemini usage metadata to Bifrost responses usage
-func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.ResponsesResponseUsage {
+// convertGeminiUsageMetadataToSpeechUsage converts Gemini usage metadata to Bifrost speech usage
+func convertGeminiUsageMetadataToSpeechUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.SpeechUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.SpeechUsage{
+		InputTokens:  int(metadata.PromptTokenCount),
+		OutputTokens: int(metadata.CandidatesTokenCount),
+		TotalTokens:  int(metadata.TotalTokenCount),
+	}
+
+	// Process input token details (modality breakdown for audio+text)
+	if len(metadata.PromptTokensDetails) > 0 {
+		inputDetails := &schemas.SpeechUsageInputTokenDetails{}
+		for _, detail := range metadata.PromptTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				inputDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				inputDetails.AudioTokens = int(detail.TokenCount)
+			}
+		}
+		usage.InputTokenDetails = inputDetails
+	}
+
+	return usage
+}
+
+// convertBifrostSpeechUsageToGeminiUsageMetadata converts Bifrost speech usage to Gemini usage metadata
+func convertBifrostSpeechUsageToGeminiUsageMetadata(usage *schemas.SpeechUsage) *GenerateContentResponseUsageMetadata {
+	if usage == nil {
+		return nil
+	}
+
+	metadata := &GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     int32(usage.InputTokens),
+		CandidatesTokenCount: int32(usage.OutputTokens),
+		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+
+	// Process input token details to PromptTokensDetails
+	if usage.InputTokenDetails != nil {
+		if usage.InputTokenDetails.TextTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityText,
+				TokenCount: int32(usage.InputTokenDetails.TextTokens),
+			})
+		}
+		if usage.InputTokenDetails.AudioTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityAudio,
+				TokenCount: int32(usage.InputTokenDetails.AudioTokens),
+			})
+		}
+	}
+
+	return metadata
+}
+
+// convertGeminiUsageMetadataToTranscriptionUsage converts Gemini usage metadata to Bifrost transcription usage
+func convertGeminiUsageMetadataToTranscriptionUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.TranscriptionUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.TranscriptionUsage{
+		Type:         "tokens",
+		InputTokens:  schemas.Ptr(int(metadata.PromptTokenCount)),
+		OutputTokens: schemas.Ptr(int(metadata.CandidatesTokenCount)),
+		TotalTokens:  schemas.Ptr(int(metadata.TotalTokenCount)),
+	}
+
+	// Process input token details (modality breakdown for audio+text)
+	if len(metadata.PromptTokensDetails) > 0 {
+		inputDetails := &schemas.TranscriptionUsageInputTokenDetails{}
+		for _, detail := range metadata.PromptTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				inputDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				inputDetails.AudioTokens = int(detail.TokenCount)
+			}
+		}
+		usage.InputTokenDetails = inputDetails
+	}
+
+	return usage
+}
+
+// convertBifrostTranscriptionUsageToGeminiUsageMetadata converts Bifrost transcription usage to Gemini usage metadata
+func convertBifrostTranscriptionUsageToGeminiUsageMetadata(usage *schemas.TranscriptionUsage) *GenerateContentResponseUsageMetadata {
+	if usage == nil {
+		return nil
+	}
+
+	metadata := &GenerateContentResponseUsageMetadata{}
+
+	if usage.InputTokens != nil {
+		metadata.PromptTokenCount = int32(*usage.InputTokens)
+	}
+	if usage.OutputTokens != nil {
+		metadata.CandidatesTokenCount = int32(*usage.OutputTokens)
+	}
+	if usage.TotalTokens != nil {
+		metadata.TotalTokenCount = int32(*usage.TotalTokens)
+	}
+
+	// Process input token details to PromptTokensDetails
+	if usage.InputTokenDetails != nil {
+		if usage.InputTokenDetails.TextTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityText,
+				TokenCount: int32(usage.InputTokenDetails.TextTokens),
+			})
+		}
+		if usage.InputTokenDetails.AudioTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityAudio,
+				TokenCount: int32(usage.InputTokenDetails.AudioTokens),
+			})
+		}
+	}
+
+	return metadata
+}
+
+// convertGeminiUsageMetadataToImageUsage converts Gemini usage metadata to Bifrost image usage
+func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.ImageUsage {
+	if metadata == nil {
+		return nil
+	}
+
+	usage := &schemas.ImageUsage{
+		InputTokens:  int(metadata.PromptTokenCount),
+		OutputTokens: int(metadata.CandidatesTokenCount),
+		TotalTokens:  int(metadata.TotalTokenCount),
+	}
+
+	// Process input token details (modality breakdown)
+	if len(metadata.PromptTokensDetails) > 0 {
+		inputDetails := &schemas.ImageTokenDetails{}
+		for _, detail := range metadata.PromptTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				inputDetails.TextTokens = int(detail.TokenCount)
+			case ModalityImage:
+				inputDetails.ImageTokens = int(detail.TokenCount)
+			}
+		}
+		usage.InputTokensDetails = inputDetails
+	}
+
+	// Process output token details (modality breakdown)
+	if len(metadata.CandidatesTokensDetails) > 0 {
+		outputDetails := &schemas.ImageTokenDetails{}
+		for _, detail := range metadata.CandidatesTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				outputDetails.TextTokens = int(detail.TokenCount)
+			case ModalityImage:
+				outputDetails.ImageTokens = int(detail.TokenCount)
+			}
+		}
+		usage.OutputTokensDetails = outputDetails
+	}
+
+	return usage
+}
+
+// convertBifrostImageUsageToGeminiUsageMetadata converts Bifrost image usage to Gemini usage metadata
+func convertBifrostImageUsageToGeminiUsageMetadata(usage *schemas.ImageUsage) *GenerateContentResponseUsageMetadata {
+	if usage == nil {
+		return nil
+	}
+
+	metadata := &GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     int32(usage.InputTokens),
+		CandidatesTokenCount: int32(usage.OutputTokens),
+		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+
+	// Process input token details to PromptTokensDetails
+	if usage.InputTokensDetails != nil {
+		if usage.InputTokensDetails.TextTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityText,
+				TokenCount: int32(usage.InputTokensDetails.TextTokens),
+			})
+		}
+		if usage.InputTokensDetails.ImageTokens > 0 {
+			metadata.PromptTokensDetails = append(metadata.PromptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityImage,
+				TokenCount: int32(usage.InputTokensDetails.ImageTokens),
+			})
+		}
+	}
+
+	// Process output token details to CandidatesTokensDetails
+	if usage.OutputTokensDetails != nil {
+		if usage.OutputTokensDetails.TextTokens > 0 {
+			metadata.CandidatesTokensDetails = append(metadata.CandidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityText,
+				TokenCount: int32(usage.OutputTokensDetails.TextTokens),
+			})
+		}
+		if usage.OutputTokensDetails.ImageTokens > 0 {
+			metadata.CandidatesTokensDetails = append(metadata.CandidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityImage,
+				TokenCount: int32(usage.OutputTokensDetails.ImageTokens),
+			})
+		}
+	}
+
+	return metadata
+}
+
+// ConvertGeminiUsageMetadataToResponsesUsage converts Gemini usage metadata to Bifrost responses usage
+func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.ResponsesResponseUsage {
 	if metadata == nil {
 		return nil
 	}
@@ -553,27 +790,105 @@ func convertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 		InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
 	}
 
-	// Add cached tokens if present
-	if metadata.CachedContentTokenCount > 0 {
-		usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-			CachedTokens: int(metadata.CachedContentTokenCount),
-		}
-	}
-
-	if metadata.CandidatesTokensDetails != nil {
-		for _, detail := range metadata.CandidatesTokensDetails {
+	// Process input token details (modality breakdown + cached tokens)
+	if len(metadata.PromptTokensDetails) > 0 {
+		for _, detail := range metadata.PromptTokensDetails {
 			switch detail.Modality {
-			case "AUDIO":
-				usage.OutputTokensDetails.AudioTokens = int(detail.TokenCount)
+			case ModalityText:
+				usage.InputTokensDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				usage.InputTokensDetails.AudioTokens = int(detail.TokenCount)
+			case ModalityImage:
+				usage.InputTokensDetails.ImageTokens = int(detail.TokenCount)
 			}
 		}
 	}
 
+	// Add cached tokens if present
+	if metadata.CachedContentTokenCount > 0 {
+		usage.InputTokensDetails.CachedTokens = int(metadata.CachedContentTokenCount)
+	}
+
+	// Process output token details (modality breakdown + reasoning tokens)
+	if len(metadata.CandidatesTokensDetails) > 0 {
+		for _, detail := range metadata.CandidatesTokensDetails {
+			switch detail.Modality {
+			case ModalityText:
+				usage.OutputTokensDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				usage.OutputTokensDetails.AudioTokens = int(detail.TokenCount)
+			case ModalityImage:
+				usage.OutputTokensDetails.ImageTokens = schemas.Ptr(int(detail.TokenCount))
+			}
+		}
+	}
+
+	// Add reasoning tokens if present
 	if metadata.ThoughtsTokenCount > 0 {
 		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
 	}
 
 	return usage
+}
+
+func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesResponseUsage) *GenerateContentResponseUsageMetadata {
+	if usage == nil {
+		return nil
+	}
+	metadata := &GenerateContentResponseUsageMetadata{
+		PromptTokenCount:     int32(usage.InputTokens),
+		CandidatesTokenCount: int32(usage.OutputTokens),
+		TotalTokenCount:      int32(usage.TotalTokens),
+	}
+	if usage.OutputTokensDetails != nil {
+		metadata.ThoughtsTokenCount = int32(usage.OutputTokensDetails.ReasoningTokens)
+	}
+
+	promptTokensDetails := make([]*ModalityTokenCount, 0)
+	candidatesTokensDetails := make([]*ModalityTokenCount, 0)
+
+	if usage.InputTokensDetails != nil {
+		if usage.InputTokensDetails.CachedTokens > 0 {
+			metadata.CachedContentTokenCount = int32(usage.InputTokensDetails.CachedTokens)
+		}
+		promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
+			Modality:   ModalityText,
+			TokenCount: int32(usage.InputTokensDetails.TextTokens),
+		})
+		if usage.InputTokensDetails.AudioTokens > 0 {
+			promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityAudio,
+				TokenCount: int32(usage.InputTokensDetails.AudioTokens),
+			})
+		}
+		if usage.InputTokensDetails.ImageTokens > 0 {
+			promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityImage,
+				TokenCount: int32(usage.InputTokensDetails.ImageTokens),
+			})
+		}
+	}
+	metadata.PromptTokensDetails = promptTokensDetails
+	if usage.OutputTokensDetails != nil {
+		candidatesTokensDetails = append(candidatesTokensDetails, &ModalityTokenCount{
+			Modality:   ModalityText,
+			TokenCount: int32(usage.OutputTokensDetails.TextTokens),
+		})
+		if usage.OutputTokensDetails.AudioTokens > 0 {
+			candidatesTokensDetails = append(candidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityAudio,
+				TokenCount: int32(usage.OutputTokensDetails.AudioTokens),
+			})
+		}
+		if usage.OutputTokensDetails.ImageTokens != nil && *usage.OutputTokensDetails.ImageTokens > 0 {
+			candidatesTokensDetails = append(candidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityImage,
+				TokenCount: int32(*usage.OutputTokensDetails.ImageTokens),
+			})
+		}
+	}
+	metadata.CandidatesTokensDetails = candidatesTokensDetails
+	return metadata
 }
 
 // convertParamsToGenerationConfig converts Bifrost parameters to Gemini GenerationConfig
@@ -753,16 +1068,17 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 		schema.Enum = params.Enum
 	}
 
-	if params.Properties != nil && len(*params.Properties) > 0 {
+	if params.Properties != nil && params.Properties.Len() > 0 {
 		schema.Properties = make(map[string]*Schema)
-		for k, v := range *params.Properties {
+		params.Properties.Range(func(k string, v interface{}) bool {
 			schema.Properties[k] = convertPropertyToSchema(v)
-		}
+			return true
+		})
 	}
 
 	// Array schema fields
 	if params.Items != nil {
-		schema.Items = convertPropertyToSchema(*params.Items)
+		schema.Items = convertPropertyToSchema(params.Items)
 	}
 	if params.MinItems != nil {
 		schema.MinItems = params.MinItems
@@ -833,8 +1149,10 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 	switch v := prop.(type) {
 	case map[string]interface{}:
 		propMap = v
+	case *schemas.OrderedMap:
+		propMap = v.ToMap()
 	case schemas.OrderedMap:
-		propMap = map[string]interface{}(v)
+		propMap = v.ToMap()
 	}
 	if propMap != nil {
 		if propType, exists := propMap["type"]; exists {
@@ -864,12 +1182,27 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 		}
 
 		// Handle nested properties for object types
+		// Note: properties may be *OrderedMap when deserialized from JSON (e.g. via
+		// ToolFunctionParameters), not just map[string]interface{}.
 		if props, exists := propMap["properties"]; exists {
-			if propsMap, ok := props.(map[string]interface{}); ok {
+			switch p := props.(type) {
+			case map[string]interface{}:
 				schema.Properties = make(map[string]*Schema)
-				for key, nestedProp := range propsMap {
+				for key, nestedProp := range p {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 				}
+			case *schemas.OrderedMap:
+				schema.Properties = make(map[string]*Schema)
+				p.Range(func(key string, nestedProp interface{}) bool {
+					schema.Properties[key] = convertPropertyToSchema(nestedProp)
+					return true
+				})
+			case schemas.OrderedMap:
+				schema.Properties = make(map[string]*Schema)
+				p.Range(func(key string, nestedProp interface{}) bool {
+					schema.Properties[key] = convertPropertyToSchema(nestedProp)
+					return true
+				})
 			}
 		}
 
@@ -1047,7 +1380,7 @@ func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfi
 		}
 
 		// Handle specific function selection
-		if toolChoice.ChatToolChoiceStruct.Function.Name != "" {
+		if toolChoice.ChatToolChoiceStruct.Function != nil && toolChoice.ChatToolChoiceStruct.Function.Name != "" {
 			functionCallingConfig.AllowedFunctionNames = []string{toolChoice.ChatToolChoiceStruct.Function.Name}
 		}
 	}
@@ -1354,6 +1687,15 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						callID = *toolCall.ID
 					}
 
+					// Extract thought signature from CallID if embedded (matches responses.go pattern)
+					var thoughtSig string
+					if strings.Contains(callID, thoughtSignatureSeparator) {
+						parts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+						if len(parts) == 2 {
+							thoughtSig = parts[1]
+						}
+					}
+
 					part := &Part{
 						FunctionCall: &FunctionCall{
 							ID:   callID,
@@ -1364,9 +1706,25 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 					// Store the mapping for later use in FunctionResponse
 					callIDToFunctionName[callID] = *toolCall.Function.Name
 
-					// check in reasoning details array for thought signature with id tool_call_<callID>
-					if len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
-						lookupID := fmt.Sprintf("tool_call_%s", callID)
+					// Decode thought signature if extracted from ID
+					if thoughtSig != "" {
+						decoded, err := base64.RawURLEncoding.DecodeString(thoughtSig)
+						if err == nil {
+							part.ThoughtSignature = decoded
+						}
+					}
+
+					// Also check in reasoning details array for thought signature (fallback)
+					if part.ThoughtSignature == nil && len(message.ChatAssistantMessage.ReasoningDetails) > 0 {
+						// Extract base ID for lookup (strip signature if present)
+						baseCallID := callID
+						if strings.Contains(callID, thoughtSignatureSeparator) {
+							splitParts := strings.SplitN(callID, thoughtSignatureSeparator, 2)
+							if len(splitParts) == 2 {
+								baseCallID = splitParts[0]
+							}
+						}
+						lookupID := fmt.Sprintf("tool_call_%s", baseCallID)
 						for _, reasoningDetail := range message.ChatAssistantMessage.ReasoningDetails {
 							if reasoningDetail.ID != nil && *reasoningDetail.ID == lookupID &&
 								reasoningDetail.Type == schemas.BifrostReasoningDetailsTypeEncrypted &&
@@ -1513,7 +1871,7 @@ func buildJSONSchemaFromMap(schemaMap map[string]interface{}) *schemas.Responses
 
 	if additionalProps, ok := schemas.SafeExtractOrderedMap(normalizedSchemaMap["additionalProperties"]); ok {
 		jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-			AdditionalPropertiesMap: &additionalProps,
+			AdditionalPropertiesMap: additionalProps,
 		}
 	}
 

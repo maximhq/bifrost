@@ -2,14 +2,14 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { getErrorMessage, useCreateProviderMutation } from "@/lib/store";
 import { BaseProvider, ModelProviderName } from "@/lib/types/config";
 import { allowedRequestsSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useMemo } from "react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { z } from "zod";
@@ -26,13 +26,17 @@ const formSchema = z.object({
 
 type FormData = z.infer<typeof formSchema>;
 
-interface Props {
-	show: boolean;
+export interface AddCustomProviderSheetContentProps {
+	show?: boolean;
 	onSave: (id: string) => void;
 	onClose: () => void;
 }
 
-export default function AddCustomProviderSheet({ show, onClose, onSave }: Props) {
+interface Props extends AddCustomProviderSheetContentProps {
+	show: boolean;
+}
+
+export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: AddCustomProviderSheetContentProps) {
 	const [addProvider, { isLoading: isAddingProvider }] = useCreateProviderMutation();
 	const form = useForm<FormData>({
 		resolver: zodResolver(formSchema),
@@ -54,6 +58,16 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 				transcription_stream: true,
 				image_generation: true,
 				image_generation_stream: true,
+				image_edit: true,
+				image_edit_stream: true,
+				image_variation: true,
+				rerank: true,
+				video_generation: true,
+				video_retrieve: true,
+				video_download: true,
+				video_delete: true,
+				video_list: true,
+				video_remix: true,
 				count_tokens: true,
 				list_models: true,
 			},
@@ -100,108 +114,121 @@ export default function AddCustomProviderSheet({ show, onClose, onSave }: Props)
 			});
 	};
 
-	const isKeyLessDisabled = useMemo(() => (form.watch("baseFormat") as BaseProvider) === "bedrock", [form.watch("baseFormat")]);
+	const baseFormat = form.watch("baseFormat") as BaseProvider;
+	const isKeyLessDisabled = baseFormat === "bedrock";
 
 	return (
-		<Sheet open={show} onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8">
-				<SheetHeader className="flex flex-col items-start">
-					<SheetTitle>Add Custom Provider</SheetTitle>
-					<SheetDescription>Enter the details of your custom provider.</SheetDescription>
-				</SheetHeader>
-				<Form {...form}>
-					<form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-1 flex-col overflow-hidden">
-						<div className="custom-scrollbar flex-1 space-y-4 overflow-y-auto">
-							<FormField
-								control={form.control}
-								name="name"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel className="text-right">Name</FormLabel>
-										<div className="col-span-3">
-											<FormControl>
-												<Input placeholder="Name" {...field} />
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="baseFormat"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel>Base Format</FormLabel>
-										<div>
-											<FormControl>
-												<Select onValueChange={field.onChange} defaultValue={field.value}>
-													<SelectTrigger className="w-full">
-														<SelectValue placeholder="Select base format" />
-													</SelectTrigger>
-													<SelectContent>
-														<SelectItem value="openai">OpenAI</SelectItem>
-														<SelectItem value="anthropic">Anthropic</SelectItem>
-														<SelectItem value="gemini">Gemini</SelectItem>
-														<SelectItem value="cohere">Cohere</SelectItem>
-														<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-													</SelectContent>
-												</Select>
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
-							<FormField
-								control={form.control}
-								name="base_url"
-								render={({ field }) => (
-									<FormItem className="flex flex-col gap-3">
-										<FormLabel>Base URL</FormLabel>
-										<div>
-											<FormControl>
-												<Input placeholder={"https://api.your-provider.com"} {...field} value={field.value || ""} />
-											</FormControl>
-											<FormMessage />
-										</div>
-									</FormItem>
-								)}
-							/>
-							{!isKeyLessDisabled && (
-								<FormField
-									control={form.control}
-									name="is_key_less"
-									render={({ field }) => (
-										<FormItem>
-											<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
-												<div className="space-y-0.5">
-													<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-														Is Keyless?
-													</label>
-													<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
-												</div>
-												<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} />
-											</div>
-										</FormItem>
-									)}
-								/>
+		<>
+			<SheetHeader className="flex shrink-0 flex-col items-start">
+				<SheetTitle>Add Custom Provider</SheetTitle>
+				<SheetDescription>Enter the details of your custom provider.</SheetDescription>
+			</SheetHeader>
+			<Form {...form}>
+				<form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+					<div className="custom-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto">
+						<FormField
+							control={form.control}
+							name="name"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel className="text-right">Name</FormLabel>
+									<div className="col-span-3">
+										<FormControl>
+											<Input placeholder="Name" data-testid="custom-provider-name" {...field} />
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
 							)}
-							{/* Allowed Requests Configuration */}
-							<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
+						/>
+						<FormField
+							control={form.control}
+							name="baseFormat"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel>Base Format</FormLabel>
+									<div>
+										<FormControl>
+											<Select onValueChange={field.onChange} value={field.value}>
+												<SelectTrigger className="w-full" data-testid="base-provider-select">
+													<SelectValue placeholder="Select base format" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="openai">OpenAI</SelectItem>
+													<SelectItem value="anthropic">Anthropic</SelectItem>
+													<SelectItem value="gemini">Gemini</SelectItem>
+													<SelectItem value="cohere">Cohere</SelectItem>
+													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
+													<SelectItem value="replicate">Replicate</SelectItem>
+												</SelectContent>
+											</Select>
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="base_url"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-3">
+									<FormLabel>Base URL</FormLabel>
+									<div>
+										<FormControl>
+											<Input
+												placeholder={"https://api.your-provider.com"}
+												data-testid="base-url-input"
+												{...field}
+												value={field.value || ""}
+											/>
+										</FormControl>
+										<FormMessage />
+									</div>
+								</FormItem>
+							)}
+						/>
+						{!isKeyLessDisabled && (
+							<FormField
+								control={form.control}
+								name="is_key_less"
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center justify-between space-x-2 rounded-lg border p-3">
+											<div className="space-y-0.5">
+												<label htmlFor="drop-excess-requests" className="text-sm font-medium">
+													Is Keyless?
+												</label>
+												<p className="text-muted-foreground text-sm">Whether the custom provider requires a key</p>
+											</div>
+											<Switch id="drop-excess-requests" size="md" checked={field.value} onCheckedChange={field.onChange} data-testid="custom-provider-keyless-switch" />
+										</div>
+									</FormItem>
+								)}
+							/>
+						)}
+						{/* Allowed Requests Configuration */}
+						<AllowedRequestsFields control={form.control} providerType={form.watch("baseFormat") as BaseProvider} />
+						<div className="align-end mt-10 ml-auto flex flex-row gap-2 border-t pt-4">
+							<Button type="button" variant="outline" onClick={onClose} className="ml-auto" data-testid="custom-provider-cancel-btn">
+								Cancel
+							</Button>
+							<Button type="submit" isLoading={isAddingProvider} data-testid="custom-provider-save-btn">
+								Add
+							</Button>
 						</div>
-						<SheetFooter className="mt-4 flex flex-row gap-2 pt-4">
-							<div className="ml-auto flex flex-row gap-2">
-								<Button type="button" variant="outline" onClick={onClose}>
-									Cancel
-								</Button>
-								<Button type="submit" isLoading={isAddingProvider}>
-									Add
-								</Button>
-							</div>
-						</SheetFooter>
-					</form>
-				</Form>
+					</div>
+				</form>
+			</Form>
+		</>
+	);
+}
+
+export default function AddCustomProviderSheet(props: Props) {
+	return (
+		<Sheet open={props.show} onOpenChange={(open) => !open && props.onClose()}>
+			<SheetContent className="custom-scrollbar dark:bg-card flex flex-col bg-white p-8 sm:max-w-3xl" data-testid="custom-provider-sheet">
+				<AddCustomProviderSheetContent {...props} />
 			</SheetContent>
 		</Sheet>
 	);

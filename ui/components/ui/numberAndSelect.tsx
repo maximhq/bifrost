@@ -63,8 +63,8 @@ const NumberAndSelect = ({
 					<SelectTrigger className="m-0 w-full">
 						<SelectValue />
 					</SelectTrigger>
-					<SelectContent className="w-full">
-						{options.map((option) => (
+					<SelectContent>
+						{options.filter((option) => option.value).map((option) => (
 							<SelectItem key={option.value} value={option.value}>
 								{option.label}
 							</SelectItem>

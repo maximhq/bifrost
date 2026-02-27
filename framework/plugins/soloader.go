@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"fmt"
 	"plugin"
 	"strings"
@@ -11,11 +12,7 @@ import (
 // SharedObjectPluginLoader is the loader for shared object plugins
 type SharedObjectPluginLoader struct{}
 
-// LoadDynamicPlugin loads a dynamic plugin from a shared object file
-func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (schemas.Plugin, error) {
-	dp := &DynamicPlugin{
-		Path: path,
-	}
+func openPlugin(dp *DynamicPlugin) (*plugin.Plugin, error) {
 	// Checking if path is URL or file path
 	if strings.HasPrefix(dp.Path, "http") {
 		// Download the file
@@ -25,87 +22,154 @@ func (l *SharedObjectPluginLoader) LoadDynamicPlugin(path string, config any) (s
 		}
 		dp.Path = tempPath
 	}
-	// For allowing reloads, we replace
-	plugin, err := plugin.Open(dp.Path)
+	pluginObj, err := plugin.Open(dp.Path)
 	if err != nil {
 		return nil, err
 	}
-	ok := false
-	// Looking up for optional Init method
-	initSym, err := plugin.Lookup("Init")
-	if err != nil {
-		if strings.Contains(err.Error(), "symbol Init not found") {
-			initSym = nil
-		} else {
-			return nil, err
-		}
+	dp.plugin = pluginObj
+	return pluginObj, nil
+}
+
+// LoadPlugin loads a generic plugin from a shared object file
+// It uses optional symbol lookup - only GetName and Cleanup are required
+// All other hook methods are optional and stored as nil if not implemented
+func (l *SharedObjectPluginLoader) LoadPlugin(path string, config any) (schemas.BasePlugin, error) {
+	dp := &DynamicPlugin{
+		Path: path,
 	}
-	if initSym != nil {
-		initFunc, ok := initSym.(func(config any) error)
-		if !ok {
+
+	pluginObj, err := openPlugin(dp)
+	if err != nil {
+		return nil, err
+	}
+
+	// Optional Init method
+	if initSym, err := pluginObj.Lookup("Init"); err == nil {
+		if initFunc, ok := initSym.(func(config any) error); ok {
+			if err := initFunc(config); err != nil {
+				return nil, fmt.Errorf("plugin Init failed: %w", err)
+			}
+		} else {
 			return nil, fmt.Errorf("failed to cast Init to func(config any) error")
 		}
-		err := initFunc(config)
-		if err != nil {
-			return nil, err
-		}
 	}
-	// Looking up for GetName method
-	getNameSym, err := plugin.Lookup("GetName")
+
+	// Required: GetName
+	getNameSym, err := pluginObj.Lookup("GetName")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("required symbol GetName not found: %w", err)
 	}
+	var ok bool
 	if dp.getName, ok = getNameSym.(func() string); !ok {
 		return nil, fmt.Errorf("failed to cast GetName to func() string\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
-	// Looking up for HTTPTransportPreHook method
-	httpTransportPreHookSym, err := plugin.Lookup("HTTPTransportPreHook")
+
+	// Required: Cleanup
+	cleanupSym, err := pluginObj.Lookup("Cleanup")
 	if err != nil {
-		return nil, err
-	}
-	if dp.httpTransportPreHook, ok = httpTransportPreHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportPreHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
-	}
-	// Looking up for HTTPTransportPostHook method
-	httpTransportPostHookSym, err := plugin.Lookup("HTTPTransportPostHook")
-	if err != nil {
-		return nil, err
-	}
-	if dp.httpTransportPostHook, ok = httpTransportPostHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
-	}
-	// Looking up for HTTPTransportStreamChunkHook method
-	httpTransportStreamChunkHookSym, err := plugin.Lookup("HTTPTransportStreamChunkHook")
-	if err != nil {
-		return nil, err
-	}
-	if dp.httpTransportStreamChunkHook, ok = httpTransportStreamChunkHookSym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)); !ok {
-		return nil, fmt.Errorf("failed to cast HTTPTransportStreamChunkHook to func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error).\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
-	}
-	// Looking up for PreHook method
-	preHookSym, err := plugin.Lookup("PreHook")
-	if err != nil {
-		return nil, err
-	}
-	if dp.preHook, ok = preHookSym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PreHook to func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
-	}
-	// Looking up for PostHook method
-	postHookSym, err := plugin.Lookup("PostHook")
-	if err != nil {
-		return nil, err
-	}
-	if dp.postHook, ok = postHookSym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)); !ok {
-		return nil, fmt.Errorf("failed to cast PostHook to func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
-	}
-	// Looking up for Cleanup method
-	cleanupSym, err := plugin.Lookup("Cleanup")
-	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("required symbol Cleanup not found: %w", err)
 	}
 	if dp.cleanup, ok = cleanupSym.(func() error); !ok {
 		return nil, fmt.Errorf("failed to cast Cleanup to func() error\nSee docs for more information: https://docs.getbifrost.ai/plugins/writing-go-plugin")
 	}
-	dp.plugin = plugin
+
+	// Optional: HTTPTransportPreHook
+	if sym, err := pluginObj.Lookup("HTTPTransportPreHook"); err == nil {
+		if dp.httpTransportPreHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportPreHook to expected signature")
+		}
+	}
+
+	// Optional: HTTPTransportPostHook
+	if sym, err := pluginObj.Lookup("HTTPTransportPostHook"); err == nil {
+		if dp.httpTransportPostHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportPostHook to expected signature")
+		}
+	}
+
+	// Optional: HTTPTransportStreamChunkHook
+	if sym, err := pluginObj.Lookup("HTTPTransportStreamChunkHook"); err == nil {
+		if dp.httpTransportStreamChunkHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error)); !ok {
+			return nil, fmt.Errorf("failed to cast HTTPTransportStreamChunkHook to expected signature")
+		}
+	}
+
+	// Optional: PreLLMHook (with backward compatibility for legacy PreHook)
+	if sym, err := pluginObj.Lookup("PreLLMHook"); err == nil {
+		if dp.preLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreLLMHook to expected signature")
+		}
+	} else if sym, err := pluginObj.Lookup("PreHook"); err == nil {
+		// Legacy backward compatibility (v1.3.x): treat PreHook as PreLLMHook
+		if dp.preLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreHook to expected signature (legacy backward compatibility)")
+		}
+	}
+
+	// Optional: PostLLMHook (with backward compatibility for legacy PostHook)
+	if sym, err := pluginObj.Lookup("PostLLMHook"); err == nil {
+		if dp.postLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostLLMHook to expected signature")
+		}
+	} else if sym, err := pluginObj.Lookup("PostHook"); err == nil {
+		// Legacy backward compatibility (v1.3.x): treat PostHook as PostLLMHook
+		if dp.postLLMHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostHook to expected signature (legacy backward compatibility)")
+		}
+	}
+
+	// Optional: PreMCPHook
+	if sym, err := pluginObj.Lookup("PreMCPHook"); err == nil {
+		if dp.preMCPHook, ok = sym.(func(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PreMCPHook to expected signature")
+		}
+	}
+
+	// Optional: PostMCPHook
+	if sym, err := pluginObj.Lookup("PostMCPHook"); err == nil {
+		if dp.postMCPHook, ok = sym.(func(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error)); !ok {
+			return nil, fmt.Errorf("failed to cast PostMCPHook to expected signature")
+		}
+	}
+
+	// Optional: Inject (ObservabilityPlugin)
+	if sym, err := pluginObj.Lookup("Inject"); err == nil {
+		if dp.inject, ok = sym.(func(ctx context.Context, trace *schemas.Trace) error); !ok {
+			return nil, fmt.Errorf("failed to cast Inject to expected signature")
+		}
+	}
+
 	return dp, nil
+}
+
+// VerifyBasePlugin verifies a plugin at the given path
+// Returns the name of the plugin or an empty string if the plugin is invalid
+// Returns an error if the plugin is invalid
+// This method is used to verify that the plugin is a valid base plugin and has the required symbols
+func (l *SharedObjectPluginLoader) VerifyBasePlugin(path string) (string, error) {
+	dp := &DynamicPlugin{
+		Path: path,
+	}
+	pluginObj, err := openPlugin(dp)
+	if err != nil {
+		return "", err
+	}
+	// Required: GetName
+	getNameSym, err := pluginObj.Lookup("GetName")
+	if err != nil {
+		return "", fmt.Errorf("required symbol GetName not found: %w", err)
+	}
+	var ok bool
+	if dp.getName, ok = getNameSym.(func() string); !ok {
+		return "", fmt.Errorf("failed to cast GetName to func() string")
+	}
+	// Required: Cleanup
+	cleanupSym, err := pluginObj.Lookup("Cleanup")
+	if err != nil {
+		return "", fmt.Errorf("required symbol Cleanup not found: %w", err)
+	}
+	if dp.cleanup, ok = cleanupSym.(func() error); !ok {
+		return "", fmt.Errorf("failed to cast Cleanup to func() error")
+	}
+	return dp.getName(), nil
 }

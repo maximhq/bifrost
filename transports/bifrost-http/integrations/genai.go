@@ -1,20 +1,27 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
+
+const isGeminiEmbedContentRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-embed-content-request"
+
+const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
 
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
@@ -25,12 +32,51 @@ type GenAIRouter struct {
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
 
+	// Video operation retrieve endpoint
+	// Example: /v1beta/models/veo-3.1-generate-preview/operations/{operation_id:*}
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/models/{model}/operations/{operation_id:*}",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.VideoRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostVideoRetrieveRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if videoRetrieveReq, ok := req.(*schemas.BifrostVideoRetrieveRequest); ok {
+				return &schemas.BifrostRequest{
+					VideoRetrieveRequest: videoRetrieveReq,
+				}, nil
+			}
+			return nil, errors.New("invalid video retrieve request type")
+		},
+		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+			return gemini.ToGeminiVideoGenerationResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiVideoOperationFromPath,
+	})
+
 	// Chat completions endpoint
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/models/{model:*}",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			_, requestType := extractModelAndRequestType(ctx)
+			return requestType
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.EmbeddingRequest && ctx.Value(isGeminiEmbedContentRequestContextKey) != nil {
+				return &gemini.GeminiEmbeddingRequest{}
+			}
+			if requestType, ok := ctx.Value(schemas.BifrostContextKeyHTTPRequestType).(schemas.RequestType); ok && requestType == schemas.VideoGenerationRequest && ctx.Value(isGeminiVideoGenerationRequestContextKey) != nil {
+				return &gemini.GeminiVideoGenerationRequest{}
+			}
 			return &gemini.GeminiGenerationRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -57,11 +103,32 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 					return &schemas.BifrostRequest{
 						ImageGenerationRequest: geminiReq.ToBifrostImageGenerationRequest(ctx),
 					}, nil
+				} else if geminiReq.IsImageEdit {
+					return &schemas.BifrostRequest{
+						ImageEditRequest: geminiReq.ToBifrostImageEditRequest(ctx),
+					}, nil
 				} else {
 					return &schemas.BifrostRequest{
 						ResponsesRequest: geminiReq.ToBifrostResponsesRequest(ctx),
 					}, nil
 				}
+			} else if geminiReq, ok := req.(*gemini.GeminiEmbeddingRequest); ok {
+				req := &gemini.GeminiGenerationRequest{
+					Model:    geminiReq.Model,
+					Requests: []gemini.GeminiEmbeddingRequest{*geminiReq},
+				}
+				return &schemas.BifrostRequest{
+					EmbeddingRequest: req.ToBifrostEmbeddingRequest(ctx),
+				}, nil
+			} else if geminiReq, ok := req.(*gemini.GeminiVideoGenerationRequest); ok {
+				// convert to bifrost video generation request
+				bifrostReq, err := geminiReq.ToBifrostVideoGenerationRequest(ctx)
+				if err != nil {
+					return nil, err
+				}
+				return &schemas.BifrostRequest{
+					VideoGenerationRequest: bifrostReq,
+				}, nil
 			}
 			return nil, errors.New("invalid request type")
 		},
@@ -82,6 +149,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
 			return gemini.ToGeminiImageGenerationResponse(ctx, resp)
+		},
+		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
+			return gemini.ToGeminiVideoGenerationResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 			return gemini.ToGeminiError(err)
@@ -109,14 +179,17 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 				return gemini.ToGeminiError(err)
 			},
 		},
-		PreCallback: extractAndSetModelFromURL,
+		PreCallback: extractAndSetModelAndRequestType,
 	})
 
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/models",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ListModelsRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostListModelsRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -136,6 +209,8 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 		PreCallback: extractGeminiListModelsParams,
 	})
 
+	routes = append(routes, createGenAIRerankRouteConfig(pathPrefix))
+
 	return routes
 }
 
@@ -148,7 +223,10 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/upload/v1beta/files",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileUploadRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileUploadRequest{}
 		},
 		RequestParser: parseGeminiFileUploadRequest,
@@ -178,7 +256,10 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileListRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileListRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -208,7 +289,10 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files/{file_id}",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileRetrieveRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -238,7 +322,10 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 		Type:   RouteConfigTypeGenAI,
 		Path:   pathPrefix + "/v1beta/files/{file_id}",
 		Method: "DELETE",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileDeleteRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &schemas.BifrostFileDeleteRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -355,6 +442,41 @@ func extractGeminiFileIDFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 	return nil
 }
 
+// createGenAIRerankRouteConfig creates a route configuration for the GenAI/Vertex Rerank API endpoint
+// Handles POST /genai/v1/rank
+func createGenAIRerankRouteConfig(pathPrefix string) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1/rank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &vertex.VertexRankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if vertexReq, ok := req.(*vertex.VertexRankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: vertexReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Vertex {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+	}
+}
+
 // NewGenAIRouter creates a new GenAIRouter with the given bifrost client.
 func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *GenAIRouter {
 	routes := CreateGenAIRouteConfigs("/genai")
@@ -370,8 +492,8 @@ var embeddingPaths = []string{
 	":batchEmbedContents",
 }
 
-// extractAndSetModelFromURL extracts model from URL and sets it in the request
-func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+// extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
+func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
 	if model == nil {
 		return fmt.Errorf("model parameter is required")
@@ -430,12 +552,109 @@ func extractAndSetModelFromURL(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 
 		// Detect if this is an image generation request
 		// isImagenPredict takes precedence for :predict endpoints
-		r.IsImageGeneration = isImagenPredict || isImageGenerationRequest(r)
+		r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
+		r.IsImageEdit = isImageEditRequest(r)
 
+		return nil
+	case *gemini.GeminiEmbeddingRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
+		return nil
+	case *gemini.GeminiVideoGenerationRequest:
+		if modelStr != "" {
+			r.Model = modelStr
+		}
 		return nil
 	}
 
 	return fmt.Errorf("invalid request type for GenAI")
+}
+
+// extractAndSetModelFromURL extracts model from URL and sets it in the request
+func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.RequestType) {
+	model := ctx.UserValue("model")
+	if model == nil {
+		return "", ""
+	}
+
+	modelStr := model.(string)
+
+	// Check if this is a count tokens request
+	if strings.HasSuffix(modelStr, ":countTokens") {
+		return modelStr, schemas.CountTokensRequest
+	}
+
+	isPredict := strings.HasSuffix(modelStr, ":predict")
+	isVideoGeneration := strings.HasSuffix(modelStr, ":predictLongRunning")
+
+	// Check if this is an embedding request
+	isEmbedding := false
+	for _, path := range embeddingPaths {
+		if strings.HasSuffix(modelStr, path) {
+			isEmbedding = true
+			break
+		}
+	}
+	if strings.HasSuffix(modelStr, ":embedContent") {
+		ctx.SetUserValue(isGeminiEmbedContentRequestContextKey, true)
+	}
+	if isEmbedding {
+		return modelStr, schemas.EmbeddingRequest
+	}
+
+	if isVideoGeneration {
+		ctx.SetUserValue(isGeminiVideoGenerationRequestContextKey, true)
+		return modelStr, schemas.VideoGenerationRequest
+	}
+
+	// Remove Google GenAI API endpoint suffixes if present
+	for _, sfx := range gemini.GeminiRequestSuffixPaths {
+		modelStr = strings.TrimSuffix(modelStr, sfx)
+	}
+
+	// Remove trailing colon if present
+	if len(modelStr) > 0 && modelStr[len(modelStr)-1] == ':' {
+		modelStr = modelStr[:len(modelStr)-1]
+	}
+
+	// Determine if :predict is for image generation (Imagen) or embedding
+	// Imagen models use :predict for image generation
+	isImagenPredict := isPredict && schemas.IsImagenModel(modelStr)
+	if isPredict && !isImagenPredict {
+		// :predict for non-Imagen models is embedding
+		isEmbedding = true
+	}
+
+	if isEmbedding {
+		return modelStr, schemas.EmbeddingRequest
+	}
+
+	// Create a proper GeminiGenerationRequest to detect request type
+	geminiReq := &gemini.GeminiGenerationRequest{}
+	if err := sonic.Unmarshal(ctx.Request.Body(), geminiReq); err != nil {
+		return modelStr, ""
+	}
+
+	// Set the model on the request so detection functions can use it
+	geminiReq.Model = modelStr
+
+	// Detect if this is a speech or transcription request by examining the request body
+	// Speech detection takes priority over transcription
+	if isSpeechRequest(geminiReq) {
+		return modelStr, schemas.SpeechRequest
+	}
+	if isTranscriptionRequest(geminiReq) {
+		return modelStr, schemas.TranscriptionRequest
+	}
+	if isImageGenerationRequest(geminiReq) {
+		return modelStr, schemas.ImageGenerationRequest
+	}
+	if isImageEditRequest(geminiReq) {
+		return modelStr, schemas.ImageEditRequest
+	}
+
+	return modelStr, schemas.ResponsesRequest
 }
 
 // isSpeechRequest checks if the request is for speech generation (text-to-speech)
@@ -511,6 +730,10 @@ func isAudioMimeType(mimeType string) bool {
 // 1. responseModalities containing "IMAGE"
 // 2. Model name containing "imagen"
 func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
+	if isImageEditRequest(req) {
+		return false
+	}
+
 	// Check if responseModalities contains IMAGE
 	for _, modality := range req.GenerationConfig.ResponseModalities {
 		if modality == gemini.ModalityImage {
@@ -521,6 +744,26 @@ func isImageGenerationRequest(req *gemini.GeminiGenerationRequest) bool {
 	// Fallback: Check if model name is an Imagen model (for forward-compatibility)
 	if schemas.IsImagenModel(req.Model) {
 		return true
+	}
+
+	return false
+}
+
+// isImageEditRequest checks if the request is for image edit
+// Image edit is detected by:
+// 1. Model is an Imagen model and has reference images
+// 2. Inline image data present in the first content part and response modalities contain IMAGE
+func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
+	if schemas.IsImagenModel(req.Model) && len(req.Instances) > 0 && req.Instances[0].ReferenceImages != nil {
+		return true
+	}
+
+	if len(req.Contents) > 0 && len(req.Contents[0].Parts) > 0 && req.Contents[0].Parts[0].InlineData != nil && strings.Contains(req.Contents[0].Parts[0].InlineData.MIMEType, "image") {
+		for _, modality := range req.GenerationConfig.ResponseModalities {
+			if modality == gemini.ModalityImage {
+				return true
+			}
+		}
 	}
 
 	return false
@@ -547,4 +790,57 @@ func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 		return nil
 	}
 	return errors.New("invalid request type for Gemini list models")
+}
+
+// extractGeminiVideoOperationFromPath extracts model and operation_id from path
+// and maps them to a Bifrost video retrieve request.
+func extractGeminiVideoOperationFromPath(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	model := ctx.UserValue("model")
+	if model == nil {
+		return errors.New("model is required")
+	}
+
+	operationID := ctx.UserValue("operation_id")
+	if operationID == nil {
+		return errors.New("operation_id is required")
+	}
+	operationIDStr, ok := operationID.(string)
+	if !ok || operationIDStr == "" {
+		return errors.New("operation_id must be a non-empty string")
+	}
+
+	// check provider from operation id suffix, id:provider, could be any provider
+	parts := strings.Split(operationIDStr, ":")
+	if len(parts) < 2 || parts[len(parts)-1] == "" {
+		return errors.New("provider is required in operation_id format 'id:provider'")
+	}
+	provider := parts[len(parts)-1]
+
+	modelStr, ok := model.(string)
+	if !ok || modelStr == "" {
+		modelStr = provider
+	}
+
+	// if its gemini, set r.ID in format models/model/operations/operation_id:provider
+	// else set r.ID in format operation_id:provider
+
+	switch r := req.(type) {
+	case *schemas.BifrostVideoRetrieveRequest:
+		r.Provider = schemas.ModelProvider(provider)
+
+		if r.Provider == schemas.OpenAI || r.Provider == schemas.Azure {
+			// set a context flag to have video download request after video retrieve request when incoming request is coming from genai integration
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
+		}
+		// Gemini provider expects an operation resource path (without /v1beta prefix).
+		if provider == string(schemas.Gemini) {
+			r.ID = "models/" + modelStr + "/operations/" + operationIDStr
+		} else {
+			r.ID = operationIDStr
+		}
+	default:
+		return errors.New("invalid request type for Gemini video operation")
+	}
+
+	return nil
 }

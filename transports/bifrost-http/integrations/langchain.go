@@ -22,7 +22,7 @@ func NewLangChainRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateOpenAIRouteConfigs("/langchain", handlerStore)...)
 
 	// Add Anthropic routes to LangChain for Anthropic API compatibility
-	routes = append(routes, CreateAnthropicRouteConfigs("/langchain")...)
+	routes = append(routes, CreateAnthropicRouteConfigs("/langchain", logger)...)
 
 	// Add Anthropic count tokens route for LangChain to ensure token counting uses the dedicated endpoint
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/langchain", handlerStore)...)

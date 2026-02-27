@@ -199,6 +199,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 							parsedValues = append(parsedValues, trimmed)
 						}
 					}
+				} else {
+					parsedValues = []string{""}
 				}
 				bifrostCtx.SetValue(schemas.BifrostContextKey("mcp-"+labelName), parsedValues)
 				return true
@@ -342,6 +344,20 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			}
 			return true
 		}
+		// Parent request ID header (for linking MCP tool calls to parent LLM requests)
+		if keyStr == "x-bf-parent-request-id" {
+			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
+				bifrostCtx.SetValue(schemas.BifrostMCPAgentOriginalRequestID, valueStr)
+			}
+			return true
+		}
+		// Add passthrough extra params header support
+		if keyStr == "x-bf-passthrough-extra-params" {
+			if valueStr := string(value); valueStr == "true" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			return true
+		}
 		return true
 	})
 
@@ -354,6 +370,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 	if len(extraHeaders) > 0 {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
 	}
+
+	// Collect all request headers for downstream use (e.g., governance required headers check)
+	// Keys are lowercased for case-insensitive lookup
+	allHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		allHeaders[strings.ToLower(string(key))] = string(value)
+		return true
+	})
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
 	if allowDirectKeys {
 		// Extract API key from Authorization header (Bearer format), x-api-key, or x-goog-api-key header

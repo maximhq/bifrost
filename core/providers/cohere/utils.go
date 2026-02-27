@@ -58,7 +58,7 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 
 	// Extract properties
 	if orderedProps, ok := schemas.SafeExtractOrderedMap(paramsMap["properties"]); ok {
-		result.Properties = &orderedProps
+		result.Properties = orderedProps
 	}
 
 	// Extract enum
@@ -81,18 +81,18 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 
 	if addPropsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["additionalProperties"]); ok {
 		result.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-			AdditionalPropertiesMap: &addPropsVal,
+			AdditionalPropertiesMap: addPropsVal,
 		}
 	}
 
 	// Extract $defs (JSON Schema draft 2019-09+)
 	if defsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["$defs"]); ok {
-		result.Defs = &defsVal
+		result.Defs = defsVal
 	}
 
 	// Extract definitions (legacy JSON Schema draft-07)
 	if defsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["definitions"]); ok {
-		result.Definitions = &defsVal
+		result.Definitions = defsVal
 	}
 
 	// Extract $ref
@@ -102,7 +102,7 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 
 	// Extract items (array element schema)
 	if itemsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["items"]); ok {
-		result.Items = &itemsVal
+		result.Items = itemsVal
 	}
 
 	// Extract minItems
@@ -120,7 +120,7 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 		anyOf := make([]schemas.OrderedMap, 0, len(anyOfVal))
 		for _, v := range anyOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				anyOf = append(anyOf, m)
+				anyOf = append(anyOf, *m)
 			}
 		}
 		result.AnyOf = anyOf
@@ -131,7 +131,7 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 		oneOf := make([]schemas.OrderedMap, 0, len(oneOfVal))
 		for _, v := range oneOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				oneOf = append(oneOf, m)
+				oneOf = append(oneOf, *m)
 			}
 		}
 		result.OneOf = oneOf
@@ -142,7 +142,7 @@ func convertInterfaceToToolFunctionParameters(params interface{}) *schemas.ToolF
 		allOf := make([]schemas.OrderedMap, 0, len(allOfVal))
 		for _, v := range allOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				allOf = append(allOf, m)
+				allOf = append(allOf, *m)
 			}
 		}
 		result.AllOf = allOf

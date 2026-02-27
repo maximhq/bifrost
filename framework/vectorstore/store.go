@@ -101,9 +101,9 @@ type VectorStore interface {
 	// Delete removes a vector from the vector store.
 	Delete(ctx context.Context, namespace string, id string) error
 	// DeleteAll deletes all vectors from the vector store.
-	DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error)	
+	DeleteAll(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error)
 	// Close closes the vector store.
-	Close(ctx context.Context, namespace string) error	
+	Close(ctx context.Context, namespace string) error
 }
 
 // Config represents the configuration for the vector store.

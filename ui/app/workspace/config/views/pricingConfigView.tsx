@@ -80,26 +80,16 @@ export default function PricingConfigView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
+		<div className="mx-auto w-full max-w-7xl space-y-4">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-				<div className="flex items-center justify-between">
-					<div>
-						<h2 className="text-2xl font-semibold tracking-tight">Pricing Configuration</h2>
-						<p className="text-muted-foreground text-sm">Configure custom pricing datasheet and sync intervals.</p>
-					</div>
-					<div className="flex items-center gap-2">
-						<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess}>
-							{isForceSyncing ? "Syncing..." : "Force Sync Now"}
-						</Button>
-						<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-							{isLoading ? "Saving..." : "Save Changes"}
-						</Button>
-					</div>
+				<div>
+					<h2 className="text-lg font-semibold tracking-tight">Pricing Configuration</h2>
+					<p className="text-muted-foreground text-sm">Configure custom pricing datasheet and sync intervals.</p>
 				</div>
 
 				<div className="space-y-4">
 					{/* Pricing Datasheet URL */}
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-0.5">
 							<Label htmlFor="pricing-datasheet-url">Pricing Datasheet URL</Label>
 							<p className="text-muted-foreground text-sm">URL to a custom pricing datasheet. Leave empty to use default pricing.</p>
@@ -126,7 +116,7 @@ export default function PricingConfigView() {
 					</div>
 
 					{/* Pricing Sync Interval */}
-					<div className="space-y-2 rounded-lg border p-4">
+					<div className="space-y-2 rounded-sm border p-4">
 						<div className="space-y-2">
 							<div className="space-y-0.5">
 								<Label htmlFor="pricing-sync-interval">Pricing Sync Interval (hours)</Label>
@@ -154,6 +144,14 @@ export default function PricingConfigView() {
 							)}
 						</div>
 					</div>
+				</div>
+				<div className="flex justify-end gap-2 pt-2">
+					<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess}>
+						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
+					</Button>
+					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+						{isLoading ? "Saving..." : "Save Changes"}
+					</Button>
 				</div>
 			</form>
 		</div>

@@ -84,7 +84,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		ReadTimeout:         time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		WriteTimeout:        time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds),
 		MaxConnsPerHost:     5000,
-		MaxIdleConnDuration: 60 * time.Second,
+		MaxIdleConnDuration: 30 * time.Second,
 		MaxConnWaitTimeout:  10 * time.Second,
 	}
 
@@ -94,9 +94,9 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		anthropicMessageResponsePool.Put(&AnthropicMessageResponse{})
 	}
 
-	// Configure proxy if provided
+	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-
+	client = providerUtils.ConfigureDialer(client)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.anthropic.com"
@@ -121,7 +121,11 @@ func (provider *AnthropicProvider) GetProviderKey() schemas.ModelProvider {
 
 // buildRequestURL constructs the full request URL using the provider's configuration.
 func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, defaultPath string, requestType schemas.RequestType) string {
-	return provider.networkConfig.BaseURL + providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	path, isCompleteURL := providerUtils.GetRequestPath(ctx, defaultPath, provider.customProviderConfig, requestType)
+	if isCompleteURL {
+		return path
+	}
+	return provider.networkConfig.BaseURL + path
 }
 
 // completeRequest sends a request to Anthropic's API and handles the response.
@@ -139,8 +143,10 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	req.SetRequestURI(url)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
+
 	// Can be empty in case of passthrough or keyless custom provider
-	if key != "" {
+	// Here we can avoid this - in case of passthrough completely
+	if key != "" && !IsClaudeCodeMaxMode(ctx) {
 		req.Header.Set("x-api-key", key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
@@ -214,7 +220,7 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 	}
 
 	// Create final response
-	response := anthropicResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models)
+	response := anthropicResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, request.Unfiltered)
 	response.ExtraFields.Latency = latency.Milliseconds()
 
 	// Set raw request if enabled
@@ -239,14 +245,15 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 		return nil, err
 	}
 	if provider.customProviderConfig != nil && provider.customProviderConfig.IsKeyLess {
-		return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		return providerUtils.HandleKeylessListModelsRequest(schemas.Anthropic, func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			return provider.listModelsByKey(ctx, schemas.Key{}, request)
+		})
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
 		keys,
 		request,
 		provider.listModelsByKey,
-		provider.logger,
 	)
 }
 
@@ -262,7 +269,9 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 	jsonData, err := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (any, error) { return ToAnthropicTextCompletionRequest(request), nil },
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToAnthropicTextCompletionRequest(request), nil
+		},
 		provider.GetProviderKey())
 	if err != nil {
 		return nil, err
@@ -323,20 +332,20 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Use struct directly for JSON marshaling
@@ -388,23 +397,21 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	}
 
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-	var betaHeaders []string
-
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		anthropicReq.Stream = schemas.Ptr(true)
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			anthropicReq.Stream = schemas.Ptr(true)
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// Prepare Anthropic headers
@@ -414,12 +421,9 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		"Accept":            "text/event-stream",
 		"Cache-Control":     "no-cache",
 	}
-	if key.Value.GetValue() != "" {
+
+	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
 		headers["x-api-key"] = key.Value.GetValue()
-	}
-	// Add beta headers if any features require them
-	if len(betaHeaders) > 0 {
-		headers["anthropic-beta"] = strings.Join(betaHeaders, ",")
 	}
 
 	// Use shared Anthropic streaming logic
@@ -860,7 +864,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		"Accept":            "text/event-stream",
 		"Cache-Control":     "no-cache",
 	}
-	if key.Value.GetValue() != "" {
+
+	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
 		headers["x-api-key"] = key.Value.GetValue()
 	}
 
@@ -1680,6 +1685,11 @@ func (provider *AnthropicProvider) Speech(ctx *schemas.BifrostContext, key schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
+// Rerank is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
 // SpeechStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
@@ -1703,6 +1713,21 @@ func (provider *AnthropicProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 // ImageGenerationStream is not supported by the Anthropic provider.
 func (provider *AnthropicProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+}
+
+// ImageEdit is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+}
+
+// ImageEditStream is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+}
+
+// ImageVariation is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
 // FileUpload uploads a file to Anthropic's Files API.
@@ -2191,23 +2216,23 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	}
 
 	// Convert to Anthropic format and get required beta headers
-	var jsonData []byte
-
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		jsonData = request.GetRawRequestBody()
-	} else {
-		anthropicReq, convErr := ToAnthropicResponsesRequest(ctx, request)
-		if convErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, convErr, provider.GetProviderKey())
-		}
-		addMissingBetaHeadersToContext(ctx, anthropicReq)
-		var marshalErr error
-		jsonData, marshalErr = sonic.Marshal(anthropicReq)
-		if marshalErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, marshalErr, provider.GetProviderKey())
-		}
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			anthropicReq, convErr := ToAnthropicResponsesRequest(ctx, request)
+			if convErr != nil {
+				return nil, convErr
+			}
+			addMissingBetaHeadersToContext(ctx, anthropicReq)
+			return anthropicReq, nil
+		},
+		provider.GetProviderKey())
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
+	// Remove max_tokens and temperature for count_tokens endpoint
 	var payload map[string]any
 	if err := sonic.Unmarshal(jsonData, &payload); err == nil {
 		delete(payload, "max_tokens")
@@ -2258,6 +2283,36 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	}
 
 	return response, nil
+}
+
+// VideoGeneration is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+}
+
+// VideoRetrieve is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+}
+
+// VideoDownload is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+}
+
+// VideoDelete is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+}
+
+// VideoList is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+}
+
+// VideoRemix is not supported by the Anthropic provider.
+func (provider *AnthropicProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRemixRequest, provider.GetProviderKey())
 }
 
 // ContainerCreate is not supported by the Anthropic provider.

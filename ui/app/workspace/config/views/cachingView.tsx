@@ -9,7 +9,7 @@ export default function CachingView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div>
-				<h2 className="text-2xl font-semibold tracking-tight">Caching</h2>
+				<h2 className="text-lg font-semibold tracking-tight">Caching</h2>
 				<p className="text-muted-foreground text-sm">Configure semantic caching for requests.</p>
 			</div>
 
@@ -22,7 +22,9 @@ export default function CachingView() {
 			{configError !== undefined && (
 				<div className="border-destructive/50 bg-destructive/10 rounded-lg border p-4">
 					<p className="text-destructive text-sm font-medium">Failed to load configuration</p>
-					<p className="text-muted-foreground mt-1 text-sm">{getErrorMessage(configError) || "An unexpected error occurred. Please try again."}</p>
+					<p className="text-muted-foreground mt-1 text-sm">
+						{getErrorMessage(configError) || "An unexpected error occurred. Please try again."}
+					</p>
 				</div>
 			)}
 

@@ -23,15 +23,24 @@ transports/bifrost-http/logs/
 transports/bifrost-http/tmp/
 node_modules
 /dist
+**/dist
 **/tmp/
-temp*/
+/temp*/
+!examples/mcps/temperature/
 tmp/
 tmp-*
+.tmp
 private
+**/bin
+build/
+target/
 
 # Go workspaces (local only)
 go.work
 go.work.sum
+
+# Generated schema copy (created by go generate)
+transports/schema/config.schema.json
 
 # Sqlite DBs
 *.db
@@ -41,8 +50,12 @@ go.work.sum
 # Test reports
 test-reports
 
-# Cursor specific
-.claude
+# AI Agent specific
+settings.local.json
+.codex/
+.cursor/
+.claude/
+!.claude/skills/
 
 # Python specific
 **/__pycache__/**
@@ -53,11 +66,55 @@ test-reports
 **/.pytest_cache/
 
 
-# Cursor specific
-.cursor/
-build/
-target/
-
 # Nix specific
 .direnv
 .nix-store
+
+# MCP servers
+examples/mcps/**/bin/
+examples/mcps/http-no-ping-server/http-server
+examples/mcps/test-tools-server/dist/
+
+# Dependencies
+node_modules/
+
+# Test results
+test-results/
+playwright-report/
+blob-report/
+
+# Screenshots and videos
+screenshots/
+videos/
+
+# Coverage
+coverage/
+
+# Build output
+dist/
+
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug logs
+*.log
+npm-debug.log*
+
+# Playwright
+playwright/.cache/
+
+# Terraform
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+!*.tfvars.example
+
+# Bifrost benchmarking
+bifrost-benchmarking

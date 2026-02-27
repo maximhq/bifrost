@@ -1,0 +1,98 @@
+# Rerank API schemas
+
+RerankRequest:
+  type: object
+  required:
+    - model
+    - query
+    - documents
+  properties:
+    model:
+      type: string
+      description: Model in provider/model format
+      example: cohere/rerank-v3.5
+    query:
+      type: string
+      minLength: 1
+      description: Query used to score and reorder documents
+    documents:
+      type: array
+      description: Documents to rerank
+      minItems: 1
+      items:
+        $ref: '#/RerankDocument'
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback models in provider/model format
+    top_n:
+      type: integer
+      minimum: 1
+      description: Maximum number of ranked results to return
+    max_tokens_per_doc:
+      type: integer
+      minimum: 1
+      description: Maximum tokens to consider per document (provider-dependent)
+    priority:
+      type: integer
+      description: Request priority hint (provider-dependent)
+    return_documents:
+      type: boolean
+      description: Whether to include document content in each result
+
+RerankDocument:
+  type: object
+  required:
+    - text
+  properties:
+    text:
+      type: string
+      minLength: 1
+      description: Document text content
+    id:
+      type: string
+      minLength: 1
+      description: Optional document identifier
+    meta:
+      type: object
+      description: Optional document metadata
+      additionalProperties: true
+
+RerankResponse:
+  type: object
+  required:
+    - results
+    - model
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the rerank response
+    results:
+      type: array
+      description: Ranked results ordered by relevance score descending
+      items:
+        $ref: '#/RerankResult'
+    model:
+      type: string
+      description: Model used to perform reranking
+    usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'
+
+RerankResult:
+  type: object
+  required:
+    - index
+    - relevance_score
+  properties:
+    index:
+      type: integer
+      minimum: 0
+      description: Index into the original documents array
+    relevance_score:
+      type: number
+      description: Relevance score for this document
+    document:
+      $ref: '#/RerankDocument'

@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string) *schemas.BifrostListModelsResponse {
+func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -24,9 +24,10 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 		bifrostResponse.NextPageToken = *response.LastID
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
 		modelID := model.ID
-		if len(allowedModels) > 0 {
+		if !unfiltered && len(allowedModels) > 0 {
 			allowed := false
 			for _, allowedModel := range allowedModels {
 				if schemas.SameBaseModel(model.ID, allowedModel) {
@@ -44,6 +45,19 @@ func (response *AnthropicListModelsResponse) ToBifrostListModelsResponse(provide
 			Name:    schemas.Ptr(model.DisplayName),
 			Created: schemas.Ptr(model.CreatedAt.Unix()),
 		})
+		includedModels[modelID] = true
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
 	}
 
 	return bifrostResponse

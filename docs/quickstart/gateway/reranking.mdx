@@ -1,0 +1,124 @@
+---
+title: "Reranking"
+description: "Reorder documents by relevance to a query using /v1/rerank."
+icon: "book-open-cover"
+---
+
+Use reranking to sort documents by relevance for search, retrieval, and context selection.
+
+## Provider Model Examples
+
+- Cohere: `cohere/rerank-v3.5`
+- vLLM: `vllm/BAAI/bge-reranker-v2-m3`
+- Bedrock: `bedrock/<rerank-model-or-arn>`
+- Vertex AI: `vertex/<ranking-model>`
+
+## Basic Request
+
+```bash
+curl --location 'http://localhost:8080/v1/rerank' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "cohere/rerank-v3.5",
+  "query": "What is Bifrost?",
+  "documents": [
+    {"text": "Bifrost is an AI gateway that unifies many LLM providers."},
+    {"text": "Paris is the capital of France."},
+    {"text": "Bifrost exposes an OpenAI-compatible API."}
+  ]
+}'
+```
+
+## Request Parameters
+
+- `model` (required): model in `provider/model` format
+- `query` (required): query used for ranking
+- `documents` (required): array of documents with `text` (optional `id`, `meta`)
+- `top_n` (optional): maximum number of results
+- `max_tokens_per_doc` (optional): provider-dependent document token cap
+- `priority` (optional): provider-dependent priority hint
+- `return_documents` (optional): include matched document content in each result
+- `fallbacks` (optional): fallback models in `provider/model` format
+
+## Example with Options
+
+```bash
+curl --location 'http://localhost:8080/v1/rerank' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "cohere/rerank-v3.5",
+  "query": "gateway observability",
+  "top_n": 2,
+  "return_documents": true,
+  "documents": [
+    {"id": "a", "text": "Bifrost supports observability plugins like OTEL and Maxim."},
+    {"id": "b", "text": "Bifrost can run in Kubernetes and ECS."},
+    {"id": "c", "text": "Token counting is available at /v1/count_tokens."}
+  ]
+}'
+```
+
+## vLLM Endpoint Compatibility
+
+When using a `vllm/...` model, Bifrost sends rerank requests to `/v1/rerank` first and automatically retries `/rerank` when the upstream endpoint responds with `404`, `405`, or `501`.
+
+## Response Shape
+
+```json
+{
+  "results": [
+    {
+      "index": 0,
+      "relevance_score": 0.98,
+      "document": {
+        "id": "a",
+        "text": "Bifrost supports observability plugins like OTEL and Maxim."
+      }
+    },
+    {
+      "index": 2,
+      "relevance_score": 0.63,
+      "document": {
+        "id": "c",
+        "text": "Token counting is available at /v1/count_tokens."
+      }
+    }
+  ],
+  "model": "rerank-v3.5",
+  "usage": {
+    "prompt_tokens": 52,
+    "completion_tokens": 0,
+    "total_tokens": 52
+  },
+  "extra_fields": {
+    "request_type": "rerank",
+    "provider": "cohere",
+    "latency": 245,
+    "chunk_index": 0
+  }
+}
+```
+
+## Common Validation Errors
+
+- Missing `query` -> `query is required for rerank`
+- Empty `documents` -> `documents are required for rerank`
+- Blank document text -> `document text is required for rerank at index N`
+- `top_n < 1` -> `top_n must be at least 1`
+
+## Next Steps
+
+Now that you understand reranking, explore these related topics:
+
+### Essential Topics
+
+- **[Multimodal AI](./multimodal)** - Process images, audio, and multimedia content
+- **[Tool Calling](./tool-calling)** - Enable AI models to use external tools and functions
+- **[Provider Configuration](./provider-configuration)** - Multiple providers for redundancy
+- **[Integrations](./integrations)** - Drop-in compatibility with existing SDKs
+
+### Advanced Topics
+
+- **[Core Features](../../features/)** - Advanced Bifrost capabilities
+- **[Architecture](../../architecture/)** - How Bifrost works internally
+- **[Deployment](../../deployment-guides)** - Production setup and scaling

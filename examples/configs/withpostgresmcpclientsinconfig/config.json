@@ -1,0 +1,138 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "allow_direct_keys": false,
+    "allowed_origins": [
+      "*"
+    ],
+    "disable_content_logging": false,
+    "drop_excess_requests": false,
+    "enable_litellm_fallbacks": false,
+    "enable_logging": true,
+    "enforce_governance_header": true,
+    "initial_pool_size": 300,
+    "log_retention_days": 365,
+    "max_request_body_size_mb": 100
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "id": "weather-mcp-server",
+        "name": "WeatherService",
+        "connection_type": "http",
+        "http_url": "http://localhost:8080/mcp",
+        "is_enabled": true
+      },
+      {
+        "id": "calendar-mcp-server",
+        "name": "CalendarService",
+        "connection_type": "http",
+        "http_url": "http://localhost:8081/mcp",
+        "is_enabled": true
+      }
+    ]
+  },
+  "governance": {
+    "auth_config": {
+      "admin_password": "env.BIFROST_ADMIN_PASSWORD",
+      "admin_username": "env.BIFROST_ADMIN_USERNAME",
+      "disable_auth_on_inference": true,
+      "is_enabled": false
+    },
+    "virtual_keys": [
+      {
+        "id": "vk-ai-portal-prod",
+        "is_active": true,
+        "name": "ai-portal-production-key",
+        "description": "Virtual key for AI portal with MCP access to weather and calendar services",
+        "value": "env.BIFROST_VK_AI_PORTAL",
+        "mcp_configs": [
+          {
+            "mcp_client_name": "WeatherService",
+            "tools_to_execute": [
+              "*"
+            ]
+          },
+          {
+            "mcp_client_name": "CalendarService",
+            "tools_to_execute": [
+              "get_events",
+              "create_event"
+            ]
+          }
+        ],
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "weight": 1.0
+          }
+        ]
+      },
+      {
+        "id": "vk-internal-tools",
+        "is_active": true,
+        "name": "internal-tools-key",
+        "description": "Virtual key for internal tools with limited MCP access",
+        "value": "env.BIFROST_VK_INTERNAL",
+        "mcp_configs": [
+          {
+            "mcp_client_name": "WeatherService",
+            "tools_to_execute": [
+              "get_current_weather"
+            ]
+          }
+        ],
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "weight": 1.0
+          }
+        ]
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "config": {
+        "is_vk_mandatory": true
+      },
+      "enabled": true,
+      "name": "governance"
+    }
+  ],
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-primary",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1
+        }
+      ]
+    }
+  }
+}

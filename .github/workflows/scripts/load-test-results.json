@@ -1,0 +1,39 @@
+{
+  "overhead": {
+    "configured_rate": 1000,
+    "actual_rate": 1000,
+    "duration": 30,
+    "concurrent": 1000,
+    "success_rate": 100.00,
+    "latency_us": {
+      "min": 999926.96,
+      "mean": 849.31,
+      "p50": 155.78,
+      "p90": 408.13,
+      "p95": 636.92,
+      "p99": 4526.28,
+      "max": 176968.29
+    }
+  },
+  "timestamp": "2026-02-14T12:40:01Z",
+  "stress": {
+    "rate": 1000,
+    "duration": 30,
+    "mocker_latency_ms": 1000,
+    "success_rate": 100.00
+  },
+  "process_stats": {
+    "overhead": {
+      "cpu_avg_pct": 20.7,
+      "cpu_peak_pct": 66.9,
+      "rss_avg_mb": 332.8,
+      "rss_peak_mb": 640.2
+    },
+    "stress": {
+      "cpu_avg_pct": 29.9,
+      "cpu_peak_pct": 73.5,
+      "rss_avg_mb": 639.5,
+      "rss_peak_mb": 789.2
+    }
+  }
+}

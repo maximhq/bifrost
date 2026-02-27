@@ -134,7 +134,7 @@ func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
 	defer setup.Cleanup()
 
 	// Set very short TTL for testing
-	shortTTL := 2 * time.Second
+	shortTTL := 5 * time.Second
 	ctx := CreateContextWithCacheKeyAndTTL("test-embedding-ttl", shortTTL)
 
 	embeddingRequest := CreateEmbeddingRequest([]string{"TTL test embedding"})

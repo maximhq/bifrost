@@ -1,0 +1,38 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/logs.db"
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 5000,
+    "prometheus_labels": [],
+    "enable_logging": true,
+    "disable_content_logging": false,
+    "log_retention_days": 365,
+    "enforce_governance_header": false,
+    "allow_direct_keys": false,
+    "allowed_origins": [
+      "*"
+    ],
+    "max_request_body_size_mb": 100,
+    "enable_litellm_fallbacks": false
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "https://getbifrost.ai/datasheet",
+      "pricing_sync_interval": 86400
+    }
+  }
+}

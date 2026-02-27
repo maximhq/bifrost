@@ -86,6 +86,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 	};
 
 	const form = useForm<FormData>({
+		mode: "onChange",
 		resolver: zodResolver(formSchema),
 		defaultValues: {
 			modelName: modelConfig?.model_name || "",
@@ -208,8 +209,8 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
 			<SheetContent
 				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8"
-				onInteractOutside={(e) => e.preventDefault()}
-				onEscapeKeyDown={(e) => e.preventDefault()}
+				onInteractOutside={(e) => { if (form.formState.isDirty) e.preventDefault(); }}
+				onEscapeKeyDown={(e) => { if (form.formState.isDirty) e.preventDefault(); }}
 			>
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
@@ -221,28 +222,6 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="space-y-4">
-							{/* Model Name */}
-							<FormField
-								control={form.control}
-								name="modelName"
-								render={({ field }) => (
-									<FormItem>
-										<FormLabel>Model Name</FormLabel>
-										<FormControl>
-											<ModelMultiselect
-												provider={form.watch("provider") || undefined}
-												value={field.value}
-												onChange={field.onChange}
-												placeholder="Select a model..."
-												isSingleSelect
-												loadModelsOnEmptyProvider
-											/>
-										</FormControl>
-										<FormMessage />
-									</FormItem>
-								)}
-							/>
-
 							{/* Provider */}
 							<FormField
 								control={form.control}
@@ -253,6 +232,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 										<Select
 											value={field.value || "all"}
 											onValueChange={(value) => handleProviderChange(value === "all" ? "" : value, form.getValues("modelName"), field.onChange)}
+											disabled={isEditing}
 										>
 											<FormControl>
 												<SelectTrigger className="w-full">
@@ -261,7 +241,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											</FormControl>
 											<SelectContent>
 												<SelectItem value="all">All Providers</SelectItem>
-												{availableProviders.map((provider) => (
+												{availableProviders.filter((p) => p.name).map((provider) => (
 													<SelectItem key={provider.name} value={provider.name}>
 														<RenderProviderIcon
 															provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
@@ -275,6 +255,29 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 												))}
 											</SelectContent>
 										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Model Name */}
+							<FormField
+								control={form.control}
+								name="modelName"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Model Name</FormLabel>
+										<FormControl>
+											<ModelMultiselect
+												provider={form.watch("provider") || undefined}
+												value={field.value}
+												onChange={field.onChange}
+												placeholder="Search for a model..."
+												isSingleSelect
+												loadModelsOnEmptyProvider="base_models"
+												disabled={isEditing}
+											/>
+										</FormControl>
 										<FormMessage />
 									</FormItem>
 								)}

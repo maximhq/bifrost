@@ -254,7 +254,7 @@ func TestResponsesAPICacheExpiration(t *testing.T) {
 	defer setup.Cleanup()
 
 	// Set very short TTL for testing
-	shortTTL := 1 * time.Second
+	shortTTL := 5 * time.Second
 	ctx := CreateContextWithCacheKeyAndTTL("test-responses-ttl", shortTTL)
 
 	responsesRequest := CreateBasicResponsesRequest("TTL test for Responses API", 0.5, 500)

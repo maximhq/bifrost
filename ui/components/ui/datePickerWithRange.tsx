@@ -39,6 +39,8 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	disabledAfter?: Date;
 	open?: boolean;
 	onOpenChange?: (open: boolean) => void;
+	/** Optional data-testid for the trigger button (e.g. for E2E tests) */
+	triggerTestId?: string;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
@@ -115,6 +117,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					<Button
 						id="date"
 						variant="outline"
+						data-testid={props.triggerTestId}
 						className={cn(
 							!predefinedPeriod && "w-[360px]",
 							predefinedPeriod && "w-[140px]",

@@ -20,13 +20,18 @@ type TableClientConfig struct {
 	DisableContentLogging   bool   `gorm:"default:false" json:"disable_content_logging"` // DisableContentLogging controls whether sensitive content (inputs, outputs, embeddings, etc.) is logged
 	DisableDBPingsInHealth  bool   `gorm:"default:false" json:"disable_db_pings_in_health"`
 	LogRetentionDays        int    `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool   `gorm:"" json:"enable_governance"`
+	EnforceAuthOnInference  bool   `gorm:"default:false" json:"enforce_auth_on_inference"`
 	EnforceGovernanceHeader bool   `gorm:"" json:"enforce_governance_header"`
+	EnforceSCIMAuth         bool   `gorm:"default:false" json:"enforce_scim_auth"`
 	AllowDirectKeys         bool   `gorm:"" json:"allow_direct_keys"`
 	MaxRequestBodySizeMB    int    `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth           int    `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout int    `gorm:"default:30" json:"mcp_tool_execution_timeout"`      // Timeout for individual tool execution in seconds (default: 30)
 	MCPCodeModeBindingLevel string `gorm:"default:server" json:"mcp_code_mode_binding_level"` // How tools are exposed in VFS: "server" or "tool"
+	MCPToolSyncInterval     int    `gorm:"default:10" json:"mcp_tool_sync_interval"`          // Global tool sync interval in minutes (default: 10, 0 = disabled)
+	AsyncJobResultTTL       int    `gorm:"default:3600" json:"async_job_result_ttl"`          // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeadersJSON     string `gorm:"type:text" json:"-"`                                // JSON serialized []string
+	LoggingHeadersJSON      string `gorm:"type:text" json:"-"`                                // JSON serialized []string
 
 	// LiteLLM fallback flag
 	EnableLiteLLMFallbacks bool `gorm:"column:enable_litellm_fallbacks;default:false" json:"enable_litellm_fallbacks"`
@@ -42,6 +47,8 @@ type TableClientConfig struct {
 	PrometheusLabels   []string                  `gorm:"-" json:"prometheus_labels"`
 	AllowedOrigins     []string                  `gorm:"-" json:"allowed_origins,omitempty"`
 	AllowedHeaders     []string                  `gorm:"-" json:"allowed_headers,omitempty"`
+	RequiredHeaders    []string                  `gorm:"-" json:"required_headers,omitempty"`
+	LoggingHeaders     []string                  `gorm:"-" json:"logging_headers,omitempty"`
 	HeaderFilterConfig *GlobalHeaderFilterConfig `gorm:"-" json:"header_filter_config,omitempty"`
 }
 
@@ -79,6 +86,26 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.AllowedHeadersJSON = "[]"
 	}
 
+	if cc.RequiredHeaders != nil {
+		data, err := json.Marshal(cc.RequiredHeaders)
+		if err != nil {
+			return err
+		}
+		cc.RequiredHeadersJSON = string(data)
+	} else {
+		cc.RequiredHeadersJSON = "[]"
+	}
+
+	if cc.LoggingHeaders != nil {
+		data, err := json.Marshal(cc.LoggingHeaders)
+		if err != nil {
+			return err
+		}
+		cc.LoggingHeadersJSON = string(data)
+	} else {
+		cc.LoggingHeadersJSON = "[]"
+	}
+
 	if cc.HeaderFilterConfig != nil {
 		data, err := json.Marshal(cc.HeaderFilterConfig)
 		if err != nil {
@@ -108,6 +135,18 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 
 	if cc.AllowedHeadersJSON != "" {
 		if err := json.Unmarshal([]byte(cc.AllowedHeadersJSON), &cc.AllowedHeaders); err != nil {
+			return err
+		}
+	}
+
+	if cc.RequiredHeadersJSON != "" {
+		if err := json.Unmarshal([]byte(cc.RequiredHeadersJSON), &cc.RequiredHeaders); err != nil {
+			return err
+		}
+	}
+
+	if cc.LoggingHeadersJSON != "" {
+		if err := json.Unmarshal([]byte(cc.LoggingHeadersJSON), &cc.LoggingHeaders); err != nil {
 			return err
 		}
 	}

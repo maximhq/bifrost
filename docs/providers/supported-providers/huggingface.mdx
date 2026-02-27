@@ -18,26 +18,26 @@ The Hugging Face provider implements custom logic for:
 
 The Hugging Face provider supports routing to 20+ inference backends. Below is the current list of supported providers and their capabilities (as of December 2025):
 
-| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) | Image Generation | Image Generation (stream) |
-|----------|------|-----------|--------------|---------------------|------------------|---------------------------|
-| `hf-inference` | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| `cerebras` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `cohere` | ✅ | ❌  | ❌ | ❌ | ❌ | ❌ |
-| `fal-ai` | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| `featherless-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `fireworks` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `groq` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `hyperbolic` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `nebius` | ✅ | ✅ | ❌  | ❌ | ✅ | ❌ |
-| `novita` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `nscale` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `public-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `replicate` | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ |
-| `sambanova` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `scaleway` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| `together` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `z-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Provider | Chat | Embedding | Speech (TTS) | Transcription (ASR) | Image Generation | Image Generation (stream) | Image Edit | Image Edit (stream) |
+|----------|------|-----------|--------------|---------------------|------------------|---------------------------|------------|---------------------|
+| `hf-inference` | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| `cerebras` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `cohere` | ✅ | ❌  | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `fal-ai` | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `featherless-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `fireworks` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `groq` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `hyperbolic` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `nebius` | ✅ | ✅ | ❌  | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `novita` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `nscale` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `ovhcloud-ai-endpoints` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `public-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `replicate` | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `sambanova` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `scaleway` | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `together` | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `z-ai` | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 <Note>Provider capabilities may change over time. For the most up-to-date information, refer to the [Hugging Face Inference Providers documentation](https://huggingface.co/docs/inference-providers/en/index#partners). Also checkmarks (✅) indicate capabilities supported by the inference provider itself.</Note>
 
@@ -337,7 +337,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.HuggingFace,
     Model:    "huggingface/fal-ai/fal-ai/flux/dev",
     Input: &schemas.ImageGenerationInput{
@@ -364,7 +364,7 @@ resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationR
 <Tab title="Go SDK - Streaming">
 
 ```go
-streamChan, err := client.ImageGenerationStreamRequest(ctx, &schemas.BifrostImageGenerationRequest{
+streamChan, err := client.ImageGenerationStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.HuggingFace,
     Model:    "huggingface/fal-ai/fal-ai/flux/dev",
     Input: &schemas.ImageGenerationInput{
@@ -406,6 +406,75 @@ for stream := range streamChan {
 - **together**: 
   - OpenAI-compatible format
   - `response_format: "b64_json"` is converted to `"base64"`
+
+## Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+**Only `fal-ai` supports image editing** for HuggingFace. Image edit requests are routed to fal-ai inference provider.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (must be `huggingface/fal-ai/{model_id}`) |
+| `prompt` | string | ✅ | Text description of the edit |
+| `image[]` | binary | ✅ | Image file(s) to edit (supports multiple images for some models) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `size` | string | ❌ | Image size: `"WxH"` format (e.g., `"1024x1024"`) |
+| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` (note: `"jpg"` is normalized to `"jpeg"`) |
+| `seed` | int | ❌ | Seed for reproducibility (via `ExtraParams["seed"]`) |
+| `num_inference_steps` | int | ❌ | Number of inference steps (via `ExtraParams["num_inference_steps"]`) |
+| `guidance_scale` | float | ❌ | Guidance scale (via `ExtraParams["guidance_scale"]`) |
+| `acceleration` | string | ❌ | Acceleration mode (via `ExtraParams["acceleration"]`) |
+| `enable_safety_checker` | bool | ❌ | Enable safety checker (via `ExtraParams["enable_safety_checker"]`) |
+| `use_image_urls` | bool | ❌ | Override image field selection (via `ExtraParams["use_image_urls"]`) |
+
+---
+
+**Request Conversion**
+
+- **Model Validation**: Only `fal-ai` inference provider supports image edit. Other providers return `UnsupportedOperationError`.
+- **Image Conversion**: Each image in `bifrostReq.Input.Images` is converted to a base64 data URL:
+  - Format: `data:{mimeType};base64,{base64Data}`
+  - MIME type detection: `image/jpeg`, `image/webp`, `image/png` (via `http.DetectContentType`)
+- **Image Field Selection**: The provider uses different image fields based on model capabilities:
+  - **Multi-image models** (e.g., `fal-ai/flux-2/edit`, `fal-ai/flux-2-pro/edit`): Uses `image_urls` array field
+  - **Single-image models** (e.g., `fal-ai/flux-pro/kontext`, `fal-ai/flux/dev/image-to-image`): Uses `image_url` string field
+  - **Override**: `ExtraParams["use_image_urls"]` can override the automatic selection
+  - **Fallback**: For unknown models, uses `image_url` if single image, `image_urls` if multiple images
+- **Parameter Mapping**:
+  - `prompt` → `Prompt`
+  - `n` → `NumImages`
+  - `size` → `ImageSize` (converted from `"WxH"` string to `{Width, Height}` object)
+  - `output_format` → `OutputFormat` (`"jpg"` normalized to `"jpeg"`)
+  - `seed` (via `ExtraParams["seed"]`) → `Seed`
+  - `num_inference_steps` (via `ExtraParams["num_inference_steps"]`) → `NumInferenceSteps`
+  - `guidance_scale` (via `ExtraParams["guidance_scale"]`) → `GuidanceScale`
+  - `acceleration` (via `ExtraParams["acceleration"]`) → `Acceleration`
+  - `enable_safety_checker` (via `ExtraParams["enable_safety_checker"]`) → `EnableSafetyChecker`
+
+**Response Conversion**
+
+- **Non-streaming**: Uses the same response conversion as image generation (see Image Generation section)
+- **Streaming**: fal-ai streaming responses use Server-Sent Events (SSE) format:
+  - **Event Type**: Server-Sent Events with `data:` prefix
+  - **Chunk Format**: Each SSE event contains JSON with `images[]` array (or `data.images[]` in API envelope format)
+  - **Stream Processing**:
+    - Each image in `images[]` becomes a separate stream chunk
+    - Chunks have `type: "image_edit.partial_image"` until stream completion
+    - Final chunk has `type: "image_edit.completed"` with the last image data
+    - Images can be delivered as `url` (public URL) or `b64_json` (base64-encoded)
+  - **Response Structure**: Handles both API envelope format (`Data.Images`) and legacy flattened format (`Images`)
+  - **URL Pattern**: `/fal-ai/{model_id}/stream` (appended to base URL)
+
+**Endpoint**: `/fal-ai/{model_id}` (non-streaming), `/fal-ai/{model_id}/stream` (streaming)
+
+**Image Variation**
+
+Image variation is not supported by HuggingFace.
 
 ## Raw JSON Body Handling
 

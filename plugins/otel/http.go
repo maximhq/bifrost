@@ -24,22 +24,40 @@ type OtelClientHTTP struct {
 }
 
 // NewOtelClientHTTP creates a new OpenTelemetry client for HTTP
-func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert string) (*OtelClientHTTP, error) {
+func NewOtelClientHTTP(endpoint string, headers map[string]string, tlsCACert string, insecureMode bool) (*OtelClientHTTP, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = 100
 	transport.MaxIdleConnsPerHost = 10
 	transport.IdleConnTimeout = 120 * time.Second
 
+	// TLS priority: custom CA > system roots > insecure
 	if tlsCACert != "" {
+		// Validate the CA cert path to prevent path traversal attacks
+		if err := validateCACertPath(tlsCACert); err != nil {
+			return nil, err
+		}
 		caCert, err := os.ReadFile(tlsCACert)
 		if err != nil {
 			return nil, fmt.Errorf("fail to load provided CA cert: %w", err)
 		}
 		caCertPool := x509.NewCertPool()
 		if !caCertPool.AppendCertsFromPEM(caCert) {
-			return nil, fmt.Errorf("fail to add provided CA cert: %w", err)
+			return nil, fmt.Errorf("fail to add provided CA cert")
 		}
-		transport.TLSClientConfig = &tls.Config{RootCAs: caCertPool}
+		transport.TLSClientConfig = &tls.Config{
+			RootCAs:    caCertPool,
+			MinVersion: tls.VersionTLS12,
+		}
+	} else if insecureMode {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true, // #nosec G402
+			MinVersion:         tls.VersionTLS12,
+		}
+	} else {
+		// Use system root CAs with MinVersion
+		transport.TLSClientConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		}
 	}
 
 	return &OtelClientHTTP{client: &http.Client{

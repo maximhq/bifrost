@@ -231,7 +231,7 @@ func main() {
     // 2. Auto-execute list_directory, read_file
     // 3. Feed results back to LLM
     // 4. Return final response
-    response, err := client.ChatCompletionRequest(context.Background(), request)
+    response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
 }
 ```
 

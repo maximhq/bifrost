@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -21,12 +21,12 @@ var (
 	testStop      = []string{"STOP"}
 	testTrace     = "enabled"
 	testLatency   = "optimized"
-	testProps     = schemas.OrderedMap{
-		"location": map[string]interface{}{
+	testProps     = *schemas.NewOrderedMapFromPairs(
+		schemas.KV("location", map[string]interface{}{
 			"type":        "string",
 			"description": "The city name",
-		},
-	}
+		}),
+	)
 )
 
 // assertBedrockRequestEqual compares two BedrockConverseRequest objects
@@ -92,7 +92,7 @@ func TestBedrock(t *testing.T) {
 		t.Skip("Skipping Bedrock tests because AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
@@ -101,6 +101,7 @@ func TestBedrock(t *testing.T) {
 	// Get Bedrock-specific configuration from environment
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
 	roleArn := os.Getenv("AWS_BEDROCK_ROLE_ARN")
+	rerankModelARN := strings.TrimSpace(os.Getenv("AWS_BEDROCK_RERANK_MODEL_ARN"))
 
 	// Build extra params for batch and file operations
 	var batchExtraParams map[string]interface{}
@@ -118,7 +119,7 @@ func TestBedrock(t *testing.T) {
 		}
 	}
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:    schemas.Bedrock,
 		ChatModel:   "claude-4-sonnet",
 		VisionModel: "claude-4-sonnet",
@@ -126,12 +127,15 @@ func TestBedrock(t *testing.T) {
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
 		},
-		EmbeddingModel:     "cohere.embed-v4:0",
-		ReasoningModel:     "claude-4.5-sonnet",
-		PromptCachingModel: "claude-4.5-sonnet",
-		BatchExtraParams:   batchExtraParams,
-		FileExtraParams:    fileExtraParams,
-		Scenarios: testutil.TestScenarios{
+		EmbeddingModel:      "cohere.embed-v4:0",
+		RerankModel:         rerankModelARN,
+		ReasoningModel:      "claude-4.5-sonnet",
+		PromptCachingModel:  "claude-4.5-sonnet",
+		ImageEditModel:      "amazon.nova-canvas-v1:0",
+		ImageVariationModel: "amazon.nova-canvas-v1:0",
+		BatchExtraParams:    batchExtraParams,
+		FileExtraParams:     fileExtraParams,
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -148,6 +152,7 @@ func TestBedrock(t *testing.T) {
 			FileURL:               false, // S3 urls supported for nova models
 			CompleteEnd2End:       true,
 			Embedding:             true,
+			Rerank:                rerankModelARN != "",
 			ListModels:            true,
 			Reasoning:             true,
 			PromptCaching:         true,
@@ -163,12 +168,14 @@ func TestBedrock(t *testing.T) {
 			FileContent:           true,
 			FileBatchInput:        true,
 			CountTokens:           false, // Not supported
+			ImageEdit:             true,
+			ImageVariation:        true,
 			StructuredOutputs:     true,
 		},
 	}
 
 	t.Run("BedrockTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }
@@ -391,12 +398,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Description: schemas.Ptr("Get weather information"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"location": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("location", map[string]interface{}{
 											"type":        "string",
 											"description": "The city name",
-										},
-									},
+										}),
+									),
 									Required: []string{"location"},
 								},
 							},
@@ -502,9 +509,9 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 				RequestMetadata: map[string]string{
 					"user": "test-user",
 				},
-				AdditionalModelRequestFields: schemas.OrderedMap{
-					"customField": "customValue",
-				},
+				AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+					schemas.KV("customField", "customValue"),
+				),
 				AdditionalModelResponseFieldPaths: []string{"field1", "field2"},
 			},
 		},
@@ -723,12 +730,12 @@ func TestBifrostToBedrockRequestConversion(t *testing.T) {
 								Description: schemas.Ptr("Get weather information"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"location": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("location", map[string]interface{}{
 											"type":        "string",
 											"description": "The city name",
-										},
-									},
+										}),
+									),
 									Required: []string{"location"},
 								},
 							},
@@ -1132,9 +1139,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 				RequestMetadata: map[string]string{
 					"user": "test-user",
 				},
-				AdditionalModelRequestFields: schemas.OrderedMap{
-					"customField": "customValue",
-				},
+				AdditionalModelRequestFields: schemas.NewOrderedMapFromPairs(
+					schemas.KV("customField", "customValue"),
+				),
 				AdditionalModelResponseFieldPaths: []string{"field1", "field2"},
 			},
 			expected: &schemas.BifrostResponsesRequest{
@@ -1173,9 +1180,9 @@ func TestBedrockToBifrostRequestConversion(t *testing.T) {
 						"requestMetadata": map[string]string{
 							"user": "test-user",
 						},
-						"additionalModelRequestFieldPaths": schemas.OrderedMap{
-							"customField": "customValue",
-						},
+						"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(
+							schemas.KV("customField", "customValue"),
+						),
 						"additionalModelResponseFieldPaths": []string{"field1", "field2"},
 					},
 				},
@@ -2142,10 +2149,7 @@ func TestToBedrockResponsesRequest_AdditionalFields(t *testing.T) {
 
 	// Convert OrderedMap to map[string]interface{} for comparison
 	expectedFields := map[string]interface{}{"top_k": 200}
-	actualFields := make(map[string]interface{})
-	for k, v := range bedrockReq.AdditionalModelRequestFields {
-		actualFields[k] = v
-	}
+	actualFields := bedrockReq.AdditionalModelRequestFields.ToMap()
 	assert.Equal(t, expectedFields, actualFields)
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
 }
@@ -2168,6 +2172,125 @@ func TestToBedrockResponsesRequest_AdditionalFields_InterfaceSlice(t *testing.T)
 	require.NotNil(t, bedrockReq)
 
 	assert.Equal(t, []string{"/amazon-bedrock-invocationMetrics/inputTokenCount"}, bedrockReq.AdditionalModelResponseFieldPaths)
+}
+
+// TestToolResultJSONParsingResponsesAPI tests that tool results are correctly parsed and wrapped based on JSON type
+// Tests only Responses API.
+func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
+	tests := []struct {
+		name                string
+		toolResultContent   string
+		expectedContentType string // "text" or "json"
+		expectedJSON        map[string]any
+		expectedText        *string
+	}{
+		{
+			name:                "PlainTextResult",
+			toolResultContent:   "Hello there! This is plain text, not JSON.",
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr("Hello there! This is plain text, not JSON."),
+		},
+		{
+			name:                "InvalidJSONResult",
+			toolResultContent:   "{invalid json syntax",
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr("{invalid json syntax"),
+		},
+		{
+			name:                "JSONObjectResult",
+			toolResultContent:   `{"location":"NYC","temperature":72}`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"location": "NYC", "temperature": float64(72)},
+		},
+		{
+			name:                "JSONArrayResult",
+			toolResultContent:   `[{"period":"now","weather":"sunny"},{"period":"next_1_hour","weather":"cloudy"}]`,
+			expectedContentType: "json",
+			expectedJSON: map[string]any{
+				"results": []any{
+					map[string]any{"period": "now", "weather": "sunny"},
+					map[string]any{"period": "next_1_hour", "weather": "cloudy"},
+				},
+			},
+		},
+		{
+			name:                "JSONPrimitiveNumberResult",
+			toolResultContent:   `42`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": float64(42)},
+		},
+		{
+			name:                "JSONPrimitiveStringResult",
+			toolResultContent:   `"hello world"`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": "hello world"},
+		},
+		{
+			name:                "JSONPrimitiveBooleanResult",
+			toolResultContent:   `true`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": true},
+		},
+		{
+			name:                "JSONPrimitiveNullResult",
+			toolResultContent:   `null`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"value": nil},
+		},
+		{
+			name:                "EmptyJSONObjectResult",
+			toolResultContent:   `{}`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{},
+		},
+		{
+			name:                "EmptyJSONArrayResult",
+			toolResultContent:   `[]`,
+			expectedContentType: "json",
+			expectedJSON:        map[string]any{"results": []any{}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a Responses API message with function call output (tool result)
+			input := []schemas.ResponsesMessage{
+				{
+					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("tooluse_test_123"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesToolCallOutputStr: schemas.Ptr(tt.toolResultContent),
+						},
+					},
+				},
+			}
+
+			messages, _, err := bedrock.ConvertBifrostMessagesToBedrockMessages(input)
+			require.NoError(t, err)
+			require.Len(t, messages, 1)
+
+			// The tool result should be in a user message
+			toolResultMsg := messages[0]
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, toolResultMsg.Role)
+			require.Len(t, toolResultMsg.Content, 1)
+
+			toolResult := toolResultMsg.Content[0].ToolResult
+			require.NotNil(t, toolResult)
+			assert.Equal(t, "tooluse_test_123", toolResult.ToolUseID)
+			require.Len(t, toolResult.Content, 1)
+
+			resultContent := toolResult.Content[0]
+			if tt.expectedContentType == "text" {
+				assert.NotNil(t, resultContent.Text, "Expected text content")
+				assert.Nil(t, resultContent.JSON, "Expected no JSON content")
+				assert.Equal(t, tt.expectedText, resultContent.Text)
+			} else {
+				assert.Nil(t, resultContent.Text, "Expected no text content")
+				assert.Equal(t, tt.expectedJSON, resultContent.JSON)
+			}
+		})
+	}
 }
 
 // TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_EmptyBlocks tests that
@@ -2456,6 +2579,886 @@ func TestConvertBifrostResponsesMessageContentBlocksToBedrockContentBlocks_Empty
 					"ContentBlock at index %d must have at least one required field set (text, image, toolUse, toolResult, document, video, cachePoint, reasoningContent, citationsContent, searchResult)",
 					i)
 			}
+		})
+	}
+}
+
+// TestToolResultDeduplication tests that duplicate tool results are properly handled
+func TestToolResultDeduplication(t *testing.T) {
+	t.Run("DuplicateResultInPendingResults", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// tool call and result
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("First result")}}
+		manager.RegisterToolResult("call-123", content1, "success")
+
+		// duplicate result with different content
+		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate result")}}
+		manager.RegisterToolResult("call-123", content2, "success")
+
+		// Deduplicated regardless of content. Practically same ID should not ever has diff content.
+		results := manager.GetPendingResults()
+		require.Len(t, results, 1)
+		require.NotNil(t, results["call-123"])
+		assert.Equal(t, "First result", *results["call-123"].Content[0].Text)
+	})
+
+	t.Run("DuplicateResultAfterEmission", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// Register and emit a tool call
+		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`)
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		manager.MarkToolCallsEmitted(callIDs, 0)
+
+		// register and emit the result
+		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("3")}}
+		manager.RegisterToolResult("call-456", content1, "success")
+		manager.MarkResultsEmitted([]string{"call-456"})
+
+		// Register a duplicate
+		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate")}}
+		manager.RegisterToolResult("call-456", content2, "success")
+
+		// Not added due to it being duplicated with the emitted result
+		results := manager.GetPendingResults()
+		assert.Empty(t, results)
+	})
+
+	t.Run("MultipleToolCallsWithDuplicateResults", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// Register multiple tool calls
+		manager.RegisterToolCall("call-a", "tool_a", `{}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{}`)
+
+		// Register results for both
+		contentA := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
+		contentB := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
+		manager.RegisterToolResult("call-a", contentA, "success")
+		manager.RegisterToolResult("call-b", contentB, "success")
+
+		// Try to register duplicates
+		contentADup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
+		contentBDup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
+		manager.RegisterToolResult("call-a", contentADup, "success")
+		manager.RegisterToolResult("call-b", contentBDup, "success")
+
+		// Verify original results are preserved
+		results := manager.GetPendingResults()
+		require.Len(t, results, 2)
+		assert.Equal(t, "Result A", *results["call-a"].Content[0].Text)
+		assert.Equal(t, "Result B", *results["call-b"].Content[0].Text)
+	})
+}
+
+// TestToolCallDeduplication tests that duplicate tool calls are properly handled
+func TestToolCallDeduplication(t *testing.T) {
+	t.Run("DuplicateToolCallIgnored", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+
+		// Deduplicated regardless of content.
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		assert.Equal(t, "call-123", callIDs[0])
+	})
+
+	t.Run("MultipleDistinctToolCalls", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// initial registration
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+
+		// duplications
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+
+		// no duplicates
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 3)
+		assert.Contains(t, callIDs, "call-a")
+		assert.Contains(t, callIDs, "call-b")
+		assert.Contains(t, callIDs, "call-c")
+	})
+
+	t.Run("DuplicateToolCallAfterEmission", func(t *testing.T) {
+		manager := bedrock.NewToolCallStateManager()
+
+		// register and emit a tool call
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		callIDs := manager.EmitPendingToolCalls()
+		require.Len(t, callIDs, 1)
+		manager.MarkToolCallsEmitted(callIDs, 0)
+
+		// register the same tool call again after emission
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+
+		// duplicate was rejected
+		newCallIDs := manager.EmitPendingToolCalls()
+		assert.Empty(t, newCallIDs)
+	})
+}
+
+// TestAnthropicReasoningConfigUsesThinkinField verifies that Anthropic models use
+// the "thinking" field (not "reasoning_config") in additionalModelRequestFields
+// for the Bedrock Converse API.
+func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
+	tests := []struct {
+		name                     string
+		model                    string
+		effort                   *string
+		maxTokens                *int
+		expectedFieldName        string
+		expectedType             string
+		expectBudgetTokens       bool
+		expectNoOutputConfig     bool
+		expectOutputConfigEffort string // expected effort value in output_config (empty string means no output_config expected)
+	}{
+		{
+			name:                     "Opus4.6_AdaptiveThinking_UsesThinkingField",
+			model:                    "anthropic.claude-opus-4-6-v1",
+			effort:                   schemas.Ptr("high"),
+			expectedFieldName:        "thinking",
+			expectedType:             "adaptive",
+			expectBudgetTokens:       false,
+			expectNoOutputConfig:     false,
+			expectOutputConfigEffort: "high",
+		},
+		{
+			name:                 "Opus4.5_NativeEffort_UsesThinkingField",
+			model:                "anthropic.claude-opus-4-5-v1",
+			effort:               schemas.Ptr("high"),
+			expectedFieldName:    "thinking",
+			expectedType:         "enabled",
+			expectBudgetTokens:   true,
+			expectNoOutputConfig: true,
+		},
+		{
+			name:                 "Sonnet3.7_OlderModel_UsesThinkingField",
+			model:                "anthropic.claude-3-7-sonnet-v1",
+			effort:               schemas.Ptr("medium"),
+			expectedFieldName:    "thinking",
+			expectedType:         "enabled",
+			expectBudgetTokens:   true,
+			expectNoOutputConfig: true,
+		},
+		{
+			name:                 "Anthropic_MaxTokens_UsesThinkingField",
+			model:                "anthropic.claude-3-7-sonnet-v1",
+			maxTokens:            schemas.Ptr(2048),
+			expectedFieldName:    "thinking",
+			expectedType:         "enabled",
+			expectBudgetTokens:   true,
+			expectNoOutputConfig: true,
+		},
+		{
+			name:                 "Anthropic_DisabledReasoning_UsesThinkingField",
+			model:                "anthropic.claude-3-7-sonnet-v1",
+			effort:               schemas.Ptr("none"),
+			expectedFieldName:    "thinking",
+			expectedType:         "disabled",
+			expectBudgetTokens:   false,
+			expectNoOutputConfig: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reasoning := &schemas.ChatReasoning{}
+			if tt.effort != nil {
+				reasoning.Effort = tt.effort
+			}
+			if tt.maxTokens != nil {
+				reasoning.MaxTokens = tt.maxTokens
+			}
+
+			bifrostReq := &schemas.BifrostChatRequest{
+				Model: tt.model,
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Hello"),
+						},
+					},
+				},
+				Params: &schemas.ChatParameters{
+					Reasoning: reasoning,
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.NotNil(t, result.AdditionalModelRequestFields)
+
+			// Verify the correct field name is used
+			thinkingConfig, hasThinking := result.AdditionalModelRequestFields.Get(tt.expectedFieldName)
+			assert.True(t, hasThinking, "expected field %q in AdditionalModelRequestFields", tt.expectedFieldName)
+
+			// Verify reasoning_config is NOT used for Anthropic models
+			_, hasReasoningConfig := result.AdditionalModelRequestFields.Get("reasoning_config")
+			assert.False(t, hasReasoningConfig, "reasoning_config should NOT be set for Anthropic models")
+
+			// Verify output_config handling
+			if tt.expectNoOutputConfig {
+				_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+				assert.False(t, hasOutputConfig, "output_config should NOT be set for this model")
+			} else if tt.expectOutputConfigEffort != "" {
+				// Opus 4.6+ should have output_config.effort set
+				outputConfig, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+				assert.True(t, hasOutputConfig, "output_config should be set for Opus 4.6+")
+				if outputConfigMap, ok := outputConfig.(map[string]any); ok {
+					effortStr, _ := outputConfigMap["effort"].(string)
+					assert.Equal(t, tt.expectOutputConfigEffort, effortStr, "output_config.effort should match expected value")
+				}
+			}
+
+			// Verify the type
+			if configMap, ok := thinkingConfig.(map[string]any); ok {
+				typeStr, _ := configMap["type"].(string)
+				assert.Equal(t, tt.expectedType, typeStr)
+
+				if tt.expectBudgetTokens {
+					_, hasBudget := configMap["budget_tokens"]
+					assert.True(t, hasBudget, "expected budget_tokens in thinking config")
+				}
+			} else if configMap, ok := thinkingConfig.(map[string]string); ok {
+				assert.Equal(t, tt.expectedType, configMap["type"])
+			}
+		})
+	}
+}
+
+// TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
+// the "reasoningConfig" field (camelCase) and NOT "thinking".
+func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "amazon.nova-pro-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Hello"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			Reasoning: &schemas.ChatReasoning{
+				Effort: schemas.Ptr("medium"),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	// Nova should use reasoningConfig (camelCase)
+	_, hasReasoningConfig := result.AdditionalModelRequestFields.Get("reasoningConfig")
+	assert.True(t, hasReasoningConfig, "Nova models should use reasoningConfig field")
+
+	// Nova should NOT use "thinking"
+	_, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+	assert.False(t, hasThinking, "Nova models should NOT use thinking field")
+}
+
+// TestStandaloneCachePointBlockHandling tests that standalone cachePoint content blocks
+// (those with only cachePoint field and no type) are properly converted.
+func TestStandaloneCachePointBlockHandling(t *testing.T) {
+	t.Run("UserMessage_WithStandaloneCachePoint", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostChatRequest{
+			Model: "anthropic.claude-3-sonnet-20240229-v1:0",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type: schemas.ChatContentBlockTypeText,
+								Text: schemas.Ptr("Hello, this is a test message"),
+							},
+							{
+								// Standalone cachePoint block (no type, just cachePoint)
+								CachePoint: &schemas.CachePoint{
+									Type: "default",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Messages, 1)
+		require.Len(t, result.Messages[0].Content, 2)
+
+		// First block should be text
+		assert.NotNil(t, result.Messages[0].Content[0].Text)
+		assert.Equal(t, "Hello, this is a test message", *result.Messages[0].Content[0].Text)
+
+		// Second block should be cachePoint
+		assert.NotNil(t, result.Messages[0].Content[1].CachePoint)
+		assert.Equal(t, bedrock.BedrockCachePointTypeDefault, result.Messages[0].Content[1].CachePoint.Type)
+	})
+
+	t.Run("BedrockNativeFormat_TextWithoutType", func(t *testing.T) {
+		// This tests the Bedrock native format where text blocks don't have a "type" field
+		// Example: {"text": "hello"} instead of {"type": "text", "text": "hello"}
+		bifrostReq := &schemas.BifrostChatRequest{
+			Model: "anthropic.claude-3-sonnet-20240229-v1:0",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								// No Type field set, but Text is present (Bedrock native format)
+								Text: schemas.Ptr("hello this is a test request"),
+							},
+							{
+								// Standalone cachePoint block
+								CachePoint: &schemas.CachePoint{
+									Type: "default",
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.Len(t, result.Messages, 1)
+		require.Len(t, result.Messages[0].Content, 2)
+
+		// First block should be text (even without explicit type)
+		assert.NotNil(t, result.Messages[0].Content[0].Text)
+		assert.Equal(t, "hello this is a test request", *result.Messages[0].Content[0].Text)
+
+		// Second block should be cachePoint
+		assert.NotNil(t, result.Messages[0].Content[1].CachePoint)
+		assert.Equal(t, bedrock.BedrockCachePointTypeDefault, result.Messages[0].Content[1].CachePoint.Type)
+	})
+
+	t.Run("SystemMessage_WithStandaloneCachePoint", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostChatRequest{
+			Model: "anthropic.claude-3-sonnet-20240229-v1:0",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleSystem,
+					Content: &schemas.ChatMessageContent{
+						ContentBlocks: []schemas.ChatContentBlock{
+							{
+								Type: schemas.ChatContentBlockTypeText,
+								Text: schemas.Ptr("You are a helpful assistant"),
+							},
+							{
+								// Standalone cachePoint block
+								CachePoint: &schemas.CachePoint{
+									Type: "default",
+								},
+							},
+							{
+								Type: schemas.ChatContentBlockTypeText,
+								Text: schemas.Ptr("Additional system instructions"),
+							},
+						},
+					},
+				},
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.System)
+		require.Len(t, result.System, 3) // Two text blocks + one cachePoint
+
+		// First system message should be text
+		assert.NotNil(t, result.System[0].Text)
+		assert.Equal(t, "You are a helpful assistant", *result.System[0].Text)
+
+		// Second should be cachePoint
+		assert.NotNil(t, result.System[1].CachePoint)
+
+		// Third should be text
+		assert.NotNil(t, result.System[2].Text)
+		assert.Equal(t, "Additional system instructions", *result.System[2].Text)
+	})
+}
+
+func TestMultiTurnReasoningContentPassthrough(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AssistantMessage_WithReasoningDetails_ConvertsToBedrockReasoningContent", func(t *testing.T) {
+		reasoningText := "Let me think step by step..."
+		signature := "abc123signature"
+		assistantContent := "The answer is 42."
+
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-opus-4-6-v1",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("What is the meaning of life?"),
+					},
+				},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &assistantContent,
+					},
+					ChatAssistantMessage: &schemas.ChatAssistantMessage{
+						ReasoningDetails: []schemas.ChatReasoningDetails{
+							{
+								Index:     0,
+								Type:      schemas.BifrostReasoningDetailsTypeText,
+								Text:      &reasoningText,
+								Signature: &signature,
+							},
+						},
+					},
+				},
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Can you elaborate?"),
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		// The assistant message (index 1) should have reasoning content blocks
+		require.Len(t, result.Messages, 3) // user, assistant, user
+		assistantMsg := result.Messages[1]
+		assert.Equal(t, bedrock.BedrockMessageRoleAssistant, assistantMsg.Role)
+
+		// Should have text block + reasoning content block
+		require.GreaterOrEqual(t, len(assistantMsg.Content), 2)
+
+		// Find the reasoning content block
+		var foundReasoning bool
+		for _, block := range assistantMsg.Content {
+			if block.ReasoningContent != nil {
+				foundReasoning = true
+				require.NotNil(t, block.ReasoningContent.ReasoningText)
+				assert.Equal(t, &reasoningText, block.ReasoningContent.ReasoningText.Text)
+				assert.Equal(t, &signature, block.ReasoningContent.ReasoningText.Signature)
+			}
+		}
+		assert.True(t, foundReasoning, "Expected reasoning content block in assistant message")
+	})
+
+	t.Run("AssistantMessage_WithoutReasoningDetails_NoReasoningContent", func(t *testing.T) {
+		assistantContent := "Simple response"
+
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-opus-4-6-v1",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Hello"),
+					},
+				},
+				{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &assistantContent,
+					},
+				},
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Hi again"),
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		assistantMsg := result.Messages[1]
+		for _, block := range assistantMsg.Content {
+			assert.Nil(t, block.ReasoningContent, "Should not have reasoning content without ReasoningDetails")
+		}
+	})
+}
+
+func TestDocumentFormatMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		fileType       string
+		expectedFormat string
+	}{
+		{"PDF_MimeType", "application/pdf", "pdf"},
+		{"PDF_Short", "pdf", "pdf"},
+		{"TXT_MimeType", "text/plain", "txt"},
+		{"TXT_Short", "txt", "txt"},
+		{"Markdown_MimeType", "text/markdown", "md"},
+		{"Markdown_Short", "md", "md"},
+		{"HTML_MimeType", "text/html", "html"},
+		{"HTML_Short", "html", "html"},
+		{"CSV_MimeType", "text/csv", "csv"},
+		{"CSV_Short", "csv", "csv"},
+		{"DOC_MimeType", "application/msword", "doc"},
+		{"DOC_Short", "doc", "doc"},
+		{"DOCX_MimeType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"},
+		{"DOCX_Short", "docx", "docx"},
+		{"XLS_MimeType", "application/vnd.ms-excel", "xls"},
+		{"XLS_Short", "xls", "xls"},
+		{"XLSX_MimeType", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"},
+		{"XLSX_Short", "xlsx", "xlsx"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fileData := "Hello World" // plain text; base64 requires a data: URL prefix
+			bifrostReq := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "anthropic.claude-3-5-sonnet-v2",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentBlocks: []schemas.ChatContentBlock{
+								{
+									Type: schemas.ChatContentBlockTypeFile,
+									File: &schemas.ChatInputFile{
+										Filename: schemas.Ptr("testfile"),
+										FileType: &tt.fileType,
+										FileData: &fileData,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Messages, 1)
+			require.Len(t, result.Messages[0].Content, 1)
+			require.NotNil(t, result.Messages[0].Content[0].Document)
+			assert.Equal(t, tt.expectedFormat, result.Messages[0].Content[0].Document.Format,
+				"File type %q should map to format %q", tt.fileType, tt.expectedFormat)
+		})
+	}
+}
+
+func TestBedrockStopReasonMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		bedrockStopReason string
+		expectedBifrost   string
+	}{
+		{"EndTurn", "end_turn", "stop"},
+		{"MaxTokens", "max_tokens", "length"},
+		{"StopSequence", "stop_sequence", "stop"},
+		{"ToolUse", "tool_use", "tool_calls"},
+		{"GuardrailIntervened", "guardrail_intervened", "content_filter"},
+		{"ContentFiltered", "content_filtered", "content_filter"},
+		{"UnknownReason", "some_unknown_reason", "stop"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := &bedrock.BedrockConverseResponse{
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{Text: schemas.Ptr("Response text")},
+						},
+					},
+				},
+				StopReason: tt.bedrockStopReason,
+				Usage: &bedrock.BedrockTokenUsage{
+					InputTokens:  10,
+					OutputTokens: 5,
+					TotalTokens:  15,
+				},
+			}
+
+			bifrostResp, err := response.ToBifrostChatResponse(context.Background(), "test-model")
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+			require.Len(t, bifrostResp.Choices, 1)
+			require.NotNil(t, bifrostResp.Choices[0].FinishReason)
+			assert.Equal(t, tt.expectedBifrost, *bifrostResp.Choices[0].FinishReason,
+				"Bedrock stop reason %q should map to %q", tt.bedrockStopReason, tt.expectedBifrost)
+		})
+	}
+}
+
+func TestGuardrailConfigStreamProcessingMode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithStreamProcessingMode", func(t *testing.T) {
+		mode := "async"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Hello"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"guardrailConfig": map[string]interface{}{
+						"guardrailIdentifier":  "test-guardrail",
+						"guardrailVersion":     "1",
+						"trace":                "enabled",
+						"streamProcessingMode": mode,
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GuardrailConfig)
+		assert.Equal(t, "test-guardrail", result.GuardrailConfig.GuardrailIdentifier)
+		assert.Equal(t, "1", result.GuardrailConfig.GuardrailVersion)
+		require.NotNil(t, result.GuardrailConfig.Trace)
+		assert.Equal(t, "enabled", *result.GuardrailConfig.Trace)
+		require.NotNil(t, result.GuardrailConfig.StreamProcessingMode)
+		assert.Equal(t, mode, *result.GuardrailConfig.StreamProcessingMode)
+	})
+
+	t.Run("WithoutStreamProcessingMode", func(t *testing.T) {
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("Hello"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"guardrailConfig": map[string]interface{}{
+						"guardrailIdentifier": "test-guardrail",
+						"guardrailVersion":    "1",
+					},
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.GuardrailConfig)
+		assert.Nil(t, result.GuardrailConfig.StreamProcessingMode)
+	})
+}
+
+func TestToolChoiceAutoHandling(t *testing.T) {
+	t.Parallel()
+
+	t.Run("AutoToolChoice_OmitsToolChoice", func(t *testing.T) {
+		autoStr := "auto"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("What's the weather?"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "get_weather",
+							Description: schemas.Ptr("Get weather"),
+							Parameters: &schemas.ToolFunctionParameters{
+								Type:       "object",
+								Properties: &testProps,
+							},
+						},
+					},
+				},
+				ToolChoice: &schemas.ChatToolChoice{
+					ChatToolChoiceStr: &autoStr,
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.ToolConfig)
+		assert.Nil(t, result.ToolConfig.ToolChoice, "Auto tool choice should be omitted (nil) as it's the default")
+	})
+
+	t.Run("RequiredToolChoice_SetsAny", func(t *testing.T) {
+		requiredStr := "required"
+		bifrostReq := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "anthropic.claude-3-5-sonnet-v2",
+			Input: []schemas.ChatMessage{
+				{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("What's the weather?"),
+					},
+				},
+			},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{
+					{
+						Type: schemas.ChatToolTypeFunction,
+						Function: &schemas.ChatToolFunction{
+							Name:        "get_weather",
+							Description: schemas.Ptr("Get weather"),
+							Parameters: &schemas.ToolFunctionParameters{
+								Type:       "object",
+								Properties: &testProps,
+							},
+						},
+					},
+				},
+				ToolChoice: &schemas.ChatToolChoice{
+					ChatToolChoiceStr: &requiredStr,
+				},
+			},
+		}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		require.NotNil(t, result.ToolConfig)
+		require.NotNil(t, result.ToolConfig.ToolChoice)
+		assert.NotNil(t, result.ToolConfig.ToolChoice.Any, "Required tool choice should map to Any")
+	})
+}
+
+func TestDocumentFormatResponseMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		bedrockFormat    string
+		expectedMimeType string
+	}{
+		{"PDF", "pdf", "application/pdf"},
+		{"TXT", "txt", "text/plain"},
+		{"Markdown", "md", "text/markdown"},
+		{"HTML", "html", "text/html"},
+		{"CSV", "csv", "text/csv"},
+		{"DOC", "doc", "application/msword"},
+		{"DOCX", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		{"XLS", "xls", "application/vnd.ms-excel"},
+		{"XLSX", "xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"Unknown", "xyz", "application/pdf"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			docBytes := "SGVsbG8=" // base64 "Hello"
+			response := &bedrock.BedrockConverseResponse{
+				Output: &bedrock.BedrockConverseOutput{
+					Message: &bedrock.BedrockMessage{
+						Role: bedrock.BedrockMessageRoleAssistant,
+						Content: []bedrock.BedrockContentBlock{
+							{
+								Document: &bedrock.BedrockDocumentSource{
+									Format: tt.bedrockFormat,
+									Name:   "testdoc",
+									Source: &bedrock.BedrockDocumentSourceData{
+										Bytes: &docBytes,
+									},
+								},
+							},
+						},
+					},
+				},
+				StopReason: "end_turn",
+				Usage: &bedrock.BedrockTokenUsage{
+					InputTokens:  10,
+					OutputTokens: 5,
+					TotalTokens:  15,
+				},
+			}
+
+			bifrostResp, err := response.ToBifrostChatResponse(context.Background(), "test-model")
+			require.NoError(t, err)
+			require.NotNil(t, bifrostResp)
+			require.Len(t, bifrostResp.Choices, 1)
+
+			choice := bifrostResp.Choices[0]
+			require.NotNil(t, choice.ChatNonStreamResponseChoice)
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message)
+			require.NotNil(t, choice.ChatNonStreamResponseChoice.Message.Content)
+
+			blocks := choice.ChatNonStreamResponseChoice.Message.Content.ContentBlocks
+			require.Len(t, blocks, 1)
+			assert.Equal(t, schemas.ChatContentBlockTypeFile, blocks[0].Type)
+			require.NotNil(t, blocks[0].File)
+			require.NotNil(t, blocks[0].File.FileType)
+			assert.Equal(t, tt.expectedMimeType, *blocks[0].File.FileType,
+				"Bedrock format %q should map to MIME type %q", tt.bedrockFormat, tt.expectedMimeType)
 		})
 	}
 }

@@ -16,7 +16,26 @@ import (
 var (
 	invalidCharRegex = regexp.MustCompile(`[^a-zA-Z0-9\s\-\(\)\[\]]`)
 	multiSpaceRegex  = regexp.MustCompile(`\s{2,}`)
+
+	// bedrockFinishReasonToBifrost maps Bedrock Converse API stop reasons to Bifrost format.
+	// Bedrock has additional stop reasons beyond Anthropic (guardrail_intervened, content_filtered).
+	bedrockFinishReasonToBifrost = map[string]string{
+		"end_turn":             "stop",
+		"max_tokens":           "length",
+		"stop_sequence":        "stop",
+		"tool_use":             "tool_calls",
+		"guardrail_intervened": "content_filter",
+		"content_filtered":     "content_filter",
+	}
 )
+
+// convertBedrockStopReason converts a Bedrock stop reason to Bifrost format.
+func convertBedrockStopReason(stopReason string) string {
+	if reason, ok := bedrockFinishReasonToBifrost[stopReason]; ok {
+		return reason
+	}
+	return "stop"
+}
 
 // normalizeBedrockFilename normalizes a filename to meet Bedrock's requirements:
 // - Only alphanumeric characters, whitespace, hyphens, parentheses, and square brackets
@@ -66,7 +85,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {
 		if bedrockReq.AdditionalModelRequestFields == nil {
-			bedrockReq.AdditionalModelRequestFields = make(schemas.OrderedMap)
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
 		if bifrostReq.Params.Reasoning.MaxTokens != nil {
 			tokenBudget := *bifrostReq.Params.Reasoning.MaxTokens
@@ -79,10 +98,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 					return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 				}
-				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 					"type":          "enabled",
 					"budget_tokens": tokenBudget,
-				}
+				})
 			} else if schemas.IsNovaModel(bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
 				defaultMaxTokens := DefaultCompletionMaxTokens
@@ -118,12 +137,12 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					config["maxReasoningEffort"] = maxReasoningEffort
 				}
 
-				bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else {
-				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
+				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
 					"type":          "enabled",
 					"budget_tokens": tokenBudget,
-				}
+				})
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 			maxTokens := DefaultCompletionMaxTokens
@@ -161,20 +180,42 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					config["maxReasoningEffort"] = effort
 				}
 
-				bedrockReq.AdditionalModelRequestFields["reasoningConfig"] = config
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else if schemas.IsAnthropicModel(bifrostReq.Model) {
-				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
-				if err != nil {
-					return err
-				}
-				bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]any{
-					"type":          "enabled",
-					"budget_tokens": budgetTokens,
+				if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+					// Opus 4.6+: adaptive thinking + output_config.effort
+					effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						"type": "adaptive",
+					})
+					bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
+						"effort": effort,
+					})
+				} else {
+					// Opus 4.5 and older models: budget_tokens thinking
+					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
+					if err != nil {
+						return err
+					}
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+						"type":          "enabled",
+						"budget_tokens": budgetTokens,
+					})
 				}
 			}
 		} else {
-			bedrockReq.AdditionalModelRequestFields["reasoning_config"] = map[string]string{
-				"type": "disabled",
+			if schemas.IsAnthropicModel(bifrostReq.Model) {
+				bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					"type": "disabled",
+				})
+			} else if schemas.IsNovaModel(bifrostReq.Model) {
+				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", map[string]any{
+					"type": "disabled",
+				})
+			} else {
+				bedrockReq.AdditionalModelRequestFields.Set("reasoning_config", map[string]any{
+					"type": "disabled",
+				})
 			}
 		}
 	}
@@ -200,6 +241,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
+		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle guardrail configuration
 		if guardrailConfig, exists := bifrostReq.Params.ExtraParams["guardrailConfig"]; exists {
 			if gc, ok := guardrailConfig.(map[string]interface{}); ok {
@@ -214,7 +256,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				if trace, ok := gc["trace"].(string); ok {
 					config.Trace = &trace
 				}
-
+				if mode, ok := gc["streamProcessingMode"].(string); ok {
+					config.StreamProcessingMode = &mode
+				}
+				delete(bedrockReq.ExtraParams, "guardrailConfig")
 				bedrockReq.GuardrailConfig = config
 			}
 		}
@@ -222,6 +267,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		if bifrostReq.Params != nil && bifrostReq.Params.ExtraParams != nil {
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
 					bedrockReq.AdditionalModelRequestFields = orderedFields
 				}
 			}
@@ -230,6 +276,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
 				// Handle both []string and []interface{} types
 				if fields, ok := responseFields.([]string); ok {
+					delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
 					bedrockReq.AdditionalModelResponseFieldPaths = fields
 				} else if fieldsInterface, ok := responseFields.([]interface{}); ok {
 					stringFields := make([]string, 0, len(fieldsInterface))
@@ -239,6 +286,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 						}
 					}
 					if len(stringFields) > 0 {
+						delete(bedrockReq.ExtraParams, "additionalModelResponseFieldPaths")
 						bedrockReq.AdditionalModelResponseFieldPaths = stringFields
 					}
 				}
@@ -247,16 +295,17 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if perfConfig, exists := bifrostReq.Params.ExtraParams["performanceConfig"]; exists {
 				if pc, ok := perfConfig.(map[string]interface{}); ok {
 					config := &BedrockPerformanceConfig{}
-
 					if latency, ok := pc["latency"].(string); ok {
 						config.Latency = &latency
 					}
+					delete(bedrockReq.ExtraParams, "performanceConfig")
 					bedrockReq.PerformanceConfig = config
 				}
 			}
 			// Handle prompt variables
 			if promptVars, exists := bifrostReq.Params.ExtraParams["promptVariables"]; exists {
 				if vars, ok := promptVars.(map[string]interface{}); ok {
+					delete(bedrockReq.ExtraParams, "promptVariables")
 					variables := make(map[string]BedrockPromptVariable)
 
 					for key, value := range vars {
@@ -277,9 +326,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			// Handle request metadata
 			if reqMetadata, exists := bifrostReq.Params.ExtraParams["requestMetadata"]; exists {
 				if metadata, ok := schemas.SafeExtractStringMap(reqMetadata); ok {
+					delete(bedrockReq.ExtraParams, "requestMetadata")
 					bedrockReq.RequestMetadata = metadata
 				}
 			}
+		}
+		// Set ExtraParams to nil if all keys were extracted to dedicated fields
+		if len(bedrockReq.ExtraParams) == 0 {
+			bedrockReq.ExtraParams = nil
 		}
 	}
 	return nil
@@ -359,7 +413,13 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 		})
 	} else if msg.Content.ContentBlocks != nil {
 		for _, block := range msg.Content.ContentBlocks {
-			if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
+			// Handle Bedrock native format where type may be empty but text is set directly
+			blockType := block.Type
+			if blockType == "" && block.Text != nil {
+				blockType = schemas.ChatContentBlockTypeText
+			}
+
+			if blockType == schemas.ChatContentBlockTypeText && block.Text != nil {
 				systemMsgs = append(systemMsgs, BedrockSystemMessage{
 					Text: block.Text,
 				})
@@ -370,6 +430,13 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 						},
 					})
 				}
+			} else if block.CachePoint != nil {
+				// Handle standalone cache point blocks
+				systemMsgs = append(systemMsgs, BedrockSystemMessage{
+					CachePoint: &BedrockCachePoint{
+						Type: BedrockCachePointTypeDefault,
+					},
+				})
 			}
 		}
 	}
@@ -398,6 +465,22 @@ func convertMessage(msg schemas.ChatMessage) (BedrockMessage, error) {
 		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			toolUseBlock := convertToolCallToContentBlock(toolCall)
 			contentBlocks = append(contentBlocks, toolUseBlock)
+		}
+	}
+
+	// Add reasoning content if present (for multi-turn conversations with thinking)
+	if msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ReasoningDetails) > 0 {
+		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
+			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
+				contentBlocks = append(contentBlocks, BedrockContentBlock{
+					ReasoningContent: &BedrockReasoningContent{
+						ReasoningText: &BedrockReasoningContentText{
+							Text:      detail.Text,
+							Signature: detail.Signature,
+						},
+					},
+				})
+			}
 		}
 	}
 
@@ -515,8 +598,8 @@ func convertToolMessages(msgs []schemas.ChatMessage) (BedrockMessage, error) {
 // convertContent converts Bifrost message content to Bedrock content blocks
 func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, error) {
 	var contentBlocks []BedrockContentBlock
-	if content.ContentStr != nil {
-		// Simple text content
+	if content.ContentStr != nil && *content.ContentStr != "" {
+		// Simple text content (skip empty strings as Bedrock rejects blank text)
 		contentBlocks = append(contentBlocks, BedrockContentBlock{
 			Text: content.ContentStr,
 		})
@@ -536,9 +619,21 @@ func convertContent(content schemas.ChatMessageContent) ([]BedrockContentBlock, 
 
 // convertContentBlock converts a Bifrost content block to Bedrock format
 func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock, error) {
+	// Handle Bedrock native format where type may be empty but text is set directly
+	// This occurs when requests are sent in Bedrock's native format (e.g., from Claude Code)
+	// In Bedrock format: {"text": "hello"} vs OpenAI format: {"type": "text", "text": "hello"}
+	if block.Type == "" && block.Text != nil {
+		block.Type = schemas.ChatContentBlockTypeText
+	}
+
 	switch block.Type {
 	case schemas.ChatContentBlockTypeText:
-		if block.Text == nil {
+		// NOTE: we are doing this because LiteLLM does this for empty text blocks.
+		// Ideally we should not play with the payload - we should let the provider handle it.
+		// But for now, we are doing this to avoid the API error.
+		// Once the world onboards on Bifrost - we should remove these shitty patterns.
+		if block.Text == nil || *block.Text == "" {
+			// Skip nil or empty text as Bedrock rejects blank text content blocks
 			return []BedrockContentBlock{}, nil
 		}
 		blocks := []BedrockContentBlock{
@@ -596,14 +691,32 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 			documentSource.Name = normalizeBedrockFilename(*block.File.Filename)
 		}
 
-		// Convert MIME type to Bedrock format (pdf or txt)
+		// Convert MIME type to Bedrock format
 		isText := false
 		if block.File.FileType != nil {
 			fileType := *block.File.FileType
-			if fileType == "text/plain" || fileType == "txt" {
+			switch {
+			case fileType == "text/plain" || fileType == "txt":
 				documentSource.Format = "txt"
 				isText = true
-			} else if strings.Contains(fileType, "pdf") || fileType == "pdf" {
+			case fileType == "text/markdown" || fileType == "md":
+				documentSource.Format = "md"
+				isText = true
+			case fileType == "text/html" || fileType == "html":
+				documentSource.Format = "html"
+				isText = true
+			case fileType == "text/csv" || fileType == "csv":
+				documentSource.Format = "csv"
+				isText = true
+			case fileType == "application/msword" || fileType == "doc":
+				documentSource.Format = "doc"
+			case strings.Contains(fileType, "wordprocessingml") || fileType == "docx":
+				documentSource.Format = "docx"
+			case fileType == "application/vnd.ms-excel" || fileType == "xls":
+				documentSource.Format = "xls"
+			case strings.Contains(fileType, "spreadsheetml") || fileType == "xlsx":
+				documentSource.Format = "xlsx"
+			case strings.Contains(fileType, "pdf") || fileType == "pdf":
 				documentSource.Format = "pdf"
 			}
 		}
@@ -645,6 +758,16 @@ func convertContentBlock(block schemas.ChatContentBlock) ([]BedrockContentBlock,
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
 
 	default:
+		// Handle cache-point-only blocks (Type is empty but CachePoint is set)
+		if block.Type == "" && block.CachePoint != nil {
+			return []BedrockContentBlock{
+				{
+					CachePoint: &BedrockCachePoint{
+						Type: BedrockCachePointTypeDefault,
+					},
+				},
+			}, nil
+		}
 		return nil, fmt.Errorf("unsupported content block type: %s", block.Type)
 	}
 }
@@ -962,6 +1085,9 @@ func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
 	// String variant
 	if toolChoice.ChatToolChoiceStr != nil {
 		switch schemas.ChatToolChoiceType(*toolChoice.ChatToolChoiceStr) {
+		case schemas.ChatToolChoiceTypeAuto:
+			// Auto is Bedrock's default behavior - omit ToolChoice
+			return nil
 		case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
 			return &BedrockToolChoice{Any: &BedrockToolChoiceAny{}}
 		case schemas.ChatToolChoiceTypeNone:
@@ -976,7 +1102,10 @@ func convertToolChoice(toolChoice schemas.ChatToolChoice) *BedrockToolChoice {
 	if toolChoice.ChatToolChoiceStruct != nil {
 		switch toolChoice.ChatToolChoiceStruct.Type {
 		case schemas.ChatToolChoiceTypeFunction:
-			name := toolChoice.ChatToolChoiceStruct.Function.Name
+			name := ""
+			if toolChoice.ChatToolChoiceStruct.Function != nil {
+				name = toolChoice.ChatToolChoiceStruct.Function.Name
+			}
 			if name != "" {
 				return &BedrockToolChoice{
 					Tool: &BedrockToolChoiceTool{Name: name},
@@ -1137,7 +1266,7 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 
 	// Extract properties
 	if props, ok := schemas.SafeExtractOrderedMap(paramsMap["properties"]); ok {
-		params.Properties = &props
+		params.Properties = props
 	}
 
 	// Extract required
@@ -1171,18 +1300,18 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 		}
 	} else if addPropsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["additionalProperties"]); ok {
 		params.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-			AdditionalPropertiesMap: &addPropsVal,
+			AdditionalPropertiesMap: addPropsVal,
 		}
 	}
 
 	// Extract $defs (JSON Schema draft 2019-09+)
 	if defsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["$defs"]); ok {
-		params.Defs = &defsVal
+		params.Defs = defsVal
 	}
 
 	// Extract definitions (legacy JSON Schema draft-07)
 	if defsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["definitions"]); ok {
-		params.Definitions = &defsVal
+		params.Definitions = defsVal
 	}
 
 	// Extract $ref
@@ -1192,7 +1321,7 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 
 	// Extract items (array element schema)
 	if itemsVal, ok := schemas.SafeExtractOrderedMap(paramsMap["items"]); ok {
-		params.Items = &itemsVal
+		params.Items = itemsVal
 	}
 
 	// Extract minItems
@@ -1210,7 +1339,7 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 		anyOf := make([]schemas.OrderedMap, 0, len(anyOfVal))
 		for _, v := range anyOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				anyOf = append(anyOf, m)
+				anyOf = append(anyOf, *m)
 			}
 		}
 		params.AnyOf = anyOf
@@ -1221,7 +1350,7 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 		oneOf := make([]schemas.OrderedMap, 0, len(oneOfVal))
 		for _, v := range oneOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				oneOf = append(oneOf, m)
+				oneOf = append(oneOf, *m)
 			}
 		}
 		params.OneOf = oneOf
@@ -1232,7 +1361,7 @@ func convertMapToToolFunctionParameters(paramsMap map[string]interface{}) *schem
 		allOf := make([]schemas.OrderedMap, 0, len(allOfVal))
 		for _, v := range allOfVal {
 			if m, ok := schemas.SafeExtractOrderedMap(v); ok {
-				allOf = append(allOf, m)
+				allOf = append(allOf, *m)
 			}
 		}
 		params.AllOf = allOf
@@ -1315,5 +1444,28 @@ func bedrockExtractFloat64(v interface{}) (float64, bool) {
 		return float64(val), true
 	default:
 		return 0, false
+	}
+}
+
+// tryParseJSONIntoContentBlock try to parse input text into a JSON and returns a proper
+// BedrockContentBlock based on the result.
+func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
+	var parsed interface{}
+	// Try to parse as JSON, otherwise treat as text
+	if err := sonic.UnmarshalString(text, &parsed); err != nil {
+		return BedrockContentBlock{Text: schemas.Ptr(text)}
+	} else {
+		// Bedrock does not accept primitives or arrays directly in the json field
+		switch v := parsed.(type) {
+		case map[string]any:
+			// Objects are valid as-is
+			return BedrockContentBlock{JSON: v}
+		case []any:
+			// Arrays need to be wrapped
+			return BedrockContentBlock{JSON: map[string]any{"results": v}}
+		default:
+			// Primitives (string, number, boolean, null) need to be wrapped
+			return BedrockContentBlock{JSON: map[string]any{"value": v}}
+		}
 	}
 }

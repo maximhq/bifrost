@@ -124,7 +124,7 @@ const (
 	SpanKindUnspecified SpanKind = ""
 	// SpanKindLLMCall represents a call to an LLM provider
 	SpanKindLLMCall SpanKind = "llm.call"
-	// SpanKindPlugin represents plugin execution (PreHook/PostHook)
+	// SpanKindPlugin represents plugin execution (PreLLMHook/PostLLMHook)
 	SpanKindPlugin SpanKind = "plugin"
 	// SpanKindMCPTool represents an MCP tool invocation
 	SpanKindMCPTool SpanKind = "mcp.tool"
@@ -234,6 +234,8 @@ const (
 	AttrVirtualKeyName  = "gen_ai.virtual_key_name"
 	AttrSelectedKeyID   = "gen_ai.selected_key_id"
 	AttrSelectedKeyName = "gen_ai.selected_key_name"
+	AttrRoutingRuleID   = "gen_ai.routing_rule_id"
+	AttrRoutingRuleName = "gen_ai.routing_rule_name"
 	AttrTeamID          = "gen_ai.team_id"
 	AttrTeamName        = "gen_ai.team_name"
 	AttrCustomerID      = "gen_ai.customer_id"

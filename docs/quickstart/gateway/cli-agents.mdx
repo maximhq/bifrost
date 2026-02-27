@@ -382,7 +382,17 @@ Add Bifrost as an MCP server to Claude Code:
 claude mcp add --transport http bifrost http://localhost:8080/mcp
 ```
 
-This gives Claude Code access to all configured MCP tools in Bifrost without any additional setup. Once connected, Claude Code can use filesystem operations, database queries, web search, and any other MCP tools you've connected to Bifrost.
+**Using Virtual Key Authentication:**
+
+If you have virtual key authentication enabled in Bifrost, connect using the JSON configuration format:
+
+```bash
+claude mcp add-json bifrost '{"type":"http","url":"http://localhost:8080/mcp","headers":{"Authorization":"Bearer bf-virtual-key"}}'
+```
+
+Replace `bf-virtual-key` with your actual Bifrost virtual key.
+
+Claude Code will only have access to the specific MCP tools permitted by the virtual key's configuration. To grant access to additional tools, verify or modify the virtual key's MCP tool permissions in the Bifrost dashboard.
 
 ### Supported Agents
 

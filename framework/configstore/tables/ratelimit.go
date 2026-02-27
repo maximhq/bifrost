@@ -29,10 +29,6 @@ type TableRateLimit struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
-
-	// Virtual fields for runtime use (not stored in DB)
-	LastDBTokenUsage   int64 `gorm:"-" json:"-"`
-	LastDBRequestUsage int64 `gorm:"-" json:"-"`
 }
 
 // TableName sets the table name for each model
@@ -77,12 +73,5 @@ func (rl *TableRateLimit) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("request_max_limit cannot be zero or negative: %d", *rl.RequestMaxLimit)
 	}
 
-	return nil
-}
-
-// AfterFind hook for RateLimit to set the LastDBTokenUsage and LastDBRequestUsage virtual fields
-func (rl *TableRateLimit) AfterFind(tx *gorm.DB) error {
-	rl.LastDBTokenUsage = rl.TokenCurrentUsage
-	rl.LastDBRequestUsage = rl.RequestCurrentUsage
 	return nil
 }

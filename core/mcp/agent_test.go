@@ -56,6 +56,9 @@ func (m *MockLogger) Error(msg string, args ...any)                     {}
 func (m *MockLogger) Fatal(msg string, args ...any)                     {}
 func (m *MockLogger) SetLevel(level schemas.LogLevel)                   {}
 func (m *MockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+func (m *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
 
 // MockClientManager implements ClientManager for testing
 type MockClientManager struct{}
@@ -199,9 +202,6 @@ func TestExtractToolCalls(t *testing.T) {
 }
 
 func TestExecuteAgentForChatRequest(t *testing.T) {
-	// Set up logger for the test
-	SetLogger(&MockLogger{})
-
 	// Test with response that has no tool calls - should return immediately
 	responseNoTools := &schemas.BifrostChatResponse{
 		Choices: []schemas.BifrostResponseChoice{
@@ -237,8 +237,10 @@ func TestExecuteAgentForChatRequest(t *testing.T) {
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	result, err := ExecuteAgentForChatRequest(ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
+	agentModeExecutor := &AgentModeExecutor{
+		logger: &MockLogger{},
+	}
+	result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
 	if err != nil {
 		t.Errorf("Expected no error for response without tool calls, got: %v", err)
 	}
@@ -248,8 +250,6 @@ func TestExecuteAgentForChatRequest(t *testing.T) {
 }
 
 func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
-	// Set up logger for the test
-	SetLogger(&MockLogger{})
 
 	// Create a response with tool calls that will NOT be auto-executed
 	responseWithNonAutoTools := &schemas.BifrostChatResponse{
@@ -297,9 +297,11 @@ func TestExecuteAgentForChatRequest_WithNonAutoExecutableTools(t *testing.T) {
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
+	agentModeExecutor := &AgentModeExecutor{
+		logger: &MockLogger{},
+	}
 	// Execute agent mode - should return immediately with non-auto-executable tools
-	result, err := ExecuteAgentForChatRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
+	result, err := agentModeExecutor.ExecuteAgentForChatRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
 
 	// Should not return error for non-auto-executable tools
 	if err != nil {
@@ -377,8 +379,6 @@ func TestHasToolCallsForResponsesResponse(t *testing.T) {
 }
 
 func TestExecuteAgentForResponsesRequest(t *testing.T) {
-	// Set up logger for the test
-	SetLogger(&MockLogger{})
 
 	// Test with response that has no tool calls - should return immediately
 	responseNoTools := &schemas.BifrostResponsesResponse{
@@ -412,8 +412,10 @@ func TestExecuteAgentForResponsesRequest(t *testing.T) {
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
-	result, err := ExecuteAgentForResponsesRequest(ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
+	agentModeExecutor := &AgentModeExecutor{
+		logger: &MockLogger{},
+	}
+	result, err := agentModeExecutor.ExecuteAgentForResponsesRequest(ctx, 10, originalReq, responseNoTools, makeReq, nil, nil, &MockClientManager{})
 	if err != nil {
 		t.Errorf("Expected no error for response without tool calls, got: %v", err)
 	}
@@ -423,8 +425,6 @@ func TestExecuteAgentForResponsesRequest(t *testing.T) {
 }
 
 func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T) {
-	// Set up logger for the test
-	SetLogger(&MockLogger{})
 
 	// Create a response with tool calls that will NOT be auto-executed
 	responseWithNonAutoTools := &schemas.BifrostResponsesResponse{
@@ -460,9 +460,11 @@ func TestExecuteAgentForResponsesRequest_WithNonAutoExecutableTools(t *testing.T
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-
+	agentModeExecutor := &AgentModeExecutor{
+		logger: &MockLogger{},
+	}
 	// Execute agent mode - should return immediately with non-auto-executable tools
-	result, err := ExecuteAgentForResponsesRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
+	result, err := agentModeExecutor.ExecuteAgentForResponsesRequest(ctx, 10, originalReq, responseWithNonAutoTools, makeReq, nil, nil, &MockClientManager{})
 
 	// Should not return error for non-auto-executable tools
 	if err != nil {

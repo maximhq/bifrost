@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,28 +19,30 @@ func TestGemini(t *testing.T) {
 		t.Skip("Skipping Gemini tests because GEMINI_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
 		ChatModel: "gemini-2.0-flash",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-flash"},
 		},
 		VisionModel:          "gemini-2.5-flash",
-		EmbeddingModel:       "text-embedding-004",
+		EmbeddingModel:       "gemini-embedding-001",
 		TranscriptionModel:   "gemini-2.5-flash",
 		SpeechSynthesisModel: "gemini-2.5-flash-preview-tts",
 		ImageGenerationModel: "gemini-2.5-flash-image",
+		ImageEditModel:       "gemini-3-pro-image-preview",
 		SpeechSynthesisFallbacks: []schemas.Fallback{
 			{Provider: schemas.Gemini, Model: "gemini-2.5-pro-preview-tts"},
 		},
-		ReasoningModel: "gemini-3-pro-preview",
-		Scenarios: testutil.TestScenarios{
+		ReasoningModel:       "gemini-3-pro-preview",
+		VideoGenerationModel: "veo-3.1-generate-preview",
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false, // Not supported
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -56,6 +58,10 @@ func TestGemini(t *testing.T) {
 			MultipleImages:        false,
 			ImageGeneration:       true,
 			ImageGenerationStream: false,
+			ImageEdit:             true,
+			VideoGeneration:       false, // disabled for now because of long running operations
+			VideoRetrieve:         false,
+			VideoDownload:         false,
 			FileBase64:            true,
 			FileURL:               false, // supported files via gemini files api
 			CompleteEnd2End:       true,
@@ -83,7 +89,7 @@ func TestGemini(t *testing.T) {
 	}
 
 	t.Run("GeminiTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }
@@ -189,6 +195,142 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 	}
 }
 
+// TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs
+// for both streaming and non-streaming responses to enable round-trip compatibility
+func TestThoughtSignatureInToolCalls(t *testing.T) {
+	thoughtSig := []byte{0x01, 0x02, 0x03, 0x04, 0x05} // Sample signature
+
+	tests := []struct {
+		name     string
+		response *gemini.GenerateContentResponse
+		isStream bool
+	}{
+		{
+			name: "NonStream_ToolCallWithThoughtSignature",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-non-stream",
+				ModelVersion: "gemini-3-pro-preview",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonStop,
+						Content: &gemini.Content{
+							Role: string(gemini.RoleModel),
+							Parts: []*gemini.Part{
+								{
+									FunctionCall: &gemini.FunctionCall{
+										Name: "get_weather",
+										ID:   "call_123",
+										Args: map[string]interface{}{
+											"location": "San Francisco",
+										},
+									},
+									ThoughtSignature: thoughtSig,
+								},
+							},
+						},
+					},
+				},
+			},
+			isStream: false,
+		},
+		{
+			name: "Stream_ToolCallWithThoughtSignature",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-stream",
+				ModelVersion: "gemini-3-pro-preview",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonStop,
+						Content: &gemini.Content{
+							Role: string(gemini.RoleModel),
+							Parts: []*gemini.Part{
+								{
+									FunctionCall: &gemini.FunctionCall{
+										Name: "get_weather",
+										ID:   "call_456",
+										Args: map[string]interface{}{
+											"location": "New York",
+										},
+									},
+									ThoughtSignature: thoughtSig,
+								},
+							},
+						},
+					},
+				},
+				UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{
+					PromptTokenCount: 10,
+					TotalTokenCount:  20,
+				},
+			},
+			isStream: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var bifrostResp *schemas.BifrostChatResponse
+
+			if tt.isStream {
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+			} else {
+				bifrostResp = tt.response.ToBifrostChatResponse()
+			}
+
+			require.NotNil(t, bifrostResp, "Response should not be nil")
+			require.NotEmpty(t, bifrostResp.Choices, "Should have choices")
+
+			choice := bifrostResp.Choices[0]
+
+			// Get tool calls from appropriate response type
+			var toolCalls []schemas.ChatAssistantMessageToolCall
+			if tt.isStream {
+				require.NotNil(t, choice.ChatStreamResponseChoice, "Stream should have delta")
+				require.NotNil(t, choice.ChatStreamResponseChoice.Delta, "Should have delta")
+				toolCalls = choice.ChatStreamResponseChoice.Delta.ToolCalls
+			} else {
+				require.NotNil(t, choice.ChatNonStreamResponseChoice, "Non-stream should have message")
+				require.NotNil(t, choice.ChatNonStreamResponseChoice.Message, "Should have message")
+				require.NotNil(t, choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage, "Should have assistant message")
+				toolCalls = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
+			}
+
+			// Critical: Tool call ID must contain embedded thought signature
+			require.Len(t, toolCalls, 1, "Should have exactly one tool call")
+			toolCall := toolCalls[0]
+			require.NotNil(t, toolCall.ID, "Tool call must have ID")
+
+			// Verify thought signature is embedded in the ID (format: "call_id_ts_base64sig")
+			assert.Contains(t, *toolCall.ID, "_ts_", "Tool call ID must contain thought signature separator")
+
+			// Verify we can extract the thought signature from the ID for round-trip
+			parts := strings.SplitN(*toolCall.ID, "_ts_", 2)
+			require.Len(t, parts, 2, "Should be able to split ID into base and signature")
+			assert.NotEmpty(t, parts[1], "Signature part should not be empty")
+
+			// Verify reasoning details also contain the signature (backward compatibility)
+			var reasoningDetails []schemas.ChatReasoningDetails
+			if tt.isStream {
+				reasoningDetails = choice.ChatStreamResponseChoice.Delta.ReasoningDetails
+			} else {
+				reasoningDetails = choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ReasoningDetails
+			}
+
+			assert.NotEmpty(t, reasoningDetails, "Should have reasoning details")
+			foundEncrypted := false
+			for _, detail := range reasoningDetails {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Signature != nil {
+					foundEncrypted = true
+					break
+				}
+			}
+			assert.True(t, foundEncrypted, "Should have encrypted reasoning detail with signature")
+		})
+	}
+}
+
 // TestBifrostToGeminiToolConversion tests the conversion of tools from Bifrost to Gemini format
 func TestBifrostToGeminiToolConversion(t *testing.T) {
 	tests := []struct {
@@ -217,25 +359,25 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Description: schemas.Ptr("Search for products with filters"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"query": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("query", map[string]interface{}{
 											"type":        "string",
 											"description": "Search query",
-										},
-										"category": map[string]interface{}{
+										}),
+										schemas.KV("category", map[string]interface{}{
 											"type":        "string",
 											"description": "Product category",
 											"enum":        []interface{}{"electronics", "books", "clothing"},
-										},
-										"tags": map[string]interface{}{
+										}),
+										schemas.KV("tags", map[string]interface{}{
 											"type":        "array",
 											"description": "Filter tags",
 											"items": map[string]interface{}{
 												"type":        "string",
 												"description": "A tag",
 											},
-										},
-									},
+										}),
+									),
 									Required: []string{"query"},
 								},
 							},
@@ -289,8 +431,8 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Description: schemas.Ptr("Process customer order"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"customer": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("customer", map[string]interface{}{
 											"type": "object",
 											"properties": map[string]interface{}{
 												"name": map[string]interface{}{
@@ -301,8 +443,8 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 												},
 											},
 											"required": []string{"name", "email"},
-										},
-										"items": map[string]interface{}{
+										}),
+										schemas.KV("items", map[string]interface{}{
 											"type": "array",
 											"items": map[string]interface{}{
 												"type": "object",
@@ -316,8 +458,8 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 												},
 												"required": []string{"product_id", "quantity"},
 											},
-										},
-									},
+										}),
+									),
 									Required: []string{"customer", "items"},
 								},
 							},
@@ -347,6 +489,84 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 			},
 		},
 		{
+			// This test reproduces the bug where nested properties inside array items
+			// are *OrderedMap (from JSON deserialization) instead of map[string]interface{}.
+			// The old code only handled map[string]interface{}, silently dropping properties
+			// while keeping required, causing Gemini to reject with "property is not defined".
+			name: "NestedOrderedMapPropertiesInArrayItems",
+			input: &schemas.BifrostChatRequest{
+				Model: "gemini-2.0-flash",
+				Input: []schemas.ChatMessage{
+					{
+						Role: schemas.ChatMessageRoleUser,
+						Content: &schemas.ChatMessageContent{
+							ContentStr: schemas.Ptr("Test nested OrderedMap properties"),
+						},
+					},
+				},
+				Params: &schemas.ChatParameters{
+					Tools: []schemas.ChatTool{
+						{
+							Type: schemas.ChatToolTypeFunction,
+							Function: &schemas.ChatToolFunction{
+								Name:        "browser_fill_form",
+								Description: schemas.Ptr("Fill form fields"),
+								Parameters: &schemas.ToolFunctionParameters{
+									Type: "object",
+									// Use OrderedMap for the nested items.properties to simulate
+									// JSON deserialization, which stores nested objects as *OrderedMap
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("fields", map[string]interface{}{
+											"type":        "array",
+											"description": "Fields to fill in",
+											"items": schemas.NewOrderedMapFromPairs(
+												schemas.KV("type", "object"),
+												schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+													schemas.KV("name", map[string]interface{}{
+														"type":        "string",
+														"description": "Human-readable field name",
+													}),
+													schemas.KV("ref", map[string]interface{}{
+														"type":        "string",
+														"description": "Target field reference",
+													}),
+													schemas.KV("value", map[string]interface{}{
+														"type":        "string",
+														"description": "Value to fill",
+													}),
+												)),
+												schemas.KV("required", []interface{}{"name", "ref", "value"}),
+												schemas.KV("additionalProperties", false),
+											),
+										}),
+									),
+									Required: []string{"fields"},
+								},
+							},
+						},
+					},
+				},
+			},
+			validate: func(t *testing.T, result *gemini.GeminiGenerationRequest) {
+				require.Len(t, result.Tools, 1)
+				fd := result.Tools[0].FunctionDeclarations[0]
+				assert.Equal(t, "browser_fill_form", fd.Name)
+
+				fieldsProp := fd.Parameters.Properties["fields"]
+				assert.Equal(t, gemini.Type("array"), fieldsProp.Type)
+				require.NotNil(t, fieldsProp.Items, "array items must be present")
+				assert.Equal(t, gemini.Type("object"), fieldsProp.Items.Type)
+
+				// This is the critical assertion: nested properties inside items must
+				// be preserved even when they come as *OrderedMap from JSON deserialization.
+				require.NotNil(t, fieldsProp.Items.Properties, "nested properties must not be nil - this was the bug")
+				assert.Contains(t, fieldsProp.Items.Properties, "name")
+				assert.Contains(t, fieldsProp.Items.Properties, "ref")
+				assert.Contains(t, fieldsProp.Items.Properties, "value")
+				assert.Equal(t, []string{"name", "ref", "value"}, fieldsProp.Items.Required)
+			},
+		},
+		{
 			name: "EmptyItemsObject",
 			input: &schemas.BifrostChatRequest{
 				Model: "gemini-2.0-flash",
@@ -366,12 +586,12 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Name: "test_tool",
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"data": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("data", map[string]interface{}{
 											"type":  "array",
 											"items": map[string]interface{}{}, // Empty items object
-										},
-									},
+										}),
+									),
 								},
 							},
 						},
@@ -407,28 +627,28 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Description: schemas.Ptr("Validate input with constraints"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"username": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("username", map[string]interface{}{
 											"type":        "string",
 											"description": "Username with length constraints",
 											"minLength":   float64(3),
 											"maxLength":   float64(20),
 											"pattern":     "^[a-zA-Z0-9_]+$",
-										},
-										"age": map[string]interface{}{
+										}),
+										schemas.KV("age", map[string]interface{}{
 											"type":    "integer",
 											"minimum": float64(0),
 											"maximum": float64(150),
-										},
-										"tags": map[string]interface{}{
+										}),
+										schemas.KV("tags", map[string]interface{}{
 											"type":     "array",
 											"minItems": float64(1),
 											"maxItems": float64(5),
 											"items": map[string]interface{}{
 												"type": "string",
 											},
-										},
-									},
+										}),
+									),
 									Required: []string{"username"},
 								},
 							},
@@ -487,15 +707,15 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Description: schemas.Ptr("Process ID that can be string or number"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"id": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("id", map[string]interface{}{
 											"anyOf": []interface{}{
 												map[string]interface{}{"type": "string"},
 												map[string]interface{}{"type": "integer"},
 											},
 											"description": "ID that can be string or integer",
-										},
-									},
+										}),
+									),
 									Required: []string{"id"},
 								},
 							},
@@ -536,10 +756,10 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Description: schemas.Ptr("Process a list of items"),
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "array",
-									Items: &schemas.OrderedMap{
-										"type":        "string",
-										"description": "Item in the list",
-									},
+									Items: schemas.NewOrderedMapFromPairs(
+										schemas.KV("type", "string"),
+										schemas.KV("description", "Item in the list"),
+									),
 									MinItems: schemas.Ptr(int64(1)),
 									MaxItems: schemas.Ptr(int64(10)),
 								},
@@ -584,18 +804,18 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 								Parameters: &schemas.ToolFunctionParameters{
 									Type:  "object",
 									Title: schemas.Ptr("ConfigParameters"),
-									Properties: &schemas.OrderedMap{
-										"enabled": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("enabled", map[string]interface{}{
 											"type":     "boolean",
 											"default":  true,
 											"nullable": true,
 											"title":    "Enabled Flag",
-										},
-										"format_type": map[string]interface{}{
+										}),
+										schemas.KV("format_type", map[string]interface{}{
 											"type":   "string",
 											"format": "email",
-										},
-									},
+										}),
+									),
 								},
 							},
 						},
@@ -1562,20 +1782,20 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"filters": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("filters", map[string]interface{}{
 											"type":        "array",
 											"description": "List of filters",
 											"items": map[string]interface{}{
 												"type":        "string",
 												"description": "Filter criterion",
 											},
-										},
-										"sort_order": map[string]interface{}{
+										}),
+										schemas.KV("sort_order", map[string]interface{}{
 											"type": "string",
 											"enum": []interface{}{"asc", "desc"},
-										},
-									},
+										}),
+									),
 									Required: []string{"filters"},
 								},
 							},
@@ -1625,8 +1845,8 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"updates": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("updates", map[string]interface{}{
 											"type": "array",
 											"items": map[string]interface{}{
 												"type": "object",
@@ -1649,8 +1869,8 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 												},
 												"required": []string{"id", "fields"},
 											},
-										},
-									},
+										}),
+									),
 									Required: []string{"updates"},
 								},
 							},
@@ -1705,12 +1925,12 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 							ResponsesToolFunction: &schemas.ResponsesToolFunction{
 								Parameters: &schemas.ToolFunctionParameters{
 									Type: "object",
-									Properties: &schemas.OrderedMap{
-										"any_array": map[string]interface{}{
+									Properties: schemas.NewOrderedMapFromPairs(
+										schemas.KV("any_array", map[string]interface{}{
 											"type":  "array",
 											"items": map[string]interface{}{}, // Empty items
-										},
-									},
+										}),
+									),
 								},
 							},
 						},
@@ -1732,6 +1952,333 @@ func TestBifrostResponsesToGeminiToolConversion(t *testing.T) {
 			result := gemini.ToGeminiResponsesRequest(tt.input)
 			require.NotNil(t, result, "Responses API conversion should not return nil")
 			tt.validate(t, result)
+		})
+	}
+}
+
+func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata *gemini.GenerateContentResponseUsageMetadata
+		expected *schemas.BifrostLLMUsage
+	}{
+		{
+			name: "CompleteModalityBreakdown",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     6,
+				CandidatesTokenCount: 42,
+				TotalTokenCount:      48,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 6},
+					{Modality: gemini.ModalityAudio, TokenCount: 0},
+					{Modality: gemini.ModalityImage, TokenCount: 0},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 1},
+				},
+				ThoughtsTokenCount: 41,
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     6,
+				CompletionTokens: 42,
+				TotalTokens:      48,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens:  6,
+					AudioTokens: 0,
+					ImageTokens: 0,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					TextTokens:      1,
+					ReasoningTokens: 41,
+				},
+			},
+		},
+		{
+			name: "MultimodalInputWithCache",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        150,
+				CandidatesTokenCount:    50,
+				TotalTokenCount:         200,
+				CachedContentTokenCount: 100,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+					{Modality: gemini.ModalityImage, TokenCount: 100},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     150,
+				CompletionTokens: 50,
+				TotalTokens:      200,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens:   50,
+					ImageTokens:  100,
+					CachedTokens: 100,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					TextTokens: 50,
+				},
+			},
+		},
+		{
+			name: "AudioOutputGeneration",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     20,
+				CandidatesTokenCount: 80,
+				TotalTokenCount:      100,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 20},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityAudio, TokenCount: 80},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     20,
+				CompletionTokens: 80,
+				TotalTokens:      100,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens: 20,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					AudioTokens: 80,
+				},
+			},
+		},
+		{
+			name: "ImageOutputGeneration",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     30,
+				CandidatesTokenCount: 120,
+				TotalTokenCount:      150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 30},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityImage, TokenCount: 120},
+				},
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     30,
+				CompletionTokens: 120,
+				TotalTokens:      150,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					TextTokens: 30,
+				},
+				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+					ImageTokens: func() *int { v := 120; return &v }(),
+				},
+			},
+		},
+		{
+			name: "BasicUsageNoDetails",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 20,
+				TotalTokenCount:      30,
+			},
+			expected: &schemas.BifrostLLMUsage{
+				PromptTokens:     10,
+				CompletionTokens: 20,
+				TotalTokens:      30,
+			},
+		},
+		{
+			name:     "NilMetadata",
+			metadata: nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ConvertGeminiUsageMetadataToChatUsage(tt.metadata)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.PromptTokens, result.PromptTokens)
+			assert.Equal(t, tt.expected.CompletionTokens, result.CompletionTokens)
+			assert.Equal(t, tt.expected.TotalTokens, result.TotalTokens)
+
+			// Check prompt token details
+			if tt.expected.PromptTokensDetails != nil {
+				require.NotNil(t, result.PromptTokensDetails)
+				assert.Equal(t, tt.expected.PromptTokensDetails.TextTokens, result.PromptTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.AudioTokens, result.PromptTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.ImageTokens, result.PromptTokensDetails.ImageTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.CachedTokens, result.PromptTokensDetails.CachedTokens)
+			} else {
+				assert.Nil(t, result.PromptTokensDetails)
+			}
+
+			// Check completion token details
+			if tt.expected.CompletionTokensDetails != nil {
+				require.NotNil(t, result.CompletionTokensDetails)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.TextTokens, result.CompletionTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.AudioTokens, result.CompletionTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.CompletionTokensDetails.ReasoningTokens, result.CompletionTokensDetails.ReasoningTokens)
+
+				if tt.expected.CompletionTokensDetails.ImageTokens != nil {
+					require.NotNil(t, result.CompletionTokensDetails.ImageTokens)
+					assert.Equal(t, *tt.expected.CompletionTokensDetails.ImageTokens, *result.CompletionTokensDetails.ImageTokens)
+				} else {
+					assert.Nil(t, result.CompletionTokensDetails.ImageTokens)
+				}
+			} else {
+				assert.Nil(t, result.CompletionTokensDetails)
+			}
+		})
+	}
+}
+
+// TestConvertGeminiUsageMetadataToResponsesUsage tests the conversion of Gemini usage metadata to Bifrost responses usage
+func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata *gemini.GenerateContentResponseUsageMetadata
+		expected *schemas.ResponsesResponseUsage
+	}{
+		{
+			name: "CompleteModalityBreakdown",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     100,
+				CandidatesTokenCount: 50,
+				TotalTokenCount:      150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 60},
+					{Modality: gemini.ModalityAudio, TokenCount: 20},
+					{Modality: gemini.ModalityImage, TokenCount: 20},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 40},
+					{Modality: gemini.ModalityAudio, TokenCount: 10},
+				},
+				ThoughtsTokenCount: 5,
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  150,
+				InputTokens:  100,
+				OutputTokens: 50,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens:  60,
+					AudioTokens: 20,
+					ImageTokens: 20,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					TextTokens:      40,
+					AudioTokens:     10,
+					ReasoningTokens: 5,
+				},
+			},
+		},
+		{
+			name: "WithCachedTokens",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:        200,
+				CandidatesTokenCount:    100,
+				TotalTokenCount:         300,
+				CachedContentTokenCount: 150,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 200},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 100},
+				},
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  300,
+				InputTokens:  200,
+				OutputTokens: 100,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens:   200,
+					CachedTokens: 150,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					TextTokens: 100,
+				},
+			},
+		},
+		{
+			name: "AudioOnlyOutput",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     50,
+				CandidatesTokenCount: 200,
+				TotalTokenCount:      250,
+				PromptTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityText, TokenCount: 50},
+				},
+				CandidatesTokensDetails: []*gemini.ModalityTokenCount{
+					{Modality: gemini.ModalityAudio, TokenCount: 200},
+				},
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:  250,
+				InputTokens:  50,
+				OutputTokens: 200,
+				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+					TextTokens: 50,
+				},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+					AudioTokens: 200,
+				},
+			},
+		},
+		{
+			name: "BasicUsageNoDetails",
+			metadata: &gemini.GenerateContentResponseUsageMetadata{
+				PromptTokenCount:     10,
+				CandidatesTokenCount: 20,
+				TotalTokenCount:      30,
+			},
+			expected: &schemas.ResponsesResponseUsage{
+				TotalTokens:         30,
+				InputTokens:         10,
+				OutputTokens:        20,
+				InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
+				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{},
+			},
+		},
+		{
+			name:     "NilMetadata",
+			metadata: nil,
+			expected: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := gemini.ConvertGeminiUsageMetadataToResponsesUsage(tt.metadata)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expected.TotalTokens, result.TotalTokens)
+			assert.Equal(t, tt.expected.InputTokens, result.InputTokens)
+			assert.Equal(t, tt.expected.OutputTokens, result.OutputTokens)
+
+			// Check input token details
+			if tt.expected.InputTokensDetails != nil {
+				require.NotNil(t, result.InputTokensDetails)
+				assert.Equal(t, tt.expected.InputTokensDetails.TextTokens, result.InputTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.AudioTokens, result.InputTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.ImageTokens, result.InputTokensDetails.ImageTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.CachedTokens, result.InputTokensDetails.CachedTokens)
+			}
+
+			// Check output token details
+			if tt.expected.OutputTokensDetails != nil {
+				require.NotNil(t, result.OutputTokensDetails)
+				assert.Equal(t, tt.expected.OutputTokensDetails.TextTokens, result.OutputTokensDetails.TextTokens)
+				assert.Equal(t, tt.expected.OutputTokensDetails.AudioTokens, result.OutputTokensDetails.AudioTokens)
+				assert.Equal(t, tt.expected.OutputTokensDetails.ReasoningTokens, result.OutputTokensDetails.ReasoningTokens)
+			}
 		})
 	}
 }

@@ -14,6 +14,11 @@ info:
     The primary API using Bifrost's unified format. Model parameters use the format
     `provider/model` (e.g., `openai/gpt-4`, `anthropic/claude-3-opus`).
 
+    ### Async Inference API (`/v1/async/*`)
+    Submit inference requests for asynchronous execution. Returns a job ID immediately
+    and allows polling for results. Supports all inference types except batches, files,
+    and containers.
+
     ### Provider Integration APIs
     Native provider-format APIs for drop-in compatibility:
     - `/openai/*` - OpenAI-compatible API
@@ -33,7 +38,7 @@ info:
     - `/api/config` - Configuration management
     - `/api/providers` - Provider and API key management
     - `/api/plugins` - Plugin management
-    - `/api/governance/*` - Virtual keys, teams, and customers
+    - `/api/governance/*` - Virtual keys, teams, customers, budgets, rate limits, and routing rules
     - `/api/logs` - Log search and analytics
     - `/api/mcp/*` - MCP (Model Context Protocol) client management
     - `/api/session/*` - Authentication and session management
@@ -64,10 +69,14 @@ tags:
     description: Text completion generation
   - name: Responses
     description: OpenAI Responses API compatible endpoints
+  - name: Rerank
+    description: Document reranking by relevance to a query
   - name: Embeddings
     description: Text embedding generation
-  - name: Image Generations
-    description: Image generation from text prompts
+  - name: Images
+    description: Image generations, editing, and variations
+  - name: Videos
+    description: Video generation and management
   - name: Audio
     description: Speech synthesis and transcription
   - name: Count Tokens
@@ -78,6 +87,8 @@ tags:
     description: File management operations
   - name: Containers
     description: Container management operations
+  - name: Async Jobs
+    description: Asynchronous job submission and retrieval endpoints
   # Provider Integrations
   - name: OpenAI Integration
     description: OpenAI-compatible API endpoints (/openai/*)
@@ -127,6 +138,8 @@ paths:
     $ref: './paths/inference/text-completions.yaml#/text-completions'
   /v1/responses:
     $ref: './paths/inference/responses.yaml#/responses'
+  /v1/rerank:
+    $ref: './paths/inference/rerank.yaml#/rerank'
   /v1/embeddings:
     $ref: './paths/inference/embeddings.yaml#/embeddings'
   /v1/audio/speech:
@@ -135,6 +148,18 @@ paths:
     $ref: './paths/inference/audio.yaml#/transcriptions'
   /v1/images/generations:
     $ref: './paths/inference/images.yaml#/image-generation'
+  /v1/images/edits:
+    $ref: './paths/inference/images.yaml#/image-edit'
+  /v1/images/variations:
+    $ref: './paths/inference/images.yaml#/image-variation'
+  /v1/videos:
+    $ref: './paths/inference/videos.yaml#/video-generation'
+  /v1/videos/{video_id}:
+    $ref: './paths/inference/videos.yaml#/video-by-id'
+  /v1/videos/{video_id}/content:
+    $ref: './paths/inference/videos.yaml#/video-download'
+  /v1/videos/{video_id}/remix:
+    $ref: './paths/inference/videos.yaml#/video-remix'
   /v1/count_tokens:
     $ref: './paths/inference/count-tokens.yaml#/count-tokens'
   /v1/batches:
@@ -161,6 +186,44 @@ paths:
     $ref: './paths/inference/containers.yaml#/container-files-by-id'
   /v1/containers/{container_id}/files/{file_id}/content:
     $ref: './paths/inference/containers.yaml#/container-files-content'
+
+  # ==================== Async Inference API ====================
+  /v1/async/chat/completions:
+    $ref: './paths/inference/async.yaml#/async-chat-completions'
+  /v1/async/completions:
+    $ref: './paths/inference/async.yaml#/async-text-completions'
+  /v1/async/responses:
+    $ref: './paths/inference/async.yaml#/async-responses'
+  /v1/async/embeddings:
+    $ref: './paths/inference/async.yaml#/async-embeddings'
+  /v1/async/audio/speech:
+    $ref: './paths/inference/async.yaml#/async-speech'
+  /v1/async/audio/transcriptions:
+    $ref: './paths/inference/async.yaml#/async-transcriptions'
+  /v1/async/images/generations:
+    $ref: './paths/inference/async.yaml#/async-image-generation'
+  /v1/async/images/edits:
+    $ref: './paths/inference/async.yaml#/async-image-edit'
+  /v1/async/images/variations:
+    $ref: './paths/inference/async.yaml#/async-image-variation'
+  /v1/async/chat/completions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-chat-completions-job'
+  /v1/async/completions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-text-completions-job'
+  /v1/async/responses/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-responses-job'
+  /v1/async/embeddings/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-embeddings-job'
+  /v1/async/audio/speech/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-speech-job'
+  /v1/async/audio/transcriptions/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-transcriptions-job'
+  /v1/async/images/generations/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-generation-job'
+  /v1/async/images/edits/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-edit-job'
+  /v1/async/images/variations/{job_id}:
+    $ref: './paths/inference/async.yaml#/async-image-variation-job'
 
   # ==================== OpenAI Integration ====================
   # Chat Completions
@@ -521,6 +584,12 @@ paths:
   /api/mcp/client/{id}/reconnect:
     $ref: './paths/management/mcp.yaml#/client-reconnect'
 
+  # MCP - OAuth
+  /api/oauth/callback:
+    $ref: './paths/management/oauth.yaml#/oauth-callback'
+  /api/oauth/config/{id}/status:
+    $ref: './paths/management/oauth.yaml#/oauth-config-status'
+
   # Governance - Virtual Keys
   /api/governance/virtual-keys:
     $ref: './paths/management/governance.yaml#/virtual-keys'
@@ -544,7 +613,22 @@ paths:
     $ref: './paths/management/governance.yaml#/budgets'
   /api/governance/rate-limits:
     $ref: './paths/management/governance.yaml#/rate-limits'
+  /api/governance/routing-rules:
+    $ref: './paths/management/governance.yaml#/routing-rules'
+  /api/governance/routing-rules/{rule_id}:
+    $ref: './paths/management/governance.yaml#/routing-rules-by-id'
 
+  # Governance - Model Configs
+  /api/governance/model-configs:
+    $ref: './paths/management/governance.yaml#/model-configs'
+  /api/governance/model-configs/{mc_id}:
+    $ref: './paths/management/governance.yaml#/model-configs-by-id'
+
+  # Governance - Provider Governance
+  /api/governance/providers:
+    $ref: './paths/management/governance.yaml#/provider-governance'
+  /api/governance/providers/{provider_name}:
+    $ref: './paths/management/governance.yaml#/provider-governance-by-name'
 
   # Logging
   /api/logs:
@@ -598,6 +682,12 @@ components:
     CacheControl:
       $ref: './schemas/inference/common.yaml#/CacheControl'
 
+    # ==================== Async Jobs ====================
+    AsyncJobStatus:
+      $ref: './schemas/inference/async.yaml#/AsyncJobStatus'
+    AsyncJobResponse:
+      $ref: './schemas/inference/async.yaml#/AsyncJobResponse'
+
     # ==================== Usage ====================
     BifrostLLMUsage:
       $ref: './schemas/inference/usage.yaml#/BifrostLLMUsage'
@@ -637,6 +727,16 @@ components:
       $ref: './schemas/inference/responses.yaml#/ResponsesRequest'
     ResponsesResponse:
       $ref: './schemas/inference/responses.yaml#/ResponsesResponse'
+
+    # ==================== Rerank ====================
+    RerankRequest:
+      $ref: './schemas/inference/rerank.yaml#/RerankRequest'
+    RerankResponse:
+      $ref: './schemas/inference/rerank.yaml#/RerankResponse'
+    RerankDocument:
+      $ref: './schemas/inference/rerank.yaml#/RerankDocument'
+    RerankResult:
+      $ref: './schemas/inference/rerank.yaml#/RerankResult'
 
     # ==================== Embeddings ====================
     EmbeddingRequest:
@@ -830,24 +930,110 @@ components:
       $ref: './schemas/management/mcp.yaml#/MCPClientConfig'
     ExecuteToolRequest:
       $ref: './schemas/management/mcp.yaml#/ExecuteToolRequest'
+    MCPAuthType:
+      $ref: './schemas/management/oauth.yaml#/MCPAuthType'
+    OAuthConfigRequest:
+      $ref: './schemas/management/oauth.yaml#/OAuthConfigRequest'
+    OAuthFlowInitiation:
+      $ref: './schemas/management/oauth.yaml#/OAuthFlowInitiation'
+    OAuthConfigStatus:
+      $ref: './schemas/management/oauth.yaml#/OAuthConfigStatus'
+    OAuthToken:
+      $ref: './schemas/management/oauth.yaml#/OAuthToken'
 
-    # Governance
+    # Governance - Virtual Keys
     VirtualKey:
       $ref: './schemas/management/governance.yaml#/VirtualKey'
+    VirtualKeyResponse:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyResponse'
+    VirtualKeyProviderConfig:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyProviderConfig'
+    VirtualKeyMCPConfig:
+      $ref: './schemas/management/governance.yaml#/VirtualKeyMCPConfig'
     ListVirtualKeysResponse:
       $ref: './schemas/management/governance.yaml#/ListVirtualKeysResponse'
     CreateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/CreateVirtualKeyRequest'
     UpdateVirtualKeyRequest:
       $ref: './schemas/management/governance.yaml#/UpdateVirtualKeyRequest'
+
+    # Governance - Teams
     Team:
       $ref: './schemas/management/governance.yaml#/Team'
+    TeamResponse:
+      $ref: './schemas/management/governance.yaml#/TeamResponse'
     ListTeamsResponse:
       $ref: './schemas/management/governance.yaml#/ListTeamsResponse'
+    CreateTeamRequest:
+      $ref: './schemas/management/governance.yaml#/CreateTeamRequest'
+    UpdateTeamRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateTeamRequest'
+
+    # Governance - Customers
     Customer:
       $ref: './schemas/management/governance.yaml#/Customer'
+    CustomerResponse:
+      $ref: './schemas/management/governance.yaml#/CustomerResponse'
     ListCustomersResponse:
       $ref: './schemas/management/governance.yaml#/ListCustomersResponse'
+    CreateCustomerRequest:
+      $ref: './schemas/management/governance.yaml#/CreateCustomerRequest'
+    UpdateCustomerRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateCustomerRequest'
+
+    # Governance - Budgets and Rate Limits
+    Budget:
+      $ref: './schemas/management/governance.yaml#/Budget'
+    RateLimit:
+      $ref: './schemas/management/governance.yaml#/RateLimit'
+    ListBudgetsResponse:
+      $ref: './schemas/management/governance.yaml#/ListBudgetsResponse'
+    ListRateLimitsResponse:
+      $ref: './schemas/management/governance.yaml#/ListRateLimitsResponse'
+    CreateBudgetRequest:
+      $ref: './schemas/management/governance.yaml#/CreateBudgetRequest'
+    UpdateBudgetRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateBudgetRequest'
+    CreateRateLimitRequest:
+      $ref: './schemas/management/governance.yaml#/CreateRateLimitRequest'
+    UpdateRateLimitRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateRateLimitRequest'
+
+    # Governance - Routing Rules
+    RoutingRule:
+      $ref: './schemas/management/governance.yaml#/RoutingRule'
+    RoutingRuleResponse:
+      $ref: './schemas/management/governance.yaml#/RoutingRuleResponse'
+    ListRoutingRulesResponse:
+      $ref: './schemas/management/governance.yaml#/ListRoutingRulesResponse'
+    CreateRoutingRuleRequest:
+      $ref: './schemas/management/governance.yaml#/CreateRoutingRuleRequest'
+    UpdateRoutingRuleRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
+    TableKey:
+      $ref: './schemas/management/governance.yaml#/TableKey'
+
+    # Governance - Model Configs
+    ModelConfig:
+      $ref: './schemas/management/governance.yaml#/ModelConfig'
+    ModelConfigResponse:
+      $ref: './schemas/management/governance.yaml#/ModelConfigResponse'
+    ListModelConfigsResponse:
+      $ref: './schemas/management/governance.yaml#/ListModelConfigsResponse'
+    CreateModelConfigRequest:
+      $ref: './schemas/management/governance.yaml#/CreateModelConfigRequest'
+    UpdateModelConfigRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateModelConfigRequest'
+
+    # Governance - Provider Governance
+    ProviderGovernance:
+      $ref: './schemas/management/governance.yaml#/ProviderGovernance'
+    ProviderGovernanceResponse:
+      $ref: './schemas/management/governance.yaml#/ProviderGovernanceResponse'
+    ListProviderGovernanceResponse:
+      $ref: './schemas/management/governance.yaml#/ListProviderGovernanceResponse'
+    UpdateProviderGovernanceRequest:
+      $ref: './schemas/management/governance.yaml#/UpdateProviderGovernanceRequest'
 
     # Logging
     LogEntry:

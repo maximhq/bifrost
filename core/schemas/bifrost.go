@@ -4,6 +4,8 @@ package schemas
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strconv"
 )
 
 const (
@@ -17,7 +19,9 @@ type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
 	Account            Account
-	Plugins            []Plugin
+	LLMPlugins         []LLMPlugin
+	MCPPlugins         []MCPPlugin
+	OAuth2Provider     OAuth2Provider
 	Logger             Logger
 	Tracer             Tracer      // Tracer for distributed tracing (nil = NoOpTracer)
 	InitialPoolSize    int         // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
@@ -49,6 +53,9 @@ const (
 	HuggingFace ModelProvider = "huggingface"
 	Nebius      ModelProvider = "nebius"
 	XAI         ModelProvider = "xai"
+	Replicate   ModelProvider = "replicate"
+	VLLM        ModelProvider = "vllm"
+	Runway      ModelProvider = "runway"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -59,6 +66,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Gemini,
 	OpenAI,
 	HuggingFace,
+	Replicate,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
@@ -81,6 +89,10 @@ var StandardProviders = []ModelProvider{
 	Elevenlabs,
 	HuggingFace,
 	Nebius,
+	XAI,
+	Replicate,
+	VLLM,
+	Runway,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -101,6 +113,15 @@ const (
 	TranscriptionStreamRequest   RequestType = "transcription_stream"
 	ImageGenerationRequest       RequestType = "image_generation"
 	ImageGenerationStreamRequest RequestType = "image_generation_stream"
+	ImageEditRequest             RequestType = "image_edit"
+	ImageEditStreamRequest       RequestType = "image_edit_stream"
+	ImageVariationRequest        RequestType = "image_variation"
+	VideoGenerationRequest       RequestType = "video_generation"
+	VideoRetrieveRequest         RequestType = "video_retrieve"
+	VideoDownloadRequest         RequestType = "video_download"
+	VideoDeleteRequest           RequestType = "video_delete"
+	VideoListRequest             RequestType = "video_list"
+	VideoRemixRequest            RequestType = "video_remix"
 	BatchCreateRequest           RequestType = "batch_create"
 	BatchListRequest             RequestType = "batch_list"
 	BatchRetrieveRequest         RequestType = "batch_retrieve"
@@ -120,7 +141,9 @@ const (
 	ContainerFileRetrieveRequest RequestType = "container_file_retrieve"
 	ContainerFileContentRequest  RequestType = "container_file_content"
 	ContainerFileDeleteRequest   RequestType = "container_file_delete"
+	RerankRequest                RequestType = "rerank"
 	CountTokensRequest           RequestType = "count_tokens"
+	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
 	UnknownRequest               RequestType = "unknown"
 )
 
@@ -129,25 +152,36 @@ type BifrostContextKey string
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                      // string
-	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                 // string (explicit key name selection)
-	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                   // string
-	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"          // string
-	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"           // Key struct
-	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"      // string (to store the selected key ID (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"    // string (to store the selected key name (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"    // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"       // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
-	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"   // bool (will pass an empty key to the provider)
-	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"        // map[string][]string
-	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"       // string
+	BifrostContextKeyVirtualKey                          BifrostContextKey = "x-bf-vk"                              // string
+	BifrostContextKeyAPIKeyName                          BifrostContextKey = "x-bf-api-key"                         // string (explicit key name selection)
+	BifrostContextKeyRequestID                           BifrostContextKey = "request-id"                           // string
+	BifrostContextKeyFallbackRequestID                   BifrostContextKey = "fallback-request-id"                  // string
+	BifrostContextKeyDirectKey                           BifrostContextKey = "bifrost-direct-key"                   // Key struct
+	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"              // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"            // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"    // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"  // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"           // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"         // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"       // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"     // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceUserID                    BifrostContextKey = "bifrost-governance-user-id"           // string (to store the user ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"   // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name" // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"      // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"            // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"           // bool (will pass an empty key to the provider)
+	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                // map[string][]string
+	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"               // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
+	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (trace ID for distributed tracing - set by tracing middleware)
@@ -164,8 +198,37 @@ const (
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRawRequestResponseForLogging        BifrostContextKey = "bifrost-raw-request-response-for-logging"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyRetryDBFetch                       BifrostContextKey = "bifrost-retry-db-fetch"                            // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyHTTPRequestType                     BifrostContextKey = "bifrost-http-request-type"                        // RequestType (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyPassthroughExtraParams              BifrostContextKey = "bifrost-passthrough-extra-params"                 // bool
+	BifrostContextKeyRoutingEnginesUsed                  BifrostContextKey = "bifrost-routing-engines-used"                     // []string (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engines used ("routing-rule", "governance", "loadbalancing", etc.)
+	BifrostContextKeyRoutingEngineLogs                   BifrostContextKey = "bifrost-routing-engine-logs"                      // []RoutingEngineLogEntry (set by bifrost - DO NOT SET THIS MANUALLY) - list of routing engine log entries
+	BifrostContextKeySkipPluginPipeline                  BifrostContextKey = "bifrost-skip-plugin-pipeline"                     // bool - skip plugin pipeline for the request
+	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
+	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
+	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
+	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
+	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
+	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
+	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
+	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
 )
+
+// RoutingEngine constants
+const (
+	RoutingEngineGovernance    = "governance"
+	RoutingEngineRoutingRule   = "routing-rule"
+	RoutingEngineLoadbalancing = "loadbalancing"
+)
+
+// RoutingEngineLogEntry represents a log entry from a routing engine
+// format: [timestamp] [engine] - message
+type RoutingEngineLogEntry struct {
+	Engine    string // e.g., "governance", "routing-rule", "openrouter"
+	Message   string // Human-readable decision/action message
+	Timestamp int64  // Unix milliseconds
+}
 
 // NOTE: for custom plugin implementation dealing with streaming short circuit,
 // make sure to mark BifrostContextKeyStreamEndIndicator as true at the end of the stream.
@@ -186,6 +249,7 @@ type Fallback struct {
 // - ResponsesRequest
 // - CountTokensRequest
 // - EmbeddingRequest
+// - RerankRequest
 // - SpeechRequest
 // - TranscriptionRequest
 // - ImageGenerationRequest
@@ -199,9 +263,18 @@ type BifrostRequest struct {
 	ResponsesRequest             *BifrostResponsesRequest
 	CountTokensRequest           *BifrostResponsesRequest
 	EmbeddingRequest             *BifrostEmbeddingRequest
+	RerankRequest                *BifrostRerankRequest
 	SpeechRequest                *BifrostSpeechRequest
 	TranscriptionRequest         *BifrostTranscriptionRequest
 	ImageGenerationRequest       *BifrostImageGenerationRequest
+	ImageEditRequest             *BifrostImageEditRequest
+	ImageVariationRequest        *BifrostImageVariationRequest
+	VideoGenerationRequest       *BifrostVideoGenerationRequest
+	VideoRetrieveRequest         *BifrostVideoRetrieveRequest
+	VideoDownloadRequest         *BifrostVideoDownloadRequest
+	VideoListRequest             *BifrostVideoListRequest
+	VideoRemixRequest            *BifrostVideoRemixRequest
+	VideoDeleteRequest           *BifrostVideoDeleteRequest
 	FileUploadRequest            *BifrostFileUploadRequest
 	FileListRequest              *BifrostFileListRequest
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
@@ -226,6 +299,8 @@ type BifrostRequest struct {
 // GetRequestFields returns the provider, model, and fallbacks from the request.
 func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model string, fallbacks []Fallback) {
 	switch {
+	case br.ListModelsRequest != nil:
+		return br.ListModelsRequest.Provider, "", nil
 	case br.TextCompletionRequest != nil:
 		return br.TextCompletionRequest.Provider, br.TextCompletionRequest.Model, br.TextCompletionRequest.Fallbacks
 	case br.ChatRequest != nil:
@@ -236,12 +311,30 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.CountTokensRequest.Provider, br.CountTokensRequest.Model, br.CountTokensRequest.Fallbacks
 	case br.EmbeddingRequest != nil:
 		return br.EmbeddingRequest.Provider, br.EmbeddingRequest.Model, br.EmbeddingRequest.Fallbacks
+	case br.RerankRequest != nil:
+		return br.RerankRequest.Provider, br.RerankRequest.Model, br.RerankRequest.Fallbacks
 	case br.SpeechRequest != nil:
 		return br.SpeechRequest.Provider, br.SpeechRequest.Model, br.SpeechRequest.Fallbacks
 	case br.TranscriptionRequest != nil:
 		return br.TranscriptionRequest.Provider, br.TranscriptionRequest.Model, br.TranscriptionRequest.Fallbacks
 	case br.ImageGenerationRequest != nil:
 		return br.ImageGenerationRequest.Provider, br.ImageGenerationRequest.Model, br.ImageGenerationRequest.Fallbacks
+	case br.ImageEditRequest != nil:
+		return br.ImageEditRequest.Provider, br.ImageEditRequest.Model, br.ImageEditRequest.Fallbacks
+	case br.ImageVariationRequest != nil:
+		return br.ImageVariationRequest.Provider, br.ImageVariationRequest.Model, br.ImageVariationRequest.Fallbacks
+	case br.VideoGenerationRequest != nil:
+		return br.VideoGenerationRequest.Provider, br.VideoGenerationRequest.Model, br.VideoGenerationRequest.Fallbacks
+	case br.VideoRetrieveRequest != nil:
+		return br.VideoRetrieveRequest.Provider, "", nil
+	case br.VideoDownloadRequest != nil:
+		return br.VideoDownloadRequest.Provider, "", nil
+	case br.VideoListRequest != nil:
+		return br.VideoListRequest.Provider, "", nil
+	case br.VideoDeleteRequest != nil:
+		return br.VideoDeleteRequest.Provider, "", nil
+	case br.VideoRemixRequest != nil:
+		return br.VideoRemixRequest.Provider, "", nil
 	case br.FileUploadRequest != nil:
 		if br.FileUploadRequest.Model != nil {
 			return br.FileUploadRequest.Provider, *br.FileUploadRequest.Model, nil
@@ -316,6 +409,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 
 func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 	switch {
+	case br.ListModelsRequest != nil:
+		br.ListModelsRequest.Provider = provider
 	case br.TextCompletionRequest != nil:
 		br.TextCompletionRequest.Provider = provider
 	case br.ChatRequest != nil:
@@ -326,12 +421,30 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.CountTokensRequest.Provider = provider
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Provider = provider
+	case br.RerankRequest != nil:
+		br.RerankRequest.Provider = provider
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Provider = provider
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Provider = provider
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Provider = provider
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Provider = provider
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Provider = provider
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Provider = provider
+	case br.VideoRetrieveRequest != nil:
+		br.VideoRetrieveRequest.Provider = provider
+	case br.VideoDownloadRequest != nil:
+		br.VideoDownloadRequest.Provider = provider
+	case br.VideoListRequest != nil:
+		br.VideoListRequest.Provider = provider
+	case br.VideoDeleteRequest != nil:
+		br.VideoDeleteRequest.Provider = provider
+	case br.VideoRemixRequest != nil:
+		br.VideoRemixRequest.Provider = provider
 	}
 }
 
@@ -347,12 +460,20 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.CountTokensRequest.Model = model
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Model = model
+	case br.RerankRequest != nil:
+		br.RerankRequest.Model = model
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Model = model
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Model = model
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Model = model
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Model = model
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Model = model
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Model = model
 	}
 }
 
@@ -368,12 +489,20 @@ func (br *BifrostRequest) SetFallbacks(fallbacks []Fallback) {
 		br.CountTokensRequest.Fallbacks = fallbacks
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.Fallbacks = fallbacks
+	case br.RerankRequest != nil:
+		br.RerankRequest.Fallbacks = fallbacks
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.Fallbacks = fallbacks
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.Fallbacks = fallbacks
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.Fallbacks = fallbacks
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.Fallbacks = fallbacks
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.Fallbacks = fallbacks
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.Fallbacks = fallbacks
 	}
 }
 
@@ -389,31 +518,89 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.CountTokensRequest.RawRequestBody = rawRequestBody
 	case br.EmbeddingRequest != nil:
 		br.EmbeddingRequest.RawRequestBody = rawRequestBody
+	case br.RerankRequest != nil:
+		br.RerankRequest.RawRequestBody = rawRequestBody
 	case br.SpeechRequest != nil:
 		br.SpeechRequest.RawRequestBody = rawRequestBody
 	case br.TranscriptionRequest != nil:
 		br.TranscriptionRequest.RawRequestBody = rawRequestBody
 	case br.ImageGenerationRequest != nil:
 		br.ImageGenerationRequest.RawRequestBody = rawRequestBody
+	case br.ImageEditRequest != nil:
+		br.ImageEditRequest.RawRequestBody = rawRequestBody
+	case br.ImageVariationRequest != nil:
+		br.ImageVariationRequest.RawRequestBody = rawRequestBody
+	case br.VideoGenerationRequest != nil:
+		br.VideoGenerationRequest.RawRequestBody = rawRequestBody
+	case br.VideoRemixRequest != nil:
+		br.VideoRemixRequest.RawRequestBody = rawRequestBody
 	}
+}
+
+type MCPRequestType string
+
+const (
+	MCPRequestTypeChatToolCall      MCPRequestType = "chat_tool_call"      // Chat API format
+	MCPRequestTypeResponsesToolCall MCPRequestType = "responses_tool_call" // Responses API format
+)
+
+// BifrostMCPRequest is the request struct for all MCP requests.
+// only ONE of the following fields should be set:
+// - ChatAssistantMessageToolCall
+// - ResponsesToolMessage
+type BifrostMCPRequest struct {
+	RequestType MCPRequestType
+
+	*ChatAssistantMessageToolCall
+	*ResponsesToolMessage
+}
+
+func (r *BifrostMCPRequest) GetToolName() string {
+	if r.ChatAssistantMessageToolCall != nil {
+		if r.ChatAssistantMessageToolCall.Function.Name != nil {
+			return *r.ChatAssistantMessageToolCall.Function.Name
+		}
+	}
+	if r.ResponsesToolMessage != nil {
+		if r.ResponsesToolMessage.Name != nil {
+			return *r.ResponsesToolMessage.Name
+		}
+	}
+	return ""
+}
+
+func (r *BifrostMCPRequest) GetToolArguments() interface{} {
+	if r.ChatAssistantMessageToolCall != nil {
+		return r.ChatAssistantMessageToolCall.Function.Arguments
+	}
+	if r.ResponsesToolMessage != nil {
+		return r.ResponsesToolMessage.Arguments
+	}
+	return nil
 }
 
 //* Response Structs
 
 // BifrostResponse represents the complete result from any bifrost request.
 type BifrostResponse struct {
+	ListModelsResponse            *BifrostListModelsResponse
 	TextCompletionResponse        *BifrostTextCompletionResponse
 	ChatResponse                  *BifrostChatResponse
 	ResponsesResponse             *BifrostResponsesResponse
 	ResponsesStreamResponse       *BifrostResponsesStreamResponse
 	CountTokensResponse           *BifrostCountTokensResponse
 	EmbeddingResponse             *BifrostEmbeddingResponse
+	RerankResponse                *BifrostRerankResponse
 	SpeechResponse                *BifrostSpeechResponse
 	SpeechStreamResponse          *BifrostSpeechStreamResponse
 	TranscriptionResponse         *BifrostTranscriptionResponse
 	TranscriptionStreamResponse   *BifrostTranscriptionStreamResponse
 	ImageGenerationResponse       *BifrostImageGenerationResponse
 	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
+	VideoGenerationResponse       *BifrostVideoGenerationResponse
+	VideoDownloadResponse         *BifrostVideoDownloadResponse
+	VideoListResponse             *BifrostVideoListResponse
+	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
@@ -437,6 +624,8 @@ type BifrostResponse struct {
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	switch {
+	case r.ListModelsResponse != nil:
+		return &r.ListModelsResponse.ExtraFields
 	case r.TextCompletionResponse != nil:
 		return &r.TextCompletionResponse.ExtraFields
 	case r.ChatResponse != nil:
@@ -449,6 +638,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.CountTokensResponse.ExtraFields
 	case r.EmbeddingResponse != nil:
 		return &r.EmbeddingResponse.ExtraFields
+	case r.RerankResponse != nil:
+		return &r.RerankResponse.ExtraFields
 	case r.SpeechResponse != nil:
 		return &r.SpeechResponse.ExtraFields
 	case r.SpeechStreamResponse != nil:
@@ -471,6 +662,14 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.VideoGenerationResponse != nil:
+		return &r.VideoGenerationResponse.ExtraFields
+	case r.VideoDownloadResponse != nil:
+		return &r.VideoDownloadResponse.ExtraFields
+	case r.VideoListResponse != nil:
+		return &r.VideoListResponse.ExtraFields
+	case r.VideoDeleteResponse != nil:
+		return &r.VideoDeleteResponse.ExtraFields
 	case r.BatchCreateResponse != nil:
 		return &r.BatchCreateResponse.ExtraFields
 	case r.BatchListResponse != nil:
@@ -504,6 +703,16 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 	return &BifrostResponseExtraFields{}
 }
 
+// BifrostMCPResponse is the response struct for all MCP responses.
+// only ONE of the following fields should be set:
+// - ChatMessage
+// - ResponsesMessage
+type BifrostMCPResponse struct {
+	ChatMessage      *ChatMessage
+	ResponsesMessage *ResponsesMessage
+	ExtraFields      BifrostMCPResponseExtraFields
+}
+
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
 	RequestType     RequestType        `json:"request_type"`
@@ -517,6 +726,12 @@ type BifrostResponseExtraFields struct {
 	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
 	ParseErrors     []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
 	LiteLLMCompat   bool               `json:"litellm_compat,omitempty"`
+}
+
+type BifrostMCPResponseExtraFields struct {
+	ClientName string `json:"client_name"`
+	ToolName   string `json:"tool_name"`
+	Latency    int64  `json:"latency"` // in milliseconds
 }
 
 // BifrostCacheDebug represents debug information about the cache.
@@ -577,7 +792,7 @@ func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 
 // BifrostError represents an error from the Bifrost system.
 //
-// PLUGIN DEVELOPERS: When creating BifrostError in PreHook or PostHook, you can set AllowFallbacks:
+// PLUGIN DEVELOPERS: When creating BifrostError in PreLLMHook or PostLLMHook, you can set AllowFallbacks:
 // - AllowFallbacks = &true: Bifrost will try fallback providers if available
 // - AllowFallbacks = &false: Bifrost will return this error immediately, no fallbacks
 // - AllowFallbacks = nil: Treated as true by default (fallbacks allowed for resilience)
@@ -628,31 +843,48 @@ func (e *ErrorField) MarshalJSON() ([]byte, error) {
 }
 
 func (e *ErrorField) UnmarshalJSON(data []byte) error {
-	type Alias ErrorField
 	aux := &struct {
-		Error *string `json:"error,omitempty"`
-		*Alias
-	}{
-		Alias: (*Alias)(e),
-	}
+		Type    *string     `json:"type,omitempty"`
+		Code    interface{} `json:"code,omitempty"`
+		Message string      `json:"message"`
+		Error   *string     `json:"error,omitempty"`
+		Param   interface{} `json:"param,omitempty"`
+		EventID *string     `json:"event_id,omitempty"`
+	}{}
 
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
 
+	e.Type = aux.Type
+	e.Message = aux.Message
+	e.Param = aux.Param
+	e.EventID = aux.EventID
 	if aux.Error != nil {
 		e.Error = errors.New(*aux.Error)
 	}
-
+	if aux.Code != nil {
+		switch v := aux.Code.(type) {
+		case string:
+			e.Code = &v
+		case float64:
+			s := strconv.FormatInt(int64(v), 10)
+			e.Code = &s
+		default:
+			s := fmt.Sprint(aux.Code)
+			e.Code = &s
+		}
+	}
 	return nil
 }
 
 // BifrostErrorExtraFields contains additional fields in an error response.
 type BifrostErrorExtraFields struct {
-	Provider       ModelProvider `json:"provider"`
-	ModelRequested string        `json:"model_requested"`
-	RequestType    RequestType   `json:"request_type"`
+	Provider       ModelProvider `json:"provider,omitempty"`
+	ModelRequested string        `json:"model_requested,omitempty"`
+	RequestType    RequestType   `json:"request_type,omitempty"`
 	RawRequest     interface{}   `json:"raw_request,omitempty"`
 	RawResponse    interface{}   `json:"raw_response,omitempty"`
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
+	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
 }

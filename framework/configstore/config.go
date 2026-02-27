@@ -10,8 +10,8 @@ type ConfigStoreType string
 
 // ConfigStoreTypeSQLite is the type of config store for SQLite.
 const (
-	ConfigStoreTypeSQLite ConfigStoreType = "sqlite"
-	ConfigStoreTypePostgres ConfigStoreType = "postgres"	
+	ConfigStoreTypeSQLite   ConfigStoreType = "sqlite"
+	ConfigStoreTypePostgres ConfigStoreType = "postgres"
 )
 
 // Config represents the configuration for the config store.

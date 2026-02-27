@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/maximhq/bifrost/core/internal/testutil"
+	"github.com/maximhq/bifrost/core/internal/llmtests"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -16,13 +16,13 @@ func TestGroq(t *testing.T) {
 		t.Skip("Skipping Groq tests because GROQ_API_KEY is not set")
 	}
 
-	client, ctx, cancel, err := testutil.SetupTest()
+	client, ctx, cancel, err := llmtests.SetupTest()
 	if err != nil {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
 
-	testConfig := testutil.ComprehensiveTestConfig{
+	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Groq,
 		ChatModel: "llama-3.3-70b-versatile",
 		Fallbacks: []schemas.Fallback{
@@ -34,7 +34,7 @@ func TestGroq(t *testing.T) {
 		},
 		EmbeddingModel: "", // Groq doesn't support embedding
 		ReasoningModel: "openai/gpt-oss-120b",
-		Scenarios: testutil.TestScenarios{
+		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
 			SimpleChat:            true,
@@ -57,7 +57,7 @@ func TestGroq(t *testing.T) {
 		},
 	}
 	t.Run("GroqTests", func(t *testing.T) {
-		testutil.RunAllComprehensiveTests(t, client, ctx, testConfig)
+		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
 	client.Shutdown()
 }

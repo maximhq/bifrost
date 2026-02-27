@@ -99,7 +99,6 @@ bifrost:
       - "https://yourdomain.com"
       - "https://app.yourdomain.com"
     enableLogging: true
-    enableGovernance: true
     maxRequestBodySizeMb: 100
   
   providers: {}

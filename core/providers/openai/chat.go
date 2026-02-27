@@ -8,20 +8,20 @@ import (
 )
 
 // ToBifrostChatRequest converts an OpenAI chat request to Bifrost format
-func (request *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) *schemas.BifrostChatRequest {
+	provider, model := schemas.ParseModelString(req.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
 
 	return &schemas.BifrostChatRequest{
 		Provider:  provider,
 		Model:     model,
-		Input:     ConvertOpenAIMessagesToBifrostMessages(request.Messages),
-		Params:    &request.ChatParameters,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Input:     ConvertOpenAIMessagesToBifrostMessages(req.Messages),
+		Params:    &req.ChatParameters,
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 }
 
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
-func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
+func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil
 	}
@@ -38,10 +38,10 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		}
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
+		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
-
 	switch bifrostReq.Provider {
-	case schemas.OpenAI:
+	case schemas.OpenAI, schemas.Azure:
 		return openaiReq
 	case schemas.XAI:
 		openaiReq.filterOpenAISpecificParameters()
@@ -65,85 +65,98 @@ func ToOpenAIChatRequest(bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequ
 		}
 		return openaiReq
 	default:
+		// Check if provider is a custom provider
+		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			return openaiReq
+		}
 		openaiReq.filterOpenAISpecificParameters()
 		return openaiReq
 	}
 }
 
 // Filter OpenAI Specific Parameters
-func (request *OpenAIChatRequest) filterOpenAISpecificParameters() {
+func (req *OpenAIChatRequest) filterOpenAISpecificParameters() {
 	// Handle reasoning parameter: OpenAI uses effort-based reasoning
 	// Priority: effort (native) > max_tokens (estimated)
-	if request.ChatParameters.Reasoning != nil {
-		if request.ChatParameters.Reasoning.Effort != nil {
+	if req.ChatParameters.Reasoning != nil {
+		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
-			effort := *request.ChatParameters.Reasoning.Effort
+			effort := *req.ChatParameters.Reasoning.Effort
 			// Convert "minimal" to "low" for non-OpenAI providers
 			if effort == "minimal" {
-				request.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
+				req.ChatParameters.Reasoning.Effort = schemas.Ptr("low")
 			}
 			// Clear max_tokens since OpenAI doesn't use it
-			request.ChatParameters.Reasoning.MaxTokens = nil
-		} else if request.ChatParameters.Reasoning.MaxTokens != nil {
+			req.ChatParameters.Reasoning.MaxTokens = nil
+		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
 			// Estimate effort from max_tokens
-			maxTokens := *request.ChatParameters.Reasoning.MaxTokens
+			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
 			maxCompletionTokens := DefaultCompletionMaxTokens
-			if request.ChatParameters.MaxCompletionTokens != nil {
-				maxCompletionTokens = *request.ChatParameters.MaxCompletionTokens
+			if req.ChatParameters.MaxCompletionTokens != nil {
+				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
 			}
 			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
-			request.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
 			// Clear max_tokens since OpenAI doesn't use it
-			request.ChatParameters.Reasoning.MaxTokens = nil
+			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
 	}
 
-	if request.ChatParameters.PromptCacheKey != nil {
-		request.ChatParameters.PromptCacheKey = nil
+	if req.ChatParameters.Prediction != nil {
+		req.ChatParameters.Prediction = nil
 	}
-	if request.ChatParameters.Verbosity != nil {
-		request.ChatParameters.Verbosity = nil
+	if req.ChatParameters.PromptCacheKey != nil {
+		req.ChatParameters.PromptCacheKey = nil
 	}
-	if request.ChatParameters.Store != nil {
-		request.ChatParameters.Store = nil
+	if req.ChatParameters.PromptCacheRetention != nil {
+		req.ChatParameters.PromptCacheRetention = nil
+	}
+	if req.ChatParameters.Verbosity != nil {
+		req.ChatParameters.Verbosity = nil
+	}
+	if req.ChatParameters.Store != nil {
+		req.ChatParameters.Store = nil
+	}
+	if req.ChatParameters.WebSearchOptions != nil {
+		req.ChatParameters.WebSearchOptions = nil
 	}
 }
 
 // applyMistralCompatibility applies Mistral-specific transformations to the request
-func (request *OpenAIChatRequest) applyMistralCompatibility() {
+func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	// Mistral uses max_tokens instead of max_completion_tokens
-	if request.MaxCompletionTokens != nil {
-		request.MaxTokens = request.MaxCompletionTokens
-		request.MaxCompletionTokens = nil
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
 	}
 
 	// Mistral does not support ToolChoiceStruct, only simple tool choice strings are supported
-	if request.ToolChoice != nil && request.ToolChoice.ChatToolChoiceStruct != nil {
-		request.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
-		request.ToolChoice.ChatToolChoiceStruct = nil
+	if req.ToolChoice != nil && req.ToolChoice.ChatToolChoiceStruct != nil {
+		req.ToolChoice.ChatToolChoiceStr = schemas.Ptr("any")
+		req.ToolChoice.ChatToolChoiceStruct = nil
 	}
 }
 
 // applyXAICompatibility applies xAI-specific transformations to the request
-func (request *OpenAIChatRequest) applyXAICompatibility(model string) {
+func (req *OpenAIChatRequest) applyXAICompatibility(model string) {
 	// Only apply filters if this is a grok reasoning model
 	if !schemas.IsGrokReasoningModel(model) {
 		return
 	}
 
-	request.ChatParameters.PresencePenalty = nil
+	req.ChatParameters.PresencePenalty = nil
 
 	// Only non-mini grok-3 models support frequency_penalty and stop
 	// grok-3-mini only supports reasoning_effort in reasoning mode
 	if !strings.Contains(model, "grok-3") || strings.Contains(model, "grok-3-mini") {
-		request.ChatParameters.FrequencyPenalty = nil
-		request.ChatParameters.Stop = nil
+		req.ChatParameters.FrequencyPenalty = nil
+		req.ChatParameters.Stop = nil
 	}
 
 	// Only grok-3-mini supports reasoning_effort
-	if request.ChatParameters.Reasoning != nil &&
+	if req.ChatParameters.Reasoning != nil &&
 		!strings.Contains(model, "grok-3-mini") {
 		// Clear reasoning_effort for non-grok-3-mini models
-		request.ChatParameters.Reasoning.Effort = nil
+		req.ChatParameters.Reasoning.Effort = nil
 	}
 }

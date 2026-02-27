@@ -25,6 +25,9 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Files | ✅ | - | `/openai/v1/files` |
 | List Models | ✅ | - | `/openai/v1/models` |
 | Image Generation | ✅ | ✅ | `/openai/v1/images/generations` |
+| Image Edit | ✅ | ✅ | `/openai/v1/images/edits` |
+| Video Generation | ✅ | - | `/openai/v1/videos` |
+| Image Variation | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -71,7 +74,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Azure,
     Model:    "gpt-4",
     Input:    messages,
@@ -102,6 +105,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
     "client_id": "your-client-id",
     "client_secret": "your-client-secret",
     "tenant_id": "your-tenant-id",
+    "scopes": ["https://cognitiveservices.azure.com/.default"],
     "api_version": "2024-10-21",
     "deployments": {
       "gpt-4": "my-gpt4-deployment",
@@ -137,6 +141,7 @@ If you set `client_id`, `client_secret`, and `tenant_id`, Azure Entra ID authent
 - `client_id` - Azure Entra ID client ID (optional, for Service Principal auth)
 - `client_secret` - Azure Entra ID client secret (optional, for Service Principal auth)
 - `tenant_id` - Azure Entra ID tenant ID (optional, for Service Principal auth)
+- `scopes` - OAuth scopes for token requests (default: `["https://cognitiveservices.azure.com/.default"]`)
 - `api_version` - API version to use (default: `2024-10-21`)
 - `deployments` - Map of model names to deployment IDs (optional, can be provided per-request)
 - `allowed_models` - List of allowed models to use from this key (optional)
@@ -251,7 +256,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Azure,
     Model:    "claude-3-sonnet",
     Input:    messages,
@@ -308,7 +313,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Azure,
     Model:    "text-embedding-3-small",
     Input: &schemas.EmbeddingInput{
@@ -402,7 +407,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Azure,
     Model:    "dall-e-3",
     Input: &schemas.ImageGenerationInput{
@@ -429,7 +434,28 @@ Image generation streaming is supported and uses OpenAI's streaming format with 
 
 ---
 
-# 6. List Models
+# 6. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Image Edit is supported for OpenAI models on Azure and uses the OpenAI-compatible format.
+
+Azure uses the same conversion as OpenAI (see [OpenAI Image Edit](/providers/supported-providers/openai#8-image-edit)):
+
+- **Request Conversion**: Uses `openai.HandleOpenAIImageEditRequest` with Azure-specific URL construction
+- **URL Format**: `{endpoint}/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
+- **Authentication**: Azure API key or OAuth bearer token (via `getAzureAuthHeaders`)
+- **Deployment Mapping**: Model identifier mapped to Azure deployment ID
+- **Response Conversion**: Same as OpenAI - responses unmarshaled directly into `BifrostImageGenerationResponse`
+- **Streaming**: Supported via `openai.HandleOpenAIImageEditStreamRequest` with Azure-specific URL and authentication
+
+**Endpoint**: `/openai/deployments/{deployment}/images/edits?api-version={apiVersion}`
+
+---
+
+# 7. List Models
 
 ## Request Parameters
 
@@ -488,6 +514,23 @@ Lists available models/deployments configured in the Azure key. Response include
 **Impact**: `gpt-4` and `gpt-4-turbo` can map to same deployment
 **Code**: `models.go:13-58`
 </Accordion>
+
+---
+
+# 8. Video Generation
+
+Azure routes video generation to OpenAI's Sora models via the Azure OpenAI-compatible endpoint. All parameters are identical to [OpenAI Video Generation](/providers/supported-providers/openai#video-generation).
+
+**Supported Operations**
+
+| Operation | Supported | Notes |
+|-----------|-----------|-------|
+| Generate | ✅ | `POST /v1/videos` |
+| Retrieve | ✅ | `GET /v1/videos/{id}` |
+| Download | ✅ | `GET /v1/videos/{id}/content` |
+| Delete | ✅ | `DELETE /v1/videos/{id}` |
+| List | ✅ | `GET /v1/videos` |
+| Remix | ❌ | Not supported |
 
 ---
 

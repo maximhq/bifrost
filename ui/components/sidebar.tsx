@@ -6,32 +6,39 @@ import {
 	Boxes,
 	BoxIcon,
 	BugIcon,
+	Building,
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircleDollarSign,
-	Cog,
 	Construction,
+	DatabaseZap,
 	FlaskConical,
 	FolderGit,
-	Gauge,
 	Globe,
 	KeyRound,
 	Landmark,
-	Layers,
+	LayoutGrid,
 	LogOut,
 	Logs,
+	Network,
 	PanelLeftClose,
 	Puzzle,
 	ScrollText,
+	Search,
+	SearchCheck,
 	Settings,
 	Settings2Icon,
-	Shield,
+	ShieldCheck,
+	ShieldUser,
 	Shuffle,
 	Telescope,
+	ToolCase,
+	TrendingUp,
 	User,
 	UserRoundCheck,
 	Users,
-	Zap,
+	Wallet,
+	WalletCards
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -64,7 +71,7 @@ import { useTheme } from "next-themes";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCookies } from "react-cookie";
 import { ThemeToggle } from "./themeToggle";
 import { Badge } from "./ui/badge";
@@ -154,13 +161,13 @@ interface SidebarItem {
 	hasAccess: boolean;
 	subItems?: SidebarItem[];
 	tag?: string;
+	isExternal?: boolean;
 	queryParam?: string; // Optional: for tab-based subitems (e.g., "client-settings")
 }
 
 const SidebarItemView = ({
 	item,
 	isActive,
-	isAllowed,
 	isExternal,
 	isWebSocketConnected,
 	isExpanded,
@@ -168,11 +175,11 @@ const SidebarItemView = ({
 	pathname,
 	router,
 	isSidebarCollapsed,
-	expandSidebar,
+	expandSidebar,	
+	highlightedUrl,
 }: {
 	item: SidebarItem;
 	isActive: boolean;
-	isAllowed: boolean;
 	isExternal?: boolean;
 	isWebSocketConnected: boolean;
 	isExpanded?: boolean;
@@ -180,7 +187,8 @@ const SidebarItemView = ({
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
-	expandSidebar: () => void;
+	expandSidebar: () => void;	
+	highlightedUrl?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
 	const isAnySubItemActive =
@@ -205,35 +213,44 @@ const SidebarItemView = ({
 		}
 	};
 
-	const handleNavigation = (url: string) => {
-		if (!isAllowed) return;
-		if (isExternal) {
-			window.open(url, "_blank");
+	const openInNewTab = (url: string) => {
+		window.open(url, "_blank", "noopener,noreferrer");
+	};
+
+	const handleNavigation = (url: string, e?: React.MouseEvent) => {
+		if (isExternal || e?.metaKey || e?.ctrlKey) {
+			openInNewTab(url);
 			return;
 		}
 		router.push(url);
 	};
 
-	const handleSubItemClick = (subItem: SidebarItem) => {
-		if (subItem.queryParam) {
-			router.push(`${subItem.url}?tab=${subItem.queryParam}`);
-		} else {
-			router.push(subItem.url);
+	const handleSubItemClick = (subItem: SidebarItem, e?: React.MouseEvent) => {
+		const url = subItem.queryParam ? `${subItem.url}?tab=${subItem.queryParam}` : subItem.url;
+		if (e?.metaKey || e?.ctrlKey) {
+			openInNewTab(url);
+			return;
 		}
+		router.push(url);
 	};
+
+	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
 	return (
 		<SidebarMenuItem key={item.title}>
 			<SidebarMenuButton
 				tooltip={item.title}
+				data-nav-url={!hasSubItems ? item.url : undefined}
 				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isActive || isAnySubItemActive
-						? "bg-sidebar-accent text-primary border-primary/20"
-						: isAllowed && item.hasAccess
-							? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
-							: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+					isHighlighted
+						? "bg-sidebar-accent text-accent-foreground border-primary/20"
+						: isActive || isAnySubItemActive
+							? "bg-sidebar-accent text-primary border-primary/20"
+							: item.hasAccess
+								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
+								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 				} `}
-				onClick={hasSubItems ? handleClick : () => handleNavigation(item.url)}
+				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
 			>
 				<div className="flex w-full items-center justify-between">
 					<div className="flex w-full items-center gap-2">
@@ -265,18 +282,22 @@ const SidebarItemView = ({
 					{item.subItems?.map((subItem: SidebarItem) => {
 						// For query param based subitems, check if tab matches
 						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
+						const isSubItemHighlighted = highlightedUrl === subItem.url;
 						const SubItemIcon = subItem.icon;
 						return (
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
+									data-nav-url={subItem.url}
 									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemActive
-											? "bg-sidebar-accent text-primary font-medium"
-											: subItem.hasAccess === false
-												? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-												: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
+										isSubItemHighlighted
+											? "bg-sidebar-accent text-accent-foreground"
+											: isSubItemActive
+												? "bg-sidebar-accent text-primary font-medium"
+												: subItem.hasAccess === false
+													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
+													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
 									}`}
-									onClick={() => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem))}
+									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 								>
 									<div className="flex items-center gap-2">
 										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
@@ -339,6 +360,9 @@ export default function AppSidebar() {
 	const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
 	const [areCardsEmpty, setAreCardsEmpty] = useState(false);
 	const [userPopoverOpen, setUserPopoverOpen] = useState(false);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [focusedIndex, setFocusedIndex] = useState(-1);
+	const searchInputRef = useRef<HTMLInputElement>(null);
 	const [cookies, setCookie] = useCookies([PRODUCTION_SETUP_DISMISSED_COOKIE]);
 	const isProductionSetupDismissed = !!cookies[PRODUCTION_SETUP_DISMISSED_COOKIE];
 	const { data: latestRelease } = useGetLatestReleaseQuery(undefined, {
@@ -349,6 +373,7 @@ export default function AppSidebar() {
 	const hasModelProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasMCPGatewayAccess = useRbac(RbacResource.MCPGateway, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
+	const hasUsersAccess = useRbac(RbacResource.Users, RbacOperation.View);
 	const hasUserProvisioningAccess = useRbac(RbacResource.UserProvisioning, RbacOperation.View);
 	const hasAuditLogsAccess = useRbac(RbacResource.AuditLogs, RbacOperation.View);
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View);
@@ -356,253 +381,351 @@ export default function AppSidebar() {
 	const hasRbacAccess = useRbac(RbacResource.RBAC, RbacOperation.View);
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 
-	const items = [
-		{
-			title: "Observability",
-			url: "/workspace/logs",
-			icon: Telescope,
-			description: "Request logs & monitoring",
-			hasAccess: hasLogsAccess,
-			subItems: [
-				{
-					title: "Dashboard",
-					url: "/workspace/dashboard",
-					icon: ChartColumnBig,
-					description: "Dashboard",
-					hasAccess: hasObservabilityAccess,
-				},
-				{
-					title: "Logs",
-					url: "/workspace/logs",
-					icon: Logs,
-					description: "Request logs & monitoring",
-					hasAccess: hasLogsAccess,
-				},
-				{
-					title: "Connectors",
-					url: "/workspace/observability",
-					icon: ChevronsLeftRightEllipsis,
-					description: "Log connectors",
-					hasAccess: hasObservabilityAccess,
-				},
-			],
-		},
-		{
-			title: "Prompt Repository",
-			url: "/workspace/prompt-repo",
-			icon: FolderGit,
-			description: "Prompt repository",
-			hasAccess: true,
-		},
-		{
-			title: "Model Providers",
-			url: "/workspace/providers",
-			icon: BoxIcon,
-			description: "Configure models",
-			hasAccess: hasModelProvidersAccess,
-		},
-		{
-			title: "MCP Gateway",
-			url: "/workspace/mcp-gateway",
-			icon: MCPIcon,
-			description: "MCP configuration",
-			hasAccess: hasMCPGatewayAccess,
-		},
-		{
-			title: "Plugins",
-			url: "/workspace/plugins",
-			icon: Puzzle,
-			tag: "BETA",
-			description: "Manage custom plugins",
-			hasAccess: hasPluginsAccess,
-		},
-		{
-			title: "Governance",
-			url: "/workspace/governance",
-			icon: Landmark,
-			description: "Govern access",
-			hasAccess:
-				hasVirtualKeysAccess || hasGovernanceAccess || hasCustomersAccess || hasTeamsAccess || hasUserProvisioningAccess || hasRbacAccess,
-			subItems: [
-				{
-					title: "Virtual Keys",
-					url: "/workspace/virtual-keys",
-					icon: KeyRound,
-					description: "Manage virtual keys & access",
-					hasAccess: hasVirtualKeysAccess,
-				},
-				{
-					title: "Users & Groups",
-					url: "/workspace/user-groups",
-					icon: Users,
-					description: "Manage users & groups",
-					hasAccess: hasCustomersAccess || hasTeamsAccess,
-				},
-				{
-					title: "User Provisioning",
-					url: "/workspace/scim",
-					icon: BookUser,
-					description: "User management and provisioning",
-					hasAccess: hasUserProvisioningAccess,
-				},
-				{
-					title: "Roles & Permissions",
-					url: "/workspace/rbac",
-					icon: UserRoundCheck,
-					description: "User roles and permissions",
-					hasAccess: hasRbacAccess,
-				},
-				{
-					title: "Audit Logs",
-					url: "/workspace/audit-logs",
-					icon: ScrollText,
-					description: "Audit logs and compliance",
-					hasAccess: hasAuditLogsAccess,
-				},
-			],
-		},
-		{
-			title: "Guardrails",
-			url: "/workspace/guardrails",
-			icon: Construction,
-			description: "Guardrails configuration",
-			hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
-			subItems: [
-				{
-					title: "Configuration",
-					url: "/workspace/guardrails/configuration",
-					icon: Cog,
-					description: "Guardrail configuration",
-					hasAccess: hasGuardrailsConfigAccess,
-				},
-				{
-					title: "Providers",
-					url: "/workspace/guardrails/providers",
-					icon: Boxes,
-					description: "Guardrail providers configuration",
-					hasAccess: hasGuardrailsProvidersAccess,
-				},
-			],
-		},
-		{
-			title: "Evals",
-			url: "https://www.getmaxim.ai",
-			icon: FlaskConical,
-			isExternal: true,
-			description: "Evaluations",
-			hasAccess: true,
-		},
-		{
-			title: "Cluster Config",
-			url: "/workspace/cluster",
-			icon: Layers,
-			description: "Manage Bifrost cluster",
-			hasAccess: hasClusterConfigAccess,
-		},
-		{
-			title: "Adaptive Routing",
-			url: "/workspace/adaptive-routing",
-			icon: Shuffle,
-			description: "Manage adaptive load balancer",
-			hasAccess: isAdaptiveRoutingAllowed,
-		},
-		{
-			title: "Config",
-			url: "/workspace/config",
-			icon: Settings2Icon,
-			description: "Bifrost settings",
-			hasAccess: hasSettingsAccess,
-			subItems: [
-				{
-					title: "Client Settings",
-					url: "/workspace/config/client-settings",
-					icon: Settings,
-					description: "Client configuration settings",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "MCP Gateway",
-					url: "/workspace/config/mcp-gateway",
-					icon: MCPIcon,
-					description: "MCP gateway configuration",
-					hasAccess: hasMCPGatewayAccess,
-				},
-				{
-					title: "Pricing Config",
-					url: "/workspace/config/pricing-config",
-					icon: CircleDollarSign,
-					description: "Pricing configuration",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Logging",
-					url: "/workspace/config/logging",
-					icon: Logs,
-					description: "Logging configuration",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Governance",
-					url: "/workspace/config/governance",
-					icon: Landmark,
-					description: "Governance settings",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Caching",
-					url: "/workspace/config/caching",
-					icon: Zap,
-					description: "Caching configuration",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Observability",
-					url: "/workspace/config/observability",
-					icon: Gauge,
-					description: "Observability settings",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Security",
-					url: "/workspace/config/security",
-					icon: Shield,
-					description: "Security settings",
-					hasAccess: hasSettingsAccess,
-				},
-				...(IS_ENTERPRISE
-					? [
-							{
-								title: "Proxy",
-								url: "/workspace/config/proxy",
-								icon: Globe,
-								description: "Proxy configuration",
-								hasAccess: hasSettingsAccess,
-							},
-						]
-					: []),
-				{
-					title: "API Keys",
-					url: "/workspace/config/api-keys",
-					icon: KeyRound,
-					description: "API keys management",
-					hasAccess: hasSettingsAccess,
-				},
-				{
-					title: "Performance Tuning",
-					url: "/workspace/config/performance-tuning",
-					icon: Zap,
-					description: "Performance tuning settings",
-					hasAccess: hasSettingsAccess,
-				},
-			],
-		},
-	];
+	const items = useMemo(
+		() => [
+			{
+				title: "Observability",
+				url: "/workspace/logs",
+				icon: Telescope,
+				description: "Request logs & monitoring",
+				hasAccess: hasLogsAccess,
+				subItems: [
+					{
+						title: "Dashboard",
+						url: "/workspace/dashboard",
+						icon: ChartColumnBig,
+						description: "Dashboard",
+						hasAccess: hasObservabilityAccess,
+					},
+					{
+						title: "LLM Logs",
+						url: "/workspace/logs",
+						icon: Logs,
+						description: "LLM request logs & monitoring",
+						hasAccess: hasLogsAccess,
+					},
+					{
+						title: "MCP Logs",
+						url: "/workspace/mcp-logs",
+						icon: MCPIcon,
+						description: "MCP tool execution logs",
+						hasAccess: hasLogsAccess,
+					},
+					{
+						title: "Connectors",
+						url: "/workspace/observability",
+						icon: ChevronsLeftRightEllipsis,
+						description: "Log connectors",
+						hasAccess: hasObservabilityAccess,
+					},
+					{
+						title: "Logs Settings",
+						url: "/workspace/config/logging",
+						icon: Settings,
+						description: "Logs configuration",
+						hasAccess: hasSettingsAccess,
+					},
+				],
+			},
+			{
+				title: "Models",
+				url: "/workspace/providers",
+				icon: BoxIcon,
+				description: "Configure models",
+				hasAccess: true,
+				subItems: [
+					{
+						title: "Model Providers",
+						url: "/workspace/providers",
+						icon: Boxes,
+						description: "Configure models",
+						hasAccess: hasModelProvidersAccess,
+					},
+					{
+						title: "Budgets & Limits",
+						url: "/workspace/model-limits",
+						icon: Wallet,
+						description: "Model limits",
+						hasAccess: hasGovernanceAccess,
+					},
+					{
+						title: "Routing Rules",
+						url: "/workspace/routing-rules",
+						icon: Network,
+						description: "Intelligent routing rules",
+						hasAccess: hasRoutingRulesAccess,
+					},
+					{
+						title: "Pricing config",
+						url: "/workspace/custom-pricing",
+						icon: CircleDollarSign,
+						description: "Pricing configuration",
+						hasAccess: hasSettingsAccess,
+					},
+				],
+			},
+			{
+				title: "MCP Gateway",
+				icon: MCPIcon,
+				description: "MCP configuration",
+				url: "/workspace/mcp-gateway",
+				hasAccess: hasMCPGatewayAccess,
+				subItems: [
+					{
+						title: "MCP Catalog",
+						url: "/workspace/mcp-registry",
+						icon: LayoutGrid,
+						description: "MCP tool catalog",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						title: "Tool groups",
+						url: "/workspace/mcp-tool-groups",
+						icon: ToolCase,
+						description: "MCP tool groups",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						title: "Auth Config",
+						url: "/workspace/mcp-auth-config",
+						icon: ShieldUser,
+						description: "MCP auth config",
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						title: "MCP Settings",
+						url: "/workspace/mcp-settings",
+						icon: Settings,
+						description: "MCP configuration",
+						hasAccess: hasMCPGatewayAccess,
+					},
+				],
+			},
+			{
+				title: "Plugins",
+				url: "/workspace/plugins",
+				icon: Puzzle,
+				tag: "BETA",
+				description: "Manage custom plugins",
+				hasAccess: hasPluginsAccess,
+			},
+			{
+				title: "Governance",
+				url: "/workspace/governance",
+				icon: Landmark,
+				description: "Virtual keys, users, teams, customers & roles",
+				hasAccess: hasGovernanceAccess,
+				subItems: [
+					{
+						title: "Virtual Keys",
+						url: "/workspace/governance/virtual-keys",
+						icon: KeyRound,
+						description: "Manage virtual keys & access",
+						hasAccess: hasVirtualKeysAccess,
+					},
+					{
+						title: "Users",
+						url: "/workspace/governance/users",
+						icon: Users,
+						description: "Manage users",
+						hasAccess: hasUsersAccess,
+					},
+					{
+						title: "Teams",
+						url: "/workspace/governance/teams",
+						icon: Building,
+						description: "Manage teams",
+						hasAccess: hasTeamsAccess,
+					},
+					{
+						title: "Customers",
+						url: "/workspace/governance/customers",
+						icon: WalletCards,
+						description: "Manage customers",
+						hasAccess: hasCustomersAccess,
+					},
+					{
+						title: "User Provisioning",
+						url: "/workspace/scim",
+						icon: BookUser,
+						description: "User management and provisioning",
+						hasAccess: hasUserProvisioningAccess,
+					},
+					{
+						title: "Roles & Permissions",
+						url: "/workspace/governance/rbac",
+						icon: UserRoundCheck,
+						description: "User roles and permissions",
+						hasAccess: hasRbacAccess,
+					},
+					{
+						title: "Audit Logs",
+						url: "/workspace/audit-logs",
+						icon: ScrollText,
+						description: "Audit logs and compliance",
+						hasAccess: hasAuditLogsAccess,
+					},
+				],
+			},
+			{
+				title: "Guardrails",
+				url: "/workspace/guardrails",
+				icon: Construction,
+				description: "Guardrails configuration",
+				hasAccess: hasGuardrailsConfigAccess || hasGuardrailsProvidersAccess,
+				subItems: [
+					{
+						title: "Rules",
+						url: "/workspace/guardrails/configuration",
+						icon: SearchCheck,
+						description: "Guardrail rules",
+						hasAccess: hasGuardrailsConfigAccess,
+					},
+					{
+						title: "Providers",
+						url: "/workspace/guardrails/providers",
+						icon: Boxes,
+						description: "Guardrail providers configuration",
+						hasAccess: hasGuardrailsProvidersAccess,
+					},
+				],
+			},
+			{
+				title: "Cluster Config",
+				url: "/workspace/cluster",
+				icon: Network,
+				description: "Manage Bifrost cluster",
+				hasAccess: hasClusterConfigAccess,
+			},
+			{
+				title: "Adaptive Routing",
+				url: "/workspace/adaptive-routing",
+				icon: Shuffle,
+				description: "Manage adaptive load balancer",
+				hasAccess: isAdaptiveRoutingAllowed,
+			},
+			{
+				title: "Prompt Repository",
+				url: "/workspace/prompt-repo",
+				icon: FolderGit,
+				description: "Prompt repository",
+				// Public access intentional — feature is "coming soon" with no sensitive data; RBAC will be added at GA
+				hasAccess: true,
+			},
+			{
+				title: "Evals",
+				url: "https://www.getmaxim.ai",
+				icon: FlaskConical,
+				isExternal: true,
+				description: "Evaluations",
+				hasAccess: true,
+			},
+			{
+				title: "Settings",
+				url: "/workspace/config",
+				icon: Settings2Icon,
+				description: "Bifrost settings",
+				hasAccess: hasSettingsAccess || hasAuditLogsAccess || hasUserProvisioningAccess,
+				subItems: [
+					{
+						title: "Client Settings",
+						url: "/workspace/config/client-settings",
+						icon: Settings,
+						description: "Client configuration settings",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Caching",
+						url: "/workspace/config/caching",
+						icon: DatabaseZap,
+						description: "Caching configuration",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Security",
+						url: "/workspace/config/security",
+						icon: ShieldCheck,
+						description: "Security settings",
+						hasAccess: hasSettingsAccess,
+					},
+					...(IS_ENTERPRISE
+						? [
+								{
+									title: "Proxy",
+									url: "/workspace/config/proxy",
+									icon: Globe,
+									description: "Proxy configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							]
+						: []),
+					{
+						title: "API Keys",
+						url: "/workspace/config/api-keys",
+						icon: KeyRound,
+						description: "API keys management",
+						hasAccess: hasSettingsAccess,
+					},
+					{
+						title: "Performance Tuning",
+						url: "/workspace/config/performance-tuning",
+						icon: TrendingUp,
+						description: "Performance tuning settings",
+						hasAccess: hasSettingsAccess,
+					},
+				],
+			},
+		],
+		[
+			hasLogsAccess,
+			hasObservabilityAccess,
+			hasModelProvidersAccess,
+			hasMCPGatewayAccess,
+			hasPluginsAccess,
+			hasUsersAccess,
+			hasUserProvisioningAccess,
+			hasAuditLogsAccess,
+			hasCustomersAccess,
+			hasTeamsAccess,
+			hasRbacAccess,
+			hasVirtualKeysAccess,
+			hasGovernanceAccess,
+			hasRoutingRulesAccess,
+			hasGuardrailsProvidersAccess,
+			hasGuardrailsConfigAccess,
+			hasClusterConfigAccess,
+			isAdaptiveRoutingAllowed,
+			hasSettingsAccess,
+		],
+	);
+
+	const filteredItems: SidebarItem[] = useMemo(() => {
+		const query = searchQuery.trim().toLowerCase();
+		if (!query) return items;
+
+		return items
+			.map((item) => {
+				const parentMatches = item.title.toLowerCase().includes(query);
+				if (parentMatches) return item;
+
+				if (item.subItems) {
+					const matchingSubItems = item.subItems.filter((sub) => sub.title.toLowerCase().includes(query));
+					if (matchingSubItems.length > 0) {
+						return { ...item, subItems: matchingSubItems };
+					}
+				}
+				return null;
+			})
+			.filter(Boolean) as SidebarItem[];
+	}, [items, searchQuery]);
+
 	const { data: version } = useGetVersionQuery();
 	const { resolvedTheme } = useTheme();
 	const [logout] = useLogoutMutation();
@@ -626,7 +749,6 @@ export default function AppSidebar() {
 	}, [latestRelease, version]);
 	// Get governance config from RTK Query
 	const { data: coreConfig } = useGetCoreConfigQuery({});
-	const isGovernanceEnabled = coreConfig?.client_config.enable_governance || false;
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {
@@ -646,6 +768,108 @@ export default function AppSidebar() {
 		}
 	}, [pathname]);
 
+	// Auto-expand parents when search matches their subItems
+	useEffect(() => {
+		const query = searchQuery.trim().toLowerCase();
+		if (!query) return;
+		const toExpand = new Set<string>();
+		items.forEach((item) => {
+			if (!item.subItems?.length) return;
+			const parentMatches = item.title.toLowerCase().includes(query);
+			if (parentMatches) return;
+			const hasMatchingChild = item.subItems.some((sub) => sub.title.toLowerCase().includes(query));
+			if (hasMatchingChild) {
+				toExpand.add(item.title);
+			}
+		});
+		if (toExpand.size > 0) {
+			setExpandedItems((prev) => {
+				const hasAll = [...toExpand].every((t) => prev.has(t));
+				if (hasAll) return prev;
+				return new Set([...prev, ...toExpand]);
+			});
+		}
+	}, [searchQuery, items]);
+
+	// Cmd+K to focus search input
+	useEffect(() => {
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (event.key === "k" && (event.metaKey || event.ctrlKey)) {
+				event.preventDefault();
+				searchInputRef.current?.focus();
+			}
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, []);
+
+	// Flat list of navigable items for keyboard navigation
+	const navigableItems = useMemo(() => {
+		const result: { title: string; url: string; queryParam?: string; isExternal?: boolean }[] = [];
+		for (const item of filteredItems) {
+			if (item.isExternal) {
+				if (item.hasAccess) result.push({ title: item.title, url: item.url, isExternal: true });
+				continue;
+			}
+			const hasSubItems = item.subItems && item.subItems.length > 0;
+			if (hasSubItems) {
+				// When search is active or parent is expanded, include visible subItems
+				if (searchQuery.trim() || expandedItems.has(item.title)) {
+					for (const sub of item.subItems!) {
+						if (sub.hasAccess === false) continue;
+						result.push({ title: sub.title, url: sub.url, queryParam: sub.queryParam });
+					}
+				} else {
+					// Parent is collapsed - include parent as a toggle target
+					if (item.hasAccess) result.push({ title: item.title, url: item.url });
+				}
+			} else {
+				if (item.hasAccess) result.push({ title: item.title, url: item.url });
+			}
+		}
+		return result;
+	}, [filteredItems, expandedItems, searchQuery]);
+
+	const handleSearchKeyDown = useCallback(
+		(e: React.KeyboardEvent<HTMLInputElement>) => {
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				setFocusedIndex((prev) => Math.min(prev + 1, navigableItems.length - 1));
+			} else if (e.key === "ArrowUp") {
+				e.preventDefault();
+				setFocusedIndex((prev) => Math.max(prev - 1, 0));
+			} else if (e.key === "Enter") {
+				e.preventDefault();
+				const target = navigableItems[focusedIndex];
+				if (target) {
+					const url = target.queryParam ? `${target.url}?tab=${target.queryParam}` : target.url;
+					if (target.isExternal || e.metaKey || e.ctrlKey) {
+						window.open(url, "_blank", "noopener,noreferrer");
+					} else {
+						router.push(url);
+					}
+					setSearchQuery("");
+					setFocusedIndex(-1);
+					searchInputRef.current?.blur();
+				}
+			} else if (e.key === "Escape") {
+				setSearchQuery("");
+				setFocusedIndex(-1);
+				searchInputRef.current?.blur();
+			}
+		},
+		[navigableItems, focusedIndex, router],
+	);
+
+	// Auto-scroll focused item into view
+	useEffect(() => {
+		if (focusedIndex < 0) return;
+		const url = navigableItems[focusedIndex]?.url;
+		if (!url) return;
+		const el = document.querySelector(`[data-nav-url="${url}"]`);
+		el?.scrollIntoView({ block: "nearest" });
+	}, [focusedIndex, navigableItems]);
+
 	const toggleItem = (title: string) => {
 		setExpandedItems((prev) => {
 			const next = new Set(prev);
@@ -658,9 +882,16 @@ export default function AppSidebar() {
 		});
 	};
 
+	const configExceptions = ["/workspace/config/logging"];
+
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
-		if (url !== "/" && pathname.startsWith(url)) return true;
+		if (url !== "/" && pathname.startsWith(url)) {
+			if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
+				return false;
+			}
+			return true;
+		}
 		return false;
 	};
 
@@ -791,19 +1022,41 @@ export default function AppSidebar() {
 					<Image className="h-[22px] w-auto" src={iconSrc} alt="Bifrost" width={22} height={22} />
 				</div>
 			</SidebarHeader>
+			<div className="mx-2 pb-1 group-data-[collapsible=icon]:hidden">
+				<div className="relative">
+					<Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
+					<input
+						ref={searchInputRef}
+						type="text"
+						aria-label="Search sidebar navigation"
+						placeholder="Search..."
+						value={searchQuery}
+						onChange={(e) => {
+							setSearchQuery(e.target.value);
+							setFocusedIndex(-1);
+						}}
+						onKeyDown={handleSearchKeyDown}
+						className="border-input text-foreground placeholder:text-shadow-muted-foreground focus:ring-ring h-8 w-full rounded-sm border bg-transparent pr-14 pl-8 text-sm outline-none focus:bg-transparent"
+					/>
+					<kbd className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 flex -translate-y-1/2 gap-0.5 text-[10px]">
+						<span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">⌘</span>
+						<span className="border-border bg-muted rounded-sm px-1 font-mono shadow-sm">K</span>
+					</kbd>
+				</div>
+			</div>
 			<SidebarContent className="overflow-hidden pb-4">
 				<SidebarGroup className={`custom-scrollbar ${sidebarGroupHeight} overflow-scroll`}>
 					<SidebarGroupContent>
 						<SidebarMenu className="space-y-0.5">
-							{items.map((item) => {
+							{filteredItems.map((item) => {
 								const isActive = isActiveRoute(item.url);
-								const isAllowed = item.title === "Governance" ? isGovernanceEnabled : true;
+
+								const highlightedUrl = focusedIndex >= 0 ? navigableItems[focusedIndex]?.url : undefined;
 								return (
 									<SidebarItemView
 										key={item.title}
 										item={item}
 										isActive={isActive}
-										isAllowed={isAllowed}
 										isExternal={item.isExternal ?? false}
 										isWebSocketConnected={isWebSocketConnected}
 										isExpanded={expandedItems.has(item.title)}
@@ -812,6 +1065,7 @@ export default function AppSidebar() {
 										router={router}
 										isSidebarCollapsed={sidebarState === "collapsed"}
 										expandSidebar={() => toggleSidebar()}
+										highlightedUrl={highlightedUrl}
 									/>
 								);
 							})}

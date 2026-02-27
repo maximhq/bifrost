@@ -18,15 +18,24 @@
     "latex": true
   },
   "favicon": "favicon.ico",
-  "topbarLinks": [
-    {
-      "name": "Support",
-      "url": "mailto:akshay@getmaxim.ai"
+  "navbar": {
+    "links": [
+      {
+        "label": "Discord",
+        "href": "https://getmax.im/bifrost-discord",
+        "icon": "discord"
+      },
+      {
+        "label": "GitHub",
+        "href": "https://github.com/maximhq/bifrost",
+        "icon": "github"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Book a demo",
+      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
     }
-  ],
-  "topbarCtaButton": {
-    "name": "Dashboard",
-    "url": "https://www.getbifrost.ai"
   },
   "navigation": {
     "global": {
@@ -49,6 +58,13 @@
         "icon": "book-open-cover",
         "groups": [
           {
+            "group": "Overview",
+            "icon": "book-open-cover",
+            "pages": [
+              "overview"
+            ]
+          },
+          {
             "group": "Quick Start",
             "icon": "rocket",
             "pages": [
@@ -62,6 +78,7 @@
                   "quickstart/gateway/streaming",
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
+                  "quickstart/gateway/reranking",
                   "quickstart/gateway/integrations",
                   "quickstart/gateway/cli-agents"
                 ]
@@ -76,6 +93,7 @@
                   "quickstart/go-sdk/streaming",
                   "quickstart/go-sdk/tool-calling",
                   "quickstart/go-sdk/multimodal",
+                  "quickstart/go-sdk/reranking",
                   "quickstart/go-sdk/logger"
                 ]
               }
@@ -106,15 +124,20 @@
                   "providers/supported-providers/openrouter",
                   "providers/supported-providers/parasail",
                   "providers/supported-providers/perplexity",
+                  "providers/supported-providers/replicate",
+                  "providers/supported-providers/runway",
                   "providers/supported-providers/sgl",
                   "providers/supported-providers/vertex",
+                  "providers/supported-providers/vllm",
                   "providers/supported-providers/xai"
                 ]
               },
+              "providers/routing-rules",
               "providers/provider-routing",
               "providers/reasoning",
               "providers/performance",
-              "providers/custom-providers"
+              "providers/custom-providers",
+              "providers/request-options"
             ]
           },
           {
@@ -164,6 +187,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/oauth",
               "mcp/tool-execution",
               "mcp/agent-mode",
               "mcp/code-mode",
@@ -197,6 +221,7 @@
               "features/fallbacks",
               "features/litellm-compat",
               "features/keys-management",
+              "features/async-inference",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -204,7 +229,8 @@
                   "features/governance/virtual-keys",
                   "features/governance/routing",
                   "features/governance/budget-and-limits",
-                  "features/governance/mcp-tools"
+                  "features/governance/mcp-tools",
+                  "features/governance/required-headers"
                 ]
               },
               {
@@ -283,6 +309,8 @@
             "icon": "code",
             "pages": [
               "contributing/setting-up-repo",
+              "contributing/raising-a-pr",
+              "contributing/code-conventions",
               "contributing/adding-a-provider",
               "contributing/adding-a-configstore",
               "contributing/adding-a-logstore",
@@ -378,25 +406,37 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.4.2",
-          "changelogs/v1.4.1",
-          "changelogs/v1.4.0",
-          "changelogs/v1.4.0-prerelease10",
-          "changelogs/v1.4.0-prerelease9",
-          "changelogs/v1.4.0-prerelease8",
-          "changelogs/v1.4.0-prerelease7",
-          "changelogs/v1.4.0-prerelease6",
-          "changelogs/v1.4.0-prerelease5",
-          "changelogs/v1.4.0-prerelease4",
-          "changelogs/v1.4.0-prerelease3",
-          "changelogs/v1.3.63",
-          "changelogs/v1.3.62",
-          "changelogs/v1.3.61",
-          "changelogs/v1.3.60",
-          "changelogs/v1.3.59",
-          "changelogs/v1.3.58",
-          "changelogs/v1.3.57",
-          "changelogs/v1.3.56",
+          "changelogs/v1.4.9",
+          "changelogs/v1.4.8",
+          "changelogs/v1.4.7",
+          "changelogs/v1.4.6",
+          "changelogs/v1.4.5",
+          "changelogs/v1.4.4",
+          {
+            "group": "January 2026",
+            "pages": [
+              "changelogs/v1.4.3",
+              "changelogs/v1.4.2",
+              "changelogs/v1.4.1",
+              "changelogs/v1.4.0",
+              "changelogs/v1.4.0-prerelease10",
+              "changelogs/v1.4.0-prerelease9",
+              "changelogs/v1.4.0-prerelease8",
+              "changelogs/v1.4.0-prerelease7",
+              "changelogs/v1.4.0-prerelease6",
+              "changelogs/v1.4.0-prerelease5",
+              "changelogs/v1.4.0-prerelease4",
+              "changelogs/v1.4.0-prerelease3",
+              "changelogs/v1.3.63",
+              "changelogs/v1.3.62",
+              "changelogs/v1.3.61",
+              "changelogs/v1.3.60",
+              "changelogs/v1.3.59",
+              "changelogs/v1.3.58",
+              "changelogs/v1.3.57",
+              "changelogs/v1.3.56"
+            ]
+          },
           {
             "group": "December 2025",
             "pages": [
@@ -490,6 +530,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/providers/supported-headers",
+      "destination": "/providers/request-options"
+    },
     {
       "source": "/features/unified-interface",
       "destination": "/providers/supported-providers/overview"

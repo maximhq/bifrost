@@ -1,0 +1,506 @@
+---
+title: "Raising a Pull Request"
+description: "Guidelines for submitting high-quality pull requests to Bifrost."
+icon: "code-pull-request"
+---
+
+## Before You Start
+
+1. **Create an issue first** (if one doesn't exist) - Discuss the change with the maintainers
+2. **Fork the repository** and create a feature branch
+3. **Set up your development environment** using [these instructions](/contributing/setting-up-repo)
+4. **Run tests locally** to ensure everything works
+
+## Commit Message Format
+
+All commits should follow a standardized format. **For each package/directory you modify, include a separate commit message line** describing the change in that package.
+
+### Format
+
+```
+[type]: description
+
+Additional details if needed (optional)
+```
+
+### Types
+
+- **feat** - New feature
+- **fix** - Bug fix
+- **refactor** - Code refactoring (no feature change, no bug fix)
+- **docs** - Documentation changes
+- **test** - Test changes
+- **chore** - Build, dependencies, tooling changes
+- **perf** - Performance improvements
+
+### Examples
+
+**Single Package Change:**
+```
+[fix]: handle connection timeout in MCP client manager
+```
+
+**Multiple Packages:**
+If your change affects multiple packages, include the package name or affected module in the description:
+
+```
+[fix]: MCP client - add retry logic to connection establishment
+
+This fixes intermittent connection failures by implementing exponential backoff.
+Affected packages:
+- core/mcp/clientmanager.go
+- core/mcp/healthmonitor.go
+```
+
+**Provider-Specific Changes:**
+```
+[fix]: OpenAI provider - handle streaming response errors
+[feat]: Anthropic provider - add support for batch API
+```
+
+**Multiple Commits for Multiple Packages:**
+If you're making significant changes to multiple packages, consider separate commits:
+
+```bash
+git commit -m "[feat]: Add retry mechanism to MCP core utilities"
+git commit -m "[fix]: Update OpenAI integration with retry support"
+git commit -m "[docs]: Document MCP resilience strategy"
+```
+
+### All Packages Modified Should Be Listed
+
+When creating a commit, always mention which packages/components are affected:
+
+```
+[feat]: Add semantic caching plugin
+
+Changes:
+- plugins/semanticcache/ - Core caching logic
+- core/bifrost.go - Plugin registration
+- transports/bifrost-http/server.go - Cache middleware integration
+
+Benefits:
+- Reduces API costs by 30-40%
+- Improves response latency for similar queries
+```
+
+<Tip>
+Use a structured format that makes it easy to understand at a glance what changed and where.
+</Tip>
+
+## Maintaining Changelogs
+
+For each package you modify, update the corresponding `changelog.md` file with your changes. Changelog entries are used to generate release notes and communicate changes to users.
+
+### Changelog File Locations
+
+Each package that receives updates should have a `changelog.md` file:
+
+- `core/changelog.md` - Core package changes
+- `framework/changelog.md` - Framework changes
+- `transports/changelog.md` - Transport layer changes
+- `plugins/{plugin-name}/changelog.md` - Specific plugin changes
+
+### Changelog Entry Format
+
+Each changelog entry follows this exact format:
+
+```
+[type]: description [@Your Name](https://github.com/yourname)
+```
+
+**Required Components:**
+- **Type**: One of `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, or `perf`
+- **Description**: Clear, concise description (under 100 characters)
+- **Author**: Your GitHub profile link (recommended)
+
+### Change Types Reference
+
+| Type | Usage | Example |
+|------|-------|---------|
+| **feat** | New feature | `[feat]: add exponential backoff retry mechanism` |
+| **fix** | Bug fix | `[fix]: handle connection timeout in MCP client` |
+| **refactor** | Code refactoring (no behavior change) | `[refactor]: simplify model caching` |
+| **docs** | Documentation updates | `[docs]: clarify semantic caching behavior` |
+| **test** | Test additions/modifications | `[test]: add regression tests for retry logic` |
+| **chore** | Build, dependencies, tooling | `[chore]: upgrade dependencies to latest versions` |
+| **perf** | Performance improvements | `[perf]: optimize model lookup to O(1)` |
+
+### Changelog Examples
+
+**Good Examples:**
+```markdown
+[feat]: add exponential backoff retry mechanism [@prathammaxim](https://github.com/prathammaxim)
+[fix]: handle null pointer in OpenAI response parsing [@contributor](https://github.com/contributor)
+[perf]: optimize model lookup with hash map [@contributor](https://github.com/contributor)
+```
+
+**Poor Examples (avoid):**
+```markdown
+- update stuff
+- minor changes
+- fix bug
+- added new thing
+```
+
+### How to Add Changelog Entries
+
+1. **Edit the `changelog.md`** file in the affected package
+2. **Add new entry at the TOP** of the file (most recent first)
+3. **Follow the exact format**: `[type]: description [@name](https://github.com/user)`
+4. **Include your author link** (optional but recommended)
+
+**Example: Before and After**
+
+**Before:**
+```markdown
+[feat]: added image generation request and response support
+[chore]: added case-insensitive helper methods
+```
+
+**After (with new entry at top):**
+```markdown
+[fix]: handle connection timeout in retry logic [@your-name](https://github.com/your-name)
+[feat]: add exponential backoff for transient errors [@your-name](https://github.com/your-name)
+[feat]: added image generation request and response support
+[chore]: added case-insensitive helper methods
+```
+
+### Multiple Package Changes
+
+When your PR affects multiple packages, **add entries to each package's `changelog.md`**:
+
+**Example Multi-Package Changelog:**
+
+**core/changelog.md:**
+```markdown
+[feat]: add retry executor with exponential backoff [@contributor](https://github.com/contributor)
+```
+
+**transports/changelog.md:**
+```markdown
+[fix]: apply retry logic to connection establishment [@contributor](https://github.com/contributor)
+```
+
+**plugins/governance/changelog.md:**
+```markdown
+[chore]: update core dependency to latest version
+```
+
+### What to Include in Changelog
+
+✅ **Do include:**
+- Bug fixes that affect users
+- New features
+- Breaking changes
+- Performance improvements
+- Significant refactoring
+- Documentation improvements
+
+❌ **Don't include:**
+- Internal code cleanup with no user impact
+- Typo fixes in comments only
+- Build system changes (unless significant)
+- Minor test-only changes
+
+### Changelog Best Practices
+
+1. **Add entries at the TOP** of the `changelog.md` file (most recent first)
+2. **One entry per logical change** - Don't combine unrelated changes
+3. **Keep descriptions concise** - Under 100 characters
+4. **Use consistent format** - `[type]: description`
+5. **Include your GitHub link** - Helps recognize contributors
+6. **Update all affected package changelogs** - Don't forget secondary packages
+7. **Add changelog entry with your commit** - Don't wait until the end
+
+### Format Consistency Rules
+
+**DO's:**
+- ✅ Use square brackets: `[feat]`
+- ✅ Use colon separator: `[feat]:`
+- ✅ Start with lowercase (unless proper noun)
+- ✅ Be specific and concise
+- ✅ Include GitHub profile link
+- ✅ Add new entries at the top
+
+**DON'Ts:**
+- ❌ Don't use parentheses: `(feat)` or braces `{feat}`
+- ❌ Don't use multiple spaces
+- ❌ Don't mix formats in the same file
+- ❌ Don't add entries at the bottom
+- ❌ Don't use vague descriptions
+
+### Complete PR Example with Changelogs
+
+If your PR adds retry logic to multiple packages:
+
+```
+Commit: [feat]: Add retry logic with exponential backoff
+
+Modified files:
+- core/mcp/utils.go ← add retry executor
+- core/mcp/clientmanager.go ← use retry logic
+
+Update changelogs:
+
+1. core/changelog.md:
+   [feat]: add exponential backoff retry mechanism [@your-name](https://github.com/your-name)
+
+2. transports/changelog.md:
+   [fix]: apply retry logic to connection establishment [@your-name](https://github.com/your-name)
+```
+
+### Changelog Review Checklist
+
+Before submitting a PR, verify:
+
+- [ ] All packages modified have changelog entries
+- [ ] Format is correct: `[type]: description [@name](https://github.com/user)`
+- [ ] Entries are added at TOP of the file
+- [ ] Author GitHub link is included
+- [ ] Description is clear and concise (under 100 chars)
+- [ ] Type is one of: feat, fix, refactor, docs, test, chore, perf
+- [ ] Entries are added with the commit (not after)
+
+## Pull Request Title
+
+Keep PR titles concise and descriptive, following the same pattern:
+
+```
+[type]: Brief description of the change
+```
+
+Examples:
+- `[feat]: Add rate limiting to governance plugin`
+- `[fix]: Resolve deadlock in MCP retry logic`
+- `[refactor]: Simplify model caching mechanism`
+- `[docs]: Update contribution guidelines for commit messages`
+
+## Pull Request Description
+
+Use the following template for your PR description:
+
+```markdown
+## Description
+
+Brief explanation of what this PR does and why it's needed.
+
+## Type of Change
+
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Breaking change
+- [ ] Documentation update
+- [ ] Refactoring
+
+## Affected Packages
+
+List all packages/directories modified:
+- core/providers/openai/
+- transports/bifrost-http/server/
+- plugins/governance/
+
+## Changes Made
+
+- Specific change 1
+- Specific change 2
+- Specific change 3
+
+## Testing
+
+Describe how you tested these changes:
+- [ ] Unit tests added/updated
+- [ ] Integration tests passed
+- [ ] Manual testing completed
+
+## Checklist
+
+- [ ] Code follows the project's code style
+- [ ] Tests are passing locally (`make test-all`)
+- [ ] Documentation is updated if needed
+- [ ] No breaking changes (or breaking changes are documented)
+- [ ] Commit messages follow the format: `[type]: description`
+- [ ] All affected packages are mentioned in commit messages
+
+## Related Issues
+
+Closes #123
+Relates to #456
+```
+
+## Best Practices
+
+### 1. Keep PRs Focused
+
+- One feature or fix per PR when possible
+- If multiple related changes, group them logically by package
+- Avoid mixing refactoring with feature changes
+
+### 2. Commit Messages Matter
+
+❌ **Bad:**
+```
+Update file
+```
+
+✅ **Good:**
+```
+[fix]: Handle null pointer in OpenAI response parsing
+```
+
+❌ **Bad:**
+```
+[feat]: Major update to semantic cache
+```
+
+✅ **Good:**
+```
+[feat]: Add semantic cache initialization with retry logic
+
+Changes:
+- plugins/semanticcache/ - Add retry mechanism
+- core/bifrost.go - Register cache handler
+- docs/ - Add usage documentation
+```
+
+### 3. Include All Affected Packages
+
+Always explicitly list which packages/directories are modified:
+
+```
+[fix]: Resolve SSE connection issues
+
+Affected components:
+- core/mcp/clientmanager.go - Add connection validation
+- core/mcp/healthmonitor.go - Improve health checks
+- core/mcp/utils.go - Fix retry context handling
+```
+
+### 4. Test Thoroughly
+
+Before opening a PR:
+
+```bash
+# Run all tests
+make test-all
+
+# Run specific test suite
+make test-core PROVIDER=openai
+
+# Format code
+make fmt
+
+# Lint code
+make lint
+```
+
+### 5. Small, Reviewable PRs
+
+- Aim for &lt;400 lines changed per PR
+- If larger, break into logical commits
+- Each commit should be independently reviewable
+
+### 6. Update Documentation
+
+- Update relevant `.mdx` files in `/docs`
+- Add comments for complex logic
+- Update README.md if behavior changes
+
+## Code Review Checklist
+
+Before requesting review, ensure:
+
+✅ All commits follow `[type]: description` format
+✅ All affected packages are explicitly mentioned
+✅ No merge conflicts
+✅ All tests pass (`make test-all`)
+✅ Code is properly formatted (`make fmt`)
+✅ No linting issues (`make lint`)
+✅ Documentation is updated
+✅ PR description is clear and complete
+
+## During Code Review
+
+- Respond to feedback promptly
+- Push new commits for requested changes (don't force-push to avoid confusion)
+- Mark conversations as resolved when addressed
+- Ask for clarification if feedback is unclear
+
+## Merging
+
+Once approved:
+- The maintainer will handle the merge
+- Your commits will be preserved in the history
+- Ensure your branch is up-to-date with `main` before final approval
+
+## Common Pitfalls to Avoid
+
+1. ❌ **Vague commit messages** - Always be specific about what changed
+2. ❌ **Missing package information** - Always list affected packages
+3. ❌ **Mixing concerns** - Keep commits focused
+4. ❌ **Not running tests** - Test locally before opening PR
+5. ❌ **Large PRs** - Break into smaller, reviewable chunks
+6. ❌ **Not updating docs** - If behavior changes, update documentation
+
+## Examples of Good Commits
+
+### Example 1: Provider Fix
+```
+[fix]: OpenAI provider - handle streaming response errors correctly
+
+Previously, streaming responses would sometimes fail with
+"context deadline exceeded" error when network latency exceeded
+timeout threshold.
+
+Changes:
+- core/providers/openai/openai.go - Add dynamic timeout
+- core/providers/anthropic/anthropic.go - Align timeout logic
+- tests/ - Add regression tests
+
+Affected packages:
+- core/providers/
+- core/bifrost.go (minor type update)
+```
+
+### Example 2: Plugin Development
+```
+[feat]: Add rate limiting to governance plugin
+
+Introduces token bucket algorithm for per-customer rate limiting.
+Allows fine-grained control over request throughput.
+
+Changes:
+- plugins/governance/ratelimit/ - New package with core logic
+- plugins/governance/main.go - Register rate limiter
+- transports/bifrost-http/middleware.go - Apply rate limit checks
+- docs/features/governance.mdx - Add usage documentation
+
+Benefits:
+- Prevents request storms
+- Fair resource allocation
+- Configurable per-customer
+```
+
+### Example 3: Core Refactoring
+```
+[refactor]: Simplify model caching to reduce complexity
+
+Consolidate three separate caching layers into unified approach.
+No behavior change - internal improvement only.
+
+Changes:
+- core/models.go - Unified cache implementation
+- core/cache/ - Remove legacy cache package
+- tests/ - Update cache tests
+
+Affected packages:
+- core/ (main change)
+- plugins/ (minor - cache API unchanged)
+```
+
+## Need Help?
+
+- 📚 See [Code Conventions](/contributing/code-conventions) for style guidelines
+- 🏗️ Check [Architecture Docs](/architecture) to understand the codebase structure
+- 💬 Ask in [Discord](https://discord.gg/exN5KAydbU) if unsure about the process
+- ❓ Refer to the [Changelog Review Checklist](#changelog-review-checklist) above before submitting

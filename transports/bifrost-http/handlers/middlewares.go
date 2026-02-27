@@ -17,10 +17,40 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+var loggingSkipPaths = []string{"/health", "/_next","/api/dev"}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			startTime := time.Now()
+			// skip logging if it's a /health check request
+			if slices.IndexFunc(loggingSkipPaths, func(path string) bool {
+				return strings.HasPrefix(string(ctx.RequestURI()), path)
+			}) != -1 {
+				goto corsFlow
+			}
+			defer func() {
+				statusCode := ctx.Response.Header.StatusCode()
+				level := schemas.LogLevelInfo
+				if statusCode >= 500 {
+					level = schemas.LogLevelError
+				} else if statusCode >= 400 {
+					level = schemas.LogLevelWarn
+				}
+				logBuilder := logger.LogHTTPRequest(level, "request completed").
+					Str("http.method", string(ctx.Method())).
+					Str("http.target", string(ctx.RequestURI())).
+					Int("http.status_code", statusCode).
+					Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
+					Str("http.remote_addr", ctx.RemoteAddr().String()).
+					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
+				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					logBuilder = logBuilder.Str("trace_id", traceID)
+				}
+				logBuilder.Send()
+			}()
+		corsFlow:
 			origin := string(ctx.Request.Header.Peek("Origin"))
 			allowed := IsOriginAllowed(origin, config.ClientConfig.AllowedOrigins)
 			allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout"}
@@ -60,7 +90,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			plugins := config.GetLoadedPlugins()
+			plugins := config.GetLoadedHTTPTransportPlugins()
 			if len(plugins) == 0 {
 				next(ctx)
 				return
@@ -254,7 +284,7 @@ func (m *AuthMiddleware) UpdateAuthConfig(authConfig *configstore.AuthConfig) {
 	m.authConfig.Store(authConfig)
 }
 
-// InferenceMiddleware is for inference requests if authConfig is set, it will skip authentication if disableAuthOnInference is true.
+// InferenceMiddleware is for inference requests (including MCP routes) if authConfig is set, it will skip authentication if disableAuthOnInference is true.
 func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
 		return authConfig.DisableAuthOnInference
@@ -273,11 +303,20 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	whitelistedRoutes := []string{
 		"/api/session/is-auth-enabled",
 		"/api/session/login",
-		"/api/session/logout",
+		"/api/oauth/callback",
 		"/health",
 	}
+	whitelistedPrefixes := []string{
+		"/api/oauth/callback",
+	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		return slices.Contains(whitelistedRoutes, url)
+		if slices.Contains(whitelistedRoutes, url) ||
+			slices.IndexFunc(whitelistedPrefixes, func(prefix string) bool {
+				return strings.HasPrefix(url, prefix)
+			}) != -1 {
+			return true
+		}
+		return false
 	})
 }
 
@@ -341,11 +380,15 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					return
 				}
 				// Verify the username and password
-				if username != authConfig.AdminUserName {
+				if authConfig.AdminUserName == nil || username != authConfig.AdminUserName.GetValue() {
 					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 					return
 				}
-				compare, err := encrypt.CompareHash(authConfig.AdminPassword, password)
+				if authConfig.AdminPassword == nil {
+					SendError(ctx, fasthttp.StatusInternalServerError, "Authentication not properly configured")
+					return
+				}
+				compare, err := encrypt.CompareHash(authConfig.AdminPassword.GetValue(), password)
 				if err != nil {
 					SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to compare password: %v", err))
 					return
@@ -507,7 +550,7 @@ func (m *TracingMiddleware) GetTracer() *tracing.Tracer {
 
 // GetObservabilityPlugins filters and returns only observability plugins from a list of plugins.
 // Uses Go type assertion to identify plugins implementing the ObservabilityPlugin interface.
-func GetObservabilityPlugins(plugins []schemas.Plugin) []schemas.ObservabilityPlugin {
+func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.ObservabilityPlugin {
 	if len(plugins) == 0 {
 		return nil
 	}

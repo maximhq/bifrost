@@ -1,0 +1,181 @@
+---
+title: "vLLM"
+description: "vLLM API guide - OpenAI-compatible self-hosted inference, chat, text, embeddings, rerank, and streaming"
+icon: "v"
+---
+
+## Overview
+
+vLLM is an **OpenAI-compatible provider** for self-hosted inference. Bifrost delegates to the shared OpenAI provider implementation. Key characteristics:
+- **OpenAI compatibility** - Chat, text completions, embeddings, rerank, and streaming
+- **Self-hosted** - Typically runs at `http://localhost:8000` or your own server
+- **Optional authentication** - API key often omitted for local instances
+- **Responses API** - Supported via chat completion fallback
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| Text Completions | ✅ | ✅ | `/v1/completions` |
+| Embeddings | ✅ | - | `/v1/embeddings` |
+| Rerank | ✅ | - | `/v1/rerank` (fallback: `/rerank`) |
+| List Models | ✅ | - | `/v1/models` |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): Image Generation, Speech, Files, and Batch are not supported and return `UnsupportedOperationError`.
+</Note>
+
+---
+
+## Authentication
+
+- **API key**: Optional. For local vLLM instances, the key is often left empty.
+- When set, the key is sent as `Authorization: Bearer <key>`.
+
+---
+
+## Configuration
+
+- **Base URL**: Default is `http://localhost:8000`. Override via provider `network_config.base_url`.
+- **Model names**: Depend on the models loaded in your vLLM instance (e.g. `meta-llama/Llama-3.2-1B-Instruct`, `BAAI/bge-m3` for embeddings).
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+# Point to local or remote vLLM instance (default: http://localhost:8000)
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vllm/meta-llama/Llama-3.2-1B-Instruct",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+
+# Gateway provider config: set base_url for remote vLLM
+# "network_config": { "base_url": "http://vllm-endpoint:8000" }
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+config := &schemas.ProviderConfig{
+    NetworkConfig: schemas.NetworkConfig{
+        BaseURL: "http://localhost:8000",  // optional; default is http://localhost:8000
+        DefaultRequestTimeoutInSeconds: 30,
+    },
+}
+provider, _ := vllm.NewVLLMProvider(config, logger)
+
+response, _ := provider.ChatCompletion(ctx, key, request)
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Getting started
+
+1. Run a vLLM server (Docker or pip). Example with Docker:
+   ```bash
+   docker run --gpus all -p 8000:8000 vllm/vllm-openai:latest --model meta-llama/Llama-3.2-1B-Instruct
+   ```
+2. Verify the server:
+   ```bash
+   curl http://localhost:8000/v1/models
+   ```
+3. Use Bifrost with model prefix `vllm/<model_id>` (e.g. `vllm/meta-llama/Llama-3.2-1B-Instruct`).
+
+---
+
+# 1. Chat Completions
+
+vLLM supports standard OpenAI chat completion parameters. For full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions). Message types, tools, and streaming follow the same behavior.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API requests to Chat Completions and back:
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+---
+
+# 3. Text Completions
+
+| Parameter | Mapping |
+|-----------|---------|
+| `prompt` | Sent as-is |
+| `max_tokens` | max_tokens |
+| `temperature` | temperature |
+| `top_p` | top_p |
+| `stop` | stop sequences |
+
+---
+
+# 4. Embeddings
+
+vLLM supports `/v1/embeddings`. Use model IDs exposed by your vLLM server (e.g. `BAAI/bge-m3`).
+
+---
+
+# 5. List Models
+
+Lists models from your vLLM instance via `/v1/models`. Available models depend on what is loaded on the server.
+
+---
+
+# 6. Rerank
+
+vLLM supports reranking for pooling/cross-encoder reranker models. Bifrost sends requests to `/v1/rerank` and automatically falls back to `/rerank` when required by your vLLM deployment.
+
+```bash
+curl -X POST http://localhost:8080/v1/rerank \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vllm/BAAI/bge-reranker-v2-m3",
+    "query": "What is machine learning?",
+    "documents": [
+      {"text": "Machine learning is a subset of AI."},
+      {"text": "Python is a programming language."},
+      {"text": "Deep learning uses neural networks."}
+    ],
+    "params": {
+      "return_documents": true
+    }
+  }'
+```
+
+<Note>
+Your upstream vLLM server must be started with a rerank-capable model (pooling/cross-encoder task support).
+</Note>
+
+---
+
+## Caveats
+
+<Accordion title="Default base URL is localhost">
+**Severity**: Low  
+**Behavior**: Default base URL is `http://localhost:8000`.  
+**Impact**: For remote or custom ports, set `network_config.base_url` in the provider config.  
+</Accordion>
+
+<Accordion title="Error responses with HTTP 200">
+**Severity**: Low  
+**Behavior**: vLLM may return HTTP 200 with an error payload (e.g. `{"error": {"code": 404, "message": "..."}}`) instead of 4xx/5xx.  
+**Impact**: Bifrost normalizes these into standard error responses so clients see consistent error handling.  
+</Accordion>

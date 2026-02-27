@@ -55,6 +55,8 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			reqBody.Stream = schemas.Ptr(true)
 		}
 
+		reqBody.SetStripCacheControlScope(true)
+
 		// Convert struct to map for Vertex API
 		reqBytes, err := sonic.Marshal(reqBody)
 		if err != nil {

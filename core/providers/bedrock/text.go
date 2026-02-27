@@ -34,7 +34,9 @@ func ToBedrockTextCompletionRequest(bifrostReq *schemas.BifrostTextCompletionReq
 		bedrockReq.TopP = bifrostReq.Params.TopP
 
 		if bifrostReq.Params.ExtraParams != nil {
+			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
+				delete(bedrockReq.ExtraParams, "top_k")
 				bedrockReq.TopK = topK
 			}
 		}

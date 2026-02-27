@@ -3,12 +3,13 @@
 # Variables
 HOST ?= localhost
 PORT ?= 8080
-APP_DIR ?= 
+APP_DIR ?=
 PROMETHEUS_LABELS ?=
 LOG_STYLE ?= json
 LOG_LEVEL ?= info
 TEST_REPORTS_DIR ?= test-reports
-GOTESTSUM_FORMAT ?= testname
+GOTESTSUM_FORMAT ?= standard-verbose
+FLOW ?=
 VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
@@ -26,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs build-docker-image cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts
+.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -48,9 +49,10 @@ help: ## Show this help message
 	@echo ""
 	@echo "$(YELLOW)Test Configuration:$(NC)"
 	@echo "  TEST_REPORTS_DIR  Directory for HTML test reports (default: test-reports)"
-	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: testname)"
+	@echo "  GOTESTSUM_FORMAT  Test output format: testname|dots|pkgname|standard-verbose (default: standard-verbose)"
 	@echo "  TESTCASE          Exact test name to run (e.g., TestVirtualKeyTokenRateLimit)"
 	@echo "  PATTERN           Substring pattern to filter tests (alternative to TESTCASE)"
+	@echo "  FLOW              E2E test flow to run: providers|virtual-keys (default: all)"
 
 cleanup-enterprise: ## Clean up enterprise directories if present
 	@echo "$(GREEN)Cleaning up enterprise...$(NC)"
@@ -104,9 +106,19 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 	@if [ -n "$(DEBUG)" ]; then \
 		echo "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
 	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		echo "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
+	fi
 	@echo ""
 	@echo "$(YELLOW)Starting UI development server...$(NC)"
-	@cd ui && npm run dev &
+	@if [ -n "$(DISABLE_PROFILER)" ]; then \
+		echo "$(CYAN)DevProfiler disabled for testing$(NC)"; \
+		cd ui && NEXT_PUBLIC_DISABLE_PROFILER=1 npm run dev & \
+	else \
+		cd ui && npm run dev & \
+	fi
 	@sleep 3
 	@echo "$(YELLOW)Starting API server with UI proxy...$(NC)"
 	@$(MAKE) setup-workspace >/dev/null
@@ -214,7 +226,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.25.5-alpine3.22 \
+				golang:1.26-alpine3.22 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -231,7 +243,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.25.5-alpine3.22 \
+				golang:1.26-alpine3.22 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \
@@ -247,7 +259,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 		exit 1; \
 	fi
 
-build-docker-image: build-ui ## Build Docker image
+docker-image: build-ui ## Build Docker image
 	@echo "$(GREEN)Building Docker image...$(NC)"
 	$(eval GIT_SHA=$(shell git rev-parse --short HEAD))
 	@docker build -f transports/Dockerfile -t bifrost -t bifrost:$(GIT_SHA) -t bifrost:latest .
@@ -731,6 +743,153 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		exit 1; \
 	fi
 
+setup-mcp-tests: ## Build all MCP test servers in examples/mcps/ (Go and TypeScript)
+	@echo "$(GREEN)Building MCP test servers...$(NC)"
+	@FAILED=0; \
+	for mcp_dir in examples/mcps/*/; do \
+		if [ -d "$$mcp_dir" ]; then \
+			mcp_name=$$(basename $$mcp_dir); \
+			if [ -f "$$mcp_dir/go.mod" ]; then \
+				echo "$(CYAN)Building $$mcp_name (Go)...$(NC)"; \
+				mkdir -p "$$mcp_dir/bin"; \
+				if cd "$$mcp_dir" && GOWORK=off go build -o bin/$$mcp_name . && cd - > /dev/null; then \
+					echo "$(GREEN)  ✓ $$mcp_name$(NC)"; \
+				else \
+					echo "$(RED)  ✗ $$mcp_name failed$(NC)"; \
+					FAILED=1; \
+					cd - > /dev/null 2>&1 || true; \
+				fi; \
+			elif [ -f "$$mcp_dir/package.json" ]; then \
+				echo "$(CYAN)Building $$mcp_name (TypeScript)...$(NC)"; \
+				if cd "$$mcp_dir" && npm install --silent && npm run build && cd - > /dev/null; then \
+					echo "$(GREEN)  ✓ $$mcp_name$(NC)"; \
+				else \
+					echo "$(RED)  ✗ $$mcp_name failed$(NC)"; \
+					FAILED=1; \
+					cd - > /dev/null 2>&1 || true; \
+				fi; \
+			fi; \
+		fi; \
+	done; \
+	if [ $$FAILED -eq 1 ]; then \
+		echo "$(RED)Some MCP test servers failed to build$(NC)"; \
+		exit 1; \
+	fi
+	@echo ""
+	@echo "$(GREEN)✓ All MCP test servers built$(NC)"
+
+test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-mcp [TYPE=connection] [TESTCASE=TestName] [PATTERN=substring])
+	@echo "$(GREEN)Running MCP tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@if [ -n "$(PATTERN)" ] && [ -n "$(TESTCASE)" ]; then \
+		echo "$(RED)Error: PATTERN and TESTCASE are mutually exclusive$(NC)"; \
+		echo "$(YELLOW)Use PATTERN for substring matching or TESTCASE for exact match$(NC)"; \
+		exit 1; \
+	fi
+	@if [ ! -d "core/internal/mcptests" ]; then \
+		echo "$(RED)Error: MCP tests directory not found$(NC)"; \
+		exit 1; \
+	fi
+	@TEST_FAILED=0; \
+	REPORT_FILE=""; \
+	if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(TYPE)" ]; then \
+		TYPE_CLEAN=$$(echo $(TYPE) | sed 's/_test\.go$$//'); \
+		TEST_FILE="core/internal/mcptests/$${TYPE_CLEAN}_test.go"; \
+		if [ ! -f "$$TEST_FILE" ]; then \
+			echo "$(RED)Error: Test file '$$TEST_FILE' not found$(NC)"; \
+			echo "$(YELLOW)Available test types:$(NC)"; \
+			ls -1 core/internal/mcptests/*_test.go 2>/dev/null | sed 's|core/internal/mcptests/||' | sed 's|_test\.go$$||' | sed 's/^/  - /'; \
+			exit 1; \
+		fi; \
+		TEST_PATTERN=$$(grep -h "^func Test" $$TEST_FILE 2>/dev/null | sed 's/func \(Test[^(]*\).*/\1/' | paste -sd '|' - || echo "^Test"); \
+		if [ -n "$(TESTCASE)" ]; then \
+			echo "$(CYAN)Running $(TYPE) test: $(TESTCASE)...$(NC)"; \
+			SAFE_TESTCASE=$$(echo "$(TESTCASE)" | sed 's|/|_|g'); \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_TESTCASE.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "^$(TESTCASE)$$" . || TEST_FAILED=1; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running $(TYPE) tests matching '$(PATTERN)'...$(NC)"; \
+			SAFE_PATTERN=$$(echo "$(PATTERN)" | sed 's|/|_|g'); \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_PATTERN.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run ".*$(PATTERN).*" . || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running all $(TYPE) tests (pattern: $$TEST_PATTERN)...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "$$TEST_PATTERN" . || TEST_FAILED=1; \
+		fi; \
+		cd ../../..; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	else \
+		if [ -n "$(TESTCASE)" ]; then \
+			echo "$(CYAN)Running test case: $(TESTCASE) across all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(TESTCASE).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
+		elif [ -n "$(PATTERN)" ]; then \
+			echo "$(CYAN)Running tests matching '$(PATTERN)' across all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(PATTERN).xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+		else \
+			echo "$(CYAN)Running all MCP tests...$(NC)"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all.xml"; \
+			cd core/internal/mcptests && GOWORK=off gotestsum \
+				--format=$(GOTESTSUM_FORMAT) \
+				--junitfile=../../../$$REPORT_FILE \
+				-- -v -race || TEST_FAILED=1; \
+		fi; \
+		cd ../../..; \
+		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
+			if which junit-viewer > /dev/null 2>&1; then \
+				echo "$(YELLOW)Generating HTML report...$(NC)"; \
+				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				echo ""; \
+				echo "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
+				echo "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
+			else \
+				echo ""; \
+				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+			fi; \
+		else \
+			echo ""; \
+			echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
+		fi; \
+	fi; \
+	if [ $$TEST_FAILED -eq 1 ]; then \
+		exit 1; \
+	fi
+
 test-all: test-core test-plugins test ## Run all tests
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
@@ -1010,6 +1169,65 @@ test-integrations-ts: ## Run TypeScript integration tests (Usage: make test-inte
 		exit 1; \
 	else \
 		echo "$(GREEN)✓ TypeScript integration tests complete$(NC)"; \
+	fi
+
+install-playwright: ## Install Playwright test dependencies
+	@echo "$(GREEN)Installing Playwright dependencies...$(NC)"
+	@which node > /dev/null || (echo "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
+	@which npm > /dev/null || (echo "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
+	@cd tests/e2e && npm install
+	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
+		echo "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
+	else \
+		echo "$(CYAN)Installing Chromium...$(NC)"; \
+		npx playwright install --with-deps chromium; \
+	fi
+	@echo "$(GREEN)Playwright is ready$(NC)"
+
+build-test-plugin: ## Build test plugin for E2E tests (copies to tmp/bifrost-test-plugin.so)
+	@echo "$(GREEN)Building test plugin for E2E tests...$(NC)"
+	@cd examples/plugins/hello-world && make dev
+	@mkdir -p tmp
+	@cp examples/plugins/hello-world/build/hello-world.so tmp/bifrost-test-plugin.so
+	@echo "$(GREEN)✓ Test plugin ready at tmp/bifrost-test-plugin.so$(NC)"
+
+run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=providers|virtual-keys|config])
+	@echo "$(GREEN)Running Playwright E2E tests...$(NC)"
+	@if [ -n "$(FLOW)" ]; then \
+		echo "$(CYAN)Running $(FLOW) tests...$(NC)"; \
+		if [ "$(FLOW)" = "config" ]; then \
+			cd tests/e2e && npx playwright test --project=chromium-config; \
+		else \
+			cd tests/e2e && npx playwright test features/$(FLOW); \
+		fi; \
+	else \
+		echo "$(CYAN)Running all E2E tests...$(NC)"; \
+		cd tests/e2e && npx playwright test; \
+	fi
+	@echo ""
+	@echo "$(GREEN)E2E tests complete$(NC)"
+	@echo "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
+
+run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	echo "$(GREEN)Opening Playwright UI...$(NC)"; \
+	cd tests/e2e && npx playwright test --ui
+
+run-e2e-headed: install-playwright ## Run E2E tests in headed browser mode
+	@echo "$(GREEN)Running E2E tests in headed mode...$(NC)"
+	@if [ -n "$(FLOW)" ]; then \
+		echo "$(CYAN)Running $(FLOW) tests (headed)...$(NC)"; \
+		if [ "$(FLOW)" = "config" ]; then \
+			cd tests/e2e && npx playwright test --project=chromium-config --headed; \
+		else \
+			cd tests/e2e && npx playwright test features/$(FLOW) --headed; \
+		fi; \
+	else \
+		echo "$(CYAN)Running all E2E tests (headed)...$(NC)"; \
+		cd tests/e2e && npx playwright test --headed; \
 	fi
 
 # Quick start with example config

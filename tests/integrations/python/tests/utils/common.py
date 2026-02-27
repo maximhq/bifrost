@@ -41,8 +41,24 @@ FILE_DATA_BASE64 = (
             "bGVyCjw8CiAgL1NpemUgNgogIC9Sb290IDEgMCBSCj4+CnN0YXJ0eHJlZgo0NDkKJSVFT0YK"
         )
 
-# Small test image as base64 (1x1 pixel red PNG)
-BASE64_IMAGE = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+# Small test image as base64 (64x64 pixel red PNG - minimum size for some providers)
+def _create_base64_image(width: int = 64, height: int = 64) -> str:
+    """Create a base64-encoded PNG image of specified size (default 64x64 for minimum requirements)."""
+    from PIL import Image
+    import io
+    import base64
+    
+    # Create a simple red image
+    img = Image.new('RGB', (width, height), color='red')
+    
+    # Encode as PNG
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    img_bytes = buffer.getvalue()
+    
+    return base64.b64encode(img_bytes).decode('utf-8')
+
+BASE64_IMAGE = _create_base64_image(64, 64)
 
 # Common Test Data
 SIMPLE_CHAT_MESSAGES = [{"role": "user", "content": "Hello! How are you today?"}]
@@ -828,6 +844,11 @@ def assert_valid_chat_response(response: Any, min_length: int = 1):
             text_content = [c for c in response.content if hasattr(c, "type") and c.type == "text"]
             if text_content:
                 content = text_content[0].text
+            else:
+                # Check for compaction blocks
+                compaction_content = [c for c in response.content if hasattr(c, "type") and c.type == "compaction"]
+                if compaction_content and hasattr(compaction_content[0], "content"):
+                    content = compaction_content[0].content
     elif hasattr(response, "choices") and len(response.choices) > 0:  # OpenAI
         # Handle OpenAI format (content can be string or list)
         choice = response.choices[0]
@@ -995,6 +1016,7 @@ def assert_valid_error_response(response_or_exception: Any, expected_invalid_rol
         "not supported",
         "bad request",
         "invalid_request",
+        "resource does not exist"
     ]
 
     has_role_error = any(
@@ -1028,7 +1050,7 @@ def assert_error_propagation(error_response: Any, integration: str):
     assert error_response is not None, "Should have received an error response"
 
     # Integration-specific error format validation
-    if integration.lower() == "openai":
+    if integration.lower() in ("openai", "azure"):
         # OpenAI format: should have top-level 'type', 'event_id' and 'error' field with nested structure
         if hasattr(error_response, "response"):
             error_data = error_response.response.json()
@@ -1816,6 +1838,9 @@ def get_api_key(integration: str) -> str:
         "xai": "XAI_API_KEY",
         "nebius": "NEBIUS_API_KEY",
         "huggingface": "HUGGING_FACE_API_KEY",
+        "azure": "AZURE_API_KEY",
+        "replicate": "REPLICATE_API_KEY",
+        "runway": "RUNWAY_API_KEY",
     }
 
     env_var = key_map.get(integration.lower())
@@ -2626,6 +2651,10 @@ def assert_valid_input_tokens_response(response: Any, library: str):
 # Test prompts for image generation
 IMAGE_GENERATION_SIMPLE_PROMPT = "A serene mountain landscape at sunset with a calm lake in the foreground"
 
+# Image edit test data
+IMAGE_EDIT_SIMPLE_PROMPT = "Add a beautiful sunset in the background with vibrant orange and pink colors"
+IMAGE_EDIT_PROMPT_OUTPAINT = "Extend the image with a scenic landscape continuation"
+
 def assert_valid_image_generation_response(response: Any, library: str = "openai"):
     """
     Assert that an image generation response is valid.
@@ -2721,6 +2750,78 @@ def assert_image_generation_usage(response: Any, library: str = "openai"):
         # Google may include usage metadata
         if hasattr(response, "usage_metadata") and response.usage_metadata:
             pass  # Usage metadata format varies
+
+
+# =========================================================================
+# IMAGE EDIT UTILITIES
+# =========================================================================
+
+def create_simple_mask_image(width: int = 1024, height: int = 1024) -> str:
+    """
+    Create a simple mask image for inpainting tests.
+    Returns base64-encoded PNG mask with alpha channel (white center = edit area, black borders = preserve).
+    
+    Args:
+        width: Mask width in pixels
+        height: Mask height in pixels
+    
+    Returns:
+        Base64-encoded PNG mask image with alpha channel
+    """
+    from PIL import Image, ImageDraw
+    import io
+    import base64
+    
+    # Create RGBA image with alpha channel (required by OpenAI)
+    mask = Image.new('RGBA', (width, height), color=(0, 0, 0, 255))  # Black with full opacity
+    
+    # Create white rectangle in center (area to edit) with full opacity
+    center_x, center_y = width // 2, height // 2
+    mask_width, mask_height = width // 3, height // 3
+    
+    draw = ImageDraw.Draw(mask)
+    draw.rectangle(
+        [center_x - mask_width // 2, center_y - mask_height // 2,
+         center_x + mask_width // 2, center_y + mask_height // 2],
+        fill=(255, 255, 255, 255)  # White with full opacity
+    )
+    
+    # Encode as PNG (supports alpha channel)
+    buffer = io.BytesIO()
+    mask.save(buffer, format='PNG')
+    mask_bytes = buffer.getvalue()
+    
+    return base64.b64encode(mask_bytes).decode('utf-8')
+
+
+def assert_valid_image_edit_response(response: Any, library: str = "openai"):
+    """
+    Assert that an image edit response is valid.
+    
+    Image edit responses have the same structure as image generation responses,
+    so we can reuse the generation validation with additional checks.
+    
+    Args:
+        response: The response object from image edit
+        library: Name of the library/integration used (e.g., 'openai', 'google')
+    """
+    # Image edit responses use the same format as generation
+    assert_valid_image_generation_response(response, library)
+    
+    # Additional validation specific to edits could go here
+    # (currently same structure as generation)
+
+
+def assert_image_edit_usage(response: Any, library: str = "openai"):
+    """
+    Assert that image edit usage information is present (if supported).
+    
+    Args:
+        response: The response object from image edit
+        library: Name of the library/integration used
+    """
+    # Image edit usage follows same format as generation
+    assert_image_generation_usage(response, library)
 
 
 # =========================================================================

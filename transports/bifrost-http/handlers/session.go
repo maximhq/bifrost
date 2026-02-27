@@ -99,11 +99,11 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Verify credentials
-	if payload.Username != authConfig.AdminUserName {
+	if payload.Username != authConfig.AdminUserName.GetValue() {
 		SendError(ctx, fasthttp.StatusUnauthorized, "Invalid username or password")
 		return
 	}
-	compare, err := encrypt.CompareHash(authConfig.AdminPassword, payload.Password)
+	compare, err := encrypt.CompareHash(authConfig.AdminPassword.GetValue(), payload.Password)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 		return

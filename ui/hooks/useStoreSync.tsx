@@ -6,23 +6,23 @@ import { useEffect } from "react";
 import { useWebSocket } from "./useWebSocket";
 
 /**
- * Hook that subscribes to WebSocket store_update messages and invalidates
- * RTK Query cache tags accordingly. This enables real-time cache invalidation
- * when data changes on the backend.
+ * Hook that subscribes to WebSocket messages for real-time cache updates.
  *
- * Expected message format: { type: "store_update", tags: ["Providers", "VirtualKeys", ...] }
+ * Handles store_update messages to invalidate RTK Query cache tags (triggers refetch).
  */
 export function useStoreSync() {
 	const { subscribe } = useWebSocket();
 	const dispatch = useAppDispatch();
 
 	useEffect(() => {
-		const unsubscribe = subscribe("store_update", (data) => {
+		const unsubTagSync = subscribe("store_update", (data) => {
 			if (data.tags && Array.isArray(data.tags)) {
 				dispatch(baseApi.util.invalidateTags(data.tags));
 			}
 		});
 
-		return unsubscribe;
+		return () => {
+			unsubTagSync();
+		};
 	}, [subscribe, dispatch]);
 }

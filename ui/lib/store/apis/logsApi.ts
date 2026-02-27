@@ -11,6 +11,7 @@ import {
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
+import { RoutingRule } from "@/lib/types/routingRules";
 
 // Helper function to build filter params
 function buildFilterParams(filters: LogFilters): Record<string, string | number> {
@@ -33,6 +34,12 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
 		params.virtual_key_ids = filters.virtual_key_ids.join(",");
+	}
+	if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
+		params.routing_rule_ids = filters.routing_rule_ids.join(",");
+	}
+	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
+		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
 	if (filters.start_time) params.start_time = filters.start_time;
 	if (filters.end_time) params.end_time = filters.end_time;
@@ -88,6 +95,12 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
 					params.virtual_key_ids = filters.virtual_key_ids.join(",");
 				}
+				if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
+					params.routing_rule_ids = filters.routing_rule_ids.join(",");
+				}
+				if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
+					params.routing_engine_used = filters.routing_engine_used.join(",");
+				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
 				if (filters.min_latency) params.min_latency = filters.min_latency;
@@ -133,6 +146,12 @@ export const logsApi = baseApi.injectEndpoints({
 				}
 				if (filters.virtual_key_ids && filters.virtual_key_ids.length > 0) {
 					params.virtual_key_ids = filters.virtual_key_ids.join(",");
+				}
+				if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
+					params.routing_rule_ids = filters.routing_rule_ids.join(",");
+				}
+				if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
+					params.routing_engine_used = filters.routing_engine_used.join(",");
 				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
@@ -214,7 +233,16 @@ export const logsApi = baseApi.injectEndpoints({
 		}),
 
 		// Get available models
-		getAvailableFilterData: builder.query<{ models: string[]; selected_keys: RedactedDBKey[]; virtual_keys: VirtualKey[] }, void>({
+		getAvailableFilterData: builder.query<
+			{
+				models: string[];
+				selected_keys: RedactedDBKey[];
+				virtual_keys: VirtualKey[];
+				routing_rules: RoutingRule[];
+				routing_engines: string[];
+			},
+			void
+		>({
 			query: () => "/logs/filterdata",
 			providesTags: ["Logs"],
 		}),

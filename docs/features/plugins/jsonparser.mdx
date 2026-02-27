@@ -48,7 +48,7 @@ func main() {
     // Initialize Bifrost with the plugin
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
         Account: &MyAccount{},
-        Plugins: []schemas.Plugin{
+        LLMPlugins: []schemas.LLMPlugin{
             jsonPlugin,
         },
     })
@@ -58,7 +58,7 @@ func main() {
     }
     
     // Use the client normally - JSON parsing happens automatically
-    // in the PostHook for all streaming responses
+    // in the PostLLMHook for all streaming responses
 }
 ```
 
@@ -86,7 +86,7 @@ func main() {
     // Initialize Bifrost with the plugin
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
         Account: &MyAccount{},
-        Plugins: []schemas.Plugin{
+        LLMPlugins: []schemas.LLMPlugin{
             jsonPlugin,
         },
     })
@@ -98,7 +98,7 @@ func main() {
     ctx := context.WithValue(context.Background(), jsonparser.EnableStreamingJSONParser, true)
     
     // Enable JSON parsing for specific requests
-    stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, request)
+    stream, bifrostErr := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
     if bifrostErr != nil {
             // handle error
     }
@@ -203,7 +203,7 @@ func main() {
     // Initialize Bifrost with the plugin
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
         Account: &MyAccount{},
-        Plugins: []schemas.Plugin{jsonPlugin},
+        LLMPlugins: []schemas.LLMPlugin{jsonPlugin},
     })
     if err != nil {
         panic(err)
@@ -225,7 +225,7 @@ func main() {
     }
 
     // Stream the response
-    stream, bifrostErr := client.ChatCompletionStreamRequest(context.Background(), request)
+    stream, bifrostErr := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), request)
     if bifrostErr != nil {
         panic(bifrostErr)
     }

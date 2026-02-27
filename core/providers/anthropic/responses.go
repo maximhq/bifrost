@@ -36,6 +36,7 @@ type AnthropicResponsesStreamState struct {
 	ReasoningSignatures       map[int]string                    // Maps output_index to reasoning signature
 	TextContentIndices        map[int]bool                      // Tracks which content indices are text blocks
 	ReasoningContentIndices   map[int]bool                      // Tracks which content indices are reasoning blocks
+	CompactionContentIndices  map[int]*schemas.CacheControl     // Tracks pending compaction blocks with their cache control
 	CurrentOutputIndex        int                               // Current output index counter
 	MessageID                 *string                           // Message ID from message_start
 	Model                     *string                           // Model name from message_start
@@ -58,6 +59,7 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			ReasoningSignatures:       make(map[int]string),
 			TextContentIndices:        make(map[int]bool),
 			ReasoningContentIndices:   make(map[int]bool),
+			CompactionContentIndices:  make(map[int]*schemas.CacheControl),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -115,6 +117,11 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.ReasoningContentIndices)
 	}
+	if state.CompactionContentIndices == nil {
+		state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
+	} else {
+		clear(state.CompactionContentIndices)
+	}
 	// Reset other fields
 	state.ChunkIndex = nil
 	state.AccumulatedJSON = ""
@@ -158,6 +165,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.ReasoningSignatures = make(map[int]string)
 	state.TextContentIndices = make(map[int]bool)
 	state.ReasoningContentIndices = make(map[int]bool)
+	state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
@@ -369,6 +377,21 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 			}
 
 			switch chunk.ContentBlock.Type {
+			case AnthropicContentBlockTypeCompaction:
+				// Compaction block - track it but don't emit yet (summary arrives in delta)
+				itemID := fmt.Sprintf("cmp_%d", outputIndex)
+				state.ItemIDs[outputIndex] = itemID
+
+				// Store cache control for later use when delta arrives
+				state.CompactionContentIndices[outputIndex] = chunk.ContentBlock.CacheControl
+
+				// Track in ContentIndexToBlockType so content_block_stop skips generic done
+				if chunk.Index != nil {
+					state.ContentIndexToBlockType[*chunk.Index] = AnthropicContentBlockTypeCompaction
+				}
+
+				// Don't emit output_item.added yet - wait for the delta with actual summary
+				return nil, nil, false
 			case AnthropicContentBlockTypeText:
 				// Text block - emit output_item.added with type "message"
 				messageType := schemas.ResponsesMessageTypeMessage
@@ -384,7 +407,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				state.ItemIDs[outputIndex] = itemID
 
 				item := &schemas.ResponsesMessage{
-					ID:     &itemID,
+					ID:     schemas.Ptr(itemID),
 					Status: schemas.Ptr("in_progress"),
 					Type:   &messageType,
 					Role:   &role,
@@ -602,6 +625,52 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 			// Handle different delta types
 			switch chunk.Delta.Type {
+			case AnthropicStreamDeltaTypeCompaction:
+				if chunk.Delta.Content != nil {
+					// Compaction summary arrives - emit both output_item.added and output_item.done
+					itemID := state.ItemIDs[outputIndex]
+					messageType := schemas.ResponsesMessageTypeMessage
+					role := schemas.ResponsesInputMessageRoleAssistant
+
+					// Retrieve cache control stored from content_block_start
+					cacheControl := state.CompactionContentIndices[outputIndex]
+
+					item := &schemas.ResponsesMessage{
+						ID:     &itemID,
+						Status: schemas.Ptr("completed"),
+						Type:   &messageType,
+						Role:   &role,
+						Content: &schemas.ResponsesMessageContent{
+							ContentBlocks: []schemas.ResponsesMessageContentBlock{
+								{
+									Type: schemas.ResponsesOutputMessageContentTypeCompaction,
+									ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
+										Summary: *chunk.Delta.Content,
+									},
+									CacheControl: cacheControl,
+								},
+							},
+						},
+					}
+
+					// Emit both output_item.added (with summary) and output_item.done
+					return []*schemas.BifrostResponsesStreamResponse{
+						{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(outputIndex),
+							ContentIndex:   chunk.Index,
+							Item:           item,
+						},
+						{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: sequenceNumber + 1,
+							OutputIndex:    schemas.Ptr(outputIndex),
+							ItemID:         schemas.Ptr(itemID),
+							Item:           item,
+						},
+					}, nil, false
+				}
 			case AnthropicStreamDeltaTypeText:
 				if chunk.Delta.Text != nil && *chunk.Delta.Text != "" {
 					// Text content delta - emit output_text.delta with item ID
@@ -873,11 +942,16 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 				}, nil, false
 			}
 
-			// Skip generic output_item.done if this is a web_search_tool_result block
-			// (the web search handler above already emitted the proper done event)
+			// Skip generic output_item.done if this is a web_search_tool_result or compaction block
+			// (their handlers already emitted the proper done event)
 			if chunk.Index != nil {
 				if blockType, exists := state.ContentIndexToBlockType[*chunk.Index]; exists {
 					if blockType == AnthropicContentBlockTypeWebSearchToolResult {
+						// Clean up the tracking
+						delete(state.ContentIndexToBlockType, *chunk.Index)
+						return nil, nil, false
+					}
+					if blockType == AnthropicContentBlockTypeCompaction {
 						// Clean up the tracking
 						delete(state.ContentIndexToBlockType, *chunk.Index)
 						return nil, nil, false
@@ -1068,26 +1142,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		// Check if integration type in ctx is anthropic
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
-			// Convert usage from Anthropic format to Bifrost format
-			var bifrostUsage *schemas.ResponsesResponseUsage
-			if chunk.Usage != nil {
-				bifrostUsage = &schemas.ResponsesResponseUsage{
-					InputTokens:  chunk.Usage.InputTokens,
-					OutputTokens: chunk.Usage.OutputTokens,
-					TotalTokens:  chunk.Usage.InputTokens + chunk.Usage.OutputTokens,
-				}
-				// Handle cached tokens if present
-				if chunk.Usage.CacheReadInputTokens > 0 {
-					bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedTokens: chunk.Usage.CacheReadInputTokens,
-					}
-				}
-				if chunk.Usage.CacheCreationInputTokens > 0 {
-					bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-						CachedTokens: chunk.Usage.CacheCreationInputTokens,
-					}
-				}
-			}
+			// Convert usage from Anthropic format to Bifrost
+			bifrostUsage := ConvertAnthropicUsageToBifrostUsage(chunk.Usage)
 
 			// Convert stop reason if present
 			var stopReason *string
@@ -1516,49 +1572,47 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 
 		// check for claude-cli user agent
 		if ctx != nil {
-			if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-				if strings.Contains(userAgent, "claude-cli") {
-					// check for WebSearch tool
-					if bifrostResp.Item != nil &&
-						bifrostResp.Item.Type != nil &&
-						*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall &&
-						bifrostResp.Item.ResponsesToolMessage != nil &&
-						bifrostResp.Item.ResponsesToolMessage.Name != nil &&
-						*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
-						bifrostResp.Item.ResponsesToolMessage.Arguments != nil {
+			if IsClaudeCodeRequest(ctx) {
+				// check for WebSearch tool
+				if bifrostResp.Item != nil &&
+					bifrostResp.Item.Type != nil &&
+					*bifrostResp.Item.Type == schemas.ResponsesMessageTypeFunctionCall &&
+					bifrostResp.Item.ResponsesToolMessage != nil &&
+					bifrostResp.Item.ResponsesToolMessage.Name != nil &&
+					*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
+					bifrostResp.Item.ResponsesToolMessage.Arguments != nil {
 
-						argumentsJSON := sanitizeWebSearchArguments(*bifrostResp.Item.ResponsesToolMessage.Arguments)
-						bifrostResp.Item.ResponsesToolMessage.Arguments = &argumentsJSON
+					argumentsJSON := sanitizeWebSearchArguments(*bifrostResp.Item.ResponsesToolMessage.Arguments)
+					bifrostResp.Item.ResponsesToolMessage.Arguments = &argumentsJSON
 
-						// Generate synthetic input_json_delta events for the sanitized WebSearch arguments
-						// This replaces the delta events that were skipped earlier
-						var events []*AnthropicStreamEvent
+					// Generate synthetic input_json_delta events for the sanitized WebSearch arguments
+					// This replaces the delta events that were skipped earlier
+					var events []*AnthropicStreamEvent
 
-						// Use OutputIndex for proper Anthropic indexing, fallback to ContentIndex
-						var indexToUse *int
-						if bifrostResp.OutputIndex != nil {
-							indexToUse = bifrostResp.OutputIndex
-						} else if bifrostResp.ContentIndex != nil {
-							indexToUse = bifrostResp.ContentIndex
-						}
-
-						deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
-						events = append(events, deltaEvents...)
-
-						// Add the content_block_stop event at the end
-						stopEvent := &AnthropicStreamEvent{
-							Type:  AnthropicStreamEventTypeContentBlockStop,
-							Index: indexToUse,
-						}
-						events = append(events, stopEvent)
-
-						// Clean up the tracking for this WebSearch item
-						if bifrostResp.Item.ID != nil {
-							webSearchItemIDs.Delete(*bifrostResp.Item.ID)
-						}
-
-						return events
+					// Use OutputIndex for proper Anthropic indexing, fallback to ContentIndex
+					var indexToUse *int
+					if bifrostResp.OutputIndex != nil {
+						indexToUse = bifrostResp.OutputIndex
+					} else if bifrostResp.ContentIndex != nil {
+						indexToUse = bifrostResp.ContentIndex
 					}
+
+					deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
+					events = append(events, deltaEvents...)
+
+					// Add the content_block_stop event at the end
+					stopEvent := &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockStop,
+						Index: indexToUse,
+					}
+					events = append(events, stopEvent)
+
+					// Clean up the tracking for this WebSearch item
+					if bifrostResp.Item.ID != nil {
+						webSearchItemIDs.Delete(*bifrostResp.Item.ID)
+					}
+
+					return events
 				}
 			}
 		}
@@ -1739,22 +1793,14 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				StopSequence: schemas.Ptr(""),
 			},
 		}
-		if bifrostResp.Response.Usage != nil {
-			anthropicContentDeltaEvent.Usage = &AnthropicUsage{
-				InputTokens:  bifrostResp.Response.Usage.InputTokens,
-				OutputTokens: bifrostResp.Response.Usage.OutputTokens,
-			}
-			if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-				anthropicContentDeltaEvent.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
-			}
-			if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
-				anthropicContentDeltaEvent.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
-			}
-		}
-		if bifrostResp.Response.StopReason != nil {
-			anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
-				StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
-				StopSequence: nil,
+		// Convert usage from Bifrost to Anthropic
+		if bifrostResp.Response != nil {
+			anthropicContentDeltaEvent.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
+			if bifrostResp.Response.StopReason != nil {
+				anthropicContentDeltaEvent.Delta = &AnthropicStreamDelta{
+					StopReason:   schemas.Ptr(ConvertBifrostFinishReasonToAnthropic(*bifrostResp.Response.StopReason)),
+					StopSequence: nil,
+				}
 			}
 		}
 		return []*AnthropicStreamEvent{anthropicContentDeltaEvent, streamResp}
@@ -1808,18 +1854,9 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 		if ctx.Value(schemas.BifrostContextKeyIntegrationType) == "anthropic" {
 			streamResp.Type = AnthropicStreamEventTypeMessageDelta
 
-			// Convert usage from Bifrost format to Anthropic format
-			if bifrostResp.Response != nil && bifrostResp.Response.Usage != nil {
-				streamResp.Usage = &AnthropicUsage{
-					InputTokens:  bifrostResp.Response.Usage.InputTokens,
-					OutputTokens: bifrostResp.Response.Usage.OutputTokens,
-				}
-				if bifrostResp.Response.Usage.InputTokensDetails != nil && bifrostResp.Response.Usage.InputTokensDetails.CachedTokens > 0 {
-					streamResp.Usage.CacheReadInputTokens = bifrostResp.Response.Usage.InputTokensDetails.CachedTokens
-				}
-				if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens > 0 {
-					streamResp.Usage.CacheCreationInputTokens = bifrostResp.Response.Usage.OutputTokensDetails.CachedTokens
-				}
+			// Convert usage from Bifrost format to Anthropic format using common converter
+			if bifrostResp.Response != nil {
+				streamResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Response.Usage)
 			}
 
 			// Convert stop reason from Bifrost format to Anthropic format
@@ -1854,13 +1891,13 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 }
 
 // ToBifrostResponsesRequest converts an Anthropic message request to Bifrost format
-func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
-	provider, model := schemas.ParseModelString(request.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
+func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
+	provider, model := schemas.ParseModelString(req.Model, providerUtils.CheckAndSetDefaultProvider(ctx, schemas.Anthropic))
 
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  provider,
 		Model:     model,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Fallbacks: schemas.ParseFallbacks(req.Fallbacks),
 	}
 
 	// Convert basic parameters
@@ -1868,43 +1905,71 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		ExtraParams: make(map[string]interface{}),
 	}
 
-	if request.MaxTokens > 0 {
-		params.MaxOutputTokens = &request.MaxTokens
+	if req.MaxTokens > 0 {
+		params.MaxOutputTokens = &req.MaxTokens
 	}
-	if request.Temperature != nil {
-		params.Temperature = request.Temperature
+	if req.Temperature != nil {
+		params.Temperature = req.Temperature
 	}
-	if request.TopP != nil {
-		params.TopP = request.TopP
+	if req.TopP != nil {
+		params.TopP = req.TopP
 	}
-	if request.Metadata != nil && request.Metadata.UserID != nil {
-		params.User = request.Metadata.UserID
+	if req.Metadata != nil && req.Metadata.UserID != nil {
+		params.User = req.Metadata.UserID
 	}
-	if request.TopK != nil {
-		params.ExtraParams["top_k"] = *request.TopK
+	if req.ContextManagement != nil {
+		params.ExtraParams["context_management"] = req.ContextManagement
 	}
-	if request.StopSequences != nil {
-		params.ExtraParams["stop"] = request.StopSequences
+	if req.InferenceGeo != nil {
+		params.ExtraParams["inference_geo"] = *req.InferenceGeo
 	}
-	if request.OutputFormat != nil {
-		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(request.OutputFormat)
+	if req.CacheControl != nil {
+		params.ExtraParams["cache_control"] = req.CacheControl
 	}
-	if request.Thinking != nil {
-		if request.Thinking.Type == "enabled" {
+	if req.TopK != nil {
+		params.ExtraParams["top_k"] = *req.TopK
+	}
+	if req.StopSequences != nil {
+		params.ExtraParams["stop"] = req.StopSequences
+	}
+	if req.OutputFormat != nil {
+		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(req.OutputFormat)
+	} else if req.OutputConfig != nil && req.OutputConfig.Format != nil {
+		// GA structured outputs - OutputConfig.Format has same structure as OutputFormat
+		params.Text = convertAnthropicOutputFormatToResponsesTextConfig(req.OutputConfig.Format)
+	}
+	if req.Thinking != nil {
+		if req.Thinking.Type == "enabled" || req.Thinking.Type == "adaptive" {
 			var summary *string
-			if summaryValue, ok := schemas.SafeExtractStringPointer(request.ExtraParams["reasoning_summary"]); ok {
+			if summaryValue, ok := schemas.SafeExtractStringPointer(req.ExtraParams["reasoning_summary"]); ok {
 				summary = summaryValue
 			}
 			// check if user agent in ctx is claude-cli
-			if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-				if strings.Contains(userAgent, "claude-cli") {
+			if ctx != nil {
+				if IsClaudeCodeRequest(ctx) {
 					summary = schemas.Ptr("detailed")
 				}
 			}
-			params.Reasoning = &schemas.ResponsesParametersReasoning{
-				Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*request.Thinking.BudgetTokens, MinimumReasoningMaxTokens, AnthropicDefaultMaxTokens)),
-				MaxTokens: request.Thinking.BudgetTokens,
-				Summary:   summary,
+			if req.OutputConfig != nil && req.OutputConfig.Effort != nil {
+				// Native effort present — map to Bifrost enum (e.g., "max" → "high")
+				params.Reasoning = &schemas.ResponsesParametersReasoning{
+					Effort:    schemas.Ptr(MapAnthropicEffortToBifrost(*req.OutputConfig.Effort)),
+					MaxTokens: req.Thinking.BudgetTokens,
+					Summary:   summary,
+				}
+			} else if req.Thinking.BudgetTokens != nil {
+				// Fallback: convert budget_tokens to effort
+				params.Reasoning = &schemas.ResponsesParametersReasoning{
+					Effort:    schemas.Ptr(providerUtils.GetReasoningEffortFromBudgetTokens(*req.Thinking.BudgetTokens, MinimumReasoningMaxTokens, AnthropicDefaultMaxTokens)),
+					MaxTokens: req.Thinking.BudgetTokens,
+					Summary:   summary,
+				}
+			} else {
+				// Adaptive with no explicit effort — default to "high"
+				params.Reasoning = &schemas.ResponsesParametersReasoning{
+					Effort:  schemas.Ptr("high"),
+					Summary: summary,
+				}
 			}
 		} else {
 			params.Reasoning = &schemas.ResponsesParametersReasoning{
@@ -1912,13 +1977,13 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 			}
 		}
 	}
-	if include, ok := schemas.SafeExtractStringSlice(request.ExtraParams["include"]); ok {
+	if include, ok := schemas.SafeExtractStringSlice(req.ExtraParams["include"]); ok {
 		params.Include = include
 	}
 
 	// Add trucation parameter if computer tool is being used
-	if provider == schemas.OpenAI && request.Tools != nil {
-		for _, tool := range request.Tools {
+	if provider == schemas.OpenAI && req.Tools != nil {
+		for _, tool := range req.Tools {
 			if tool.Type != nil && (*tool.Type == AnthropicToolTypeComputer20250124 || *tool.Type == AnthropicToolTypeComputer20251124) {
 				params.Truncation = schemas.Ptr("auto")
 			} else if tool.Type != nil && (*tool.Type == AnthropicToolTypeWebSearch20250305) {
@@ -1934,13 +1999,13 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	var bifrostMessages []schemas.ResponsesMessage
 
 	// Convert regular messages using the new conversion method
-	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, request.Messages, request.System, false, provider == schemas.Bedrock)
+	convertedMessages := ConvertAnthropicMessagesToBifrostMessages(ctx, req.Messages, req.System, false, provider == schemas.Bedrock)
 	bifrostMessages = append(bifrostMessages, convertedMessages...)
 
 	// Convert tools if present
-	if request.Tools != nil {
+	if req.Tools != nil {
 		var bifrostTools []schemas.ResponsesTool
-		for _, tool := range request.Tools {
+		for _, tool := range req.Tools {
 			bifrostTool := convertAnthropicToolToBifrost(&tool)
 			if bifrostTool != nil {
 				bifrostTools = append(bifrostTools, *bifrostTool)
@@ -1951,9 +2016,9 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		}
 	}
 
-	if request.MCPServers != nil {
+	if req.MCPServers != nil {
 		var bifrostMCPTools []schemas.ResponsesTool
-		for _, mcpServer := range request.MCPServers {
+		for _, mcpServer := range req.MCPServers {
 			bifrostMCPTool := convertAnthropicMCPServerToBifrostTool(&mcpServer)
 			if bifrostMCPTool != nil {
 				bifrostMCPTools = append(bifrostMCPTools, *bifrostMCPTool)
@@ -1965,8 +2030,8 @@ func (request *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.B
 	}
 
 	// Convert tool choice if present
-	if request.ToolChoice != nil {
-		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(request.ToolChoice)
+	if req.ToolChoice != nil {
+		bifrostToolChoice := convertAnthropicToolChoiceToBifrost(req.ToolChoice)
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
@@ -2048,7 +2113,13 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					}
 				}
 				if !hasCitationsEnabled {
-					anthropicReq.OutputFormat = convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+					// Use GA structured outputs (output_config.format) instead of beta (output_format)
+					outputFormat := convertResponsesTextConfigToAnthropicOutputFormat(bifrostReq.Params.Text)
+					if outputFormat != nil {
+						anthropicReq.OutputConfig = &AnthropicOutputConfig{
+							Format: outputFormat,
+						}
+					}
 				}
 			}
 		}
@@ -2070,13 +2141,33 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil {
 					if *bifrostReq.Params.Reasoning.Effort != "none" {
-						budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-						if err != nil {
-							return nil, err
-						}
-						anthropicReq.Thinking = &AnthropicThinking{
-							Type:         "enabled",
-							BudgetTokens: schemas.Ptr(budgetTokens),
+						effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+
+						if SupportsAdaptiveThinking(bifrostReq.Model) {
+							// Opus 4.6+: adaptive thinking + native effort
+							anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+							setEffortOnOutputConfig(anthropicReq, effort)
+						} else if SupportsNativeEffort(bifrostReq.Model) {
+							// Opus 4.5: native effort + budget_tokens thinking
+							setEffortOnOutputConfig(anthropicReq, effort)
+							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+							if err != nil {
+								return nil, err
+							}
+							anthropicReq.Thinking = &AnthropicThinking{
+								Type:         "enabled",
+								BudgetTokens: schemas.Ptr(budgetTokens),
+							}
+						} else {
+							// Older models: budget_tokens only
+							budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+							if err != nil {
+								return nil, err
+							}
+							anthropicReq.Thinking = &AnthropicThinking{
+								Type:         "enabled",
+								BudgetTokens: schemas.Ptr(budgetTokens),
+							}
 						}
 					} else {
 						anthropicReq.Thinking = &AnthropicThinking{
@@ -2086,13 +2177,60 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 				}
 			}
 		}
+		// Convert service tier
+		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
+
 		if bifrostReq.Params.ExtraParams != nil {
+			anthropicReq.ExtraParams = make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
+			for k, v := range bifrostReq.Params.ExtraParams {
+				anthropicReq.ExtraParams[k] = v
+			}
+			if cacheControlRaw, exists := anthropicReq.ExtraParams["cache_control"]; exists {
+				parsed := false
+				switch v := cacheControlRaw.(type) {
+				case *schemas.CacheControl:
+					anthropicReq.CacheControl = v
+					parsed = true
+				case schemas.CacheControl:
+					anthropicReq.CacheControl = &v
+					parsed = true
+				default:
+					if data, err := json.Marshal(v); err == nil {
+						var cc schemas.CacheControl
+						if json.Unmarshal(data, &cc) == nil {
+							anthropicReq.CacheControl = &cc
+							parsed = true
+						}
+					}
+				}
+				if parsed {
+					delete(anthropicReq.ExtraParams, "cache_control")
+				}
+			}
 			topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 			if ok {
+				delete(anthropicReq.ExtraParams, "top_k")
 				anthropicReq.TopK = topK
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
+				delete(anthropicReq.ExtraParams, "stop")
 				anthropicReq.StopSequences = stop
+			}
+			if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
+				delete(anthropicReq.ExtraParams, "inference_geo")
+				anthropicReq.InferenceGeo = inferenceGeo
+			}
+			if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
+				if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
+					delete(anthropicReq.ExtraParams, "context_management")
+					anthropicReq.ContextManagement = cm
+				} else if data, err := json.Marshal(cmVal); err == nil {
+					var cm ContextManagement
+					if json.Unmarshal(data, &cm) == nil {
+						delete(anthropicReq.ExtraParams, "context_management")
+						anthropicReq.ContextManagement = &cm
+					}
+				}
 			}
 		}
 
@@ -2161,6 +2299,100 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	return anthropicReq, nil
 }
 
+// ConvertAnthropicUsageToBifrostUsage converts Anthropic usage format to Bifrost usage format
+// Handles iterations recursively
+func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schemas.ResponsesResponseUsage {
+	if anthropicUsage == nil {
+		return nil
+	}
+
+	bifrostUsage := &schemas.ResponsesResponseUsage{
+		Type:         anthropicUsage.Type,
+		InputTokens:  anthropicUsage.InputTokens,
+		OutputTokens: anthropicUsage.OutputTokens,
+		TotalTokens:  anthropicUsage.InputTokens + anthropicUsage.OutputTokens,
+	}
+
+	// Handle cache read tokens (input side)
+	if anthropicUsage.CacheReadInputTokens > 0 {
+		if bifrostUsage.InputTokensDetails == nil {
+			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
+		}
+		bifrostUsage.InputTokensDetails.CachedTokens = anthropicUsage.CacheReadInputTokens
+	}
+
+	// Handle cache creation tokens (output side)
+	if anthropicUsage.CacheCreationInputTokens > 0 {
+		if bifrostUsage.OutputTokensDetails == nil {
+			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		bifrostUsage.OutputTokensDetails.CachedTokens = anthropicUsage.CacheCreationInputTokens
+	}
+
+	// Propagate server tool use (web search) counts
+	if anthropicUsage.ServerToolUse != nil && anthropicUsage.ServerToolUse.WebSearchRequests > 0 {
+		if bifrostUsage.OutputTokensDetails == nil {
+			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		}
+		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(anthropicUsage.ServerToolUse.WebSearchRequests)
+	}
+
+	// Recursively convert iterations
+	if len(anthropicUsage.Iterations) > 0 {
+		bifrostUsage.Iterations = make([]schemas.ResponsesResponseUsage, len(anthropicUsage.Iterations))
+		for i, iteration := range anthropicUsage.Iterations {
+			if converted := ConvertAnthropicUsageToBifrostUsage(&iteration); converted != nil {
+				bifrostUsage.Iterations[i] = *converted
+			}
+		}
+	}
+
+	return bifrostUsage
+}
+
+// ConvertBifrostUsageToAnthropicUsage converts Bifrost usage format to Anthropic usage format
+// Handles iterations recursively
+func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponseUsage) *AnthropicUsage {
+	if bifrostUsage == nil {
+		return nil
+	}
+
+	anthropicUsage := &AnthropicUsage{
+		Type:         bifrostUsage.Type,
+		InputTokens:  bifrostUsage.InputTokens,
+		OutputTokens: bifrostUsage.OutputTokens,
+	}
+
+	// Handle cache read tokens (from input side)
+	if bifrostUsage.InputTokensDetails != nil && bifrostUsage.InputTokensDetails.CachedTokens > 0 {
+		anthropicUsage.CacheReadInputTokens = bifrostUsage.InputTokensDetails.CachedTokens
+	}
+
+	// Handle cache creation tokens (from output side)
+	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.CachedTokens > 0 {
+		anthropicUsage.CacheCreationInputTokens = bifrostUsage.OutputTokensDetails.CachedTokens
+	}
+
+	// Handle server tool use statistics (e.g., web search)
+	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.NumSearchQueries != nil && *bifrostUsage.OutputTokensDetails.NumSearchQueries > 0 {
+		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{
+			WebSearchRequests: *bifrostUsage.OutputTokensDetails.NumSearchQueries,
+		}
+	}
+
+	// Recursively convert iterations
+	if len(bifrostUsage.Iterations) > 0 {
+		anthropicUsage.Iterations = make([]AnthropicUsage, len(bifrostUsage.Iterations))
+		for i, iteration := range bifrostUsage.Iterations {
+			if converted := ConvertBifrostUsageToAnthropicUsage(&iteration); converted != nil {
+				anthropicUsage.Iterations[i] = *converted
+			}
+		}
+	}
+
+	return anthropicUsage
+}
+
 // ToBifrostResponsesResponse converts an Anthropic response to BifrostResponse with Responses structure
 func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schemas.BifrostContext) *schemas.BifrostResponsesResponse {
 	if response == nil {
@@ -2173,28 +2405,8 @@ func (response *AnthropicMessageResponse) ToBifrostResponsesResponse(ctx *schema
 		CreatedAt: int(time.Now().Unix()),
 	}
 
-	// Convert usage information
-	if response.Usage != nil {
-		bifrostResp.Usage = &schemas.ResponsesResponseUsage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
-			TotalTokens:  response.Usage.InputTokens + response.Usage.OutputTokens,
-		}
-
-		// Handle cached tokens if present
-		if response.Usage.CacheReadInputTokens > 0 {
-			if bifrostResp.Usage.InputTokensDetails == nil {
-				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
-			}
-			bifrostResp.Usage.InputTokensDetails.CachedTokens = response.Usage.CacheReadInputTokens
-		}
-		if response.Usage.CacheCreationInputTokens > 0 {
-			if bifrostResp.Usage.OutputTokensDetails == nil {
-				bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
-			}
-			bifrostResp.Usage.OutputTokensDetails.CachedTokens = response.Usage.CacheCreationInputTokens
-		}
-	}
+	// Convert usage information using common converter (handles iterations recursively)
+	bifrostResp.Usage = ConvertAnthropicUsageToBifrostUsage(response.Usage)
 
 	// Convert content to Responses output messages using the new conversion method
 	if len(response.Content) > 0 {
@@ -2226,20 +2438,8 @@ func ToAnthropicResponsesResponse(ctx *schemas.BifrostContext, bifrostResp *sche
 		anthropicResp.ID = *bifrostResp.ID
 	}
 
-	// Convert usage information
-	if bifrostResp.Usage != nil {
-		anthropicResp.Usage = &AnthropicUsage{
-			InputTokens:  bifrostResp.Usage.InputTokens,
-			OutputTokens: bifrostResp.Usage.OutputTokens,
-		}
-
-		if bifrostResp.Usage.InputTokensDetails != nil && bifrostResp.Usage.InputTokensDetails.CachedTokens > 0 {
-			anthropicResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
-		}
-		if bifrostResp.Usage.OutputTokensDetails != nil && bifrostResp.Usage.OutputTokensDetails.CachedTokens > 0 {
-			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
-		}
-	}
+	// Convert usage information using common converter (handles iterations recursively)
+	anthropicResp.Usage = ConvertBifrostUsageToAnthropicUsage(bifrostResp.Usage)
 
 	// Convert output messages to Anthropic content blocks using the new conversion method
 	var contentBlocks []AnthropicContentBlock
@@ -3014,7 +3214,7 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
-						bifrostMsg.ResponsesToolMessage.Error = schemas.Ptr("Tool execution error")
+						bifrostMsg.Status = schemas.Ptr("incomplete")
 					}
 
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -3120,6 +3320,32 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 	// Process content blocks
 	for _, block := range contentBlocks {
 		switch block.Type {
+		case AnthropicContentBlockTypeCompaction:
+			if block.Content != nil {
+				var summaryText string
+				if block.Content.ContentStr != nil {
+					summaryText = *block.Content.ContentStr
+				}
+
+				bifrostMsg := schemas.ResponsesMessage{
+					ID:     schemas.Ptr("cmp_" + providerUtils.GetRandomString(50)),
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:   role,
+					Status: schemas.Ptr("completed"),
+					Content: &schemas.ResponsesMessageContent{
+						ContentBlocks: []schemas.ResponsesMessageContentBlock{
+							{
+								Type:         schemas.ResponsesOutputMessageContentTypeCompaction,
+								CacheControl: block.CacheControl,
+								ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
+									Summary: summaryText,
+								},
+							},
+						},
+					},
+				}
+				bifrostMessages = append(bifrostMessages, bifrostMsg)
+			}
 		case AnthropicContentBlockTypeText:
 			if block.Text != nil {
 				var bifrostMsg schemas.ResponsesMessage
@@ -3334,7 +3560,7 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 
 					// Handle is_error from Anthropic
 					if block.IsError != nil && *block.IsError {
-						bifrostMsg.ResponsesToolMessage.Error = schemas.Ptr("Tool execution error")
+						bifrostMsg.Status = schemas.Ptr("incomplete")
 					}
 
 					bifrostMessages = append(bifrostMessages, bifrostMsg)
@@ -3602,41 +3828,16 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 			// Anthropic only allows one or the other, not both
 			// Only do this for Claude CLI
 			if ctx != nil {
-				if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-					if strings.Contains(userAgent, "claude-cli") {
-						if msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name == "WebSearch" {
-							argumentsJSON = sanitizeWebSearchArguments(argumentsJSON)
-						}
+				if IsClaudeCodeRequest(ctx) {
+					if msg.ResponsesToolMessage.Name != nil && *msg.ResponsesToolMessage.Name == "WebSearch" {
+						argumentsJSON = sanitizeWebSearchArguments(argumentsJSON)
 					}
 				}
 			}
-
 			toolUseBlock.Input = parseJSONInput(argumentsJSON)
 		}
 
 		return &toolUseBlock
-	}
-	return nil
-}
-
-// convertBifrostFunctionCallOutputToAnthropicMessage converts a Bifrost function call output to Anthropic message
-func convertBifrostFunctionCallOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *AnthropicMessage {
-	if msg.ResponsesToolMessage != nil {
-		toolResultBlock := AnthropicContentBlock{
-			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
-		}
-
-		if msg.ResponsesToolMessage.Output != nil {
-			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
-		}
-
-		return &AnthropicMessage{
-			Role: AnthropicMessageRoleUser,
-			Content: AnthropicContent{
-				ContentBlocks: []AnthropicContentBlock{toolResultBlock},
-			},
-		}
 	}
 	return nil
 }
@@ -3654,7 +3855,7 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3662,6 +3863,8 @@ func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
@@ -3683,7 +3886,7 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3691,6 +3894,8 @@ func convertBifrostComputerCallOutputToAnthropicToolResultBlock(msg *schemas.Res
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
@@ -3712,7 +3917,7 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 			toolResultBlock.Content = convertToolOutputToAnthropicContent(msg.ResponsesToolMessage.Output)
 		}
 
-		// Set is_error if there's an error message
+		// Set is_error if there's an error message or the status indicates an error
 		if msg.ResponsesToolMessage.Error != nil && *msg.ResponsesToolMessage.Error != "" {
 			toolResultBlock.IsError = schemas.Ptr(true)
 			if toolResultBlock.Content == nil {
@@ -3720,6 +3925,8 @@ func convertBifrostMCPCallOutputToAnthropicToolResultBlock(msg *schemas.Response
 					ContentStr: msg.ResponsesToolMessage.Error,
 				}
 			}
+		} else if msg.Status != nil && *msg.Status == "incomplete" {
+			toolResultBlock.IsError = schemas.Ptr(true)
 		}
 
 		return &toolResultBlock
@@ -4347,6 +4554,16 @@ func convertContentBlockToAnthropic(block schemas.ResponsesMessageContentBlock) 
 			}
 			anthropicBlock := ConvertToAnthropicImageBlock(chatBlock)
 			return &anthropicBlock
+		}
+	case schemas.ResponsesOutputMessageContentTypeCompaction:
+		if block.ResponsesOutputMessageContentCompaction != nil {
+			return &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeCompaction,
+				Content: &AnthropicContent{
+					ContentStr: &block.ResponsesOutputMessageContentCompaction.Summary,
+				},
+				CacheControl: block.CacheControl,
+			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeFile:
 		if block.ResponsesInputMessageContentBlockFile != nil {

@@ -43,8 +43,9 @@ type ClientConfig struct {
 	DisableContentLogging   bool                             `json:"disable_content_logging"` // Disable logging of content
 	DisableDBPingsInHealth  bool                             `json:"disable_db_pings_in_health"`
 	LogRetentionDays        int                              `json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	EnableGovernance        bool                             `json:"enable_governance"`                   // Enable governance on all requests
-	EnforceGovernanceHeader bool                             `json:"enforce_governance_header"`           // Enforce governance on all requests
+	EnforceAuthOnInference  bool                             `json:"enforce_auth_on_inference"`           // Require auth (VK, API key, or user token) on inference endpoints
+	EnforceGovernanceHeader bool                             `json:"enforce_governance_header,omitempty"` // Deprecated: use EnforceAuthOnInference
+	EnforceSCIMAuth         bool                             `json:"enforce_scim_auth,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	AllowDirectKeys         bool                             `json:"allow_direct_keys"`                   // Allow direct keys to be used for requests
 	AllowedOrigins          []string                         `json:"allowed_origins,omitempty"`           // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
 	AllowedHeaders          []string                         `json:"allowed_headers,omitempty"`           // Additional allowed headers for CORS and WebSocket
@@ -53,7 +54,11 @@ type ClientConfig struct {
 	MCPAgentDepth           int                              `json:"mcp_agent_depth"`                     // The maximum depth for MCP agent mode tool execution
 	MCPToolExecutionTimeout int                              `json:"mcp_tool_execution_timeout"`          // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel string                           `json:"mcp_code_mode_binding_level"`         // Code mode binding level: "server" or "tool"
+	MCPToolSyncInterval     int                              `json:"mcp_tool_sync_interval"`              // Global tool sync interval in minutes (default: 10, 0 = disabled)
 	HeaderFilterConfig      *tables.GlobalHeaderFilterConfig `json:"header_filter_config,omitempty"`      // Global header filtering configuration for x-bf-eh-* headers
+	AsyncJobResultTTL       int                              `json:"async_job_result_ttl"`                // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeaders         []string                         `json:"required_headers,omitempty"`          // Headers that must be present on every request (case-insensitive)
+	LoggingHeaders          []string                         `json:"logging_headers,omitempty"`           // Headers to capture in log metadata
 	ConfigHash              string                           `json:"-"`                                   // Config hash for reconciliation (not serialized)
 }
 
@@ -87,16 +92,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("disableDBPingsInHealth:false"))
 	}
 
-	if c.EnableGovernance {
-		hash.Write([]byte("enableGovernance:true"))
+	if c.EnforceAuthOnInference {
+		hash.Write([]byte("enforceAuthOnInference:true"))
 	} else {
-		hash.Write([]byte("enableGovernance:false"))
-	}
-
-	if c.EnforceGovernanceHeader {
-		hash.Write([]byte("enforceGovernanceHeader:true"))
-	} else {
-		hash.Write([]byte("enforceGovernanceHeader:false"))
+		hash.Write([]byte("enforceAuthOnInference:false"))
 	}
 
 	if c.AllowDirectKeys {
@@ -127,6 +126,18 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpCodeModeBindingLevel:" + c.MCPCodeModeBindingLevel))
 	} else {
 		hash.Write([]byte("mcpCodeModeBindingLevel:server"))
+	}
+
+	if c.MCPToolSyncInterval > 0 {
+		hash.Write([]byte("mcpToolSyncInterval:" + strconv.Itoa(c.MCPToolSyncInterval)))
+	} else {
+		hash.Write([]byte("mcpToolSyncInterval:0"))
+	}
+
+	if c.AsyncJobResultTTL > 0 {
+		hash.Write([]byte("asyncJobResultTTL:" + strconv.Itoa(c.AsyncJobResultTTL)))
+	} else {
+		hash.Write([]byte("asyncJobResultTTL:0"))
 	}
 
 	// Hash integer fields
@@ -184,6 +195,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write(data)
 	}
 
+	// Hash RequiredHeaders (sorted for deterministic hashing)
+	if len(c.RequiredHeaders) > 0 {
+		sortedRequired := make([]string, len(c.RequiredHeaders))
+		copy(sortedRequired, c.RequiredHeaders)
+		sort.Strings(sortedRequired)
+		data, err := sonic.Marshal(sortedRequired)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("requiredHeaders:"))
+		hash.Write(data)
+	}
+
 	// Hash HeaderFilterConfig
 	if c.HeaderFilterConfig != nil {
 		// Hash Allowlist (sorted for deterministic hashing)
@@ -225,7 +249,10 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
+	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
+	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
 }
 
 // Redacted returns a redacted copy of the provider configuration.
@@ -237,7 +264,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
+		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
+		Status:                   p.Status,
+		Description:              p.Description,
 	}
 
 	if p.ProxyConfig != nil {
@@ -270,6 +300,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].UseForBatchAPI = bifrost.Ptr(false)
 		}
 
+		// Add model discovery status and error
+		redactedConfig.Keys[i].Status = key.Status
+		redactedConfig.Keys[i].Description = key.Description
+
 		// Redact Azure key config if present
 		if key.AzureKeyConfig != nil {
 			azureConfig := &schemas.AzureKeyConfig{
@@ -285,6 +319,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			}
 			if key.AzureKeyConfig.TenantID != nil {
 				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
+			}
+			if len(key.AzureKeyConfig.Scopes) > 0 {
+				azureConfig.Scopes = key.AzureKeyConfig.Scopes
 			}
 			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
 		}
@@ -322,6 +359,21 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
 			}
 			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
+		}
+
+		if key.ReplicateKeyConfig != nil {
+			replicateConfig := &schemas.ReplicateKeyConfig{
+				Deployments: key.ReplicateKeyConfig.Deployments,
+			}
+			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
+		}
+
+		if key.VLLMKeyConfig != nil {
+			vllmConfig := &schemas.VLLMKeyConfig{
+				ModelName: key.VLLMKeyConfig.ModelName,
+			}
+			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
+			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
 	}
 	return &redactedConfig
@@ -372,6 +424,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash PricingOverrides
+	if p.PricingOverrides != nil {
+		data, err := sonic.Marshal(p.PricingOverrides)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -392,11 +453,11 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
-	// Hash Value
+	// Hash Value (prefix with source type to prevent collisions between env and literal)
 	if key.Value.IsFromEnv() {
-		hash.Write([]byte(key.Value.EnvVar))
+		hash.Write([]byte("env:" + key.Value.EnvVar))
 	} else {
-		hash.Write([]byte(key.Value.Val))
+		hash.Write([]byte("val:" + key.Value.Val))
 	}
 	// Hash Models (key-level model restrictions)
 	if len(key.Models) > 0 {
@@ -439,6 +500,22 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash ReplicateKeyConfig
+	if key.ReplicateKeyConfig != nil {
+		data, err := sonic.Marshal(key.ReplicateKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash VLLMKeyConfig
+	if key.VLLMKeyConfig != nil {
+		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
@@ -456,8 +533,7 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 
 // VirtualKeyHashInput represents the fields used for virtual key hash generation.
 // This struct is used to create a consistent hash from TableVirtualKey,
-// excluding dynamic fields like ID, timestamps, relationship objects, and Value.
-// Note: Value is intentionally excluded as it's a generated secret that shouldn't affect config sync.
+// excluding dynamic fields like ID, timestamps, and relationship objects.
 type VirtualKeyHashInput struct {
 	Name        string
 	Description string
@@ -496,6 +572,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	hash.Write([]byte(vk.Name))
 	// Hash Description
 	hash.Write([]byte(vk.Description))
+	// Hash Value
 	hash.Write([]byte(vk.Value))
 	// Hash IsActive
 	if vk.IsActive {
@@ -753,6 +830,78 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
+// This is used to detect changes to routing rules between config.json and database.
+// Skips: CreatedAt, UpdatedAt (dynamic fields)
+func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
+	hash := sha256.New()
+
+	// Hash ID
+	hash.Write([]byte(r.ID))
+
+	// Hash Name
+	hash.Write([]byte(r.Name))
+
+	// Hash Description
+	hash.Write([]byte(r.Description))
+
+	// Hash Enabled
+	if r.Enabled {
+		hash.Write([]byte("enabled:true"))
+	} else {
+		hash.Write([]byte("enabled:false"))
+	}
+
+	// Hash CelExpression
+	hash.Write([]byte(r.CelExpression))
+
+	// Hash Provider
+	hash.Write([]byte(r.Provider))
+
+	// Hash Model
+	hash.Write([]byte(r.Model))
+
+	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
+	if r.Fallbacks != nil {
+		hash.Write([]byte(*r.Fallbacks))
+	} else if len(r.ParsedFallbacks) > 0 {
+		data, err := sonic.Marshal(r.ParsedFallbacks)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Query: use raw string when set, else marshal ParsedQuery (config-origin)
+	// Use OrderedMap's deterministic marshalling to ensure consistent hashes across runs
+	if r.Query != nil {
+		hash.Write([]byte(*r.Query))
+	} else if len(r.ParsedQuery) > 0 {
+		// Convert map to OrderedMap and use sorted marshalling for deterministic hashes
+		orderedMap := schemas.OrderedMapFromMap(r.ParsedQuery)
+		data, err := orderedMap.MarshalSorted()
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Hash Scope
+	hash.Write([]byte(r.Scope))
+
+	// Hash ScopeID (nil = global)
+	scopeID := ""
+	if r.ScopeID != nil {
+		scopeID = *r.ScopeID
+	}
+	hash.Write([]byte(scopeID))
+
+	// Hash Priority
+	hash.Write([]byte(strconv.Itoa(r.Priority)))
+
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 // GenerateMCPClientHash generates a SHA256 hash for an MCP client.
 // This is used to detect changes to MCP clients between config.json and database.
 // Skips: ID (autoIncrement), CreatedAt, UpdatedAt (dynamic fields)
@@ -867,10 +1016,10 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 
 // AuthConfig represents configured auth config for Bifrost dashboard
 type AuthConfig struct {
-	AdminUserName          string `json:"admin_username"`
-	AdminPassword          string `json:"admin_password"`
-	IsEnabled              bool   `json:"is_enabled"`
-	DisableAuthOnInference bool   `json:"disable_auth_on_inference"`
+	AdminUserName          *schemas.EnvVar `json:"admin_username"`
+	AdminPassword          *schemas.EnvVar `json:"admin_password"`
+	IsEnabled              bool            `json:"is_enabled"`
+	DisableAuthOnInference bool            `json:"disable_auth_on_inference"`
 }
 
 // ConfigMap maps provider names to their configurations.
@@ -884,5 +1033,6 @@ type GovernanceConfig struct {
 	RateLimits   []tables.TableRateLimit   `json:"rate_limits"`
 	ModelConfigs []tables.TableModelConfig `json:"model_configs"`
 	Providers    []tables.TableProvider    `json:"providers"`
+	RoutingRules []tables.TableRoutingRule `json:"routing_rules"`
 	AuthConfig   *AuthConfig               `json:"auth_config,omitempty"`
 }

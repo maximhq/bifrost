@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
+import { editor } from "monaco-editor";
 import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
+import { useEffect, useRef, useState } from "react";
 
 // Dynamically import Monaco Editor with SSR disabled
 const MonacoEditor = dynamic(() => import("@monaco-editor/react").then((mod) => mod.default), {
@@ -147,6 +148,8 @@ export function CodeEditor(props: CodeEditorProps) {
 		}
 	};
 
+	const isFoldingEnabled = props.options?.collapsibleBlocks ?? false;
+
 	const editorOptions = {
 		lineNumbers: (props.options?.lineNumbers || "off") as "on" | "off",
 		readOnly: props.readonly,
@@ -157,9 +160,11 @@ export function CodeEditor(props: CodeEditorProps) {
 		fontSize: props.fontSize || 12.5,
 		padding: { top: 2, bottom: 2 },
 		wordWrap: props.wrap ? ("on" as const) : ("off" as const),
-		folding: props.options?.collapsibleBlocks ?? false,
+		folding: isFoldingEnabled,
 		glyphMargin: false,
 		lineNumbersMinChars: props.options?.lineNumbersMinChars ?? 4,
+		lineDecorationsWidth: 8,
+		showFoldingControls: isFoldingEnabled ? ("always" as const) : ("mouseover" as const),
 		overviewRulerLanes: props.options?.overviewRulerLanes ?? 0,
 		renderLineHighlight: "none" as const,
 		cursorStyle: "line" as const,
@@ -177,7 +182,7 @@ export function CodeEditor(props: CodeEditorProps) {
 		},
 		wordBasedSuggestions: "off" as const,
 		...props.options,
-	};
+	} as editor.IStandaloneEditorConstructionOptions;
 
 	if (!isClient) {
 		return (

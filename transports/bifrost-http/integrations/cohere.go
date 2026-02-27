@@ -1,16 +1,18 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/cohere"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // CohereRouter holds route registrations for Cohere endpoints.
-// It supports Cohere's v2 chat API and embeddings API.
+// It supports Cohere's v2 chat, embeddings, and rerank APIs.
 type CohereRouter struct {
 	*GenericRouter
 }
@@ -22,15 +24,19 @@ func NewCohereRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	}
 }
 
-// CreateCohereRouteConfigs creates route configurations for Cohere v2 API endpoints.
+// CreateCohereRouteConfigs creates route configurations for Cohere API endpoints.
 func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
 
 	// Chat completions endpoint (v2/chat)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v2/chat",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ChatCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereChatRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -69,9 +75,13 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 
 	// Embeddings endpoint (v2/embed)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v2/embed",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.EmbeddingRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereEmbeddingRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -95,11 +105,47 @@ func CreateCohereRouteConfigs(pathPrefix string) []RouteConfig {
 		},
 	})
 
+	// Rerank endpoint (v2/rerank)
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
+		Path:   pathPrefix + "/v2/rerank",
+		Method: "POST",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.RerankRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &cohere.CohereRerankRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if cohereReq, ok := req.(*cohere.CohereRerankRequest); ok {
+				return &schemas.BifrostRequest{
+					RerankRequest: cohereReq.ToBifrostRerankRequest(ctx),
+				}, nil
+			}
+			return nil, errors.New("invalid rerank request type")
+		},
+		RerankResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error) {
+			if resp.ExtraFields.Provider == schemas.Cohere {
+				if resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+			}
+			return resp, nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		},
+	})
+
 	// Tokenize endpoint (v1/tokenize)
 	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeCohere,
 		Path:   pathPrefix + "/v1/tokenize",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.CountTokensRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &cohere.CohereCountTokensRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {

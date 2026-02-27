@@ -25,6 +25,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// Convert parameters
 	if bifrostReq.Params != nil {
+		anthropicReq.ExtraParams = bifrostReq.Params.ExtraParams
 		if bifrostReq.Params.MaxCompletionTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
@@ -34,7 +35,26 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
+			delete(anthropicReq.ExtraParams, "top_k")
 			anthropicReq.TopK = topK
+
+		}
+		// extract inference_geo and context management
+		if inferenceGeo, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["inference_geo"]); ok {
+			delete(anthropicReq.ExtraParams, "inference_geo")
+			anthropicReq.InferenceGeo = inferenceGeo
+		}
+		if cmVal := bifrostReq.Params.ExtraParams["context_management"]; cmVal != nil {
+			if cm, ok := cmVal.(*ContextManagement); ok && cm != nil {
+				delete(anthropicReq.ExtraParams, "context_management")
+				anthropicReq.ContextManagement = cm
+			} else if data, err := json.Marshal(cmVal); err == nil {
+				var cm ContextManagement
+				if json.Unmarshal(data, &cm) == nil {
+					delete(anthropicReq.ExtraParams, "context_management")
+					anthropicReq.ContextManagement = &cm
+				}
+			}
 		}
 		if bifrostReq.Params.ResponseFormat != nil {
 			// Vertex doesn't support native structured outputs, so convert to tool
@@ -49,7 +69,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				}
 			} else {
-				anthropicReq.OutputFormat = convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
+				// Use GA structured outputs (output_config.format) instead of beta (output_format)
+				outputFormat := convertChatResponseFormatToAnthropicOutputFormat(bifrostReq.Params.ResponseFormat)
+				if outputFormat != nil {
+					anthropicReq.OutputConfig = &AnthropicOutputConfig{
+						Format: outputFormat,
+					}
+				}
 			}
 		}
 
@@ -134,7 +160,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				switch bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Type {
 				case schemas.ChatToolChoiceTypeFunction:
 					toolChoice.Type = "tool"
-					toolChoice.Name = bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function.Name
+					if bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function != nil {
+						toolChoice.Name = bifrostReq.Params.ToolChoice.ChatToolChoiceStruct.Function.Name
+					}
 				case schemas.ChatToolChoiceTypeAllowedTools:
 					toolChoice.Type = "any"
 				case schemas.ChatToolChoiceTypeCustom:
@@ -163,13 +191,32 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					BudgetTokens: schemas.Ptr(budgetTokens),
 				}
 			} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
-				budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
-				if err != nil {
-					return nil, err
-				}
-				anthropicReq.Thinking = &AnthropicThinking{
-					Type:         "enabled",
-					BudgetTokens: schemas.Ptr(budgetTokens),
+				effort := MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+				if SupportsAdaptiveThinking(bifrostReq.Model) {
+					// Opus 4.6+: adaptive thinking + native effort
+					anthropicReq.Thinking = &AnthropicThinking{Type: "adaptive"}
+					setEffortOnOutputConfig(anthropicReq, effort)
+				} else if SupportsNativeEffort(bifrostReq.Model) {
+					// Opus 4.5: native effort + budget_tokens thinking
+					setEffortOnOutputConfig(anthropicReq, effort)
+					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+					if err != nil {
+						return nil, err
+					}
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type:         "enabled",
+						BudgetTokens: schemas.Ptr(budgetTokens),
+					}
+				} else {
+					// Older models: budget_tokens only
+					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, MinimumReasoningMaxTokens, anthropicReq.MaxTokens)
+					if err != nil {
+						return nil, err
+					}
+					anthropicReq.Thinking = &AnthropicThinking{
+						Type:         "enabled",
+						BudgetTokens: schemas.Ptr(budgetTokens),
+					}
 				}
 			} else {
 				anthropicReq.Thinking = &AnthropicThinking{
@@ -177,6 +224,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 				}
 			}
 		}
+
+		// Convert service tier
+		anthropicReq.ServiceTier = bifrostReq.Params.ServiceTier
 	}
 
 	// Convert messages - group consecutive tool messages into single user messages
@@ -513,6 +563,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			},
 			TotalTokens: response.Usage.InputTokens + response.Usage.OutputTokens,
 		}
+		// Forward service tier from usage to response
+		if response.Usage.ServiceTier != nil {
+			bifrostResponse.ServiceTier = response.Usage.ServiceTier
+		}
 	}
 
 	return bifrostResponse
@@ -544,6 +598,10 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 		}
 		if bifrostResp.Usage.CompletionTokensDetails != nil && bifrostResp.Usage.CompletionTokensDetails.CachedTokens > 0 {
 			anthropicResp.Usage.CacheCreationInputTokens = bifrostResp.Usage.CompletionTokensDetails.CachedTokens
+		}
+		// Forward service tier
+		if bifrostResp.ServiceTier != nil {
+			anthropicResp.Usage.ServiceTier = bifrostResp.ServiceTier
 		}
 	}
 

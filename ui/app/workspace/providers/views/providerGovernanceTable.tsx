@@ -4,12 +4,11 @@ import { Badge } from "@/components/ui/badge";
 import { CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
-import { useGetProviderGovernanceQuery, useLazyGetCoreConfigQuery } from "@/lib/store";
+import { useGetProviderGovernanceQuery } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { useEffect, useState } from "react";
 
 interface Props {
 	className?: string;
@@ -157,25 +156,9 @@ function MetricCard({
 
 export default function ProviderGovernanceTable({ provider, className }: Props) {
 	const hasViewAccess = useRbac(RbacResource.Governance, RbacOperation.View);
-	const [governanceEnabled, setGovernanceEnabled] = useState<boolean | null>(null);
-	const [triggerGetConfig] = useLazyGetCoreConfigQuery();
-
-	// Check if governance is enabled
-	useEffect(() => {
-		triggerGetConfig({ fromDB: true })
-			.then((res) => {
-				setGovernanceEnabled(!!res.data?.client_config?.enable_governance);
-			})
-			.catch(() => {
-				setGovernanceEnabled(false);
-			});
-	}, [triggerGetConfig]);
-
 	const { data: providerGovernanceData, isLoading } = useGetProviderGovernanceQuery(undefined, {
-		skip: !hasViewAccess || !governanceEnabled,
-		pollingInterval: hasViewAccess && governanceEnabled ? 10000 : 0,
-		refetchOnFocus: true,
-		skipPollingIfUnfocused: true,
+		skip: !hasViewAccess,
+		pollingInterval: 5000,
 	});
 
 	// Find governance data for this provider
@@ -184,7 +167,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 	// Check if any governance is configured
 	const hasGovernance = providerGovernance?.budget || providerGovernance?.rate_limit;
 
-	if (isLoading || governanceEnabled === null) {
+	if (isLoading) {
 		return (
 			<div className={cn("w-full", className)}>
 				<CardHeader className="mb-4 px-0">
@@ -200,7 +183,7 @@ export default function ProviderGovernanceTable({ provider, className }: Props) 
 	}
 
 	// Governance not enabled or no governance configured - don't show the section
-	if (!governanceEnabled || !hasGovernance) {
+	if (!hasGovernance) {
 		return null;
 	}
 

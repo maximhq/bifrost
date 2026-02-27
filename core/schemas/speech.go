@@ -135,8 +135,13 @@ type BifrostSpeechStreamResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+type SpeechUsageInputTokenDetails struct {
+	TextTokens  int `json:"text_tokens,omitempty"`
+	AudioTokens int `json:"audio_tokens,omitempty"`
+}
 type SpeechUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens       int                           `json:"input_tokens"`
+	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
+	OutputTokens      int                           `json:"output_tokens"`
+	TotalTokens       int                           `json:"total_tokens"`
 }

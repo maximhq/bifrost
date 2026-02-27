@@ -7,7 +7,7 @@ import { EnvVar } from "./schemas";
 export type KnownProvider = (typeof KnownProvidersNames)[number];
 
 // Base provider names - all supported base providers
-export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock";
+export type BaseProvider = "openai" | "anthropic" | "cohere" | "gemini" | "bedrock" | "replicate";
 
 // Branded type for custom provider names to prevent collision with known providers
 export type CustomProviderName = string & { readonly __brand: "CustomProviderName" };
@@ -28,6 +28,7 @@ export interface AzureKeyConfig {
 	client_id?: EnvVar;
 	client_secret?: EnvVar;
 	tenant_id?: EnvVar;
+	scopes?: string[];
 }
 
 export const DefaultAzureKeyConfig: AzureKeyConfig = {
@@ -37,6 +38,7 @@ export const DefaultAzureKeyConfig: AzureKeyConfig = {
 	client_id: { value: "", env_var: "", from_env: false },
 	client_secret: { value: "", env_var: "", from_env: false },
 	tenant_id: { value: "", env_var: "", from_env: false },
+	scopes: [],
 } as const satisfies Required<AzureKeyConfig>;
 
 // VertexKeyConfig matching Go's schemas.VertexKeyConfig
@@ -88,6 +90,28 @@ export const DefaultBedrockKeyConfig: BedrockKeyConfig = {
 	batch_s3_config: undefined as unknown as BatchS3Config,
 } as const satisfies Required<BedrockKeyConfig>;
 
+// ReplicateKeyConfig matching Go's schemas.ReplicateKeyConfig
+export interface ReplicateKeyConfig {
+	deployments?: Record<string, string> | string; // Allow string during editing
+}
+
+// Default ReplicateKeyConfig
+export const DefaultReplicateKeyConfig: ReplicateKeyConfig = {
+	deployments: {},
+} as const satisfies Required<ReplicateKeyConfig>;
+
+// VLLMKeyConfig matching Go's schemas.VLLMKeyConfig
+export interface VLLMKeyConfig {
+	url: EnvVar;
+	model_name: string;
+}
+
+// Default VLLMKeyConfig
+export const DefaultVLLMKeyConfig: VLLMKeyConfig = {
+	url: { value: "", env_var: "", from_env: false },
+	model_name: "",
+} as const satisfies Required<VLLMKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -100,7 +124,11 @@ export interface ModelProviderKey {
 	azure_key_config?: AzureKeyConfig;
 	vertex_key_config?: VertexKeyConfig;
 	bedrock_key_config?: BedrockKeyConfig;
+	replicate_key_config?: ReplicateKeyConfig;
+	vllm_key_config?: VLLMKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
+	status?: "unknown" | "success" | "list_models_failed";
+	description?: string;
 }
 
 // Default ModelProviderKey
@@ -156,12 +184,22 @@ export type RequestType =
 	| "responses"
 	| "responses_stream"
 	| "embedding"
+	| "rerank"
 	| "speech"
 	| "speech_stream"
 	| "transcription"
 	| "transcription_stream"
 	| "image_generation"
 	| "image_generation_stream"
+	| "image_edit"
+	| "image_edit_stream"
+	| "image_variation"
+	| "video_generation"
+	| "video_retrieve"
+	| "video_download"
+	| "video_delete"
+	| "video_list"
+	| "video_remix"
 	| "count_tokens"
 	| "batch_create"
 	| "batch_list"
@@ -173,6 +211,7 @@ export type RequestType =
 	| "file_retrieve"
 	| "file_delete"
 	| "file_content"
+	| "mcp_tool_execution"
 	| "container_create"
 	| "container_list"
 	| "container_retrieve"
@@ -198,8 +237,18 @@ export interface AllowedRequests {
 	transcription_stream: boolean;
 	image_generation: boolean;
 	image_generation_stream: boolean;
+	image_edit: boolean;
+	image_edit_stream: boolean;
+	image_variation: boolean;
 	count_tokens: boolean;
 	list_models: boolean;
+	rerank: boolean;
+	video_generation: boolean;
+	video_retrieve: boolean;
+	video_download: boolean;
+	video_delete: boolean;
+	video_list: boolean;
+	video_remix: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
@@ -208,6 +257,40 @@ export interface CustomProviderConfig {
 	is_key_less?: boolean;
 	allowed_requests?: AllowedRequests;
 	request_path_overrides?: Record<string, string>;
+}
+
+export type PricingOverrideMatchType = "exact" | "wildcard" | "regex";
+
+export interface ProviderPricingOverride {
+	model_pattern: string;
+	match_type: PricingOverrideMatchType;
+	request_types?: RequestType[];
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	input_cost_per_video_per_second?: number;
+	input_cost_per_audio_per_second?: number;
+	input_cost_per_character?: number;
+	output_cost_per_character?: number;
+	input_cost_per_token_above_128k_tokens?: number;
+	input_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_image_above_128k_tokens?: number;
+	input_cost_per_video_per_second_above_128k_tokens?: number;
+	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
+	output_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost?: number;
+	cache_creation_input_token_cost?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
+	input_cost_per_image_token?: number;
+	output_cost_per_image_token?: number;
+	input_cost_per_image?: number;
+	output_cost_per_image?: number;
+	cache_read_input_image_token_cost?: number;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig
@@ -219,12 +302,15 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
+	status?: "unknown" | "success" | "list_models_failed";
+	description?: string;
 }
 
 // ProviderResponse matching Go's ProviderResponse
 export interface ModelProvider extends ModelProviderConfig {
 	name: ModelProviderName;
-	status: ProviderStatus;
+	provider_status: ProviderStatus;
 	config_hash?: string; // Present when config is synced from config.json
 }
 
@@ -244,6 +330,7 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -255,6 +342,7 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	custom_provider_config?: CustomProviderConfig;
+	pricing_overrides?: ProviderPricingOverride[];
 }
 
 // BifrostErrorResponse matching Go's schemas.BifrostError
@@ -285,8 +373,8 @@ export interface FrameworkConfig {
 
 // Auth config
 export interface AuthConfig {
-	admin_username: string;
-	admin_password: string;
+	admin_username: EnvVar;
+	admin_password: EnvVar;
 	is_enabled: boolean;
 	disable_auth_on_inference?: boolean;
 }
@@ -366,8 +454,7 @@ export interface CoreConfig {
 	disable_content_logging: boolean;
 	disable_db_pings_in_health: boolean;
 	log_retention_days: number;
-	enable_governance: boolean;
-	enforce_governance_header: boolean;
+	enforce_auth_on_inference: boolean;
 	allow_direct_keys: boolean;
 	allowed_origins: string[];
 	allowed_headers: string[];
@@ -376,6 +463,10 @@ export interface CoreConfig {
 	mcp_agent_depth: number;
 	mcp_tool_execution_timeout: number;
 	mcp_code_mode_binding_level?: string;
+	mcp_tool_sync_interval: number;
+	async_job_result_ttl: number;
+	required_headers: string[];
+	logging_headers: string[];
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -387,8 +478,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	disable_content_logging: false,
 	disable_db_pings_in_health: false,
 	log_retention_days: 365,
-	enable_governance: true,
-	enforce_governance_header: false,
+	enforce_auth_on_inference: false,
 	allow_direct_keys: false,
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
@@ -396,7 +486,11 @@ export const DefaultCoreConfig: CoreConfig = {
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
 	mcp_code_mode_binding_level: "server",
+	mcp_tool_sync_interval: 10,
+	async_job_result_ttl: 3600,
 	allowed_headers: [],
+	required_headers: [],
+	logging_headers: [],
 };
 
 // Semantic cache configuration types

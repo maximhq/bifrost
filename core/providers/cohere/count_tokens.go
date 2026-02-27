@@ -52,10 +52,15 @@ func ToCohereCountTokensRequest(bifrostReq *schemas.BifrostResponsesRequest) (*C
 		return nil, fmt.Errorf("count tokens text length must be between %d and %d characters", cohereTokenizeMinTextLength, cohereTokenizeMaxTextLength)
 	}
 
-	return &CohereCountTokensRequest{
+	cohereReq := &CohereCountTokensRequest{
 		Model: bifrostReq.Model,
 		Text:  trimmed,
-	}, nil
+	}
+	if bifrostReq.Params != nil {
+		cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+
+	return cohereReq, nil
 }
 
 // ToBifrostCountTokensResponse converts a Cohere tokenize response to Bifrost format.

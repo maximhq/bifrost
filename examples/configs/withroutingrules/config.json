@@ -1,0 +1,66 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "governance": {
+    "routing_rules": [
+      {
+        "id": "rule-gpt4-to-azure",
+        "name": "Route GPT-4 to Azure",
+        "description": "Route all GPT-4 model requests to Azure provider",
+        "enabled": true,
+        "cel_expression": "model.startsWith('gpt-4')",
+        "provider": "azure",
+        "model": "",
+        "fallbacks": ["openai"],
+        "scope": "global",
+        "scope_id": null,
+        "priority": 0
+      },
+      {
+        "id": "rule-high-budget-fallback",
+        "name": "Use fallback when budget high",
+        "description": "Route to fallback providers when budget usage exceeds 80%",
+        "enabled": true,
+        "cel_expression": "budget_used >= 80.0",
+        "provider": "",
+        "model": "",
+        "fallbacks": ["anthropic", "openai"],
+        "scope": "global",
+        "scope_id": null,
+        "priority": 10
+      },
+      {
+        "id": "rule-embedding-lightweight",
+        "name": "Use lightweight embeddings",
+        "description": "Route embedding requests to cost-effective provider",
+        "enabled": true,
+        "cel_expression": "request_type == 'embedding'",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "fallbacks": [],
+        "scope": "global",
+        "scope_id": null,
+        "priority": 5
+      },
+      {
+        "id": "rule-premium-vk-azure",
+        "name": "Premium VK gets Azure",
+        "description": "Premium virtual keys always use Azure",
+        "enabled": true,
+        "cel_expression": "virtual_key_name == 'premium-tier'",
+        "provider": "azure",
+        "model": "",
+        "fallbacks": ["openai", "anthropic"],
+        "scope": "virtual_key",
+        "scope_id": "premium-tier",
+        "priority": 0
+      }
+    ]
+  }
+}

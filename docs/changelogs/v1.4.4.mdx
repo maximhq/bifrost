@@ -1,0 +1,77 @@
+---
+title: "v1.4.4"
+description: "v1.4.4 changelog - 2026-02-02"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.4
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.4
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.4
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.4">
+- feat: added support for image editing and variations
+- fix: encode provider names in API URLs
+- fix: add finish reason to Gemini chat completion response
+- fix: fixes MCP server initialization issues
+- fix: fixes race condition while booting up server form config.json + mcp_server config
+- fix: adds virtual key support for container APIs
+
+</Update>
+<Update label="Core" description="1.4.0">
+- feat: added support for image editing and variations
+- fix: skip OpenAI parameter filtering for custom providers
+- fix: add finish reason to Gemini chat completion response
+- fix: ensure ExtraParams are propagated into provider request body
+- docs: add supported headers reference documentation
+
+</Update>
+<Update label="Framework" description="1.2.18">
+- feat: added tables for routing rules
+- fix: tracing race condition fixes
+- fix: handles token refresh worker initialization when config store is empty
+
+</Update>
+<Update label="governance" description="1.4.19">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="jsonparser" description="1.4.18">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="litellmcompat" description="0.0.8">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="logging" description="1.4.18">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="maxim" description="1.5.17">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="mocker" description="1.4.18">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="otel" description="1.1.18">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="semanticcache" description="1.4.17">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>
+<Update label="telemetry" description="1.4.19">
+- chore: upgrades core to v1.4.0 and framework to v1.2.18
+
+</Update>

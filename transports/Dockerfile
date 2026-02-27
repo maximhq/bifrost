@@ -15,7 +15,7 @@ RUN node scripts/fix-paths.js
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.25.5-alpine3.22 AS builder
+FROM golang:1.26-alpine3.22 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite
@@ -38,11 +38,11 @@ COPY --from=ui-builder /app/out ./bifrost-http/ui
 ENV GOWORK=off
 ARG VERSION=unknown
 RUN go build \
-    -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
-    -a -trimpath \
-    -tags "sqlite_static" \
-    -o /app/main \
-    ./bifrost-http
+  -ldflags="-w -s -X main.Version=v${VERSION} -extldflags '-static'" \
+  -a -trimpath \
+  -tags "sqlite_static" \
+  -o /app/main \
+  ./bifrost-http
 
 # Verify build succeeded
 RUN test -f /app/main || (echo "Build failed" && exit 1)
@@ -55,7 +55,7 @@ WORKDIR /app
 # musl: C standard library (required for CGO binaries)
 # libgcc: GCC runtime library
 # ca-certificates: For HTTPS connections
-RUN apk add --no-cache musl libgcc ca-certificates
+RUN apk add --no-cache musl libgcc ca-certificates wget
 
 # Create data directory and set up user
 COPY --from=builder /app/main .
@@ -70,16 +70,16 @@ ARG ARG_APP_DIR=/app/data
 
 # Environment variables with defaults (can be overridden at runtime)
 ENV APP_PORT=$ARG_APP_PORT \
-    APP_HOST=$ARG_APP_HOST \
-    LOG_LEVEL=$ARG_LOG_LEVEL \
-    LOG_STYLE=$ARG_LOG_STYLE \
-    APP_DIR=$ARG_APP_DIR
+  APP_HOST=$ARG_APP_HOST \
+  LOG_LEVEL=$ARG_LOG_LEVEL \
+  LOG_STYLE=$ARG_LOG_STYLE \
+  APP_DIR=$ARG_APP_DIR
 
 
 RUN mkdir -p $APP_DIR/logs && \
-    adduser -D -s /bin/sh appuser && \
-    chown -R appuser:appuser /app && \
-    chmod +x /app/docker-entrypoint.sh
+  adduser -D -s /bin/sh appuser && \
+  chown -R appuser:appuser /app && \
+  chmod +x /app/docker-entrypoint.sh
 USER appuser
 
 
@@ -89,7 +89,7 @@ EXPOSE $APP_PORT
 
 # Health check for container status monitoring
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${APP_PORT}/metrics || exit 1
+  CMD wget --no-verbose --tries=1 -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
 
 # Use entrypoint script that handles volume permissions and argument processing
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -8,11 +8,12 @@ export type ChartType = "bar" | "line";
 interface ChartTypeToggleProps {
 	chartType: ChartType;
 	onToggle: (type: ChartType) => void;
+	"data-testid"?: string;
 }
 
-export function ChartTypeToggle({ chartType, onToggle }: ChartTypeToggleProps) {
+export function ChartTypeToggle({ chartType, onToggle, "data-testid": testId }: ChartTypeToggleProps) {
 	return (
-		<div className="flex items-center gap-1">
+		<div className="flex items-center gap-1" data-testid={testId}>
 			<Button
 				variant={chartType === "bar" ? "secondary" : "ghost"}
 				size="sm"

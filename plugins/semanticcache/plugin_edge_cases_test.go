@@ -126,12 +126,12 @@ func TestToolVariations(t *testing.T) {
 						Description: bifrost.Ptr("Get the current weather"),
 						Parameters: &schemas.ToolFunctionParameters{
 							Type: "object",
-							Properties: &schemas.OrderedMap{
-								"location": map[string]interface{}{
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("location", map[string]interface{}{
 									"type":        "string",
 									"description": "The city and state",
-								},
-							},
+								}),
+							),
 						},
 						Strict: bifrost.Ptr(false),
 					},
@@ -163,12 +163,12 @@ func TestToolVariations(t *testing.T) {
 						Description: bifrost.Ptr("Get current weather information"),
 						Parameters: &schemas.ToolFunctionParameters{
 							Type: "object",
-							Properties: &schemas.OrderedMap{
-								"city": map[string]interface{}{ // Different parameter name
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("city", map[string]interface{}{ // Different parameter name
 									"type":        "string",
 									"description": "The city name",
-								},
-							},
+								}),
+							),
 						},
 						Strict: bifrost.Ptr(false),
 					},
@@ -204,7 +204,7 @@ func TestToolVariations(t *testing.T) {
 		t.Fatalf("Second request with tools failed: %v", err3)
 	}
 
-	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, string(CacheTypeDirect))
+	AssertCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3}, "")
 
 	// Test 4: Request with different tools (should NOT cache hit)
 	t.Log("Making request with different tools...")

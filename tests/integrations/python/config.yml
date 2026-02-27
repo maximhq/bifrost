@@ -16,6 +16,7 @@ bifrost:
     langchain: "langchain"
     pydanticai: "pydanticai"
     bedrock: "bedrock"
+    azure: "openai"  # Azure uses OpenAI routes with /openai/deployments/{id} paths
 
   # Full URLs constructed as: {base_url.rstrip('/')}/{endpoints[integration]}
   # Examples:
@@ -43,6 +44,7 @@ providers:
     transcription: "whisper-1"
     embeddings: "text-embedding-3-small"
     image_generation: "gpt-image-1"
+    image_edit: "gpt-image-1"
     streaming: "gpt-4o-mini"
     thinking: "gpt-5.1"
     batch_file_upload: "gpt-4o-mini"
@@ -56,12 +58,33 @@ providers:
     file_delete: "gpt-4o-mini"
     file_content: "gpt-4o-mini"
     count_tokens: "gpt-4o-mini"
+    video: "sora-2"
     alternatives:
       - "gpt-4"
       - "gpt-4-turbo-preview"
       - "gpt-4o"
       - "gpt-3.5-turbo"
     
+  azure:
+    chat: "gpt-4o"
+    vision: "gpt-4o"
+    tools: "gpt-4o-mini"
+    streaming: "gpt-4o-mini"
+    speech: "gpt-4o-mini-tts"
+    transcription: "whisper"
+    embeddings: "text-embedding-3-small"
+    image_generation: "gpt-image-1"
+    thinking: "o1"
+    batch_file_upload: "gpt-4o-batch"
+    batch_list: "gpt-4o-batch"
+    batch_retrieve: "gpt-4o-batch"
+    batch_cancel: "gpt-4o-batch"
+    file_upload: "gpt-4o"
+    file_list: "gpt-4o"
+    file_retrieve: "gpt-4o"
+    file_delete: "gpt-4o"
+    file_content: "gpt-4o"
+
   xai:
     chat: "grok-4-0709"
     vision: "grok-2-vision-1212"
@@ -71,7 +94,7 @@ providers:
     
   anthropic:
     chat: "claude-sonnet-4-5-20250929"
-    vision: "claude-3-7-sonnet-20250219"
+    vision: "claude-sonnet-4-5-20250929"
     file: "claude-sonnet-4-5-20250929"
     tools: "claude-sonnet-4-5-20250929"
     streaming: "claude-sonnet-4-5-20250929"
@@ -93,17 +116,19 @@ providers:
       - "claude-3-haiku-20240307"
     
   gemini:
-    chat: "gemini-2.5-flash"
-    vision: "gemini-2.5-flash"
-    tools: "gemini-2.5-flash"
+    chat: "gemini-3-flash-preview"
+    vision: "gemini-3-flash-preview"
+    tools: "gemini-3-flash-preview"
     file: "gemini-2.5-flash"
     thinking: "gemini-3-pro-preview"
     speech: "gemini-2.5-flash-preview-tts"
     transcription: "gemini-2.5-flash"
     embeddings: "gemini-embedding-001"
     image_generation: "gemini-2.5-flash-image"
+    image_edit: "gemini-3-pro-image-preview"
     imagen: "imagen-4.0-generate-001"
-    streaming: "gemini-2.5-flash"
+    video: "veo-3.1-generate-preview"
+    streaming: "gemini-3-flash-preview"
     batch_create: "gemini-2.5-flash"
     batch_inline: "gemini-2.5-flash"
     batch_file_upload: "gemini-2.5-flash"
@@ -131,10 +156,11 @@ providers:
     thinking: "gemini-3-pro-preview"
     embeddings: "gemini-embedding-001"
     image_generation: "imagen-4.0-generate-001"
+    image_edit: "imagen-3.0-capability-001"
     imagen: "imagen-4.0-generate-001"
     streaming: "gemini-2.5-flash"
     count_tokens: "claude-sonnet-4-5"
-
+    video: "veo-3.1-generate-preview"
   bedrock:
     chat: "global.anthropic.claude-sonnet-4-20250514-v1:0"
     vision: "global.anthropic.claude-sonnet-4-20250514-v1:0"
@@ -145,6 +171,7 @@ providers:
     text_completion: "mistral.mistral-7b-instruct-v0:2"
     embeddings: "global.cohere.embed-v4:0"
     batch_inline: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    image_edit: "amazon.nova-canvas-v1:0"
     batch_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_retrieve: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     batch_cancel: "anthropic.claude-3-5-sonnet-20240620-v1:0"
@@ -169,9 +196,18 @@ providers:
   
   huggingface:
     image_generation: "fal-ai/fal-ai/flux/dev"
+    image_edit: "fal-ai/fal-ai/flux-2/edit"
   
   nebius:
     image_generation: "black-forest-labs/flux-schnell"
+  
+  replicate:
+    video: "openai/sora-2-pro"
+
+  runway:
+    video: "gen4.5"
+    
+    
 
 # Provider availability configuration
 # Maps provider names to their API key environment variables
@@ -185,6 +221,9 @@ provider_api_keys:
   xai: "XAI_API_KEY"
   huggingface: "HUGGING_FACE_API_KEY"
   nebius: "NEBIUS_API_KEY"
+  azure: "AZURE_API_KEY"
+  replicate: "REPLICATE_API_KEY"
+  runway: "RUNWAY_API_KEY"
 
 # Provider test scenarios - which tests each provider supports
 provider_scenarios:
@@ -207,6 +246,7 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     image_generation: true
+    image_edit: true
     thinking: true
     prompt_caching: false
     citations: false
@@ -230,6 +270,51 @@ provider_scenarios:
     file_delete: true
     file_content: true
     count_tokens: true
+    video_generation: false # disabled for now because of long running operations
+
+  azure:
+    simple_chat: true
+    multi_turn_conversation: true
+    streaming: true
+    tool_calls: true
+    multiple_tool_calls: true
+    end2end_tool_calling: true
+    automatic_function_calling: true
+    web_search: false
+    image_url: true
+    image_base64: true
+    file_input: false
+    multiple_images: true
+    speech_synthesis: true
+    speech_synthesis_streaming: true
+    transcription: true
+    transcription_streaming: true
+    embeddings: true
+    image_generation: true
+    image_edit: false
+    thinking: true
+    prompt_caching: false
+    citations: false
+    list_models: true
+    responses: true
+    responses_image: true
+    text_completion: false
+    langchain_structured_output: false
+    pydantic_structured_output: false
+    pydanticai_streaming: false
+    batch_file_upload: true
+    batch_create: false
+    batch_list: true
+    batch_retrieve: true
+    batch_cancel: true
+    batch_inline: false
+    batch_s3: false
+    file_upload: true
+    file_list: true
+    file_retrieve: true
+    file_delete: true
+    file_content: true
+    count_tokens: false
 
   xai:
     simple_chat: true
@@ -313,8 +398,11 @@ provider_scenarios:
     transcription_streaming: true
     embeddings: true
     image_generation: true  # Gemini image generation via responseModalities
+    image_edit: true  # Gemini image editing
     imagen: true  # Imagen via :predict endpoint
+    imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
+    video_generation: false # disabled for now because of long running operations
     prompt_caching: false
     citations: false
     list_models: true
@@ -356,10 +444,13 @@ provider_scenarios:
     transcription_streaming: false
     embeddings: true
     image_generation: true
+    image_edit: true
     imagen: true  # Imagen via :predict endpoint
+    imagen_edit: true  # Imagen editing via image_edit model
     thinking: true
     prompt_caching: false
     list_models: true
+    video_generation: false # disabled for now because of long running operations
     responses: true
     responses_image: true
     text_completion: false
@@ -420,6 +511,7 @@ provider_scenarios:
     file_retrieve: true  # Bedrock retrieves S3 object metadata
     file_delete: true  # Bedrock deletes S3 objects
     file_content: true  # Bedrock downloads S3 object content
+    image_edit: true  # Bedrock supports image editing via Nova Canvas
     
   cohere:
     simple_chat: true
@@ -463,9 +555,16 @@ provider_scenarios:
   
   huggingface:
     image_generation: true
+    image_edit: true
   
   nebius:
     image_generation: true
+  
+  replicate:
+    video_generation: false # disabled for now because of long running operations
+  
+  runway:
+    video_generation: false # disabled for now because of long running operations
 
 # Scenario to capability mapping
 # Maps test scenario names to their corresponding capability types
@@ -492,7 +591,9 @@ scenario_capabilities:
   transcription_streaming: "transcription"
   embeddings: "embeddings"
   image_generation: "image_generation"  # Uses image_generation model
+  image_edit: "image_edit"  # Uses image_edit model
   imagen: "imagen"  # Uses imagen model (Gemini/Vertex)
+  imagen_edit: "image_edit"  # Uses image_edit model for Imagen editing
   thinking: "thinking"
   prompt_caching: "chat"
   citations: "chat"
@@ -513,6 +614,7 @@ scenario_capabilities:
   file_delete: "file_delete"  # Uses file_delete model directly
   file_content: "file_content"  # Uses file_content model directly
   count_tokens: "chat"
+  video_generation: "video"
 
 # Model capabilities matrix
 model_capabilities:
@@ -790,6 +892,9 @@ integration_settings:
     s3_bucket: "${AWS_S3_BUCKET:-}"
     batch_role_arn: "${AWS_ARN:-}"
     output_s3_prefix: "${AWS_OUTPUT_S3_PREFIX:-bifrost-batch-output/}"
+
+  azure:
+    api_version: "${AZURE_API_VERSION:-2024-10-21}"
 
 # Environment-specific overrides
 environments:

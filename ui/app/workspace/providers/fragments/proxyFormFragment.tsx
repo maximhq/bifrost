@@ -71,6 +71,7 @@ export function ProxyFormFragment({ provider }: ProxyFormFragmentProps) {
 			.unwrap()
 			.then(() => {
 				toast.success("Provider configuration updated successfully");
+				form.reset(data);
 			})
 			.catch((err) => {
 				toast.error("Failed to update provider configuration", {

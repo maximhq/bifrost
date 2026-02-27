@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -48,7 +49,7 @@ var rateLimitPatterns = []string{
 }
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
-// Excluding providers that require extra configuration. (like Ollama and SGL)
+// Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
@@ -71,7 +72,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 
 // isModelRequired returns true if the request type requires a model
 func isModelRequired(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest
+	return reqType == schemas.TextCompletionRequest || reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.EmbeddingRequest || reqType == schemas.ImageGenerationRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.VideoGenerationRequest
 }
 
 // Ptr returns a pointer to the given value.
@@ -80,19 +81,33 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like SGL are keyless and don't require API keys.
+// Some providers like SGL, and vLLM are keyless and don't require API keys.
 func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
-	return providerKey != schemas.SGL
+	return !IsKeylessProvider(providerKey)
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
 // Some providers like Vertex and Bedrock have their credentials in additional key configs..
 func canProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM
+}
+
+// hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
+// This allows Azure keys to have an empty API key value when using Entra ID authentication.
+func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
+	if providerType != schemas.Azure || key.AzureKeyConfig == nil {
+		return false
+	}
+	return key.AzureKeyConfig.ClientID != nil &&
+		key.AzureKeyConfig.ClientSecret != nil &&
+		key.AzureKeyConfig.TenantID != nil &&
+		key.AzureKeyConfig.ClientID.GetValue() != "" &&
+		key.AzureKeyConfig.ClientSecret.GetValue() != "" &&
+		key.AzureKeyConfig.TenantID.GetValue() != ""
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
@@ -215,9 +230,14 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 	return ok
 }
 
+// IsKeylessProvider reports whether providerKey is a keyless provider.
+func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
+	return providerKey == schemas.SGL
+}
+
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -249,6 +269,17 @@ func isContainerRequestType(reqType schemas.RequestType) bool {
 		reqType == schemas.ContainerFileCreateRequest || reqType == schemas.ContainerFileListRequest ||
 		reqType == schemas.ContainerFileRetrieveRequest || reqType == schemas.ContainerFileContentRequest ||
 		reqType == schemas.ContainerFileDeleteRequest
+}
+
+// isModellessVideoRequestType returns true if the given request type is a video request that does not require a model.
+func isModellessVideoRequestType(reqType schemas.RequestType) bool {
+	switch reqType {
+	case schemas.VideoRetrieveRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest,
+		schemas.VideoDeleteRequest, schemas.VideoRemixRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.
@@ -351,6 +382,16 @@ func GetIntFromContext(ctx context.Context, key any) int {
 	return 0
 }
 
+// GetBoolFromContext safely extracts a bool value from context
+func GetBoolFromContext(ctx context.Context, key any) bool {
+	if value := ctx.Value(key); value != nil {
+		if boolValue, ok := value.(bool); ok {
+			return boolValue
+		}
+	}
+	return false
+}
+
 // RedactSensitiveString redacts sensitive information in a string
 func RedactSensitiveString(s string) string {
 	if s == "" {
@@ -442,4 +483,9 @@ func isPrivateIP(ip net.IP) bool {
 // sanitizeSpanName sanitizes a span name to remove capital letters and spaces to make it a valid span name
 func sanitizeSpanName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
+}
+
+// IsCodemodeTool returns true if the given tool name is a codemode tool.
+func IsCodemodeTool(toolName string) bool {
+	return mcp.IsCodeModeTool(toolName)
 }

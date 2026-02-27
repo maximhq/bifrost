@@ -8,6 +8,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+var (
+	ErrPluginNotFound = fmt.Errorf("plugin not found")
+)
+
 // DownloadPlugin downloads a plugin from a URL and returns the local file path
 func DownloadPlugin(url string, extension string) (string, error) {
 	req := fasthttp.AcquireRequest()

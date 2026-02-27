@@ -1,3 +1,5 @@
+//go:build !tinygo && !wasm
+
 package mcp
 
 import (
@@ -5,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,31 +14,44 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ClientManager interface for accessing MCP clients and tools
 type ClientManager interface {
 	GetClientByName(clientName string) *schemas.MCPClientState
 	GetClientForTool(toolName string) *schemas.MCPClientState
 	GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool
 }
 
+// PluginPipeline represents the plugin execution pipeline interface
+// This allows ToolsManager to run plugin hooks without direct dependency on Bifrost
+type PluginPipeline interface {
+	RunMCPPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int)
+	RunMCPPostHooks(ctx *schemas.BifrostContext, mcpResp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, runFrom int) (*schemas.BifrostMCPResponse, *schemas.BifrostError)
+}
+
+// ToolsManager manages MCP tool execution and agent mode.
 type ToolsManager struct {
 	toolExecutionTimeout atomic.Value
 	maxAgentDepth        atomic.Int32
-	codeModeBindingLevel atomic.Value // Stores CodeModeBindingLevel
 	clientManager        ClientManager
-	logMu                sync.Mutex // Protects concurrent access to logs slice in codemode execution
+	logger               schemas.Logger
+	agentModeExecutor    *AgentModeExecutor
+
+	// CodeMode implementation for code execution (Starlark by default)
+	codeMode CodeMode
 
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
 	// If not provided, same request ID is used for all tool call result messages without any overrides.
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string
-}
 
-const (
-	ToolTypeListToolFiles   string = "listToolFiles"
-	ToolTypeReadToolFile    string = "readToolFile"
-	ToolTypeExecuteToolCode string = "executeToolCode"
-)
+	// Function to get a plugin pipeline from the pool for running MCP plugin hooks
+	// Used when executeCode tool calls nested MCP tools to ensure plugins run for them
+	pluginPipelineProvider func() PluginPipeline
+
+	// Function to release a plugin pipeline back to the pool
+	releasePluginPipeline func(pipeline PluginPipeline)
+}
 
 // NewToolsManager creates and initializes a new tools manager instance.
 // It validates the configuration, sets defaults if needed, and initializes atomic values
@@ -47,10 +61,52 @@ const (
 //   - config: Tool manager configuration with execution timeout and max agent depth
 //   - clientManager: Client manager interface for accessing MCP clients and tools
 //   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
+//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
+//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
 //
 // Returns:
 //   - *ToolsManager: Initialized tools manager instance
-func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientManager, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string) *ToolsManager {
+func NewToolsManager(
+	config *schemas.MCPToolManagerConfig,
+	clientManager ClientManager,
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
+	pluginPipelineProvider func() PluginPipeline,
+	releasePluginPipeline func(pipeline PluginPipeline),
+	logger schemas.Logger,
+) *ToolsManager {
+	return NewToolsManagerWithCodeMode(
+		config,
+		clientManager,
+		fetchNewRequestIDFunc,
+		pluginPipelineProvider,
+		releasePluginPipeline,
+		nil, // Use default code mode (will be set later via SetCodeMode)
+		logger,
+	)
+}
+
+// NewToolsManagerWithCodeMode creates a new tools manager with a custom CodeMode implementation.
+// This allows using alternative code execution environments (e.g., Lua, JavaScript, WASM).
+//
+// Parameters:
+//   - config: Tool manager configuration with execution timeout and max agent depth
+//   - clientManager: Client manager interface for accessing MCP clients and tools
+//   - fetchNewRequestIDFunc: Optional function to generate unique request IDs for agent mode
+//   - pluginPipelineProvider: Optional function to get a plugin pipeline for running MCP hooks
+//   - releasePluginPipeline: Optional function to release a plugin pipeline back to the pool
+//   - codeMode: Optional CodeMode implementation (if nil, must be set later via SetCodeMode)
+//
+// Returns:
+//   - *ToolsManager: Initialized tools manager instance
+func NewToolsManagerWithCodeMode(
+	config *schemas.MCPToolManagerConfig,
+	clientManager ClientManager,
+	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
+	pluginPipelineProvider func() PluginPipeline,
+	releasePluginPipeline func(pipeline PluginPipeline),
+	codeMode CodeMode,
+	logger schemas.Logger,
+) *ToolsManager {
 	if config == nil {
 		config = &schemas.MCPToolManagerConfig{
 			ToolExecutionTimeout: schemas.DefaultToolExecutionTimeout,
@@ -68,17 +124,53 @@ func NewToolsManager(config *schemas.MCPToolManagerConfig, clientManager ClientM
 	if config.CodeModeBindingLevel == "" {
 		config.CodeModeBindingLevel = schemas.CodeModeBindingLevelServer
 	}
-	manager := &ToolsManager{
-		clientManager:         clientManager,
-		fetchNewRequestIDFunc: fetchNewRequestIDFunc,
+
+	if logger == nil {
+		logger = defaultLogger
 	}
+
+	agentModeExecutor := &AgentModeExecutor{
+		logger: logger,
+	}
+
+	manager := &ToolsManager{
+		clientManager:          clientManager,
+		fetchNewRequestIDFunc:  fetchNewRequestIDFunc,
+		pluginPipelineProvider: pluginPipelineProvider,
+		releasePluginPipeline:  releasePluginPipeline,
+		codeMode:               codeMode,
+		logger:                 logger,
+		agentModeExecutor:      agentModeExecutor,
+	}
+
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
-	manager.codeModeBindingLevel.Store(config.CodeModeBindingLevel)
 
-	logger.Info(fmt.Sprintf("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel))
+	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
+}
+
+// SetCodeMode sets the CodeMode implementation for code execution.
+// This should be called after construction if no CodeMode was provided to the constructor.
+func (m *ToolsManager) SetCodeMode(codeMode CodeMode) {
+	m.codeMode = codeMode
+}
+
+// GetCodeMode returns the current CodeMode implementation.
+func (m *ToolsManager) GetCodeMode() CodeMode {
+	return m.codeMode
+}
+
+// GetCodeModeDependencies returns the dependencies needed by CodeMode implementations.
+// This is useful when constructing a CodeMode implementation externally.
+func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
+	return &CodeModeDependencies{
+		ClientManager:          m.clientManager,
+		PluginPipelineProvider: m.pluginPipelineProvider,
+		ReleasePluginPipeline:  m.releasePluginPipeline,
+		FetchNewRequestIDFunc:  m.fetchNewRequestIDFunc,
+	}
 }
 
 // GetAvailableTools returns the available tools for the given context.
@@ -93,7 +185,7 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 	for clientName, clientTools := range availableToolsPerClient {
 		client := m.clientManager.GetClientByName(clientName)
 		if client == nil {
-			logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
+			m.logger.Warn("%s Client %s not found, skipping", MCPLogPrefix, clientName)
 			continue
 		}
 		if client.ExecutionConfig.IsCodeModeClient {
@@ -111,12 +203,9 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 		}
 	}
 
-	if includeCodeModeTools {
-		codeModeTools := []schemas.ChatTool{
-			m.createListToolFilesTool(),
-			m.createReadToolFileTool(),
-			m.createExecuteToolCodeTool(),
-		}
+	// Add code mode tools if any client is configured for code mode and we have a CodeMode implementation
+	if includeCodeModeTools && m.codeMode != nil {
+		codeModeTools := m.codeMode.GetTools()
 		// Add code mode tools, checking for duplicates
 		for _, tool := range codeModeTools {
 			if tool.Function != nil && tool.Function.Name != "" {
@@ -212,7 +301,7 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 
 	// Get integration user agent for duplicate checking
 	var integrationUserAgentStr string
-	integrationUserAgent := ctx.Value(schemas.BifrostContextKey("integration-user-agent"))
+	integrationUserAgent := ctx.Value(schemas.BifrostContextKeyUserAgent)
 	if integrationUserAgent != nil {
 		if str, ok := integrationUserAgent.(string); ok {
 			integrationUserAgentStr = str
@@ -305,163 +394,174 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 // TOOL REGISTRATION AND DISCOVERY
 // ============================================================================
 
-// ExecuteChatTool executes a tool call in Chat Completions API format and returns the result as a chat tool message.
+// ExecuteTool executes a tool call and returns the result.
 // This is the primary tool executor that works with both Chat Completions and Responses APIs.
-//
-// For Responses API users, use ExecuteResponsesTool() for a more type-safe interface.
-// However, internally this method is format-agnostic - it executes the tool and returns
-// a ChatMessage which can then be converted to ResponsesMessage via ToResponsesToolMessage().
 //
 // Parameters:
 //   - ctx: Execution context
-//   - toolCall: The tool call to execute (from assistant message)
+//   - request: The MCP request containing the tool call (Chat or Responses format)
 //
 // Returns:
-//   - *schemas.ChatMessage: Tool message with execution result
+//   - *schemas.BifrostMCPResponse: Tool execution result (Chat or Responses format)
 //   - error: Any execution error
-func (m *ToolsManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
+func (m *ToolsManager) ExecuteTool(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
+	// Validate request is not nil
+	if request == nil {
+		return nil, fmt.Errorf("request cannot be nil")
+	}
+
+	// Extract tool call based on request type
+	var toolCall *schemas.ChatAssistantMessageToolCall
+	switch request.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		toolCall = request.ChatAssistantMessageToolCall
+	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate ResponsesToolMessage is not nil before conversion
+		if request.ResponsesToolMessage == nil {
+			return nil, fmt.Errorf("ResponsesToolMessage cannot be nil for ResponsesToolCall request type")
+		}
+		// Convert Responses format to Chat format for internal execution
+		toolCall = request.ResponsesToolMessage.ToChatAssistantMessageToolCall()
+		if toolCall == nil {
+			return nil, fmt.Errorf("failed to convert Responses tool message to Chat format")
+		}
+	default:
+		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
+	}
+
+	// Validate toolCall and nested fields
+	if toolCall == nil {
+		return nil, fmt.Errorf("tool call cannot be nil")
+	}
+	// Function is a struct value (not a pointer), so it always exists, but Name can be nil
 	if toolCall.Function.Name == nil {
 		return nil, fmt.Errorf("tool call missing function name")
 	}
-	toolName := *toolCall.Function.Name
 
-	// Handle code mode tools
-	switch toolName {
-	case ToolTypeListToolFiles:
-		return m.handleListToolFiles(ctx, toolCall)
-	case ToolTypeReadToolFile:
-		return m.handleReadToolFile(ctx, toolCall)
-	case ToolTypeExecuteToolCode:
-		return m.handleExecuteToolCode(ctx, toolCall)
-	default:
-		// Check if the user has permission to execute the tool call
-		availableTools := m.clientManager.GetToolPerClient(ctx)
-		toolFound := false
-		for _, tools := range availableTools {
-			for _, mcpTool := range tools {
-				if mcpTool.Function != nil && mcpTool.Function.Name == toolName {
-					toolFound = true
-					break
-				}
-			}
-			if toolFound {
-				break
-			}
-		}
+	now := time.Now()
 
-		if !toolFound {
-			return nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
-		}
-
-		client := m.clientManager.GetClientForTool(toolName)
-		if client == nil {
-			return nil, fmt.Errorf("client not found for tool %s", toolName)
-		}
-
-		// Parse tool arguments
-		var arguments map[string]interface{}
-		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
-			return nil, fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
-		}
-
-		// Strip the client name prefix from tool name before calling MCP server
-		// The MCP server expects the original tool name, not the prefixed version
-		originalToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
-
-		// Call the tool via MCP client -> MCP server
-		callRequest := mcp.CallToolRequest{
-			Request: mcp.Request{
-				Method: string(mcp.MethodToolsCall),
-			},
-			Params: mcp.CallToolParams{
-				Name:      originalToolName,
-				Arguments: arguments,
-			},
-		}
-
-		logger.Debug(fmt.Sprintf("%s Starting tool execution: %s via client: %s", MCPLogPrefix, toolName, client.ExecutionConfig.Name))
-
-		// Create timeout context for tool execution
-		toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
-		toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-		defer cancel()
-
-		toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
-		if callErr != nil {
-			// Check if it was a timeout error
-			if toolCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
-			}
-			logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
-			return nil, fmt.Errorf("MCP tool call failed: %v", callErr)
-		}
-
-		logger.Debug(fmt.Sprintf("%s Tool execution completed: %s", MCPLogPrefix, toolName))
-
-		// Extract text from MCP response
-		responseText := extractTextFromMCPResponse(toolResponse, toolName)
-
-		// Create tool response message
-		return createToolResponseMessage(toolCall, responseText), nil
-	}
-}
-
-// ExecuteToolForResponses executes a tool call from a Responses API tool message and returns
-// the result in Responses API format. This is a type-safe wrapper around ExecuteTool that
-// handles the conversion between Responses and Chat API formats.
-//
-// This method:
-// 1. Converts the Responses tool message to Chat API format
-// 2. Executes the tool using the standard tool executor
-// 3. Converts the result back to Responses API format
-//
-// Parameters:
-//   - ctx: Execution context
-//   - toolMessage: The Responses API tool message to execute
-//   - callID: The original call ID from the Responses API
-//
-// Returns:
-//   - *schemas.ResponsesMessage: Tool result message in Responses API format
-//   - error: Any execution error
-//
-// Example:
-//
-//	responsesToolMsg := &schemas.ResponsesToolMessage{
-//	    Name:      Ptr("calculate"),
-//	    Arguments: Ptr("{\"x\": 10, \"y\": 20}"),
-//	}
-//	resultMsg, err := toolsManager.ExecuteResponsesTool(ctx, responsesToolMsg, "call-123")
-//	// resultMsg is a ResponsesMessage with type=function_call_output
-func (m *ToolsManager) ExecuteResponsesTool(
-	ctx *schemas.BifrostContext,
-	toolMessage *schemas.ResponsesToolMessage,
-) (*schemas.ResponsesMessage, error) {
-	if toolMessage == nil {
-		return nil, fmt.Errorf("tool message is nil")
-	}
-	if toolMessage.Name == nil {
-		return nil, fmt.Errorf("tool call missing function name")
-	}
-
-	// Convert Responses format to Chat format for execution
-	chatToolCall := toolMessage.ToChatAssistantMessageToolCall()
-	if chatToolCall == nil {
-		return nil, fmt.Errorf("failed to convert Responses tool message to Chat format")
-	}
-
-	// Execute the tool using the standard executor
-	chatResult, err := m.ExecuteChatTool(ctx, *chatToolCall)
+	// Execute the tool in Chat format (internal execution format)
+	chatResult, clientName, originalToolName, err := m.executeToolInternal(ctx, toolCall)
 	if err != nil {
 		return nil, err
 	}
 
-	// Convert the result back to Responses format
-	responsesMessage := chatResult.ToResponsesToolMessage()
-	if responsesMessage == nil {
-		return nil, fmt.Errorf("failed to convert tool result to Responses format")
+	latency := time.Since(now).Milliseconds()
+
+	extraFields := schemas.BifrostMCPResponseExtraFields{
+		ClientName: clientName,
+		ToolName:   originalToolName,
+		Latency:    latency,
 	}
 
-	return responsesMessage, nil
+	// Return result in the appropriate format
+	switch request.RequestType {
+	case schemas.MCPRequestTypeChatToolCall:
+		return &schemas.BifrostMCPResponse{
+			ChatMessage: chatResult,
+			ExtraFields: extraFields,
+		}, nil
+	case schemas.MCPRequestTypeResponsesToolCall:
+		// Validate chatResult is not nil before conversion
+		if chatResult == nil {
+			return nil, fmt.Errorf("chat result cannot be nil for ResponsesToolCall request type")
+		}
+		responsesMessage := chatResult.ToResponsesToolMessage()
+		if responsesMessage == nil {
+			return nil, fmt.Errorf("failed to convert tool result to Responses format")
+		}
+		return &schemas.BifrostMCPResponse{
+			ResponsesMessage: responsesMessage,
+			ExtraFields:      extraFields,
+		}, nil
+	default:
+		return nil, fmt.Errorf("invalid request type: %s", request.RequestType)
+	}
+}
+
+// executeToolInternal is the internal tool executor that works with Chat format.
+// This is used internally by ExecuteTool after format conversion.
+// Returns: (message, clientName, originalToolName, error)
+func (m *ToolsManager) executeToolInternal(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, string, string, error) {
+	toolName := *toolCall.Function.Name
+
+	// Check if this is a code mode tool and delegate to CodeMode implementation
+	if m.codeMode != nil && m.codeMode.IsCodeModeTool(toolName) {
+		msg, err := m.codeMode.ExecuteTool(ctx, *toolCall)
+		return msg, "", toolName, err
+	}
+
+	// Handle regular MCP tools
+	// Check if the user has permission to execute the tool call
+	availableTools := m.clientManager.GetToolPerClient(ctx)
+	toolFound := false
+	for _, tools := range availableTools {
+		for _, mcpTool := range tools {
+			if mcpTool.Function != nil && mcpTool.Function.Name == toolName {
+				toolFound = true
+				break
+			}
+		}
+		if toolFound {
+			break
+		}
+	}
+
+	if !toolFound {
+		return nil, "", "", fmt.Errorf("tool '%s' is not available or not permitted", toolName)
+	}
+
+	client := m.clientManager.GetClientForTool(toolName)
+	if client == nil {
+		return nil, "", "", fmt.Errorf("client not found for tool %s", toolName)
+	}
+
+	// Parse tool arguments
+	var arguments map[string]interface{}
+	if strings.TrimSpace(toolCall.Function.Arguments) == "" {
+		arguments = map[string]interface{}{}
+	} else {
+		if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &arguments); err != nil {
+			return nil, "", "", fmt.Errorf("failed to parse tool arguments for '%s': %v", toolName, err)
+		}
+	}
+
+	// Strip the client name prefix from tool name before calling MCP server
+	// The MCP server expects the original tool name (with hyphens), not the sanitized version
+	sanitizedToolName := stripClientPrefix(toolName, client.ExecutionConfig.Name)
+	originalMCPToolName := getOriginalToolName(sanitizedToolName, client)
+
+	// Call the tool via MCP client -> MCP server
+	callRequest := mcp.CallToolRequest{
+		Request: mcp.Request{
+			Method: string(mcp.MethodToolsCall),
+		},
+		Params: mcp.CallToolParams{
+			Name:      originalMCPToolName,
+			Arguments: arguments,
+		},
+	}
+
+	// Create timeout context for tool execution
+	toolExecutionTimeout := m.toolExecutionTimeout.Load().(time.Duration)
+	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
+	defer cancel()
+
+	toolResponse, callErr := client.Conn.CallTool(toolCtx, callRequest)
+	if callErr != nil {
+		// Check if it was a timeout error
+		if toolCtx.Err() == context.DeadlineExceeded {
+			return nil, "", "", fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, toolName)
+		}
+		m.logger.Error("%s Tool execution failed for %s via client %s: %v", MCPLogPrefix, toolName, client.ExecutionConfig.Name, callErr)
+		return nil, "", "", fmt.Errorf("MCP tool call failed: %v", callErr)
+	}
+
+	// Extract text from MCP response
+	responseText := extractTextFromMCPResponse(toolResponse, toolName)
+
+	// Create tool response message
+	return createToolResponseMessage(*toolCall, responseText), client.ExecutionConfig.Name, sanitizedToolName, nil
 }
 
 // ExecuteAgentForChatRequest executes agent mode for a chat request, handling
@@ -482,15 +582,21 @@ func (m *ToolsManager) ExecuteAgentForChatRequest(
 	req *schemas.BifrostChatRequest,
 	resp *schemas.BifrostChatResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	return ExecuteAgentForChatRequest(
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
+	return m.agentModeExecutor.ExecuteAgentForChatRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
 		req,
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteChatTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }
@@ -513,15 +619,21 @@ func (m *ToolsManager) ExecuteAgentForResponsesRequest(
 	req *schemas.BifrostResponsesRequest,
 	resp *schemas.BifrostResponsesResponse,
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
+	executeTool func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	return ExecuteAgentForResponsesRequest(
+	// Use provided executeTool function, or fall back to internal ExecuteTool
+	executeToolFunc := executeTool
+	if executeToolFunc == nil {
+		executeToolFunc = m.ExecuteTool
+	}
+	return m.agentModeExecutor.ExecuteAgentForResponsesRequest(
 		ctx,
 		int(m.maxAgentDepth.Load()),
 		req,
 		resp,
 		makeReq,
 		m.fetchNewRequestIDFunc,
-		m.ExecuteChatTool,
+		executeToolFunc,
 		m.clientManager,
 	)
 }
@@ -538,19 +650,23 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	if config.MaxAgentDepth > 0 {
 		m.maxAgentDepth.Store(int32(config.MaxAgentDepth))
 	}
-	if config.CodeModeBindingLevel != "" {
-		m.codeModeBindingLevel.Store(config.CodeModeBindingLevel)
+
+	// Update CodeMode configuration if present
+	if m.codeMode != nil && config.CodeModeBindingLevel != "" {
+		m.codeMode.UpdateConfig(&CodeModeConfig{
+			BindingLevel:         config.CodeModeBindingLevel,
+			ToolExecutionTimeout: config.ToolExecutionTimeout,
+		})
 	}
 
-	logger.Info(fmt.Sprintf("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel))
+	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
 // This method is safe to call concurrently from multiple goroutines.
 func (m *ToolsManager) GetCodeModeBindingLevel() schemas.CodeModeBindingLevel {
-	val := m.codeModeBindingLevel.Load()
-	if val == nil {
-		return schemas.CodeModeBindingLevelServer
+	if m.codeMode != nil {
+		return m.codeMode.GetBindingLevel()
 	}
-	return val.(schemas.CodeModeBindingLevel)
+	return schemas.CodeModeBindingLevelServer
 }

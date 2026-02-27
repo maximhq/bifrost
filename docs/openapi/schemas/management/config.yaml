@@ -31,9 +31,6 @@ ClientConfig:
     disable_content_logging:
       type: boolean
       description: Whether content logging is disabled
-    enable_governance:
-      type: boolean
-      description: Whether governance is enabled
     enforce_governance_header:
       type: boolean
       description: Whether to enforce governance header
@@ -60,6 +57,16 @@ ClientConfig:
     mcp_code_mode_binding_level:
       type: string
       description: Binding level for MCP code mode
+    required_headers:
+      type: array
+      items:
+        type: string
+      description: Headers that must be present on every request. Requests missing any of these headers are rejected with 400. Case-insensitive matching.
+    logging_headers:
+      type: array
+      items:
+        type: string
+      description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
 
 FrameworkConfig:
   type: object

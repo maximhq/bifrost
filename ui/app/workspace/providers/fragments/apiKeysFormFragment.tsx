@@ -6,16 +6,19 @@ import { EnvVarInput } from "@/components/ui/envVarInput";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
+import { TagInput } from "@/components/ui/tagInput";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
 import { Info, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
-const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini"];
+const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
 
 interface Props {
 	control: Control<any>;
@@ -50,19 +53,42 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isBedrock = providerName === "bedrock";
 	const isVertex = providerName === "vertex";
 	const isAzure = providerName === "azure";
+	const isReplicate = providerName === "replicate";
+	const isVLLM = providerName === "vllm";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+
+	// Auth type state for Azure: 'api_key' or 'entra_id'
+	const [azureAuthType, setAzureAuthType] = useState<'api_key' | 'entra_id'>('api_key')
+
+	// Auth type state for Bedrock: 'iam_role' or 'explicit'
+	const [bedrockAuthType, setBedrockAuthType] = useState<'iam_role' | 'explicit'>('iam_role')
+
+	// Detect auth type from existing form values when editing
+	useEffect(() => {
+		if (form.formState.isDirty) return
+		if (isAzure) {
+			const clientId = form.getValues('key.azure_key_config.client_id')?.value
+			const clientSecret = form.getValues('key.azure_key_config.client_secret')?.value
+			const tenantId = form.getValues('key.azure_key_config.tenant_id')?.value
+			if (clientId || clientSecret || tenantId) {
+				setAzureAuthType('entra_id')
+			}
+		}
+	}, [isAzure, form])
+
+	useEffect(() => {
+		if (form.formState.isDirty) return
+		if (isBedrock) {
+			const accessKey = form.getValues('key.bedrock_key_config.access_key')?.value
+			const secretKey = form.getValues('key.bedrock_key_config.secret_key')?.value
+			if (accessKey || secretKey) {
+				setBedrockAuthType('explicit')
+			}
+		}
+	}, [isBedrock, form])
+
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			{isBedrock && (
-				<Alert variant="default" className="-z-10">
-					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-					<AlertTitle>Authentication Methods</AlertTitle>
-					<AlertDescription>
-						You can either use IAM role authentication or API key authentication. Please leave API Key empty when using IAM role
-						authentication.
-					</AlertDescription>
-				</Alert>
-			)}
 			{isVertex && (
 				<Alert variant="default" className="-z-10">
 					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
@@ -138,49 +164,77 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			<FormField
-				control={control}
-				name={`key.value`}
-				render={({ field }) => (
-					<FormItem>
-						<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : ""}</FormLabel>
-						<FormControl>
-							<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
-						</FormControl>
-						<FormMessage />
-					</FormItem>
-				)}
-			/>
-			<FormField
-				control={control}
-				name={`key.models`}
-				render={({ field }) => (
-					<FormItem>
-						<div className="flex items-center gap-2">
-							<FormLabel>Models</FormLabel>
-							<TooltipProvider>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span>
-											<Info className="text-muted-foreground h-3 w-3" />
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>
-										<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
-									</TooltipContent>
-								</Tooltip>
-							</TooltipProvider>
-						</div>
-						<FormControl>
-							<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} />
-						</FormControl>
-						<FormMessage />
-					</FormItem>
-				)}
-			/>
+			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
+			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && (
+				<FormField
+					control={control}
+					name={`key.value`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
+			{!isVLLM && (
+				<FormField
+					control={control}
+					name={`key.models`}
+					render={({ field }) => (
+						<FormItem>
+							<div className="flex items-center gap-2">
+								<FormLabel>Models</FormLabel>
+								<TooltipProvider>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span>
+												<Info className="text-muted-foreground h-3 w-3" />
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>
+											<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
+							</div>
+							<FormControl>
+								<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
 			{supportsBatchAPI && !isBedrock && !isAzure && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
 				<div className="space-y-4">
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs value={azureAuthType} onValueChange={(v) => {
+							setAzureAuthType(v as 'api_key' | 'entra_id')
+							if (v === 'entra_id') {
+								// Clear API key when switching to Entra ID
+								form.setValue('key.value', undefined)
+							} else {
+								// Clear Entra ID fields when switching to API Key
+								form.setValue('key.azure_key_config.client_id', undefined)
+								form.setValue('key.azure_key_config.client_secret', undefined)
+								form.setValue('key.azure_key_config.tenant_id', undefined)
+								form.setValue('key.azure_key_config.scopes', undefined)
+							}
+						}}>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger value="api_key">API Key</TabsTrigger>
+								<TabsTrigger value="entra_id">Entra ID (Service Principal)</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+
 					<FormField
 						control={control}
 						name={`key.azure_key_config.endpoint`}
@@ -208,54 +262,82 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						)}
 					/>
 
-					<Separator className="my-6" />
-					<Alert variant="default" className="-z-10">
-						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-						<AlertTitle>Azure Entra ID Authentication</AlertTitle>
-						<AlertDescription>
-							To use Azure Entra ID authentication, fill in Client ID, Client Secret, and Tenant ID. Please leave API Key empty when using
-							Entra ID authentication.
-						</AlertDescription>
-					</Alert>
-					<FormField
-						control={control}
-						name={`key.azure_key_config.client_id`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Client ID</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.azure_key_config.client_secret`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Client Secret</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.azure_key_config.tenant_id`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Tenant ID</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
+					{azureAuthType === 'entra_id' && (
+						<>
+							<FormField
+								control={control}
+								name={`key.azure_key_config.client_id`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client ID (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-client-id or env.AZURE_CLIENT_ID" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.azure_key_config.client_secret`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Client Secret (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-client-secret or env.AZURE_CLIENT_SECRET" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.azure_key_config.tenant_id`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Tenant ID (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-tenant-id or env.AZURE_TENANT_ID" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.azure_key_config.scopes`}
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center gap-2">
+											<FormLabel>Scopes (Optional)</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<p>Optional OAuth scopes for token requests. By default we use
+															https://cognitiveservices.azure.com/.default - add additional scopes here if your setup requires extra permissions.</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<FormControl>
+											<TagInput
+												placeholder="Add scope (Enter or comma)"
+												value={field.value ?? []}
+												onValueChange={field.onChange}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+
 					<FormField
 						control={control}
 						name={`key.azure_key_config.deployments`}
@@ -347,31 +429,31 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							Leave both API Key and Auth Credentials empty to use service account attached to your environment.
 						</AlertDescription>
 					</Alert>
-				<FormField
-					control={control}
-					name={`key.vertex_key_config.auth_credentials`}
-					render={({ field }) => (
-						<FormItem>
-							<FormLabel>Auth Credentials</FormLabel>
-							<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
-							<FormControl>
-								<EnvVarInput
-									variant="textarea"
-									rows={4}
-									placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
-									inputClassName="font-mono text-sm"
-									{...field}
-								/>
-							</FormControl>
-							{isRedacted(field.value?.value ?? "") && (
-								<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
-									<Info className="h-3 w-3" />
-									<span>Credentials are stored securely. Edit to update.</span>
-								</div>
-							)}
-						</FormItem>
-					)}
-				/>
+					<FormField
+						control={control}
+						name={`key.vertex_key_config.auth_credentials`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Auth Credentials</FormLabel>
+								<FormDescription>Service account JSON object or env.VAR_NAME</FormDescription>
+								<FormControl>
+									<EnvVarInput
+										variant="textarea"
+										rows={4}
+										placeholder='{"type":"service_account","project_id":"your-gcp-project",...} or env.VERTEX_CREDENTIALS'
+										inputClassName="font-mono text-sm"
+										{...field}
+									/>
+								</FormControl>
+								{isRedacted(field.value?.value ?? "") && (
+									<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+										<Info className="h-3 w-3" />
+										<span>Credentials are stored securely. Edit to update.</span>
+									</div>
+								)}
+							</FormItem>
+						)}
+					/>
 					<FormField
 						control={control}
 						name={`key.vertex_key_config.deployments`}
@@ -412,55 +494,152 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
+			{isReplicate && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name={`key.replicate_key_config.deployments`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Deployments (Optional)</FormLabel>
+								<FormDescription>JSON object mapping model names to deployment names</FormDescription>
+								<FormControl>
+									<Textarea
+										placeholder='{"my-model": "my-deployment", "another-model": "another-deployment"}'
+										value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+										onChange={(e) => {
+											// Store as string during editing to allow intermediate invalid states
+											field.onChange(e.target.value);
+										}}
+										onBlur={(e) => {
+											// Try to parse as JSON on blur, but keep as string if invalid
+											const value = e.target.value.trim();
+											if (value) {
+												try {
+													const parsed = JSON.parse(value);
+													if (typeof parsed === "object" && parsed !== null) {
+														field.onChange(parsed);
+													}
+												} catch {
+													// Keep as string for validation on submit
+												}
+											}
+											field.onBlur();
+										}}
+										rows={3}
+										className="max-w-full font-mono text-sm wrap-anywhere"
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isVLLM && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<FormField
+						control={control}
+						name="key.vllm_key_config.url"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Server URL (Required)</FormLabel>
+								<FormDescription>Base URL of the vLLM server (e.g. http://vllm-server:8000 or env.VLLM_URL)</FormDescription>
+								<FormControl>
+									<EnvVarInput data-testid="key-input-vllm-url" placeholder="http://vllm-server:8000" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name="key.vllm_key_config.model_name"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Model Name (Required)</FormLabel>
+								<FormDescription>Exact model name served on this vLLM instance</FormDescription>
+								<FormControl>
+									<Input data-testid="key-input-vllm-model-name" placeholder="meta-llama/Llama-3-70b-hf" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
 			{isBedrock && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
-					<Alert variant="default" className="-z-10">
-						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
-						<AlertTitle>IAM Role Authentication</AlertTitle>
-						<AlertDescription>
-							Leave both Access Key and Secret Key empty to use IAM roles attached to your environment (EC2, Lambda, ECS, EKS).
-						</AlertDescription>
-					</Alert>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.access_key`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Access Key</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs value={bedrockAuthType} onValueChange={(v) => {
+							setBedrockAuthType(v as 'iam_role' | 'explicit')
+							if (v === 'iam_role') {
+								// Clear explicit credentials when switching to IAM Role
+								form.setValue('key.bedrock_key_config.access_key', undefined)
+								form.setValue('key.bedrock_key_config.secret_key', undefined)
+								form.setValue('key.bedrock_key_config.session_token', undefined)
+							}
+						}}>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger value="iam_role">IAM Role (Inherited)</TabsTrigger>
+								<TabsTrigger value="explicit">Explicit Credentials</TabsTrigger>
+							</TabsList>
+						</Tabs>
+						{bedrockAuthType === 'iam_role' && (
+							<p className="text-muted-foreground text-sm">
+								Uses IAM roles attached to your environment (EC2, Lambda, ECS, EKS).
+							</p>
 						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.secret_key`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Secret Key</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-					<FormField
-						control={control}
-						name={`key.bedrock_key_config.session_token`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>Session Token (Optional)</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
+					</div>
+
+					{bedrockAuthType === 'explicit' && (
+						<>
+							<FormField
+								control={control}
+								name={`key.bedrock_key_config.access_key`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Access Key (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-aws-access-key or env.AWS_ACCESS_KEY_ID" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.bedrock_key_config.secret_key`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Secret Key (Required)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-aws-secret-key or env.AWS_SECRET_ACCESS_KEY" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.bedrock_key_config.session_token`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Session Token (Optional)</FormLabel>
+										<FormControl>
+											<EnvVarInput placeholder="your-aws-session-token or env.AWS_SESSION_TOKEN" {...field} />
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
+					)}
+
 					<FormField
 						control={control}
 						name={`key.bedrock_key_config.region`}
@@ -479,7 +658,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						name={`key.bedrock_key_config.arn`}
 						render={({ field }) => (
 							<FormItem>
-								<FormLabel>ARN</FormLabel>
+								<FormLabel>ARN (Optional)</FormLabel>
 								<FormControl>
 									<EnvVarInput placeholder="arn:aws:bedrock:us-east-1:123:inference-profile or env.AWS_ARN" {...field} />
 								</FormControl>

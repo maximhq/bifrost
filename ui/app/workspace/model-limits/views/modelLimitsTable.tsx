@@ -25,9 +25,10 @@ import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Edit, Plus, Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import ModelLimitSheet from "./modelLimitSheet";
+import { ModelLimitsEmptyState } from "./modelLimitsEmptyState";
 
 // Helper to format reset duration for display
 const formatResetDuration = (duration: string) => {
@@ -36,12 +37,17 @@ const formatResetDuration = (duration: string) => {
 
 interface ModelLimitsTableProps {
 	modelConfigs: ModelConfig[];
-	onRefresh: () => void;
 }
 
-export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimitsTableProps) {
+export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps) {
 	const [showModelLimitSheet, setShowModelLimitSheet] = useState(false);
-	const [editingModelConfig, setEditingModelConfig] = useState<ModelConfig | null>(null);
+	const [editingModelConfigId, setEditingModelConfigId] = useState<string | null>(null);
+
+	// Derive editingModelConfig from props so it stays in sync with RTK cache updates
+	const editingModelConfig = useMemo(
+		() => (editingModelConfigId ? modelConfigs.find((mc) => mc.id === editingModelConfigId) ?? null : null),
+		[editingModelConfigId, modelConfigs],
+	);
 
 	const hasCreateAccess = useRbac(RbacResource.Governance, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.Governance, RbacOperation.Update);
@@ -53,28 +59,38 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 		try {
 			await deleteModelConfig(id).unwrap();
 			toast.success("Model limit deleted successfully");
-			onRefresh();
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
 	};
 
 	const handleAddModelLimit = () => {
-		setEditingModelConfig(null);
+		setEditingModelConfigId(null);
 		setShowModelLimitSheet(true);
 	};
 
 	const handleEditModelLimit = (config: ModelConfig, e: React.MouseEvent) => {
 		e.stopPropagation();
-		setEditingModelConfig(config);
+		setEditingModelConfigId(config.id);
 		setShowModelLimitSheet(true);
 	};
 
 	const handleModelLimitSaved = () => {
 		setShowModelLimitSheet(false);
-		setEditingModelConfig(null);
-		onRefresh();
+		setEditingModelConfigId(null);
 	};
+
+	// Empty state when user has no model limits (same pattern as Plugins / MCP Servers)
+	if (modelConfigs?.length === 0) {
+		return (
+			<>
+				{showModelLimitSheet && (
+					<ModelLimitSheet modelConfig={editingModelConfig} onSave={handleModelLimitSaved} onCancel={() => setShowModelLimitSheet(false)} />
+				)}
+				<ModelLimitsEmptyState onAddClick={handleAddModelLimit} canCreate={hasCreateAccess} />
+			</>
+		);
+	}
 
 	return (
 		<>
@@ -85,6 +101,7 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 			<div className="space-y-4">
 				<div className="flex items-center justify-between">
 					<div>
+						<h1 className="text-lg font-semibold">Model Limits</h1>
 						<p className="text-muted-foreground text-sm">
 							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
 						</p>
@@ -95,29 +112,8 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 					</Button>
 				</div>
 
-				{/* Table */}
 				<div className="rounded-sm border">
-					{modelConfigs?.length === 0 ? (
-						<Table>
-							<TableHeader>
-								<TableRow className="hover:bg-transparent">
-									<TableHead className="font-medium">Model</TableHead>
-									<TableHead className="font-medium">Provider</TableHead>
-									<TableHead className="font-medium">Budget</TableHead>
-									<TableHead className="font-medium">Rate Limit</TableHead>
-									<TableHead className="w-[100px]"></TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								<TableRow>
-									<TableCell colSpan={5} className="text-muted-foreground py-8 text-center">
-										No model limits found. Create your first model limit to get started.
-									</TableCell>
-								</TableRow>
-							</TableBody>
-						</Table>
-					) : (
-						<Table>
+					<Table>
 							<TableHeader>
 								<TableRow className="hover:bg-transparent">
 									<TableHead className="font-medium">Model</TableHead>
@@ -212,7 +208,7 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 														</Tooltip>
 													</TooltipProvider>
 												) : (
-													<span className="text-muted-foreground text-sm">—</span>
+													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell className="min-w-[180px]">
@@ -292,46 +288,36 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 														)}
 													</div>
 												) : (
-													<span className="text-muted-foreground text-sm">—</span>
+													<span className="text-muted-foreground text-sm">-</span>
 												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
-												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<Button
-																	variant="ghost"
-																	size="icon"
-																	className="h-8 w-8"
-																	onClick={(e) => handleEditModelLimit(config, e)}
-																	disabled={!hasUpdateAccess}
-																>
-																	<Edit className="h-4 w-4" />
-																</Button>
-															</TooltipTrigger>
-															<TooltipContent>Edit</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
+												<div className="flex items-center justify-end gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+													<Button
+														variant="ghost"
+														size="icon"
+														className="h-8 w-8"
+														onClick={(e) => handleEditModelLimit(config, e)}
+														disabled={!hasUpdateAccess}
+														aria-label={`Edit model limit for ${config.model_name}`}
+														data-testid="model-limit-button-edit"
+													>
+														<Edit className="h-4 w-4" />
+													</Button>
 													<AlertDialog>
-														<TooltipProvider>
-															<Tooltip>
-																<AlertDialogTrigger asChild>
-																	<TooltipTrigger asChild>
-																		<Button
-																			variant="ghost"
-																			size="icon"
-																			className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-																			onClick={(e) => e.stopPropagation()}
-																			disabled={!hasDeleteAccess}
-																		>
-																			<Trash2 className="h-4 w-4" />
-																		</Button>
-																	</TooltipTrigger>
-																</AlertDialogTrigger>
-																<TooltipContent>Delete</TooltipContent>
-															</Tooltip>
-														</TooltipProvider>
+														<AlertDialogTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+																onClick={(e) => e.stopPropagation()}
+																disabled={!hasDeleteAccess}
+																aria-label={`Delete model limit for ${config.model_name}`}
+																data-testid="model-limit-button-delete"
+															>
+																<Trash2 className="h-4 w-4" />
+															</Button>
+														</AlertDialogTrigger>
 														<AlertDialogContent>
 															<AlertDialogHeader>
 																<AlertDialogTitle>Delete Model Limit</AlertDialogTitle>
@@ -360,7 +346,6 @@ export default function ModelLimitsTable({ modelConfigs, onRefresh }: ModelLimit
 								})}
 							</TableBody>
 						</Table>
-					)}
 				</div>
 			</div>
 		</>

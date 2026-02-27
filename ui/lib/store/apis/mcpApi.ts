@@ -1,5 +1,7 @@
-import { CreateMCPClientRequest, MCPClient, UpdateMCPClientRequest } from "@/lib/types/mcp";
+import { CreateMCPClientRequest, MCPClient, OAuthFlowResponse, OAuthStatusResponse, UpdateMCPClientRequest } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
+
+type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 
 export const mcpApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -10,7 +12,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Create new MCP client
-		createMCPClient: builder.mutation<null, CreateMCPClientRequest>({
+		createMCPClient: builder.mutation<CreateMCPClientResponse, CreateMCPClientRequest>({
 			query: (data) => ({
 				url: "/mcp/client",
 				method: "POST",
@@ -20,7 +22,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Update existing MCP client
-		updateMCPClient: builder.mutation<null, { id: string; data: UpdateMCPClientRequest }>({
+		updateMCPClient: builder.mutation<any, { id: string; data: UpdateMCPClientRequest }>({
 			query: ({ id, data }) => ({
 				url: `/mcp/client/${id}`,
 				method: "PUT",
@@ -30,7 +32,7 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Delete MCP client
-		deleteMCPClient: builder.mutation<null, string>({
+		deleteMCPClient: builder.mutation<any, string>({
 			query: (id) => ({
 				url: `/mcp/client/${id}`,
 				method: "DELETE",
@@ -39,9 +41,24 @@ export const mcpApi = baseApi.injectEndpoints({
 		}),
 
 		// Reconnect MCP client
-		reconnectMCPClient: builder.mutation<null, string>({
+		reconnectMCPClient: builder.mutation<any, string>({
 			query: (id) => ({
 				url: `/mcp/client/${id}/reconnect`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
+		// Get OAuth config status (for polling)
+		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
+			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
+			providesTags: (result, error, id) => [{ type: "OAuth2Config", id }],
+		}),
+
+		// Complete OAuth flow for MCP client
+		completeOAuthFlow: builder.mutation<{ status: string; message: string }, string>({
+			query: (oauthConfigId) => ({
+				url: `/mcp/client/${oauthConfigId}/complete-oauth`,
 				method: "POST",
 			}),
 			invalidatesTags: ["MCPClients"],
@@ -56,4 +73,6 @@ export const {
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
 	useLazyGetMCPClientsQuery,
+	useLazyGetOAuthConfigStatusQuery,
+	useCompleteOAuthFlowMutation,
 } = mcpApi;

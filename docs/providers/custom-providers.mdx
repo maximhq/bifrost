@@ -254,6 +254,7 @@ Custom providers can be built on these supported providers:
 - `bedrock` - AWS Bedrock
 - `cohere` - Cohere
 - `gemini` - Gemini
+- `replicate` - Replicate
 
 ### Request Path Overrides
 
@@ -267,8 +268,9 @@ The `request_path_overrides` field allows you to override the default API endpoi
 **Not Supported:** `request_path_overrides` is not supported for `gemini` and `bedrock` base provider types due to their specialized API implementations.
 </Warning>
 
-The field accepts a mapping of request types to custom paths:
+The field accepts a mapping of request types to either custom **paths** or **full URLs**:
 
+**Using Paths (relative to `base_url`):**
 ```json
 {
     "request_path_overrides": {
@@ -279,6 +281,20 @@ The field accepts a mapping of request types to custom paths:
     }
 }
 ```
+
+**Using Full URLs (bypasses `base_url`):**
+```json
+{
+    "request_path_overrides": {
+        "chat_completion": "https://specific-endpoint.com/chat",
+        "embedding": "http://another-service:8080/embeddings"
+    }
+}
+```
+
+<Info>
+When a full URL (with scheme and host) is provided in `request_path_overrides`, Bifrost will use that URL directly and ignore the `base_url` from `network_config` for that specific request type. This allows you to route different request types to completely different endpoints.
+</Info>
 
 **Example: OpenAI-Compatible Endpoint with Custom Paths**
 

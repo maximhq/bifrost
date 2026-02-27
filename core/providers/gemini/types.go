@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -81,6 +82,7 @@ type GeminiGenerationRequest struct {
 	IsTranscription   bool                     `json:"-"` // Internal field to track if this is a transcription request
 	IsSpeech          bool                     `json:"-"` // Internal field to track if this is a speech request
 	IsImageGeneration bool                     `json:"-"` // Internal field to track if this is an image generation request
+	IsImageEdit       bool                     `json:"-"` // Internal field to track if this is an image edit request
 	IsCountTokens     bool                     `json:"-"` // Internal field to track if this is a count tokens request
 
 	// Imagen-specific fields for :predict endpoint
@@ -88,12 +90,19 @@ type GeminiGenerationRequest struct {
 	Parameters *GeminiImagenParameters `json:"parameters,omitempty"`
 
 	// Bifrost specific field (only parsed when converting from Provider -> Bifrost request)
-	Fallbacks []string `json:"fallbacks,omitempty"`
+	Fallbacks   []string               `json:"fallbacks,omitempty"`
+	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // ImagenInstance represents a single instance in an Imagen request
 type ImagenInstance struct {
-	Prompt string `json:"prompt,omitempty"`
+	Prompt          string                 `json:"prompt,omitempty"`
+	ReferenceImages []ImagenReferenceImage `json:"referenceImages,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1098,16 +1107,28 @@ func (tc *GenerationConfigThinkingConfig) UnmarshalJSON(data []byte) error {
 }
 
 type GeminiBatchEmbeddingRequest struct {
-	Requests []GeminiEmbeddingRequest `json:"requests,omitempty"`
+	Requests    []GeminiEmbeddingRequest `json:"requests,omitempty"`
+	ExtraParams map[string]interface{}   `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // GeminiEmbeddingRequest represents a single embedding request in a batch.
 type GeminiEmbeddingRequest struct {
-	Content              *Content `json:"content,omitempty"`
-	TaskType             *string  `json:"taskType,omitempty"`
-	Title                *string  `json:"title,omitempty"`
-	OutputDimensionality *int     `json:"outputDimensionality,omitempty"`
-	Model                string   `json:"model,omitempty"`
+	Content              *Content               `json:"content,omitempty"`
+	TaskType             *string                `json:"taskType,omitempty"`
+	Title                *string                `json:"title,omitempty"`
+	OutputDimensionality *int                   `json:"outputDimensionality,omitempty"`
+	Model                string                 `json:"model,omitempty"`
+	ExtraParams          map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+// GetExtraParams implements the RequestBodyWithExtraParams interface
+func (r *GeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // Content contains the multi-part content of a message.
@@ -1760,7 +1781,7 @@ type GenerateContentResponsePromptFeedback struct {
 // ModalityTokenCount represents token counting info for a single modality.
 type ModalityTokenCount struct {
 	// Optional. The modality associated with this token count.
-	Modality string `json:"modality,omitempty"`
+	Modality Modality `json:"modality,omitempty"`
 	// Number of tokens.
 	TokenCount int32 `json:"tokenCount,omitempty"`
 }
@@ -2117,22 +2138,33 @@ type GeminiCountTokensResponse struct {
 }
 
 type GeminiImagenRequest struct {
-	Instances  []ImagenInstance       `json:"instances"`
-	Parameters GeminiImagenParameters `json:"parameters"`
+	Instances   []ImagenInstance       `json:"instances"`
+	Parameters  GeminiImagenParameters `json:"parameters"`
+	ExtraParams map[string]interface{} `json:"-"` // Optional: Extra parameters
+}
+
+func (r *GeminiImagenRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 type GeminiImagenParameters struct {
-	AddWatermark     *bool                `json:"addWatermark,omitempty"`     // Whether to add a watermark to the image
-	SampleCount      *int                 `json:"sampleCount,omitempty"`      // 1 - 4
-	SampleImageSize  *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K", "4K"
-	AspectRatio      *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
-	PersonGeneration *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
-	Seed             *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
-	NegativePrompt   *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
-	Language         *string              `json:"language,omitempty"`         // Language code for the prompt
-	EnhancePrompt    *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
-	SafetySettings   []SafetySetting      `json:"safetySettings,omitempty"`   // Safety settings for content filtering
-	OutputOptions    *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+	AddWatermark            *bool                `json:"addWatermark,omitempty"`     // Whether to add a watermark to the image
+	SampleCount             *int                 `json:"sampleCount,omitempty"`      // 1 - 4
+	SampleImageSize         *string              `json:"sampleImageSize,omitempty"`  // "1K", "2K"
+	AspectRatio             *string              `json:"aspectRatio,omitempty"`      // "1:1", "3:4", "4:3", "9:16", "16:9"
+	PersonGeneration        *string              `json:"personGeneration,omitempty"` // "dont_allow", "allow_adult", "allow_all"
+	Seed                    *int                 `json:"seed,omitempty"`             // Random seed for reproducibility
+	NegativePrompt          *string              `json:"negativePrompt,omitempty"`   // Negative prompt to exclude certain elements
+	Language                *string              `json:"language,omitempty"`         // Language code for the prompt
+	EnhancePrompt           *bool                `json:"enhancePrompt,omitempty"`    // Whether to enhance the prompt
+	SafetySettings          []SafetySetting      `json:"safetySettings,omitempty"`   // Safety settings for content filtering
+	OutputOptions           *ImagenOutputOptions `json:"outputOptions,omitempty"`    // Output options for image generation
+	BaseSteps               *int                 `json:"baseSteps,omitempty"`        // 1 - 100
+	EditMode                *string              `json:"editMode,omitempty"`
+	GuidanceScale           *int                 `json:"guidanceScale,omitempty"`
+	IncludeRaiReason        *bool                `json:"includeRaiReason,omitempty"`        // Whether to include the RAI filtered reason
+	IncludeSafetyAttributes *bool                `json:"includeSafetyAttributes,omitempty"` // Whether to include safety attributes
+	StorageUri              *string              `json:"storageUri,omitempty"`              // Storage URI for the image
 }
 
 type ImagenOutputOptions struct {
@@ -2152,6 +2184,26 @@ type GeminiImagenResponse struct {
 	Predictions []GeminiImagenPrediction `json:"predictions"` // List of Imagen predictions
 }
 
+// ImagenReferenceImage represents a reference image for editing
+type ImagenReferenceImage struct {
+	ReferenceType   string                 `json:"referenceType"` // "REFERENCE_TYPE_RAW", "REFERENCE_TYPE_MASK"
+	ReferenceID     int                    `json:"referenceId"`
+	ReferenceImage  ImagenReferenceData    `json:"referenceImage"`
+	MaskImageConfig *ImagenMaskImageConfig `json:"maskImageConfig,omitempty"`
+}
+
+// ImagenReferenceData contains the base64 encoded image data
+type ImagenReferenceData struct {
+	BytesBase64Encoded string `json:"bytesBase64Encoded"`
+}
+
+// ImagenMaskImageConfig contains mask configuration
+type ImagenMaskImageConfig struct {
+	MaskMode    string   `json:"maskMode"`              // "MASK_MODE_USER_PROVIDED", "MASK_MODE_BACKGROUND", "MASK_MODE_FOREGROUND", "MASK_MODE_SEMANTIC"
+	Dilation    *float64 `json:"dilation,omitempty"`    // Range [0, 1]. Percentage of image width to dilate (grow) the mask by
+	MaskClasses []int    `json:"maskClasses,omitempty"` // Mask classes for MASK_MODE_SEMANTIC mode
+}
+
 var GeminiRequestSuffixPaths = []string{
 	":streamGenerateContent",
 	":generateContent",
@@ -2159,4 +2211,398 @@ var GeminiRequestSuffixPaths = []string{
 	":embedContent",
 	":batchEmbedContents",
 	":predict",
+	":predictLongRunning",
+}
+
+// GeminiVideoGenerationRequest represents the request for Veo video generation
+type GeminiVideoGenerationRequest struct {
+	Model       string                          `json:"model,omitempty"` // Model field for explicit model specification
+	Instances   []GeminiVideoGenerationInstance `json:"instances"`
+	Parameters  *VideoGenerationParameters      `json:"parameters,omitempty"` // Optional parameters including reference images
+	ExtraParams map[string]interface{}          `json:"-"`                    // Optional: Extra parameters
+}
+
+func (r *GeminiVideoGenerationRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// GeminiVideoGenerationInstance represents a single instance in the video generation request
+// Used in the REST API POST /models/{model}:predictLongRunning
+type GeminiVideoGenerationInstance struct {
+	Prompt          string                     `json:"prompt"`              // Text prompt for video generation
+	Image           *VideoImageData            `json:"image,omitempty"`     // Optional image for image-to-video
+	LastFrame       *VideoImageData            `json:"lastFrame,omitempty"` // Optional last frame for interpolation video
+	Mask            *VideoImageData            `json:"mask,omitempty"`      // Optional mask for image-to-video
+	Video           *VideoGenerationVideoInput `json:"video,omitempty"`     // Optional video for video extension
+	ReferenceImages []VideoReferenceImage      `json:"referenceImages,omitempty"`
+}
+
+// VideoGenerationParameters contains optional parameters for video generation
+type VideoGenerationParameters struct {
+	// Text describing what not to include in the video (Veo 2, 3, 3.1)
+	NegativePrompt *string `json:"negativePrompt,omitempty"`
+
+	// Initial image to animate for image-to-video generation (Veo 2, 3, 3.1)
+	Image *VideoImageData `json:"image,omitempty"`
+
+	// Final image for interpolation video. Must be used with image parameter (Veo 2, 3, 3.1)
+	LastFrame *VideoImageData `json:"lastFrame,omitempty"`
+
+	// Up to three images for style and content references (Veo 3.1 only)
+	ReferenceImages []VideoReferenceImage `json:"referenceImages,omitempty"`
+
+	// Video to be used for video extension (Veo 3.1 only)
+	Video *VideoGenerationVideoInput `json:"video,omitempty"`
+
+	// Video aspect ratio (Veo 2, 3, 3.1)
+	// Options: "16:9" (default), "9:16"
+	AspectRatio *string `json:"aspectRatio,omitempty"`
+
+	// Video resolution (Veo 3, 3.1)
+	// Options: "720p" (default), "1080p" (only 8s duration), "4k" (only 8s duration)
+	// Note: Only "720p" for extension
+	Resolution *string `json:"resolution,omitempty"`
+
+	// Number of samples to generate (Veo 3.1)
+	SampleCount *int `json:"sampleCount,omitempty"`
+
+	// Length of generated video in seconds (Veo 2, 3, 3.1)
+	// Veo 3/3.1: "4", "6", "8" - Must be "8" for extension, reference images, 1080p, and 4k
+	// Veo 2: "5", "6", "8"
+	DurationSeconds *int `json:"durationSeconds,omitempty"`
+
+	// Controls generation of people (Veo 2, 3, 3.1)
+	// Veo 3.1/3 Text-to-video & Extension: "allow_all" only
+	// Veo 3.1/3 Image-to-video, Interpolation, Reference images: "allow_adult" only
+	// Veo 2 Text-to-video: "allow_all", "allow_adult", "dont_allow"
+	// Veo 2 Image-to-video: "allow_adult", "dont_allow"
+	PersonGeneration *string `json:"personGeneration,omitempty"`
+
+	// Number of videos to generate (Veo 3.1)
+	NumberOfVideos *int `json:"numberOfVideos,omitempty"`
+
+	// Random seed for reproducibility (Veo 3, 3.1)
+	Seed *int `json:"seed,omitempty"`
+
+	StorageURI *string `json:"storageURI,omitempty"`
+
+	CompressionQuality *string `json:"compressionQuality,omitempty"`
+
+	// Veo 2 models only
+	EnhancePrompt *bool `json:"enhancePrompt,omitempty"`
+
+	GenerateAudio *bool `json:"generateAudio,omitempty"`
+
+	// Veo 3 image-to-video only
+	ResizeMode *string `json:"resizeMode,omitempty"`
+}
+
+// VideoReferenceImage represents a reference image for video generation
+type VideoReferenceImage struct {
+	Image         VideoImageData `json:"image"`         // Image data
+	ReferenceType string         `json:"referenceType"` // Type of reference (e.g., "asset", "style")
+}
+
+// VideoGenerationVideoInput represents a video from a previous generation for video extension
+type VideoGenerationVideoInput struct {
+	// Video data from a previous generation (contains URI from VideoData response)
+	InlineData *Blob     `json:"inlineData,omitempty"` // Inline base64-encoded video data (if applicable)
+	FileData   *FileData `json:"fileData,omitempty"`   // URI-based video data from previous generation
+	URI        *string   `json:"uri,omitempty"`        // URI of the video
+}
+
+// VideoImageData contains the image data (inline or URI-based)
+type VideoImageData struct {
+	BytesBase64Encoded *string   `json:"bytesBase64Encoded,omitempty"` // Inline base64-encoded image data
+	GCSURI             *string   `json:"gcsUri,omitempty"`             // GCS URI of the image
+	FileData           *FileData `json:"fileData,omitempty"`           // URI-based image data
+	MimeType           *string   `json:"mimeType,omitempty"`           // MIME type of the image
+	MaskMode           *string   `json:"maskMode,omitempty"`           // Mask mode for the image
+}
+
+func (v *VideoImageData) UnmarshalJSON(data []byte) error {
+	type VideoImageDataAlias struct {
+		BytesBase64Encoded *string   `json:"bytesBase64Encoded,omitempty"`
+		GCSURI             *string   `json:"gcsUri,omitempty"`
+		FileData           *FileData `json:"fileData,omitempty"`
+		MimeType           *string   `json:"mimeType,omitempty"`
+		MaskMode           *string   `json:"maskMode,omitempty"`
+	}
+
+	var aux VideoImageDataAlias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	v.GCSURI = aux.GCSURI
+	v.FileData = aux.FileData
+	v.MimeType = aux.MimeType
+	v.MaskMode = aux.MaskMode
+
+	if aux.BytesBase64Encoded != nil && *aux.BytesBase64Encoded != "" {
+
+		standardBase64 := *aux.BytesBase64Encoded
+
+		// Convert URL-safe base64 → standard base64
+		standardBase64 = strings.ReplaceAll(standardBase64, "_", "/")
+		standardBase64 = strings.ReplaceAll(standardBase64, "-", "+")
+
+		// Fix padding
+		switch len(standardBase64) % 4 {
+		case 2:
+			standardBase64 += "=="
+		case 3:
+			standardBase64 += "="
+		}
+
+		// Validate by decoding
+		decoded, err := base64.StdEncoding.DecodeString(standardBase64)
+		if err != nil {
+			return fmt.Errorf("failed to decode base64 bytesBase64Encoded: %v", err)
+		}
+
+		// Re-encode normalized version (optional but recommended)
+		normalized := base64.StdEncoding.EncodeToString(decoded)
+		v.BytesBase64Encoded = &normalized
+	} else {
+		v.BytesBase64Encoded = aux.BytesBase64Encoded
+	}
+
+	return nil
+}
+
+// A generated video.
+type Video struct {
+	// Optional. Path to another storage.
+	URI string `json:"uri,omitempty"`
+	// Optional. Video bytes.
+	VideoBytes []byte `json:"videoBytes,omitempty"`
+	// Optional. Video encoding, for example ``video/mp4``.
+	MIMEType string `json:"mimeType,omitempty"`
+}
+
+// An image.
+type Image struct {
+	// Optional. The Cloud Storage URI of the image. ``Image`` can contain a value
+	// for this field or the ``image_bytes`` field but not both.
+	GCSURI string `json:"gcsUri,omitempty"`
+	// Optional. The image bytes data. ``Image`` can contain a value for this field
+	// or the ``gcs_uri`` field but not both.
+	ImageBytes []byte `json:"imageBytes,omitempty"`
+	// Optional. The MIME type of the image.
+	MIMEType string `json:"mimeType,omitempty"`
+}
+
+// A set of source input(s) for video generation.
+type GenerateVideosSource struct {
+	// Optional. The text prompt for generating the videos.
+	// Optional if image or video is provided.
+	Prompt string `json:"prompt,omitempty"`
+	// Optional. The input image for generating the videos.
+	// Optional if prompt is provided. Not allowed if video is provided.
+	Image *Image `json:"image,omitempty"`
+	// Optional. The input video for video extension use cases.
+	// Optional if prompt is provided. Not allowed if image is provided.
+	Video *Video `json:"video,omitempty"`
+}
+
+// Enum for the reference type of a video generation reference image.
+type VideoGenerationReferenceType string
+
+const (
+	// A reference image that provides assets to the generated video,
+	// such as the scene, an object, a character, etc.
+	VideoGenerationReferenceTypeAsset VideoGenerationReferenceType = "ASSET"
+	// A reference image that provides aesthetics including colors,
+	// lighting, texture, etc., to be used as the style of the generated video,
+	// such as 'anime', 'photography', 'origami', etc.
+	VideoGenerationReferenceTypeStyle VideoGenerationReferenceType = "STYLE"
+)
+
+// Enum for the mask mode of a video generation mask.
+type VideoGenerationMaskMode string
+
+const (
+	// The image mask contains a masked rectangular region which is
+	// applied on the first frame of the input video. The object described in
+	// the prompt is inserted into this region and will appear in subsequent
+	// frames.
+	VideoGenerationMaskModeInsert VideoGenerationMaskMode = "INSERT"
+	// The image mask is used to determine an object in the
+	// first video frame to track. This object is removed from the video.
+	VideoGenerationMaskModeRemove VideoGenerationMaskMode = "REMOVE"
+	// The image mask is used to determine a region in the
+	// video. Objects in this region will be removed.
+	VideoGenerationMaskModeRemoveStatic VideoGenerationMaskMode = "REMOVE_STATIC"
+	// The image mask contains a masked rectangular region where
+	// the input video will go. The remaining area will be generated. Video
+	// masks are not supported.
+	VideoGenerationMaskModeOutpaint VideoGenerationMaskMode = "OUTPAINT"
+)
+
+// Enum that controls the compression quality of the generated videos.
+type VideoCompressionQuality string
+
+const (
+	// Optimized video compression quality. This will produce videos
+	// with a compressed, smaller file size.
+	VideoCompressionQualityOptimized VideoCompressionQuality = "OPTIMIZED"
+	// Lossless video compression quality. This will produce videos
+	// with a larger file size.
+	VideoCompressionQualityLossless VideoCompressionQuality = "LOSSLESS"
+)
+
+// A reference image for video generation.
+type VideoGenerationReferenceImage struct {
+	// The reference image.
+	Image *Image `json:"image,omitempty"`
+	// The type of the reference image, which defines how the reference
+	// image will be used to generate the video.
+	ReferenceType VideoGenerationReferenceType `json:"referenceType,omitempty"`
+}
+
+// A mask for video generation.
+type VideoGenerationMask struct {
+	// Optional. The image mask to use for generating videos.
+	Image *Image `json:"image,omitempty"`
+	// Describes how the mask will be used. Inpainting masks must
+	// match the aspect ratio of the input video. Outpainting masks can be
+	// either 9:16 or 16:9.
+	MaskMode VideoGenerationMaskMode `json:"maskMode,omitempty"`
+}
+
+// HTTP options to be used in each of the requests.
+type HTTPOptions struct {
+	// Optional. BaseURL specifies the base URL for the API endpoint. If empty, defaults
+	// to "https://generativelanguage.googleapis.com/" for the Gemini API backend, and location-specific
+	// Vertex AI endpoint (e.g., "https://us-central1-aiplatform.googleapis.com/
+	BaseURL string `json:"baseUrl,omitempty"`
+	// Optional. APIVersion specifies the version of the API to use. If empty, defaults
+	// to "v1beta" for Gemini API and "v1beta1" for Vertex AI.
+	APIVersion string `json:"apiVersion,omitempty"`
+	// Optional. Additional HTTP headers to be sent with the request.
+	Headers http.Header `json:"headers,omitempty"`
+	// Optional. Timeout for the request in milliseconds.
+	Timeout *time.Duration `json:"timeout,omitempty"`
+	// Optional. Extra parameters to add to the request body.
+	// The structure must match the backend API's request structure.
+	//   - VertexAI backend API docs: https://cloud.google.com/vertex-ai/docs/reference/rest
+	//   - GeminiAPI backend API docs: https://ai.google.dev/api/rest
+	ExtraBody map[string]any `json:"extraBody,omitempty"`
+	// Optional. A function that allows for request body customization.
+	// It is executed after ExtraBody has been merged, offering more advanced
+	// control over the request body than the static ExtraBody.
+	ExtrasRequestProvider ExtrasRequestProvider `json:"-"`
+}
+
+// ExtrasRequestProvider provides a way to dynamically modify the request body
+// before it is sent. It is a function that takes the request body and returns
+// the modified body. This is useful for advanced scenarios where request
+// parameters need to be added based on logic that cannot
+// be handled by a static map.
+type ExtrasRequestProvider = func(body map[string]any) map[string]any
+
+// You can find API default values and more details at VertexAI: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/veo-video-generation.
+type GenerateVideosConfig struct {
+	// Optional. Used to override HTTP request options.
+	HTTPOptions *HTTPOptions `json:"httpOptions,omitempty"`
+	// Optional. Number of output videos. If empty, the system will choose a default value.
+	NumberOfVideos int32 `json:"numberOfVideos,omitempty"`
+	// Optional. The GCS bucket where to save the generated videos.
+	OutputGCSURI string `json:"outputGcsUri,omitempty"`
+	// Optional. Frames per second for video generation.
+	FPS *int32 `json:"fps,omitempty"`
+	// Optional. Duration of the clip for video generation in seconds.
+	DurationSeconds *int32 `json:"durationSeconds,omitempty"`
+	// Optional. The RNG seed. If RNG seed is exactly same for each request with
+	// unchanged inputs, the prediction results will be consistent. Otherwise,
+	// a random RNG seed will be used each time to produce a different
+	// result.
+	Seed *int32 `json:"seed,omitempty"`
+	// Optional. The aspect ratio for the generated video. 16:9 (landscape) and
+	// 9:16 (portrait) are supported.
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// Optional. The resolution for the generated video. 720p and 1080p are
+	// supported.
+	Resolution string `json:"resolution,omitempty"`
+	// Optional. Whether allow to generate person videos, and restrict to specific
+	// ages. Supported values are: dont_allow, allow_adult.
+	PersonGeneration string `json:"personGeneration,omitempty"`
+	// Optional. The pubsub topic where to publish the video generation
+	// progress.
+	PubsubTopic string `json:"pubsubTopic,omitempty"`
+	// Optional. Explicitly state what should not be included in the generated
+	// videos.
+	NegativePrompt string `json:"negativePrompt,omitempty"`
+	// Optional. Whether to use the prompt rewriting logic.
+	EnhancePrompt bool `json:"enhancePrompt,omitempty"`
+	// Optional. Whether to generate audio along with the video.
+	GenerateAudio *bool `json:"generateAudio,omitempty"`
+	// Optional. Image to use as the last frame of generated videos.
+	// Only supported for image to video use cases.
+	LastFrame *Image `json:"lastFrame,omitempty"`
+	// Optional. The images to use as the references to generate the videos.
+	// If this field is provided, the text prompt field must also be provided.
+	// The image, video, or last_frame field are not supported. Each image must
+	// be associated with a type. Veo 2 supports up to 3 asset images *or* 1
+	// style image.
+	ReferenceImages []*VideoGenerationReferenceImage `json:"referenceImages,omitempty"`
+	// Optional. The mask to use for generating videos.
+	Mask *VideoGenerationMask `json:"mask,omitempty"`
+	// Optional. Compression quality of the generated videos.
+	CompressionQuality VideoCompressionQuality `json:"compressionQuality,omitempty"`
+}
+
+// A generated video.
+type GeneratedVideo struct {
+	// Optional. The output video
+	Video *Video `json:"video,omitempty"`
+}
+
+// PredictLongRunning operation response envelope for video generation.
+type GenerateVideosOperationResponse struct {
+	// Type URL for the long-running response payload.
+	Type string `json:"@type,omitempty"`
+	// Current payload shape returned by Gemini for video generation results.
+	GenerateVideoResponse *GenerateVideoResponse `json:"generateVideoResponse,omitempty"`
+	// Backward compatibility for older payloads that returned generatedVideos directly under response.
+	GeneratedVideos []*GeneratedVideo `json:"generatedVideos,omitempty"`
+	// List of generated sample videos in operation retrieve responses.
+	Videos []VideoGenerationResponse `json:"videos,omitempty"`
+}
+
+type VideoGenerationResponse struct {
+	BytesBase64Encoded *string `json:"bytesBase64Encoded"`
+	MIMEType           *string `json:"mimeType"`
+	GCSURI             *string `json:"gcsUri"`
+}
+
+// Response with generated samples for video generation operations.
+type GenerateVideoResponse struct {
+	// List of generated sample videos in operation retrieve responses.
+	GeneratedSamples []*GeneratedVideo `json:"generatedSamples,omitempty"`
+	// Returns if any videos were filtered due to RAI policies.
+	RAIMediaFilteredCount int32 `json:"raiMediaFilteredCount,omitempty"`
+	// Returns RAI failure reasons if any.
+	RAIMediaFilteredReasons []string `json:"raiMediaFilteredReasons,omitempty"`
+}
+
+// A video generation operation.
+type GenerateVideosOperation struct {
+	// The server-assigned name, which is only unique within the same service that originally
+	// returns it. If you use the default HTTP mapping, the `name` should be a resource
+	// name ending with `operations/{unique_id}`.
+	Name string `json:"name,omitempty"`
+	// Optional. Service-specific metadata associated with the operation. It typically contains
+	// progress information and common metadata such as create time. Some services might
+	// not provide such metadata. Any method that returns a long-running operation should
+	// document the metadata type, if any.
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// If the value is `false`, it means the operation is still in progress. If `true`,
+	// the operation is completed, and either `error` or `response` is available.
+	Done bool `json:"done,omitempty"`
+	// Optional. The error result of the operation in case of failure or cancellation.
+	Error map[string]any `json:"error,omitempty"`
+	// Optional. The long-running operation response payload.
+	Response *GenerateVideosOperationResponse `json:"response,omitempty"`
 }

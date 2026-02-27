@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -20,6 +23,9 @@ var availableIntegrations = []string{
 	"genai",
 	"litellm",
 	"langchain",
+	"bedrock",
+	"pydantic",
+	"cohere",
 }
 
 // newBifrostError wraps a standard error into a BifrostError with IsBifrostError set to false.
@@ -43,7 +49,7 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 	}
 }
 
-// safeGetRequestType safely obtains the request type from a BifrostStream chunk.
+// safeGetRequestType safely obtains the request type from a BifrostStreamChunk chunk.
 // It checks multiple sources in order of preference:
 // 1. Response ExtraFields if any response is available
 // 2. BifrostError ExtraFields if error is available and not nil
@@ -184,9 +190,15 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
-func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}) {
+func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, response interface{}, extraHeaders map[string]string) {
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json")
+
+	if extraHeaders != nil {
+		for key, value := range extraHeaders {
+			ctx.Response.Header.Set(key, value)
+		}
+	}
 
 	responseBody, err := sonic.Marshal(response)
 	if err != nil {
@@ -253,6 +265,10 @@ func (g *GenericRouter) extractAndParseFallbacks(req interface{}, bifrostReq *sc
 		if bifrostReq.EmbeddingRequest != nil {
 			bifrostReq.EmbeddingRequest.Fallbacks = parsedFallbacks
 		}
+	case schemas.RerankRequest:
+		if bifrostReq.RerankRequest != nil {
+			bifrostReq.RerankRequest.Fallbacks = parsedFallbacks
+		}
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if bifrostReq.SpeechRequest != nil {
 			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks
@@ -311,6 +327,30 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	return nil, nil
 }
 
+// getVirtualKeyFromBifrostContext extracts the virtual key value from bifrost context.
+// Returns nil if no VK is present (e.g., direct key mode or no governance).
+func getVirtualKeyFromBifrostContext(ctx *schemas.BifrostContext) *string {
+	vkValue := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	if vkValue == "" {
+		return nil
+	}
+	return &vkValue
+}
+
+// getResultTTLFromHeaderWithDefault extracts the result TTL from the x-bf-async-job-result-ttl header.
+// Returns the default TTL if the header is not present or invalid.
+func getResultTTLFromHeaderWithDefault(ctx *fasthttp.RequestCtx, defaultTTL int) int {
+	resultTTL := string(ctx.Request.Header.Peek(schemas.AsyncHeaderResultTTL))
+	if resultTTL == "" {
+		return defaultTTL
+	}
+	resultTTLInt, err := strconv.Atoi(resultTTL)
+	if err != nil || resultTTLInt < 0 {
+		return defaultTTL
+	}
+	return resultTTLInt
+}
+
 // isAnthropicAPIKeyAuth checks if the request uses standard API key authentication.
 // Returns true for API key auth (x-api-key header), false for OAuth (Bearer sk-ant-oat*).
 // This is required for Claude Code specifically, which may use OAuth authentication.
@@ -328,4 +368,23 @@ func isAnthropicAPIKeyAuth(ctx *fasthttp.RequestCtx) bool {
 	}
 	// Default to API mode
 	return true
+}
+
+// ParseProviderScopedVideoID parses a provider-scoped video ID in the form "id:provider".
+// The ID portion is automatically URL-decoded to restore the original ID.
+func ParseProviderScopedVideoID(videoID string) (schemas.ModelProvider, string, error) {
+	parts := strings.SplitN(videoID, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("video_id must be in id:provider format")
+	}
+	provider := schemas.ModelProvider(parts[1])
+	rawID := parts[0]
+
+	// URL decode the ID to restore original characters (e.g., %2F -> /)
+	// This handles IDs from all providers that may contain special characters
+	if decoded, err := url.PathUnescape(rawID); err == nil {
+		rawID = decoded
+	}
+
+	return provider, rawID, nil
 }

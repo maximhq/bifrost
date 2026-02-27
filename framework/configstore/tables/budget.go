@@ -21,9 +21,6 @@ type TableBudget struct {
 
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
-
-	// Virtual fields for runtime use (not stored in DB)
-	LastDBUsage float64 `gorm:"-" json:"-"`
 }
 
 // TableName sets the table name for each model
@@ -42,11 +39,5 @@ func (b *TableBudget) BeforeSave(tx *gorm.DB) error {
 		return fmt.Errorf("budget max_limit cannot be negative: %.2f", b.MaxLimit)
 	}
 
-	return nil
-}
-
-// AfterFind hook for Budget to set the LastDBUsage virtual field
-func (b *TableBudget) AfterFind(tx *gorm.DB) error {
-	b.LastDBUsage = b.CurrentUsage
 	return nil
 }

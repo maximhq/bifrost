@@ -9,17 +9,18 @@ interface ChartCardProps {
 	children: ReactNode;
 	headerActions?: ReactNode;
 	loading?: boolean;
+	testId?: string;
 }
 
-export function ChartCard({ title, children, headerActions, loading }: ChartCardProps) {
+export function ChartCard({ title, children, headerActions, loading, testId }: ChartCardProps) {
 	if (loading) {
 		return (
-			<Card className="rounded-sm px-2 py-1 shadow-none">
+			<Card className="rounded-sm px-2 py-1 shadow-none" data-testid={testId}>
 				<div className="mb-3 flex items-center justify-between">
 					<span className="text-primary pl-2 text-sm font-medium">{title}</span>
-					{headerActions && <div className="flex items-center gap-2">{headerActions}</div>}
+					{headerActions && <div className="flex items-center gap-2" data-testid={testId ? `${testId}-actions` : undefined}>{headerActions}</div>}
 				</div>
-				<div style={{ height: "200px" }}>
+				<div style={{ height: "200px" }} data-testid="skeleton">
 					<Skeleton className="h-full w-full" />
 				</div>
 			</Card>
@@ -27,10 +28,14 @@ export function ChartCard({ title, children, headerActions, loading }: ChartCard
 	}
 
 	return (
-		<Card className="rounded-sm px-2 py-1 shadow-none">
-			<div className="mb-3 flex items-center justify-between">
-				<span className="text-primary pl-2 text-sm font-medium">{title}</span>
-				{headerActions && <div className="flex items-center gap-2">{headerActions}</div>}
+		<Card className="rounded-sm px-2 py-1 shadow-none" data-testid={testId}>
+			<div className=" flex items-center justify-between">
+				<span className="text-primary pl-2 text-sm font-medium whitespace-nowrap">{title}</span>
+				{headerActions && (
+					<div className="flex items-center gap-2" data-testid={testId ? `${testId}-actions` : undefined}>
+						{headerActions}
+					</div>
+				)}
 			</div>
 			<div style={{ height: "200px" }}>{children}</div>
 		</Card>

@@ -2,9 +2,11 @@ package semanticcache
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
@@ -136,7 +138,7 @@ func TestSemanticSearch(t *testing.T) {
 	t.Logf("First request completed in %v", duration1)
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
-	// Wait for cache to be written (async PostHook needs time to complete)
+	// Wait for cache to be written (async PostLLMHook needs time to complete)
 	WaitForCache()
 
 	// Second request - very similar text to test semantic matching
@@ -416,8 +418,50 @@ func TestCacheConfiguration(t *testing.T) {
 }
 
 // MockUnsupportedStore is a mock store that returns ErrNotSupported for semantic operations
-type MockUnsupportedStore struct {
-	vectorstore.VectorStore // Embed interface to implement all methods
+type MockUnsupportedStore struct{}
+
+func (m *MockUnsupportedStore) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (m *MockUnsupportedStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
+	return vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) DeleteNamespace(ctx context.Context, namespace string) error {
+	return nil
+}
+
+func (m *MockUnsupportedStore) GetChunk(ctx context.Context, namespace string, id string) (vectorstore.SearchResult, error) {
+	return vectorstore.SearchResult{}, vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) GetChunks(ctx context.Context, namespace string, ids []string) ([]vectorstore.SearchResult, error) {
+	return nil, vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	return nil, nil, vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) GetNearest(ctx context.Context, namespace string, vector []float32, queries []vectorstore.Query, selectFields []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+	return nil, vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) RequiresVectors() bool {
+	return false
+}
+
+func (m *MockUnsupportedStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
+	return vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) Delete(ctx context.Context, namespace string, id string) error {
+	return vectorstore.ErrNotSupported
+}
+
+func (m *MockUnsupportedStore) DeleteAll(ctx context.Context, namespace string, queries []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	return nil, vectorstore.ErrNotSupported
 }
 
 func (m *MockUnsupportedStore) SearchSemanticCache(ctx context.Context, queryEmbedding []float32, metadata map[string]interface{}, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
@@ -432,6 +476,88 @@ func (m *MockUnsupportedStore) EnsureSemanticIndex(ctx context.Context, keyPrefi
 	return vectorstore.ErrNotSupported
 }
 
-func (m *MockUnsupportedStore) Close(ctx context.Context) error {
+func (m *MockUnsupportedStore) Close(ctx context.Context, namespace string) error {
 	return nil
+}
+
+// TestInvalidProviderRejection tests that providers without embedding support are rejected during initialization
+func TestInvalidProviderRejection(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+
+	// Create a mock vector store for testing
+	mockStore := &MockUnsupportedStore{}
+
+	// Test each provider that doesn't support embeddings
+	unsupportedProviders := []schemas.ModelProvider{
+		schemas.Anthropic,
+		schemas.Cerebras,
+		schemas.Groq,
+		schemas.OpenRouter,
+		schemas.Parasail,
+		schemas.Perplexity,
+		schemas.Replicate,
+		schemas.XAI,
+		schemas.Elevenlabs,
+	}
+
+	for _, provider := range unsupportedProviders {
+		t.Run(string(provider), func(t *testing.T) {
+			config := &Config{
+				Provider:          provider,
+				EmbeddingModel:    "some-model",
+				Dimension:         1536,
+				Threshold:         0.8,
+				CleanUpOnShutdown: false,
+				Keys: []schemas.Key{
+					{
+						Value:  *schemas.NewEnvVar("env.TEST_API_KEY"),
+						Models: []string{},
+						Weight: 1.0,
+					},
+				},
+			}
+
+			_, err := Init(ctx, config, logger, mockStore)
+			if err == nil {
+				t.Errorf("Expected error for provider '%s' but got none", provider)
+			}
+
+			expectedErrSubstring := "does not support embedding operations"
+			if err != nil && !strings.Contains(err.Error(), expectedErrSubstring) {
+				t.Errorf("Expected error message to contain '%s', but got: %v", expectedErrSubstring, err)
+			}
+		})
+	}
+}
+
+// TestValidProviderAccepted tests that providers with embedding support are accepted during initialization
+func TestValidProviderAccepted(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+
+	// Create a mock vector store for testing
+	mockStore := &MockUnsupportedStore{}
+
+	// Test a supported provider (OpenAI)
+	config := &Config{
+		Provider:          schemas.OpenAI,
+		EmbeddingModel:    "text-embedding-3-small",
+		Dimension:         1536,
+		Threshold:         0.8,
+		CleanUpOnShutdown: false,
+		Keys: []schemas.Key{
+			{
+				Value:  *schemas.NewEnvVar("env.OPENAI_API_KEY"),
+				Models: []string{},
+				Weight: 1.0,
+			},
+		},
+	}
+
+	// Should fail due to namespace creation, not provider validation
+	_, err := Init(ctx, config, logger, mockStore)
+	if err != nil && strings.Contains(err.Error(), "does not support embedding operations") {
+		t.Errorf("Valid provider OpenAI should not be rejected for embedding support, but got: %v", err)
+	}
 }

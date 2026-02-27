@@ -68,6 +68,9 @@ func (l *mockLogger) Fatal(msg string, args ...any) {
 func (l *mockLogger) SetLevel(level schemas.LogLevel) {}
 
 func (l *mockLogger) SetOutputType(outputType schemas.LoggerOutputType) {}
+func (l *mockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
 
 // setupLockTestStore creates a test RDBConfigStore with SQLite in-memory database
 func setupLockTestStore(t *testing.T) *RDBConfigStore {

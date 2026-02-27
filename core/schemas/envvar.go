@@ -95,6 +95,10 @@ func (e *EnvVar) IsRedacted() bool {
 			return true
 		}
 	}
+	// Check if its string <redacted>
+	if e.Val == "<redacted>" {
+		return true
+	}
 	return false
 }
 

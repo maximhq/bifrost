@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,6 +36,8 @@ type GovernanceManager interface {
 	RemoveModelConfig(ctx context.Context, id string) error
 	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
+	ReloadRoutingRule(ctx context.Context, id string) error
+	RemoveRoutingRule(ctx context.Context, id string) error
 }
 
 // GovernanceHandler manages HTTP requests for governance operations
@@ -116,6 +120,36 @@ type UpdateBudgetRequest struct {
 	ResetDuration *string  `json:"reset_duration,omitempty"`
 }
 
+// CreateRoutingRuleRequest represents the request body for creating a routing rule
+type CreateRoutingRuleRequest struct {
+	Name          string         `json:"name" validate:"required"`
+	Description   string         `json:"description,omitempty"`
+	Enabled       bool           `json:"enabled,omitempty"`
+	CelExpression string         `json:"cel_expression"`
+	Provider      string         `json:"provider,omitempty"` // Optional; empty uses incoming request provider
+	Model         string         `json:"model,omitempty"`    // Optional; empty uses incoming request model
+	Fallbacks     []string       `json:"fallbacks,omitempty"`
+	Scope         string         `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string        `json:"scope_id,omitempty"`
+	Query         map[string]any `json:"query,omitempty"`
+	Priority      int            `json:"priority,omitempty"` // Defaults to 0 if not provided
+}
+
+// UpdateRoutingRuleRequest represents the request body for updating a routing rule
+type UpdateRoutingRuleRequest struct {
+	Name          *string        `json:"name,omitempty"`
+	Description   *string        `json:"description,omitempty"`
+	Enabled       *bool          `json:"enabled,omitempty"`
+	CelExpression *string        `json:"cel_expression,omitempty"`
+	Provider      *string        `json:"provider,omitempty"`
+	Model         *string        `json:"model,omitempty"`
+	Fallbacks     []string       `json:"fallbacks,omitempty"`
+	Query         map[string]any `json:"query,omitempty"`
+	Priority      *int           `json:"priority,omitempty"`
+	Scope         *string        `json:"scope,omitempty"`
+	ScopeID       *string        `json:"scope_id,omitempty"`
+}
+
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
 type CreateRateLimitRequest struct {
 	TokenMaxLimit        *int64  `json:"token_max_limit,omitempty"`        // Maximum tokens allowed
@@ -134,28 +168,32 @@ type UpdateRateLimitRequest struct {
 
 // CreateTeamRequest represents the request body for creating a team
 type CreateTeamRequest struct {
-	Name       string               `json:"name" validate:"required"`
-	CustomerID *string              `json:"customer_id,omitempty"` // Team can belong to a customer
-	Budget     *CreateBudgetRequest `json:"budget,omitempty"`      // Team can have its own budget
+	Name       string                  `json:"name" validate:"required"`
+	CustomerID *string                 `json:"customer_id,omitempty"` // Team can belong to a customer
+	Budget     *CreateBudgetRequest    `json:"budget,omitempty"`      // Team can have its own budget
+	RateLimit  *CreateRateLimitRequest `json:"rate_limit,omitempty"`  // Team can have its own rate limit
 }
 
 // UpdateTeamRequest represents the request body for updating a team
 type UpdateTeamRequest struct {
-	Name       *string              `json:"name,omitempty"`
-	CustomerID *string              `json:"customer_id,omitempty"`
-	Budget     *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name       *string                 `json:"name,omitempty"`
+	CustomerID *string                 `json:"customer_id,omitempty"`
+	Budget     *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit  *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // CreateCustomerRequest represents the request body for creating a customer
 type CreateCustomerRequest struct {
-	Name   string               `json:"name" validate:"required"`
-	Budget *CreateBudgetRequest `json:"budget,omitempty"`
+	Name      string                  `json:"name" validate:"required"`
+	Budget    *CreateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *CreateRateLimitRequest `json:"rate_limit,omitempty"` // Customer can have its own rate limit
 }
 
 // UpdateCustomerRequest represents the request body for updating a customer
 type UpdateCustomerRequest struct {
-	Name   *string              `json:"name,omitempty"`
-	Budget *UpdateBudgetRequest `json:"budget,omitempty"`
+	Name      *string                 `json:"name,omitempty"`
+	Budget    *UpdateBudgetRequest    `json:"budget,omitempty"`
+	RateLimit *UpdateRateLimitRequest `json:"rate_limit,omitempty"`
 }
 
 // CreateModelConfigRequest represents the request body for creating a model config
@@ -207,17 +245,24 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/budgets", lib.ChainMiddlewares(h.getBudgets, middlewares...))
 	r.GET("/api/governance/rate-limits", lib.ChainMiddlewares(h.getRateLimits, middlewares...))
 
+	// Routing Rules CRUD operations
+	r.GET("/api/governance/routing-rules", lib.ChainMiddlewares(h.getRoutingRules, middlewares...))
+	r.POST("/api/governance/routing-rules", lib.ChainMiddlewares(h.createRoutingRule, middlewares...))
+	r.GET("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.getRoutingRule, middlewares...))
+	r.PUT("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.updateRoutingRule, middlewares...))
+	r.DELETE("/api/governance/routing-rules/{rule_id}", lib.ChainMiddlewares(h.deleteRoutingRule, middlewares...))
+
 	// Model Config CRUD operations
-	// r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
-	// r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
-	// r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
-	// r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
-	// r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
+	r.GET("/api/governance/model-configs", lib.ChainMiddlewares(h.getModelConfigs, middlewares...))
+	r.POST("/api/governance/model-configs", lib.ChainMiddlewares(h.createModelConfig, middlewares...))
+	r.GET("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.getModelConfig, middlewares...))
+	r.PUT("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.updateModelConfig, middlewares...))
+	r.DELETE("/api/governance/model-configs/{mc_id}", lib.ChainMiddlewares(h.deleteModelConfig, middlewares...))
 
 	// Provider Governance operations
-	// r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
-	// r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
-	// r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
+	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
+	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -232,9 +277,17 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
+		// Convert map to slice to match the non-memory response format (array)
+		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
+		for _, vk := range data.VirtualKeys {
+			virtualKeys = append(virtualKeys, vk)
+		}
+		sort.Slice(virtualKeys, func(i, j int) bool {
+			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
+		})
 		SendJSON(ctx, map[string]interface{}{
-			"virtual_keys": data.VirtualKeys,
-			"count":        len(data.VirtualKeys),
+			"virtual_keys": virtualKeys,
+			"count":        len(virtualKeys),
 		})
 		return
 	}
@@ -1043,6 +1096,19 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Validate rate limit if provided
+	if req.RateLimit != nil {
+		rateLimit := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+		}
+		if err := validateRateLimit(&rateLimit); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	// Creating team in database
 	var team configstoreTables.TableTeam
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
@@ -1063,6 +1129,21 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 			team.BudgetID = &budget.ID
+		}
+		if req.RateLimit != nil {
+			rateLimit := configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+				TokenResetDuration:   req.RateLimit.TokenResetDuration,
+				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+				RequestResetDuration: req.RateLimit.RequestResetDuration,
+				TokenLastReset:       time.Now(),
+				RequestLastReset:     time.Now(),
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return err
+			}
+			team.RateLimitID = &rateLimit.ID
 		}
 		if err := h.configStore.CreateTeam(ctx, &team, tx); err != nil {
 			return err
@@ -1141,6 +1222,9 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating team in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the team (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
 		// Update fields if provided
 		if req.Name != nil {
 			team.Name = *req.Name
@@ -1150,31 +1234,53 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			if team.BudgetID != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if team.BudgetID != nil {
+					budgetIDToDelete = *team.BudgetID
+					team.BudgetID = nil
+					team.Budget = nil
+				}
+			} else if team.BudgetID != nil {
 				// Update existing budget
-				budget, err := h.configStore.GetBudget(ctx, *team.BudgetID, tx)
-				if err != nil {
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
 					return err
 				}
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-
-				if err := h.configStore.UpdateBudget(ctx, budget, tx); err != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
 					return err
 				}
-				team.Budget = budget
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				team.Budget = &budget
 			} else {
 				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
 				budget := configstoreTables.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
 				}
 				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
 					return err
@@ -1183,9 +1289,71 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 				team.Budget = &budget
 			}
 		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if team.RateLimitID != nil {
+					rateLimitIDToDelete = *team.RateLimitID
+					team.RateLimitID = nil
+					team.RateLimit = nil
+				}
+			} else if team.RateLimitID != nil {
+				// Update existing rate limit
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *team.RateLimitID).Error; err != nil {
+					return err
+				}
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				team.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				team.RateLimitID = &rateLimit.ID
+				team.RateLimit = &rateLimit
+			}
+		}
 		if err := h.configStore.UpdateTeam(ctx, team, tx); err != nil {
 			return err
 		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}); err != nil {
 		SendError(ctx, 500, "Failed to update team")
@@ -1288,6 +1456,19 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	// Validate rate limit if provided
+	if req.RateLimit != nil {
+		rateLimit := configstoreTables.TableRateLimit{
+			TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+			TokenResetDuration:   req.RateLimit.TokenResetDuration,
+			RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+			RequestResetDuration: req.RateLimit.RequestResetDuration,
+		}
+		if err := validateRateLimit(&rateLimit); err != nil {
+			SendError(ctx, 400, fmt.Sprintf("Invalid rate limit: %s", err.Error()))
+			return
+		}
+	}
 	var customer configstoreTables.TableCustomer
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		customer = configstoreTables.TableCustomer{
@@ -1307,6 +1488,21 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 				return err
 			}
 			customer.BudgetID = &budget.ID
+		}
+		if req.RateLimit != nil {
+			rateLimit := configstoreTables.TableRateLimit{
+				ID:                   uuid.NewString(),
+				TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+				TokenResetDuration:   req.RateLimit.TokenResetDuration,
+				RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+				RequestResetDuration: req.RateLimit.RequestResetDuration,
+				TokenLastReset:       time.Now(),
+				RequestLastReset:     time.Now(),
+			}
+			if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+				return err
+			}
+			customer.RateLimitID = &rateLimit.ID
 		}
 		if err := h.configStore.CreateCustomer(ctx, &customer, tx); err != nil {
 			return err
@@ -1382,38 +1578,62 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 	}
 	// Updating customer in database
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		// Track IDs to delete after updating the customer (to avoid FK constraint)
+		var budgetIDToDelete, rateLimitIDToDelete string
+
 		// Update fields if provided
 		if req.Name != nil {
 			customer.Name = *req.Name
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			if customer.BudgetID != nil {
+			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
+			budgetIsEmpty := req.Budget.MaxLimit == nil
+			if budgetIsEmpty {
+				// Mark budget for deletion after FK is removed
+				if customer.BudgetID != nil {
+					budgetIDToDelete = *customer.BudgetID
+					customer.BudgetID = nil
+					customer.Budget = nil
+				}
+			} else if customer.BudgetID != nil {
 				// Update existing budget
-				budget, err := h.configStore.GetBudget(ctx, *customer.BudgetID, tx)
-				if err != nil {
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
+				}
+				budget := configstoreTables.TableBudget{}
+				if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
 					return err
 				}
-
-				if req.Budget.MaxLimit != nil {
-					budget.MaxLimit = *req.Budget.MaxLimit
-				}
-				if req.Budget.ResetDuration != nil {
-					budget.ResetDuration = *req.Budget.ResetDuration
-				}
-
-				if err := h.configStore.UpdateBudget(ctx, budget, tx); err != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+				budget.ResetDuration = *req.Budget.ResetDuration
+				if err := validateBudget(&budget); err != nil {
 					return err
 				}
-				customer.Budget = budget
+				if err := h.configStore.UpdateBudget(ctx, &budget, tx); err != nil {
+					return err
+				}
+				customer.Budget = &budget
 			} else {
 				// Create new budget
+				if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
+					return fmt.Errorf("both max_limit and reset_duration are required when creating a new budget")
+				}
+				if *req.Budget.MaxLimit < 0 {
+					return fmt.Errorf("budget max_limit cannot be negative: %.2f", *req.Budget.MaxLimit)
+				}
+				if _, err := configstoreTables.ParseDuration(*req.Budget.ResetDuration); err != nil {
+					return fmt.Errorf("invalid reset duration format: %s", *req.Budget.ResetDuration)
+				}
 				budget := configstoreTables.TableBudget{
 					ID:            uuid.NewString(),
 					MaxLimit:      *req.Budget.MaxLimit,
 					ResetDuration: *req.Budget.ResetDuration,
 					LastReset:     time.Now(),
 					CurrentUsage:  0,
+				}
+				if err := validateBudget(&budget); err != nil {
+					return err
 				}
 				if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
 					return err
@@ -1422,9 +1642,71 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 				customer.Budget = &budget
 			}
 		}
+		// Handle rate limit updates
+		if req.RateLimit != nil {
+			// Check if rate limit values are empty - means remove rate limit (reset durations don't matter)
+			rateLimitIsEmpty := req.RateLimit.TokenMaxLimit == nil && req.RateLimit.RequestMaxLimit == nil
+			if rateLimitIsEmpty {
+				// Mark rate limit for deletion after FK is removed
+				if customer.RateLimitID != nil {
+					rateLimitIDToDelete = *customer.RateLimitID
+					customer.RateLimitID = nil
+					customer.RateLimit = nil
+				}
+			} else if customer.RateLimitID != nil {
+				// Update existing rate limit
+				rateLimit := configstoreTables.TableRateLimit{}
+				if err := tx.First(&rateLimit, "id = ?", *customer.RateLimitID).Error; err != nil {
+					return err
+				}
+				rateLimit.TokenMaxLimit = req.RateLimit.TokenMaxLimit
+				rateLimit.TokenResetDuration = req.RateLimit.TokenResetDuration
+				rateLimit.RequestMaxLimit = req.RateLimit.RequestMaxLimit
+				rateLimit.RequestResetDuration = req.RateLimit.RequestResetDuration
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.UpdateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				customer.RateLimit = &rateLimit
+			} else {
+				// Create new rate limit
+				rateLimit := configstoreTables.TableRateLimit{
+					ID:                   uuid.NewString(),
+					TokenMaxLimit:        req.RateLimit.TokenMaxLimit,
+					TokenResetDuration:   req.RateLimit.TokenResetDuration,
+					RequestMaxLimit:      req.RateLimit.RequestMaxLimit,
+					RequestResetDuration: req.RateLimit.RequestResetDuration,
+					TokenLastReset:       time.Now(),
+					RequestLastReset:     time.Now(),
+				}
+				if err := validateRateLimit(&rateLimit); err != nil {
+					return err
+				}
+				if err := h.configStore.CreateRateLimit(ctx, &rateLimit, tx); err != nil {
+					return err
+				}
+				customer.RateLimitID = &rateLimit.ID
+				customer.RateLimit = &rateLimit
+			}
+		}
 		if err := h.configStore.UpdateCustomer(ctx, customer, tx); err != nil {
 			return err
 		}
+
+		// Now that FK references are removed, delete the orphaned budget/rate limit
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}); err != nil {
 		SendError(ctx, 500, "Failed to update customer")
@@ -1579,6 +1861,19 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"model_configs": data.ModelConfigs,
+			"count":         len(data.ModelConfigs),
+		})
+		return
+	}
 	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve model configs: %v", err)
@@ -1931,6 +2226,29 @@ type ProviderGovernanceResponse struct {
 
 // getProviderGovernance handles GET /api/governance/providers - Get all providers with governance settings
 func (h *GovernanceHandler) getProviderGovernance(ctx *fasthttp.RequestCtx) {
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		data := h.governanceManager.GetGovernanceData()
+		if data == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		var result []ProviderGovernanceResponse
+		for _, p := range data.Providers {
+			if p.Budget != nil || p.RateLimit != nil {
+				result = append(result, ProviderGovernanceResponse{
+					Provider:  p.Name,
+					Budget:    p.Budget,
+					RateLimit: p.RateLimit,
+				})
+			}
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"providers": result,
+			"count":     len(result),
+		})
+		return
+	}
 	providers, err := h.configStore.GetProviders(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve providers: %v", err)
@@ -2086,8 +2404,8 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 				provider.RateLimit = &rateLimit
 			}
 		}
-		// Update the provider first to remove FK references
-		if err := tx.Save(provider).Error; err != nil {
+		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
+		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
 			return err
 		}
 
@@ -2162,8 +2480,8 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 			provider.RateLimit = nil
 		}
 
-		// Update the provider first to remove FK references
-		if err := tx.Save(provider).Error; err != nil {
+		// Update only budget/rate limit FK references (avoid overwriting encrypted fields)
+		if err := tx.Model(provider).Select("budget_id", "rate_limit_id").Updates(provider).Error; err != nil {
 			return err
 		}
 
@@ -2192,5 +2510,288 @@ func (h *GovernanceHandler) deleteProviderGovernance(ctx *fasthttp.RequestCtx) {
 	}
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Provider governance deleted successfully",
+	})
+}
+
+// Routing Rules CRUD Operations
+
+// getRoutingRules retrieves all routing rules with optional filtering from database
+func (h *GovernanceHandler) getRoutingRules(ctx *fasthttp.RequestCtx) {
+	// Get query parameters for filtering
+	scope := string(ctx.QueryArgs().Peek("scope"))
+	scopeID := string(ctx.QueryArgs().Peek("scope_id"))
+
+	var rules []configstoreTables.TableRoutingRule
+	var err error
+
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		gd := h.governanceManager.GetGovernanceData()
+		if gd == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		inMemoryRules := gd.RoutingRules
+
+		// Filter rules by scope and scopeID
+		for _, rule := range inMemoryRules {
+			// If scope filter is specified, only include matching rules
+			if scope != "" && rule.Scope != scope {
+				continue
+			}
+			// If scopeID filter is specified, only include matching rules
+			if scopeID != "" {
+				ruleScope := ""
+				if rule.ScopeID != nil {
+					ruleScope = *rule.ScopeID
+				}
+				if ruleScope != scopeID {
+					continue
+				}
+			}
+			rules = append(rules, *rule)
+		}
+	} else {
+		// Get from config store (database)
+		if scope != "" || scopeID != "" {
+			rules, err = h.configStore.GetRoutingRulesByScope(ctx, scope, scopeID)
+		} else {
+			rules, err = h.configStore.GetRoutingRules(ctx)
+		}
+		if err != nil {
+			SendError(ctx, 500, "Failed to get routing rules")
+			return
+		}
+	}
+
+	// Convert to JSON-serializable format
+	response := make([]configstoreTables.TableRoutingRule, 0, len(rules))
+	for _, rule := range rules {
+		response = append(response, rule)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"rules": response,
+		"count": len(response),
+	})
+}
+
+// getRoutingRule retrieves a single routing rule by ID from database
+func (h *GovernanceHandler) getRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	var rule *configstoreTables.TableRoutingRule
+	var err error
+
+	// Check if "from_memory" query parameter is set to true
+	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
+	if fromMemory {
+		gd := h.governanceManager.GetGovernanceData()
+		if gd == nil {
+			SendError(ctx, 500, "Governance data is not available")
+			return
+		}
+		inMemoryRules := gd.RoutingRules
+
+		// Find rule by ID in memory
+		for _, r := range inMemoryRules {
+			if r.ID == ruleID {
+				rule = r
+				break
+			}
+		}
+		if rule == nil {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+	} else {
+		rule, err = h.configStore.GetRoutingRule(ctx, ruleID)
+		if err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, 404, "Routing rule not found")
+				return
+			}
+			logger.Error("failed to get routing rule: %v", err)
+			SendError(ctx, 500, "Failed to retrieve routing rule")
+			return
+		}
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"rule": rule,
+	})
+}
+
+// createRoutingRule creates a new routing rule
+func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
+	// Parse request body
+	var req CreateRoutingRuleRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	// Validate required fields
+	if req.Name == "" {
+		SendError(ctx, 400, "name field is required")
+		return
+	}
+
+	// Set defaults
+	scope := req.Scope
+	if scope == "" {
+		scope = "global"
+	}
+
+	// Validate scope_id is required when scope is not global
+	if scope != "global" && (req.ScopeID == nil || *req.ScopeID == "") {
+		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	}
+
+	priority := req.Priority
+	if priority == 0 && req.Priority == 0 { // Default to 0
+		priority = 0
+	}
+
+	// Create routing rule
+	rule := &configstoreTables.TableRoutingRule{
+		ID:              uuid.NewString(),
+		Name:            req.Name,
+		Description:     req.Description,
+		Enabled:         req.Enabled,
+		CelExpression:   req.CelExpression,
+		Provider:        req.Provider,
+		Model:           req.Model,
+		Scope:           scope,
+		ScopeID:         req.ScopeID,
+		Priority:        priority,
+		ParsedFallbacks: req.Fallbacks,
+		ParsedQuery:     req.Query,
+	}
+
+	// Create in database
+	if err := h.configStore.CreateRoutingRule(ctx, rule); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to create routing rule: %v", err))
+		return
+	}
+
+	// Update in-memory store via manager callback
+	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule created successfully",
+		"rule":    rule,
+	})
+}
+
+// updateRoutingRule updates an existing routing rule
+func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	// Parse request body
+	var req UpdateRoutingRuleRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+
+	rule, err := h.configStore.GetRoutingRule(ctx, ruleID)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+		logger.Error("failed to get routing rule: %v", err)
+		SendError(ctx, 500, "Failed to retrieve routing rule")
+		return
+	}
+
+	// Update fields if provided
+	if req.Name != nil && *req.Name != "" {
+		rule.Name = *req.Name
+	}
+	if req.Description != nil {
+		rule.Description = *req.Description
+	}
+	if req.Enabled != nil {
+		rule.Enabled = *req.Enabled
+	}
+	if req.CelExpression != nil {
+		rule.CelExpression = *req.CelExpression
+	}
+	if req.Provider != nil {
+		rule.Provider = *req.Provider
+	}
+	if req.Model != nil {
+		rule.Model = *req.Model
+	}
+	if req.Priority != nil {
+		rule.Priority = *req.Priority
+	}
+	if req.Query != nil {
+		rule.ParsedQuery = req.Query
+	}
+	if req.Fallbacks != nil {
+		rule.ParsedFallbacks = req.Fallbacks
+	}
+	if req.Scope != nil && *req.Scope != "" {
+		rule.Scope = *req.Scope
+	}
+	if req.ScopeID != nil {
+		rule.ScopeID = req.ScopeID
+	}
+
+	// If scope is global, ensure scope_id is nil
+	if rule.Scope == "global" {
+		rule.ScopeID = nil
+	} else if rule.ScopeID == nil || *rule.ScopeID == "" {
+		SendError(ctx, 400, "scope_id field is required when scope is not global")
+		return
+	}
+
+	// Update in database
+	if err := h.configStore.UpdateRoutingRule(ctx, rule); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to update routing rule in database: %v", err))
+		return
+	}
+
+	// Update in-memory store via manager callback
+	if err := h.governanceManager.ReloadRoutingRule(ctx, rule.ID); err != nil {
+		SendError(ctx, 500, fmt.Sprintf("Failed to reload routing rule in memory: %v, please restart bifrost to sync with the database", err))
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule updated successfully",
+		"rule":    rule,
+	})
+}
+
+// deleteRoutingRule deletes a routing rule
+func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
+	ruleID := ctx.UserValue("rule_id").(string)
+
+	// Delete from database
+	if err := h.configStore.DeleteRoutingRule(ctx, ruleID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, 404, "Routing rule not found")
+			return
+		}
+		SendError(ctx, 500, fmt.Sprintf("Failed to delete routing rule from database: %v", err))
+		return
+	}
+
+	// Remove from in-memory store via manager callback (non-fatal: DB already updated)
+	if err := h.governanceManager.RemoveRoutingRule(ctx, ruleID); err != nil {
+		logger.Error("failed to remove routing rule from memory: %v", err)
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Routing rule deleted successfully",
 	})
 }

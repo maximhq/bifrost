@@ -192,12 +192,22 @@ type AllowedRequests struct {
 	ResponsesStream       bool `json:"responses_stream"`
 	CountTokens           bool `json:"count_tokens"`
 	Embedding             bool `json:"embedding"`
+	Rerank                bool `json:"rerank"`
 	Speech                bool `json:"speech"`
 	SpeechStream          bool `json:"speech_stream"`
 	Transcription         bool `json:"transcription"`
 	TranscriptionStream   bool `json:"transcription_stream"`
 	ImageGeneration       bool `json:"image_generation"`
 	ImageGenerationStream bool `json:"image_generation_stream"`
+	ImageEdit             bool `json:"image_edit"`
+	ImageEditStream       bool `json:"image_edit_stream"`
+	ImageVariation        bool `json:"image_variation"`
+	VideoGeneration       bool `json:"video_generation"`
+	VideoRetrieve         bool `json:"video_retrieve"`
+	VideoDownload         bool `json:"video_download"`
+	VideoDelete           bool `json:"video_delete"`
+	VideoList             bool `json:"video_list"`
+	VideoRemix            bool `json:"video_remix"`
 	BatchCreate           bool `json:"batch_create"`
 	BatchList             bool `json:"batch_list"`
 	BatchRetrieve         bool `json:"batch_retrieve"`
@@ -244,6 +254,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.CountTokens
 	case EmbeddingRequest:
 		return ar.Embedding
+	case RerankRequest:
+		return ar.Rerank
 	case SpeechRequest:
 		return ar.Speech
 	case SpeechStreamRequest:
@@ -256,6 +268,24 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ImageGeneration
 	case ImageGenerationStreamRequest:
 		return ar.ImageGenerationStream
+	case ImageEditRequest:
+		return ar.ImageEdit
+	case ImageEditStreamRequest:
+		return ar.ImageEditStream
+	case ImageVariationRequest:
+		return ar.ImageVariation
+	case VideoGenerationRequest:
+		return ar.VideoGeneration
+	case VideoRetrieveRequest:
+		return ar.VideoRetrieve
+	case VideoDownloadRequest:
+		return ar.VideoDownload
+	case VideoDeleteRequest:
+		return ar.VideoDelete
+	case VideoListRequest:
+		return ar.VideoList
+	case VideoRemixRequest:
+		return ar.VideoRemix
 	case BatchCreateRequest:
 		return ar.BatchCreate
 	case BatchListRequest:
@@ -307,6 +337,62 @@ type CustomProviderConfig struct {
 	RequestPathOverrides map[RequestType]string `json:"request_path_overrides,omitempty"` // Mapping of request type to its custom path which will override the default path of the provider (not allowed for Bedrock)
 }
 
+type PricingOverrideMatchType string
+
+const (
+	PricingOverrideMatchExact    PricingOverrideMatchType = "exact"
+	PricingOverrideMatchWildcard PricingOverrideMatchType = "wildcard"
+	PricingOverrideMatchRegex    PricingOverrideMatchType = "regex"
+)
+
+// ProviderPricingOverride contains a partial pricing patch applied at lookup time.
+// Any nil field falls back to the base pricing data.
+type ProviderPricingOverride struct {
+	ModelPattern string                   `json:"model_pattern"`
+	MatchType    PricingOverrideMatchType `json:"match_type"`
+	RequestTypes []RequestType            `json:"request_types,omitempty"`
+
+	// Basic token pricing
+	InputCostPerToken  *float64 `json:"input_cost_per_token,omitempty"`
+	OutputCostPerToken *float64 `json:"output_cost_per_token,omitempty"`
+
+	// Additional pricing for media
+	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
+	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
+
+	// Character-based pricing
+	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
+	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+
+	// Pricing above 128k tokens
+	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+
+	// Pricing above 200k tokens
+	InputCostPerTokenAbove200kTokens           *float64 `json:"input_cost_per_token_above_200k_tokens,omitempty"`
+	OutputCostPerTokenAbove200kTokens          *float64 `json:"output_cost_per_token_above_200k_tokens,omitempty"`
+	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
+	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
+
+	// Cache and batch pricing
+	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
+
+	// Image generation pricing
+	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
+	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
+	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+}
+
 // IsOperationAllowed checks if a specific operation is allowed for this custom provider
 func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool {
 	if cpc == nil || cpc.AllowedRequests == nil {
@@ -322,11 +408,12 @@ type ProviderConfig struct {
 	NetworkConfig            NetworkConfig            `json:"network_config"`              // Network configuration
 	ConcurrencyAndBufferSize ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size"` // Concurrency settings
 	// Logger instance, can be provided by the user or bifrost default logger is used if not provided
-	Logger               Logger                `json:"-"`
-	ProxyConfig          *ProxyConfig          `json:"proxy_config,omitempty"` // Proxy configuration
-	SendBackRawRequest   bool                  `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
-	SendBackRawResponse  bool                  `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
-	CustomProviderConfig *CustomProviderConfig `json:"custom_provider_config,omitempty"`
+	Logger               Logger                    `json:"-"`
+	ProxyConfig          *ProxyConfig              `json:"proxy_config,omitempty"` // Proxy configuration
+	SendBackRawRequest   bool                      `json:"send_back_raw_request"`  // Send raw request back in the bifrost response (default: false)
+	SendBackRawResponse  bool                      `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
+	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
+	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {
@@ -386,6 +473,8 @@ type Provider interface {
 	CountTokens(ctx *BifrostContext, key Key, request *BifrostResponsesRequest) (*BifrostCountTokensResponse, *BifrostError)
 	// Embedding performs an embedding request
 	Embedding(ctx *BifrostContext, key Key, request *BifrostEmbeddingRequest) (*BifrostEmbeddingResponse, *BifrostError)
+	// Rerank performs a rerank request to reorder documents by relevance to a query
+	Rerank(ctx *BifrostContext, key Key, request *BifrostRerankRequest) (*BifrostRerankResponse, *BifrostError)
 	// Speech performs a text to speech request
 	Speech(ctx *BifrostContext, key Key, request *BifrostSpeechRequest) (*BifrostSpeechResponse, *BifrostError)
 	// SpeechStream performs a text to speech stream request
@@ -400,6 +489,25 @@ type Provider interface {
 	// ImageGenerationStream performs an image generation stream request
 	ImageGenerationStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
 		request *BifrostImageGenerationRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// ImageEdit performs an image edit request
+	ImageEdit(ctx *BifrostContext, key Key, request *BifrostImageEditRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	// ImageEditStream performs an image edit stream request
+	ImageEditStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key,
+		request *BifrostImageEditRequest) (chan *BifrostStreamChunk, *BifrostError)
+	// ImageVariation performs an image variation request
+	ImageVariation(ctx *BifrostContext, key Key, request *BifrostImageVariationRequest) (*BifrostImageGenerationResponse, *BifrostError)
+	// VideoGeneration performs a video generation request
+	VideoGeneration(ctx *BifrostContext, key Key, request *BifrostVideoGenerationRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	// VideoRetrieve retrieves a video from the provider
+	VideoRetrieve(ctx *BifrostContext, key Key, request *BifrostVideoRetrieveRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+	// VideoDownload downloads a video from the provider
+	VideoDownload(ctx *BifrostContext, key Key, request *BifrostVideoDownloadRequest) (*BifrostVideoDownloadResponse, *BifrostError)
+	// VideoDelete deletes a video from the provider
+	VideoDelete(ctx *BifrostContext, key Key, request *BifrostVideoDeleteRequest) (*BifrostVideoDeleteResponse, *BifrostError)
+	// VideoList lists videos from the provider
+	VideoList(ctx *BifrostContext, key Key, request *BifrostVideoListRequest) (*BifrostVideoListResponse, *BifrostError)
+	// VideoRemix remixes a video from the provider
+	VideoRemix(ctx *BifrostContext, key Key, request *BifrostVideoRemixRequest) (*BifrostVideoGenerationResponse, *BifrostError)
 	// BatchCreate creates a new batch job for asynchronous processing
 	BatchCreate(ctx *BifrostContext, key Key, request *BifrostBatchCreateRequest) (*BifrostBatchCreateResponse, *BifrostError)
 	// BatchList lists batch jobs

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
 )
 
@@ -106,6 +107,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.AzureClientID = nil
 			key.AzureClientSecret = nil
 			key.AzureTenantID = nil
+			key.AzureScopesJSON = nil
 			key.AzureDeploymentsJSON = nil
 			key.AzureKeyConfig = nil
 
@@ -125,6 +127,10 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockDeploymentsJSON = nil
 			key.BedrockKeyConfig = nil
 
+			// Clear all Replicate-related sensitive fields
+			key.ReplicateDeploymentsJSON = nil
+			key.ReplicateKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}
@@ -137,6 +143,11 @@ type TableVirtualKeyMCPConfig struct {
 	MCPClientID    uint           `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
 	MCPClient      TableMCPClient `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
 	ToolsToExecute []string       `gorm:"type:text;serializer:json" json:"tools_to_execute"`
+
+	// MCPClientName is used during config file parsing to resolve the MCP client by name.
+	// This field is not persisted to the database - it's only used to capture
+	// "mcp_client_name" from config.json and then resolve it to MCPClientID.
+	MCPClientName string `gorm:"-" json:"-"`
 }
 
 // TableName sets the table name for each model
@@ -144,12 +155,38 @@ func (TableVirtualKeyMCPConfig) TableName() string {
 	return "governance_virtual_key_mcp_configs"
 }
 
+// UnmarshalJSON custom unmarshaller to handle both "mcp_client_id" (database format)
+// and "mcp_client_name" (config file format) for MCP client references.
+func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
+	// Temporary struct to capture all fields including mcp_client_name
+	type Alias TableVirtualKeyMCPConfig
+	type TempMCPConfig struct {
+		Alias
+		MCPClientName string `json:"mcp_client_name"` // Config file format: MCP client name
+	}
+
+	var temp TempMCPConfig
+	if err := json.Unmarshal(data, &temp); err != nil {
+		return err
+	}
+
+	// Copy all standard fields
+	*mc = TableVirtualKeyMCPConfig(temp.Alias)
+
+	// Capture mcp_client_name for later resolution to MCPClientID
+	if temp.MCPClientName != "" {
+		mc.MCPClientName = temp.MCPClientName
+	}
+
+	return nil
+}
+
 // TableVirtualKey represents a virtual key with budget, rate limits, and team/customer association
 type TableVirtualKey struct {
 	ID              string                          `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	Name            string                          `gorm:"uniqueIndex:idx_virtual_key_name;type:varchar(255);not null" json:"name"`
 	Description     string                          `gorm:"type:text" json:"description,omitempty"`
-	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:varchar(255);not null" json:"value"` // The virtual key value
+	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"` // The virtual key value
 	IsActive        bool                            `gorm:"default:true" json:"is_active"`
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means all providers allowed
 	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
@@ -170,6 +207,9 @@ type TableVirtualKey struct {
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
 
+	EncryptionStatus string `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
+	ValueHash        string `gorm:"type:varchar(64);index:idx_virtual_key_value_hash,unique" json:"-"`
+
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt time.Time `gorm:"index;not null" json:"updated_at"`
 }
@@ -177,11 +217,34 @@ type TableVirtualKey struct {
 // TableName sets the table name for each model
 func (TableVirtualKey) TableName() string { return "governance_virtual_keys" }
 
-// BeforeSave hook for VirtualKey to enforce mutual exclusion
+// BeforeSave is a GORM hook that enforces mutual exclusion (team vs customer), computes
+// a SHA-256 hash of the plaintext value for indexed lookups, and encrypts the virtual key
+// value before writing to the database.
 func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	// Enforce mutual exclusion: VK can belong to either Team OR Customer, not both
 	if vk.TeamID != nil && vk.CustomerID != nil {
 		return fmt.Errorf("virtual key cannot belong to both team and customer")
+	}
+
+	// Hash must be computed before encryption (from plaintext value)
+	if vk.Value != "" {
+		vk.ValueHash = encrypt.HashSHA256(vk.Value)
+	}
+	if encrypt.IsEnabled() && vk.Value != "" {
+		if err := encryptString(&vk.Value); err != nil {
+			return fmt.Errorf("failed to encrypt virtual key value: %w", err)
+		}
+		vk.EncryptionStatus = EncryptionStatusEncrypted
+	}
+	return nil
+}
+
+// AfterFind is a GORM hook that decrypts the virtual key value after reading from the database.
+func (vk *TableVirtualKey) AfterFind(tx *gorm.DB) error {
+	if vk.EncryptionStatus == EncryptionStatusEncrypted {
+		if err := decryptString(&vk.Value); err != nil {
+			return fmt.Errorf("failed to decrypt virtual key value: %w", err)
+		}
 	}
 	return nil
 }

@@ -83,7 +83,7 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
 		geminiReq.GenerationConfig = geminiReq.convertParamsToGenerationConfigResponses(bifrostReq.Params)
-
+		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
 			geminiReq.Tools = convertResponsesToolsToGemini(bifrostReq.Params.Tools)
@@ -122,11 +122,13 @@ func ToGeminiResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Gemi
 
 		if bifrostReq.Params.ExtraParams != nil {
 			if safetySettings, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "safety_settings"); ok {
+				delete(geminiReq.ExtraParams, "safety_settings")
 				if settings, ok := SafeExtractSafetySettings(safetySettings); ok {
 					geminiReq.SafetySettings = settings
 				}
 			}
 			if cachedContent, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["cached_content"]); ok {
+				delete(geminiReq.ExtraParams, "cached_content")
 				geminiReq.CachedContent = cachedContent
 			}
 		}
@@ -149,7 +151,7 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 	}
 
 	// Convert usage information
-	bifrostResp.Usage = convertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
+	bifrostResp.Usage = ConvertGeminiUsageMetadataToResponsesUsage(response.UsageMetadata)
 
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
@@ -417,14 +419,7 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 
 	// Convert usage metadata
 	if bifrostResp.Usage != nil {
-		geminiResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-			PromptTokenCount:     int32(bifrostResp.Usage.InputTokens),
-			CandidatesTokenCount: int32(bifrostResp.Usage.OutputTokens),
-			TotalTokenCount:      int32(bifrostResp.Usage.TotalTokens),
-		}
-		if bifrostResp.Usage.OutputTokensDetails != nil {
-			geminiResp.UsageMetadata.ThoughtsTokenCount = int32(bifrostResp.Usage.OutputTokensDetails.ReasoningTokens)
-		}
+		geminiResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Usage)
 	}
 
 	return geminiResp
@@ -620,24 +615,7 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 
 			// Convert usage metadata if available
 			if bifrostResp.Response.Usage != nil {
-				streamResp.UsageMetadata = &GenerateContentResponseUsageMetadata{
-					PromptTokenCount:     int32(bifrostResp.Response.Usage.InputTokens),
-					CandidatesTokenCount: int32(bifrostResp.Response.Usage.OutputTokens),
-					TotalTokenCount:      int32(bifrostResp.Response.Usage.TotalTokens),
-				}
-				if bifrostResp.Response.Usage.InputTokensDetails != nil {
-					streamResp.UsageMetadata.CachedContentTokenCount = int32(bifrostResp.Response.Usage.InputTokensDetails.CachedTokens)
-				}
-				if bifrostResp.Response.Usage.OutputTokensDetails != nil {
-					streamResp.UsageMetadata.ThoughtsTokenCount = int32(bifrostResp.Response.Usage.OutputTokensDetails.ReasoningTokens)
-				}
-				if bifrostResp.Response.Usage.OutputTokensDetails != nil && bifrostResp.Response.Usage.OutputTokensDetails.AudioTokens > 0 {
-					// Store audio tokens separately or add proper field
-					streamResp.UsageMetadata.CandidatesTokensDetails = append(streamResp.UsageMetadata.CandidatesTokensDetails, &ModalityTokenCount{
-						Modality:   "AUDIO",
-						TokenCount: int32(bifrostResp.Response.Usage.OutputTokensDetails.AudioTokens),
-					})
-				}
+				streamResp.UsageMetadata = ConvertBifrostResponsesUsageToGeminiUsageMetadata(bifrostResp.Response.Usage)
 			}
 
 			// Set finish reason
@@ -1623,7 +1601,7 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	// Emit response.completed with usage
-	bifrostUsage := convertGeminiUsageMetadataToResponsesUsage(usage)
+	bifrostUsage := ConvertGeminiUsageMetadataToResponsesUsage(usage)
 
 	completedResp := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
@@ -2560,21 +2538,25 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
+			delete(params.ExtraParams, "top_k")
 			if val, success := schemas.SafeExtractInt(topK); success {
 				config.TopK = schemas.Ptr(val)
 			}
 		}
 		if frequencyPenalty, ok := params.ExtraParams["frequency_penalty"]; ok {
+			delete(params.ExtraParams, "frequency_penalty")
 			if val, success := schemas.SafeExtractFloat64(frequencyPenalty); success {
 				config.FrequencyPenalty = schemas.Ptr(val)
 			}
 		}
 		if presencePenalty, ok := params.ExtraParams["presence_penalty"]; ok {
+			delete(params.ExtraParams, "presence_penalty")
 			if val, success := schemas.SafeExtractFloat64(presencePenalty); success {
 				config.PresencePenalty = schemas.Ptr(val)
 			}
 		}
 		if stopSequences, ok := params.ExtraParams["stop_sequences"]; ok {
+			delete(params.ExtraParams, "stop_sequences")
 			if val, success := schemas.SafeExtractStringSlice(stopSequences); success {
 				config.StopSequences = val
 			}
@@ -2928,6 +2910,14 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 			return &Part{
 				Text: block.ResponsesOutputMessageContentRefusal.Refusal,
 			}, nil
+		}
+
+	case schemas.ResponsesOutputMessageContentTypeCompaction:
+		// Convert compaction to text block for Gemini (compaction is Anthropic-specific)
+		if block.ResponsesOutputMessageContentCompaction != nil {
+			if summary := strings.TrimSpace(block.ResponsesOutputMessageContentCompaction.Summary); summary != "" {
+				return &Part{Text: summary}, nil
+			}
 		}
 
 	case schemas.ResponsesInputMessageContentBlockTypeImage:

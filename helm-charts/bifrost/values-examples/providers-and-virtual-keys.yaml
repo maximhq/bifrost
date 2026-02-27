@@ -49,25 +49,24 @@ bifrost:
   host: 0.0.0.0
   logLevel: info
   logStyle: json
-  
+
   client:
     dropExcessRequests: false
     initialPoolSize: 100
     allowedOrigins:
       - "*"
     enableLogging: true
-    enableGovernance: true
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
-  
+
   # ==========================================================================
   # PROVIDERS CONFIGURATION
   # ==========================================================================
   # Configure multiple providers with 2-3 API keys each.
   # Keys have weights for load balancing - higher weight = more traffic.
   # Replace dummy values with real API keys in production.
-  
+
   providers:
     # OpenAI - 3 API keys with different weights
     openai:
@@ -75,7 +74,7 @@ bifrost:
         - name: "openai-primary"
           value: "sk-dummy-openai-key-1-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 2  # Gets 50% of traffic (2 out of 4 total weight)
-          models:          
+          models:
         - name: "openai-secondary"
           value: "sk-dummy-openai-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1  # Gets 25% of traffic
@@ -84,7 +83,7 @@ bifrost:
           value: "sk-dummy-openai-key-3-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1  # Gets 25% of traffic
           models:
-    
+
     # Anthropic - 2 API keys
     anthropic:
       keys:
@@ -96,7 +95,7 @@ bifrost:
           value: "sk-ant-dummy-key-2-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
           models:
-    
+
     # Groq - 2 API keys
     groq:
       keys:
@@ -108,12 +107,12 @@ bifrost:
           value: "gsk_dummy_groq_key_2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
           weight: 1
           models:
-  
+
   # ==========================================================================
   # GOVERNANCE CONFIGURATION
   # ==========================================================================
   # Configure budgets, rate limits, and virtual keys for access control
-  
+
   governance:
     # Budget configurations - limit spending per period
     budgets:
@@ -126,7 +125,7 @@ bifrost:
       - id: "budget-testing"
         max_limit: 10  # $10 limit
         reset_duration: "1d"  # Resets daily
-    
+
     # Rate limit configurations - limit requests/tokens per period
     rateLimits:
       - id: "rate-limit-standard"
@@ -144,7 +143,7 @@ bifrost:
         token_reset_duration: "1h"
         request_max_limit: 100
         request_reset_duration: "1h"
-    
+
     # Virtual Keys - access tokens for different use cases
     virtualKeys:
       # Development virtual key - access to ALL providers (no restrictions)
@@ -155,7 +154,7 @@ bifrost:
         budget_id: "budget-dev"
         rate_limit_id: "rate-limit-standard"
         # No provider_configs means all providers are accessible
-      
+
       # OpenAI-only virtual key - restricted to OpenAI provider with specific keys
       - id: "vk-openai-only"
         name: "OpenAI Only Key"
@@ -170,7 +169,7 @@ bifrost:
             keys:
               - name: "openai-primary"
               - name: "openai-secondary"
-      
+
       # Anthropic + Groq virtual key - access to both providers with key restrictions
       - id: "vk-anthropic-groq"
         name: "Anthropic and Groq Key"
@@ -190,7 +189,7 @@ bifrost:
             keys:
               - name: "groq-primary"
               - name: "groq-secondary"
-      
+
       # Testing virtual key - limited budget and rate for testing
       - id: "vk-testing"
         name: "Testing Key"
@@ -206,7 +205,7 @@ bifrost:
             # Use only the backup key for testing purposes
             keys:
               - name: "openai-backup"
-  
+
   # Plugins configuration
   plugins:
     telemetry:

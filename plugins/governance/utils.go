@@ -2,26 +2,47 @@
 package governance
 
 import (
-	"context"
+	"strings"
+
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
-// getStringFromContext safely extracts a string value from context
-func getStringFromContext(ctx context.Context, key any) string {
-	if value := ctx.Value(key); value != nil {
-		if str, ok := value.(string); ok {
-			return str
+// parseVirtualKeyFromHTTPRequest parses the virtual key from HTTP request headers.
+// It checks multiple headers in order: x-bf-vk, Authorization (Bearer token), x-api-key, and x-goog-api-key.
+// Parameters:
+//   - req: The HTTP request containing headers to parse
+//
+// Returns:
+//   - *string: The virtual key if found, nil otherwise
+func parseVirtualKeyFromHTTPRequest(req *schemas.HTTPRequest) *string {
+	var virtualKeyValue string
+	vkHeader := req.CaseInsensitiveHeaderLookup("x-bf-vk")
+	if vkHeader != "" {
+		return bifrost.Ptr(vkHeader)
+	}
+	authHeader := req.CaseInsensitiveHeaderLookup("Authorization")
+	if authHeader != "" {
+		if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
+			authHeaderValue := strings.TrimSpace(authHeader[7:]) // Remove "Bearer " prefix
+			if authHeaderValue != "" && strings.HasPrefix(strings.ToLower(authHeaderValue), VirtualKeyPrefix) {
+				virtualKeyValue = authHeaderValue
+			}
 		}
 	}
-	return ""
-}
-
-// equalPtr compares two pointers of comparable type for value equality
-// Returns true if both are nil or both are non-nil with equal values
-func equalPtr[T comparable](a, b *T) bool {
-	if a == nil || b == nil {
-		return a == b
+	if virtualKeyValue != "" {
+		return bifrost.Ptr(virtualKeyValue)
 	}
-	return *a == *b
+	xAPIKey := req.CaseInsensitiveHeaderLookup("x-api-key")
+	if xAPIKey != "" && strings.HasPrefix(strings.ToLower(xAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xAPIKey)
+	}
+	// Checking x-goog-api-key header
+	xGoogleAPIKey := req.CaseInsensitiveHeaderLookup("x-goog-api-key")
+	if xGoogleAPIKey != "" && strings.HasPrefix(strings.ToLower(xGoogleAPIKey), VirtualKeyPrefix) {
+		return bifrost.Ptr(xGoogleAPIKey)
+	}
+	return nil
 }
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
@@ -31,4 +52,46 @@ func getWeight(w *float64) float64 {
 		return 1.0
 	}
 	return *w
+}
+
+// filterModelsForVirtualKey filters models based on virtual key's provider configs
+// Returns only models that are allowed by the virtual key's ProviderConfigs
+func (p *GovernancePlugin) filterModelsForVirtualKey(
+	models []schemas.Model,
+	virtualKeyValue string,
+) []schemas.Model {
+	// Get virtual key configuration
+	vk, exists := p.store.GetVirtualKey(virtualKeyValue)
+	if !exists {
+		p.logger.Warn("[Governance] Virtual key not found for list models filtering: %s", virtualKeyValue)
+		return []schemas.Model{} // VK not found, return empty list
+	}
+
+	// Empty ProviderConfigs means all models are allowed
+	if len(vk.ProviderConfigs) == 0 {
+		return models
+	}
+
+	// Filter models based on ProviderConfigs
+	filteredModels := make([]schemas.Model, 0, len(models))
+	for _, model := range models {
+		provider, modelName := schemas.ParseModelString(model.ID, "")
+
+		// Check if this provider/model combination is allowed
+		isAllowed := false
+		for _, pc := range vk.ProviderConfigs {
+			if pc.Provider == string(provider) {
+				if p.modelCatalog.IsModelAllowedForProvider(provider, modelName, pc.AllowedModels) {
+					isAllowed = true
+					break
+				}
+			}
+		}
+
+		if isAllowed {
+			filteredModels = append(filteredModels, model)
+		}
+	}
+
+	return filteredModels
 }

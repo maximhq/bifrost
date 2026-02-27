@@ -101,6 +101,35 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 				perplexityReq.ResponseFormat = &responseFormat
 			}
 
+			// Perplexity-specific request fields
+			if numSearchResults, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_search_results"]); ok {
+				perplexityReq.NumSearchResults = numSearchResults
+			}
+
+			if numImages, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_images"]); ok {
+				perplexityReq.NumImages = numImages
+			}
+
+			if searchLanguageFilter, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["search_language_filter"]); ok {
+				perplexityReq.SearchLanguageFilter = searchLanguageFilter
+			}
+
+			if imageFormatFilter, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["image_format_filter"]); ok {
+				perplexityReq.ImageFormatFilter = imageFormatFilter
+			}
+
+			if imageDomainFilter, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["image_domain_filter"]); ok {
+				perplexityReq.ImageDomainFilter = imageDomainFilter
+			}
+
+			if safeSearch, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["safe_search"]); ok {
+				perplexityReq.SafeSearch = safeSearch
+			}
+
+			if streamMode, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["stream_mode"]); ok {
+				perplexityReq.StreamMode = streamMode
+			}
+
 			// Handle web_search_options
 			if webSearchOptionsParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "web_search_options"); ok {
 				if webSearchOptionsSlice, ok := webSearchOptionsParam.([]interface{}); ok {
@@ -113,8 +142,12 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 								option.SearchContextSize = searchContextSize
 							}
 
-							if imageSearchRelevanceEnhanced, ok := schemas.SafeExtractBoolPointer(optionMap["image_search_relevance_enhanced"]); ok {
-								option.ImageSearchRelevanceEnhanced = imageSearchRelevanceEnhanced
+							if imageResultsEnhancedRelevance, ok := schemas.SafeExtractBoolPointer(optionMap["image_results_enhanced_relevance"]); ok {
+								option.ImageResultsEnhancedRelevance = imageResultsEnhancedRelevance
+							}
+
+							if searchType, ok := schemas.SafeExtractStringPointer(optionMap["search_type"]); ok {
+								option.SearchType = searchType
 							}
 
 							// Handle user_location

@@ -77,7 +77,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Anthropic,
     Model:    "claude-3-5-sonnet",
     Input:    messages,
@@ -91,6 +91,8 @@ resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 
 </Tab>
 </Tabs>
+
+Anthropic also accepts a top-level `"cache_control": {"type": "ephemeral"}` object on `/anthropic/v1/messages` requests to enable automatic prompt caching, and Bifrost now forwards that directive through unchanged.
 
 ### Cache Control
 
@@ -130,7 +132,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.Anthropic,
     Model:    "claude-3-5-sonnet",
     Input: []schemas.ChatMessage{
@@ -322,7 +324,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Anthropic,
     Model:    "claude-3-5-sonnet",
     Input:    messages,
@@ -365,7 +367,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Anthropic,
     Model:    "claude-3-5-sonnet",
     Input: []schemas.ChatMessage{

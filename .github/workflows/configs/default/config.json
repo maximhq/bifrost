@@ -1,0 +1,55 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "config_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": {
+      "host": "localhost",
+      "port": "5432",
+      "user": "bifrost",
+      "password": "bifrost_password",
+      "db_name": "bifrost",
+      "ssl_mode": "disable"
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "e2e-openai-key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "e2e-anthropic-key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "use_for_batch_api": true
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    }
+  }
+}

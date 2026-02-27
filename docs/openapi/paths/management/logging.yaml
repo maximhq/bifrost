@@ -37,6 +37,16 @@ logs:
         description: Comma-separated list of virtual key IDs to filter by
         schema:
           type: string
+      - name: routing_rule_ids
+        in: query
+        description: Comma-separated list of routing rule IDs to filter by
+        schema:
+          type: string
+      - name: routing_engine_used
+        in: query
+        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        schema:
+          type: string
       - name: start_time
         in: query
         description: Start time filter (RFC3339 format)
@@ -190,6 +200,16 @@ logs-stats:
         description: Comma-separated list of virtual key IDs to filter by
         schema:
           type: string
+      - name: routing_rule_ids
+        in: query
+        description: Comma-separated list of routing rule IDs to filter by
+        schema:
+          type: string
+      - name: routing_engine_used
+        in: query
+        description: Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)
+        schema:
+          type: string
       - name: start_time
         in: query
         description: Start time filter (RFC3339 format)
@@ -310,5 +330,220 @@ logs-recalculate-cost:
               $ref: '../../schemas/management/logging.yaml#/RecalculateCostResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs:
+  get:
+    operationId: getMCPLogs
+    summary: Get MCP tool logs
+    description: |
+      Retrieves MCP tool execution logs with filtering, search, and pagination via query parameters.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by (processing, success, error)
+        schema:
+          type: string
+          enum: [processing, success, error]
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter (milliseconds)
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Number of logs to return (default 50, max 1000)
+        schema:
+          type: integer
+          default: 50
+          maximum: 1000
+      - name: offset
+        in: query
+        description: Number of logs to skip
+        schema:
+          type: integer
+          default: 0
+      - name: sort_by
+        in: query
+        description: Field to sort by
+        schema:
+          type: string
+          enum: [timestamp, latency, cost]
+          default: timestamp
+      - name: order
+        in: query
+        description: Sort order
+        schema:
+          type: string
+          enum: [asc, desc]
+          default: desc
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/SearchMCPLogsResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+  delete:
+    operationId: deleteMCPLogs
+    summary: Delete MCP tool logs
+    description: Deletes MCP tool logs by their IDs.
+    tags:
+      - Logging
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/logging.yaml#/DeleteMCPLogsRequest'
+    responses:
+      '200':
+        description: MCP tool logs deleted successfully
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/MessageResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs-stats:
+  get:
+    operationId: getMCPLogsStats
+    summary: Get MCP tool log statistics
+    description: Returns statistics for MCP tool logs matching the specified filters.
+    tags:
+      - Logging
+    parameters:
+      - name: tool_names
+        in: query
+        description: Comma-separated list of tool names to filter by
+        schema:
+          type: string
+      - name: server_labels
+        in: query
+        description: Comma-separated list of server labels to filter by
+        schema:
+          type: string
+      - name: status
+        in: query
+        description: Comma-separated list of statuses to filter by
+        schema:
+          type: string
+          enum: [processing, success, error]
+      - name: virtual_key_ids
+        in: query
+        description: Comma-separated list of virtual key IDs to filter by
+        schema:
+          type: string
+      - name: llm_request_ids
+        in: query
+        description: Comma-separated list of LLM request IDs to filter by
+        schema:
+          type: string
+      - name: start_time
+        in: query
+        description: Start time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: end_time
+        in: query
+        description: End time filter (RFC3339 format)
+        schema:
+          type: string
+          format: date-time
+      - name: min_latency
+        in: query
+        description: Minimum latency filter
+        schema:
+          type: number
+      - name: max_latency
+        in: query
+        description: Maximum latency filter
+        schema:
+          type: number
+      - name: content_search
+        in: query
+        description: Search in tool arguments and results
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPToolLogStats'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+mcp-logs-filterdata:
+  get:
+    operationId: getMCPLogsFilterData
+    summary: Get available MCP log filter data
+    description: Returns all unique filter data from MCP tool logs (tool names, server labels).
+    tags:
+      - Logging
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/MCPLogsFilterDataResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

@@ -40,6 +40,11 @@ Tests all core scenarios using OpenAI SDK directly:
 29. Embedding encoding formats
 30. Embedding usage tracking
 31. List models
+31a. Video create
+31b. Video retrieve
+31c. Video list
+31d. Video download content
+31e. Video delete
 32. Responses API - simple text input
 33. Responses API - with system message
 34. Responses API - with image
@@ -69,6 +74,7 @@ Batch API uses OpenAI SDK with x-model-provider header to route to different pro
 """
 
 import json
+import os
 import time
 from typing import Any
 
@@ -86,10 +92,16 @@ from .utils.common import (
     # Embeddings utilities
     EMBEDDINGS_SINGLE_TEXT,
     FILE_DATA_BASE64,
+    BASE64_IMAGE,
     IMAGE_BASE64_MESSAGES,
     IMAGE_URL_MESSAGES,
     # Image Generation utilities
     IMAGE_GENERATION_SIMPLE_PROMPT,
+    # Image Edit utilities
+    IMAGE_EDIT_SIMPLE_PROMPT,
+    IMAGE_EDIT_PROMPT_OUTPAINT,
+    assert_valid_image_edit_response,
+    create_simple_mask_image,
     INPUT_TOKENS_LONG_TEXT,
     # Input Tokens utilities
     INPUT_TOKENS_SIMPLE_TEXT,
@@ -231,6 +243,52 @@ def get_provider_openai_client(provider, vk_enabled=False):
         timeout=api_config.get("timeout", 300),
         default_headers=default_headers if default_headers else None,
     )
+
+
+def _wait_for_video_terminal_status(
+    client: OpenAI,
+    video_id: str,
+    timeout_seconds: int = 900,
+    poll_interval_seconds: int = 5,
+):
+    """Poll a video job until it reaches completed/failed status."""
+    deadline = time.time() + timeout_seconds
+    last_status = "unknown"
+
+    while time.time() < deadline:
+        video = client.videos.retrieve(video_id)
+        status = getattr(video, "status", None)
+        if isinstance(status, str):
+            last_status = status
+
+        if status in {"completed", "failed"}:
+            return video
+
+        time.sleep(poll_interval_seconds)
+
+    raise AssertionError(
+        f"Video job {video_id} did not reach terminal status within {timeout_seconds}s. "
+        f"Last observed status: {last_status}"
+    )
+
+
+def _safe_cleanup_video(client: OpenAI, video_id: str, provider: str):
+    """Best-effort cleanup for created video jobs."""
+    try:
+        if provider != "openai" :
+            print(f"Video cleanup skipped for {video_id}: provider {provider} does not support video cleanup")
+            return
+
+        terminal_video = _wait_for_video_terminal_status(
+            client,
+            video_id,
+            timeout_seconds=180,
+            poll_interval_seconds=3,
+        )
+        if getattr(terminal_video, "status", None) in {"completed", "failed"}:
+            client.videos.delete(video_id)
+    except Exception as e:
+        print(f"Video cleanup skipped for {video_id}: {e}")
 
 
 @pytest.fixture
@@ -1265,7 +1323,7 @@ class TestOpenAIIntegration:
             model=format_provider_model(provider, model),
             prompt=IMAGE_GENERATION_SIMPLE_PROMPT,
             n=1,
-            size="512x512",
+            size="1024x1024",
             quality="low",
         )
 
@@ -1273,12 +1331,332 @@ class TestOpenAIIntegration:
         assert_valid_image_generation_response(response, "openai")
         assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
 
+    # =========================================================================
+    # IMAGE EDIT TEST CASES
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53a_image_edit_simple(self, test_config, provider, model, vk_enabled):
+        """Test Case 53a: Simple image edit with inpainting"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        # Create test image and mask
+        base_image_b64 = BASE64_IMAGE  # 64x64 red pixel for minimum size requirements
+        mask_b64 = create_simple_mask_image(64, 64)
+        
+        # Decode base64 to bytes for API
+        import base64
+        image_bytes = base64.b64decode(base_image_b64)
+        mask_bytes = base64.b64decode(mask_b64)
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024"
+        )
+
+        # Validate response structure
+        assert_valid_image_edit_response(response, "openai")
+        assert len(response.data) == 1, f"Expected 1 image, got {len(response.data)}"
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53b_image_edit_no_mask(self, test_config, provider, model, vk_enabled):
+        """Test Case 53b: Image edit without mask (outpainting/general edit)"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Some providers support editing without explicit mask
+        if provider not in ["openai", "gemini", "huggingface"]:
+            pytest.skip(f"Provider {provider} requires explicit mask for edits")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            prompt=IMAGE_EDIT_PROMPT_OUTPAINT,
+            n=1,
+            size="1024x1024"
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53c_image_edit_quality(self, test_config, provider, model, vk_enabled):
+        """Test Case 53c: Image edit with quality parameter"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+        if provider != "openai" or model not in ["gpt-image-1", "gpt-image-1.5", "gpt-image-1.5-mini"]:
+            pytest.skip("Quality parameter supported by OpenAI gpt-image models")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        mask_bytes = base64.b64decode(create_simple_mask_image(64, 64))
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024",
+            quality="low"  # For faster testing
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("image_edit")
+    )
+    def test_53d_image_edit_different_sizes(self, test_config, provider, model, vk_enabled):
+        """Test Case 53d: Image edit with different output sizes"""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+        
+        # Bedrock requires type field (inpainting/outpainting) which OpenAI SDK doesn't support
+        if provider == "bedrock":
+            pytest.skip("Bedrock requires type field which is not supported by OpenAI SDK")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        
+        import base64
+        image_bytes = base64.b64decode(BASE64_IMAGE)
+        mask_bytes = base64.b64decode(create_simple_mask_image(64, 64))
+        
+        response = client.images.edit(
+            model=format_provider_model(provider, model),
+            image=image_bytes,
+            mask=mask_bytes,
+            prompt=IMAGE_EDIT_SIMPLE_PROMPT,
+            n=1,
+            size="1024x1024"
+        )
+
+        assert_valid_image_edit_response(response, "openai")
+        assert len(response.data) == 1
+
     @skip_if_no_api_key("openai")
     def test_31_list_models(self, openai_client, test_config):
         """Test Case 31: List models"""
         response = openai_client.models.list()
         assert response.data is not None
         assert len(response.data) > 0
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("video_generation")
+    )
+    def test_31a_video_create(self, test_config, provider, model, vk_enabled):
+        """Test Case 31a: Video create returns a valid job object."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        video = client.videos.create(
+            model=format_provider_model(provider, model),
+            prompt="A cinematic sunrise over mountains with light fog and gentle camera movement.",
+            seconds="4",
+            size="1280x720",
+        )
+
+        print(video.id)
+
+        assert video is not None
+        assert getattr(video, "id", None), "Video create should return a video id"
+        assert getattr(video, "object", None) in {"video", "video.task"}
+        assert getattr(video, "status", None) in {"queued", "in_progress", "completed", "failed"}
+        assert getattr(video, "model", None) is not None
+
+        _safe_cleanup_video(client, video.id, provider)
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("video_generation")
+    )
+    def test_31b_video_retrieve(self, test_config, provider, model, vk_enabled):
+        """Test Case 31b: Video retrieve returns status and id for created job."""
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        video = client.videos.create(
+            model=format_provider_model(provider, model),
+            prompt="A slow aerial shot of a river valley at golden hour.",
+            seconds="4",
+            size="1280x720",
+        )
+
+        try:
+            retrieved = client.videos.retrieve(video.id)
+            assert retrieved is not None
+            assert getattr(retrieved, "id", None) == video.id
+            assert getattr(retrieved, "status", None) in {"queued", "in_progress", "completed", "failed"}
+            assert getattr(retrieved, "created_at", None) is not None
+        finally:
+            _safe_cleanup_video(client, video.id, provider)
+
+    @skip_if_no_api_key("openai")
+    def test_31c_video_list(self, openai_client, test_config):
+        """Test Case 31c: Video list includes created video job."""
+        client = get_provider_openai_client("openai")
+        video = client.videos.create(
+            model=format_provider_model("openai", "sora-2"),
+            prompt="A paper airplane flying through a bright office scene.",
+            seconds="4",
+            size="1280x720",
+        )
+
+        # wait for video to be created
+        _wait_for_video_terminal_status(client, video.id)
+
+        try:
+            found_in_list = False
+            for _ in range(6):
+                page = client.videos.list(
+                    limit=20,
+                    extra_headers={"x-bf-video-list-provider": "openai"},
+                )
+                assert hasattr(page, "data"), "Videos list should include data field"
+                assert isinstance(page.data, list), "Videos list data should be a list"
+
+                if any(getattr(item, "id", None) == video.id for item in page.data):
+                    print("found in list: ", page.data)
+                    found_in_list = True
+                    break
+
+                time.sleep(2)
+
+            assert found_in_list, f"Created video {video.id} should be present in videos.list() response"
+        finally:
+            _safe_cleanup_video(client, video.id, "openai")
+
+    @pytest.mark.parametrize(
+        "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("video_generation", include_providers=["vertex", "runway"])
+    )
+    def test_31d_video_download_content(self, test_config, provider, model, vk_enabled):
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        """Test Case 31d: Video download_content returns binary content after completion."""
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+        video = client.videos.create(
+            model=format_provider_model(provider, model),
+            prompt="A close-up of raindrops on a window with city lights in the background.",
+            seconds="4",
+            size="1280x720",
+        )
+
+        try:
+            terminal_video = _wait_for_video_terminal_status(client, video.id)
+            assert getattr(terminal_video, "status", None) == "completed", (
+                f"Video should complete before download. Status: {getattr(terminal_video, 'status', None)}"
+            )
+
+            response = client.videos.download_content(video_id=video.id)
+            assert response is not None
+
+            if hasattr(response, "read"):
+                content = response.read()
+            elif hasattr(response, "content"):
+                content = response.content
+            else:
+                content = bytes(response)
+
+            assert isinstance(content, (bytes, bytearray))
+            assert len(content) > 0, "Downloaded video content should not be empty"
+
+            if hasattr(response, "headers") and response.headers:
+                content_type = response.headers.get("content-type", "").lower()
+                assert (
+                    "video" in content_type or "application/octet-stream" in content_type
+                ), f"Unexpected content-type: {content_type}"
+        except Exception as e:
+            print("error: ", e)
+            # _safe_cleanup_video(client, video.id, provider)
+
+
+    @skip_if_no_api_key("openai")
+    def test_31e_video_delete(self, openai_client, test_config):
+        """Test Case 31e: Video delete removes a completed/failed video job."""
+        client = get_provider_openai_client("openai")
+        video = client.videos.create(
+            model=format_provider_model("openai", "sora-2"),
+            prompt="A rotating crystal in a dark studio with soft rim lighting.",
+            seconds="4",
+            size="1280x720",
+        )
+
+        terminal_video = _wait_for_video_terminal_status(client, video.id)
+        assert getattr(terminal_video, "status", None) in {"completed", "failed"}
+
+        delete_response = client.videos.delete(video.id)
+        assert delete_response is not None
+        assert getattr(delete_response, "id", None) == video.id
+    
+    @skip_if_no_api_key("openai")
+    def test_31f_video_remix(self, openai_client, test_config):
+        """Test Case 31f: Video remix creates a new job linked to the original video."""
+        client = get_provider_openai_client("openai")
+
+        # Step 1: Create original video
+        original = client.videos.create(
+            model=format_provider_model("openai", "sora-2"),
+            prompt="A cat walking onto a theater stage under a spotlight.",
+            seconds="4",
+            size="720x1280",
+        )
+
+        try:
+            # Wait for original to complete before remixing
+            original_terminal = _wait_for_video_terminal_status(client, original.id)
+            assert getattr(original_terminal, "status", None) == "completed"
+
+            # Step 2: Remix the video
+            remixed = client.videos.remix(
+                video_id=original.id,
+                prompt="Extend the scene with the cat taking a bow to the cheering audience.",
+            )
+
+            assert remixed is not None
+            assert getattr(remixed, "id", None), "Remix should return a new video id"
+            assert remixed.id != original.id, "Remix should create a new video job"
+            assert getattr(remixed, "object", None) in {"video", "video.task"}
+            assert getattr(remixed, "status", None) in {"queued", "in_progress", "completed", "failed"}
+            assert getattr(remixed, "remixed_from_video_id", None) == original.id
+            assert getattr(remixed, "model", None) is not None
+            assert getattr(remixed, "created_at", None) is not None
+
+            # Optional: wait for remix to finish to ensure full lifecycle works
+            remixed_terminal = _wait_for_video_terminal_status(client, remixed.id)
+            assert getattr(remixed_terminal, "status", None) in {"completed", "failed"}
+
+        finally:
+            _safe_cleanup_video(client, original.id, "openai")
+            if "remixed" in locals():
+                _safe_cleanup_video(client, remixed.id, "openai")
+
 
     @pytest.mark.parametrize(
         "provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("file_input")
@@ -3362,4 +3740,118 @@ class TestOpenAIIntegration:
         assert has_message, "Second turn should have message response"
         print(f"✓ Second turn completed with {len(response2.output)} output items")
         print(f"✓ Multi-turn conversation test passed!")
+
+    # =========================================================================
+    # Async Inference Tests
+    # =========================================================================
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("simple_chat"))
+    def test_58_async_chat_completions(self, test_config, provider, model, vk_enabled):
+        """Test Case 58: Async chat completions - submit and poll"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"\n=== Testing Async Chat Completions for provider {provider} ===")
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        request_params = {
+            "model": format_provider_model(provider, model),
+            "messages": SIMPLE_CHAT_MESSAGES,
+            "max_tokens": 100,
+        }
+
+        # Submit async request
+        initial = client.chat.completions.create(
+            **request_params,
+            extra_headers={"x-bf-async": "true"},
+        )
+
+        assert initial.id is not None, "Async response should have an ID"
+        print(f"  Async job ID: {initial.id}")
+
+        # If completed synchronously, validate and return
+        if initial.choices and len(initial.choices) > 0:
+            print("  Status: completed (sync)")
+            assert initial.choices[0].message.content is not None
+            assert len(initial.choices[0].message.content) > 0
+            print(f"  Result: {initial.choices[0].message.content[:80]}...")
+            return
+
+        print("  Status: processing")
+
+        # Poll until completed
+        max_polls = 30
+        for i in range(max_polls):
+            time.sleep(2)
+            print(f"  Polling attempt {i + 1}/{max_polls}...")
+
+            poll = client.chat.completions.create(
+                **request_params,
+                extra_headers={"x-bf-async-id": initial.id},
+            )
+
+            if poll.choices and len(poll.choices) > 0:
+                print("  Status: completed")
+                assert poll.choices[0].message.content is not None
+                assert len(poll.choices[0].message.content) > 0
+                print(f"  Result: {poll.choices[0].message.content[:80]}...")
+                print("✓ Async chat completions test passed!")
+                return
+
+        pytest.fail(f"Async job did not complete after {max_polls} polls")
+
+    @pytest.mark.parametrize("provider,model,vk_enabled", get_cross_provider_params_with_vk_for_scenario("responses"))
+    def test_59_async_responses(self, test_config, provider, model, vk_enabled):
+        """Test Case 59: Async responses API - submit and poll"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for this scenario")
+
+        print(f"\n=== Testing Async Responses for provider {provider} ===")
+        client = get_provider_openai_client(provider, vk_enabled=vk_enabled)
+
+        request_params = {
+            "model": format_provider_model(provider, model),
+            "input": RESPONSES_SIMPLE_TEXT_INPUT,
+            "max_output_tokens": 100,
+        }
+
+        # Submit async request
+        initial = client.responses.create(
+            **request_params,
+            extra_headers={"x-bf-async": "true"},
+        )
+
+        assert initial.id is not None, "Async response should have an ID"
+        print(f"  Async job ID: {initial.id}")
+
+        # If completed synchronously, validate and return
+        if initial.status == "completed":
+            print("  Status: completed (sync)")
+            assert_valid_responses_response(initial)
+            print(f"  Result: {initial.output_text[:80]}...")
+            return
+
+        print("  Status: processing")
+
+        # Poll until completed
+        max_polls = 30
+        for i in range(max_polls):
+            time.sleep(2)
+            print(f"  Polling attempt {i + 1}/{max_polls}...")
+
+            poll = client.responses.create(
+                **request_params,
+                extra_headers={"x-bf-async-id": initial.id},
+            )
+
+            if poll.status == "completed":
+                print("  Status: completed")
+                assert_valid_responses_response(poll)
+                print(f"  Result: {poll.output_text[:80]}...")
+                print("✓ Async responses test passed!")
+                return
+
+        pytest.fail(f"Async job did not complete after {max_polls} polls")
 

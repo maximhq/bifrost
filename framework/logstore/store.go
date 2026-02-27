@@ -39,6 +39,31 @@ type LogStore interface {
 	DeleteLog(ctx context.Context, id string) error
 	DeleteLogs(ctx context.Context, ids []string) error
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+
+	// Distinct value methods for filter data
+	GetDistinctModels(ctx context.Context) ([]string, error)
+	GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error)
+	GetDistinctRoutingEngines(ctx context.Context) ([]string, error)
+
+	// MCP Tool Log methods
+	CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error
+	FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error)
+	UpdateMCPToolLog(ctx context.Context, id string, entry any) error
+	SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error)
+	GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error)
+	HasMCPToolLogs(ctx context.Context) (bool, error)
+	DeleteMCPToolLogs(ctx context.Context, ids []string) error
+	FlushMCPToolLogs(ctx context.Context, since time.Time) error
+	GetAvailableToolNames(ctx context.Context) ([]string, error)
+	GetAvailableServerLabels(ctx context.Context) ([]string, error)
+	GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error)
+
+	// Async Job methods
+	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
+	FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error)
+	UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error
+	DeleteExpiredAsyncJobs(ctx context.Context) (int64, error)
+	DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error)
 }
 
 // NewLogStore creates a new log store based on the configuration.

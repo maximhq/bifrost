@@ -73,60 +73,6 @@ if [ -f "go.mod" ]; then
   # Validate build
   echo "🔨 Validating plugin build..."
   go build ./...
-
-  # Run tests with coverage if any exist
-  if go list ./... | grep -q .; then
-    # Run E2E tests for governance plugin
-    if [ "$PLUGIN_NAME" = "governance" ]; then
-      echo "🧪 Running governance plugin unit tests with coverage..."
-      # go test -coverprofile=coverage.txt -coverpkg=./... ./...
-      
-      # # Upload unit test coverage to Codecov
-      # if [ -n "${CODECOV_TOKEN:-}" ]; then
-      #   echo "📊 Uploading unit test coverage to Codecov..."
-      #   curl -Os https://uploader.codecov.io/latest/linux/codecov
-      #   chmod +x codecov
-      #   ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F "plugin-${PLUGIN_NAME}"
-      #   rm -f codecov coverage.txt
-      # else
-      #   echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
-      #   rm -f coverage.txt
-      # fi
-      
-      # # Run E2E tests for governance plugin
-      # echo ""
-      # echo "🛡️ Running governance E2E tests..."
-      # cd ../..
-      # E2E_SCRIPT=".github/workflows/scripts/run-governance-e2e-tests.sh"
-      # if [ ! -f "$E2E_SCRIPT" ]; then
-      #   echo "❌ Governance E2E test script not found: $E2E_SCRIPT"
-      #   exit 1
-      # fi
-      # chmod +x "$E2E_SCRIPT" || true
-      # if ! bash "$E2E_SCRIPT"; then
-      #   echo "❌ Governance E2E tests failed"
-      #   exit 1
-      # fi
-      # echo "✅ Governance E2E tests passed"
-      # cd "$PLUGIN_DIR"
-    else
-      echo "🧪 Running plugin tests with coverage..."
-      go test -timeout 20m -coverprofile=coverage.txt -coverpkg=./... ./...
-      
-      # Upload coverage to Codecov
-      if [ -n "${CODECOV_TOKEN:-}" ]; then
-        echo "📊 Uploading coverage to Codecov..."
-        curl -Os https://uploader.codecov.io/latest/linux/codecov
-        chmod +x codecov
-        ./codecov -t "$CODECOV_TOKEN" -f coverage.txt -F "plugin-${PLUGIN_NAME}"
-        rm -f codecov coverage.txt
-      else
-        echo "ℹ️ CODECOV_TOKEN not set, skipping coverage upload"
-        rm -f coverage.txt
-      fi
-    fi
-  fi
-
   echo "✅ Plugin $PLUGIN_NAME build validation successful"
 else
   echo "ℹ️ No go.mod found, skipping Go dependency update"

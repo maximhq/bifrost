@@ -330,7 +330,7 @@ func getMockRules() []mocker.MockRule {
 }
 
 // getMockedBifrostClient creates a Bifrost client with a mocker plugin for testing
-func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.Plugin) *bifrost.Bifrost {
+func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger schemas.Logger, semanticCachePlugin schemas.LLMPlugin) *bifrost.Bifrost {
 	mockerCfg := mocker.MockerConfig{
 		Enabled: true,
 		Rules:   getMockRules(),
@@ -343,9 +343,9 @@ func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger sc
 
 	account := &BaseAccount{}
 	client, err := bifrost.Init(ctx, schemas.BifrostConfig{
-		Account: account,
-		Plugins: []schemas.Plugin{semanticCachePlugin, mockerPlugin},
-		Logger:  logger,
+		Account:    account,
+		LLMPlugins: []schemas.LLMPlugin{semanticCachePlugin, mockerPlugin},
+		Logger:     logger,
 	})
 	if err != nil {
 		t.Fatalf("Error initializing Bifrost with mocker: %v", err)
@@ -358,7 +358,7 @@ func getMockedBifrostClient(t *testing.T, ctx *schemas.BifrostContext, logger sc
 type TestSetup struct {
 	Logger schemas.Logger
 	Store  vectorstore.VectorStore
-	Plugin schemas.Plugin
+	Plugin schemas.LLMPlugin
 	Client *bifrost.Bifrost
 	Config *Config
 }
@@ -540,7 +540,7 @@ func AssertNoCacheHit(t *testing.T, response *schemas.BifrostResponse) {
 
 // WaitForCache waits for async cache operations to complete
 func WaitForCache() {
-	time.Sleep(10 * time.Second)
+	time.Sleep(2 * time.Second)
 }
 
 // CreateEmbeddingRequest creates an embedding request for testing

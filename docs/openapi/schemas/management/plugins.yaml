@@ -6,6 +6,7 @@ PluginStatus:
   properties:
     name:
       type: string
+      description: Display name of the plugin
     status:
       type: string
       enum: [active, error, disabled, loading, uninitialized, unloaded, loaded]
@@ -13,6 +14,20 @@ PluginStatus:
       type: array
       items:
         type: string
+    types:
+      type: array
+      description: Plugin types indicating which interfaces the plugin implements
+      items:
+        type: string
+        enum: [llm, mcp, http, observability]
+  example:
+    name: my_custom_plugin
+    status: active
+    logs:
+      - "plugin my_custom_plugin initialized successfully"
+    types:
+      - llm
+      - http
 
 Plugin:
   type: object
@@ -23,6 +38,10 @@ Plugin:
       description: Plugin ID (auto-generated)
     name:
       type: string
+      description: Display name of the plugin (from config)
+    actualName:
+      type: string
+      description: Actual plugin name from GetName() (used as map key in plugin status). Only populated for active plugins.
     enabled:
       type: boolean
     config:
@@ -32,6 +51,9 @@ Plugin:
       type: boolean
     path:
       type: string
+    status:
+      $ref: '#/PluginStatus'
+      description: Current plugin status including types array (only populated for active plugins)
     created_at:
       type: string
       format: date-time
@@ -43,6 +65,22 @@ Plugin:
       format: date-time
     config_hash:
       type: string
+  example:
+    name: my_custom_plugin
+    actualName: MyCustomPlugin
+    enabled: true
+    config:
+      api_key: "xxx"
+    isCustom: true
+    path: "/plugins/my_custom_plugin.so"
+    status:
+      name: my_custom_plugin
+      status: active
+      logs:
+        - "plugin my_custom_plugin initialized successfully"
+      types:
+        - llm
+        - http
 
 ListPluginsResponse:
   type: object

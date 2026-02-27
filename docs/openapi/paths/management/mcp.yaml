@@ -90,7 +90,9 @@ client:
   post:
     operationId: addMCPClient
     summary: Add MCP client
-    description: Adds a new MCP client with the specified configuration.
+    description: |
+      Adds a new MCP client with the specified configuration.
+      Note: tool_pricing is not available when creating a new client as tools are fetched after client creation.
     tags:
       - MCP
     requestBody:
@@ -98,7 +100,7 @@ client:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientCreateRequest'
     responses:
       '200':
         description: MCP client added successfully
@@ -115,7 +117,9 @@ client-by-id:
   put:
     operationId: editMCPClient
     summary: Edit MCP client
-    description: Updates an existing MCP client's configuration.
+    description: |
+      Updates an existing MCP client's configuration.
+      Unlike client creation, tool_pricing can be included to set per-tool execution costs since tools are already fetched.
     tags:
       - MCP
     parameters:
@@ -130,7 +134,7 @@ client-by-id:
       content:
         application/json:
           schema:
-            $ref: '../../schemas/management/mcp.yaml#/MCPClientConfig'
+            $ref: '../../schemas/management/mcp.yaml#/MCPClientUpdateRequest'
     responses:
       '200':
         description: MCP client updated successfully
@@ -191,5 +195,40 @@ client-reconnect:
               $ref: '../../schemas/management/common.yaml#/SuccessResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-complete-oauth:
+  post:
+    operationId: completeMCPClientOAuth
+    summary: Complete MCP client OAuth flow
+    description: |
+      Completes the OAuth flow for an MCP client after the user has authorized the request.
+      This endpoint should be called after the OAuth provider redirects back to the callback endpoint
+      and the OAuth token has been stored. It retrieves the pending MCP client configuration and
+      establishes the connection with the OAuth-provided credentials.
+    tags:
+      - MCP
+      - OAuth
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: MCP client ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: MCP client connected successfully with OAuth
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/common.yaml#/SuccessResponse'
+      '400':
+        description: OAuth not authorized yet or MCP client not found in pending OAuth clients
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '404':
+        description: MCP client not found in pending OAuth clients or OAuth config not found
+        $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'

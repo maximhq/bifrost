@@ -8,19 +8,28 @@ import (
 )
 
 // ToBifrostResponsesRequest converts an OpenAI responses request to Bifrost format
-func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
-	if request == nil {
+func (resp *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.BifrostContext) *schemas.BifrostResponsesRequest {
+	if resp == nil {
 		return nil
 	}
 
-	provider, model := schemas.ParseModelString(request.Model, utils.CheckAndSetDefaultProvider(ctx, schemas.OpenAI))
+	defaultProvider := schemas.OpenAI
 
-	input := request.Input.OpenAIResponsesRequestInputArray
+	// for requests coming from azure sdk without provider prefix, we need to set the default provider to azure
+	if ctx != nil {
+		if isAzureUser, ok := ctx.Value(schemas.BifrostContextKeyIsAzureUserAgent).(bool); ok && isAzureUser {
+			defaultProvider = schemas.Azure
+		}
+	}
+
+	provider, model := schemas.ParseModelString(resp.Model, utils.CheckAndSetDefaultProvider(ctx, defaultProvider))
+
+	input := resp.Input.OpenAIResponsesRequestInputArray
 	if len(input) == 0 {
 		input = []schemas.ResponsesMessage{
 			{
 				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{ContentStr: request.Input.OpenAIResponsesRequestInputStr},
+				Content: &schemas.ResponsesMessageContent{ContentStr: resp.Input.OpenAIResponsesRequestInputStr},
 			},
 		}
 	}
@@ -29,8 +38,8 @@ func (request *OpenAIResponsesRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		Provider:  provider,
 		Model:     model,
 		Input:     input,
-		Params:    &request.ResponsesParameters,
-		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
+		Params:    &resp.ResponsesParameters,
+		Fallbacks: schemas.ParseFallbacks(resp.Fallbacks),
 	}
 }
 
@@ -42,8 +51,53 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 
 	var messages []schemas.ResponsesMessage
 	// OpenAI models (except for gpt-oss) do not support reasoning content blocks, so we need to convert them to summaries, if there are any
+	// OpenAI also doesn't support compaction content blocks, so we need to convert them to text blocks
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	for _, message := range bifrostReq.Input {
+		// First, check if message has compaction content blocks and convert them to text
+		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {
+			hasCompaction := false
+			for _, block := range message.Content.ContentBlocks {
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+					hasCompaction = true
+					break
+				}
+			}
+
+			if hasCompaction {
+				// Create a new message with converted content blocks
+				newMessage := message
+				newContentBlocks := make([]schemas.ResponsesMessageContentBlock, 0, len(message.Content.ContentBlocks))
+
+				for _, block := range message.Content.ContentBlocks {
+					if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction {
+						// Convert compaction block to text block
+						if block.ResponsesOutputMessageContentCompaction != nil && block.ResponsesOutputMessageContentCompaction.Summary != "" {
+							newContentBlocks = append(newContentBlocks, schemas.ResponsesMessageContentBlock{
+								Type: schemas.ResponsesOutputMessageContentTypeText,
+								Text: schemas.Ptr(block.ResponsesOutputMessageContentCompaction.Summary),
+							})
+						}
+						// If summary is empty, skip the block entirely
+					} else {
+						// Keep non-compaction blocks as-is
+						newContentBlocks = append(newContentBlocks, block)
+					}
+				}
+
+				// Only update if we have blocks remaining after conversion
+				if len(newContentBlocks) > 0 {
+					newMessage.Content = &schemas.ResponsesMessageContent{
+						ContentBlocks: newContentBlocks,
+					}
+					message = newMessage
+				} else {
+					// If all blocks were compaction with empty summaries, skip message
+					continue
+				}
+			}
+		}
+
 		if message.ResponsesReasoning != nil {
 			// According to OpenAI's Responses API format specification, for non-gpt-oss models, a message
 			// with ResponsesReasoning != nil and non-empty Content.ContentBlocks but empty Summary and
@@ -167,12 +221,15 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		req.filterUnsupportedTools()
 	}
 
+	if bifrostReq.Params != nil {
+		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
 	return req
 }
 
 // filterUnsupportedTools removes tool types that OpenAI doesn't support
-func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
-	if len(req.Tools) == 0 {
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
+	if len(resp.Tools) == 0 {
 		return
 	}
 
@@ -191,8 +248,8 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 	}
 
 	// Filter tools to only include supported types
-	filteredTools := make([]schemas.ResponsesTool, 0, len(req.Tools))
-	for _, tool := range req.Tools {
+	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
+	for _, tool := range resp.Tools {
 		if supportedTypes[tool.Type] {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
@@ -241,5 +298,5 @@ func (req *OpenAIResponsesRequest) filterUnsupportedTools() {
 			}
 		}
 	}
-	req.Tools = filteredTools
+	resp.Tools = filteredTools
 }

@@ -22,6 +22,7 @@ type UsageUpdate struct {
 	TokensUsed int64                 `json:"tokens_used"`
 	Cost       float64               `json:"cost"` // Cost in dollars
 	RequestID  string                `json:"request_id"`
+	UserID     string                `json:"user_id,omitempty"` // User ID for enterprise user-level governance
 
 	// Streaming optimization fields
 	IsStreaming  bool `json:"is_streaming"`   // Whether this is a streaming response
@@ -80,19 +81,37 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 
 	// 1. Update rate limit usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
-		t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
+	if update.Provider != "" && update.Model != "" {
+		if err := t.store.UpdateProviderAndModelRateLimitUsageInMemory(ctx, update.Model, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update rate limit usage for model %s, provider %s: %v", update.Model, update.Provider, err)
+		}
 	}
 
 	// 2. Update budget usage for both provider-level and model-level
 	// This applies even when virtual keys are disabled or not present
-	if shouldUpdateBudget && update.Cost > 0 {
+	// Guard: only update when both Provider and Model are set (MCP paths may not have these)
+	if update.Provider != "" && update.Model != "" && shouldUpdateBudget && update.Cost > 0 {
 		if err := t.store.UpdateProviderAndModelBudgetUsageInMemory(ctx, update.Model, update.Provider, update.Cost); err != nil {
 			t.logger.Error("failed to update budget usage for model %s, provider %s: %v", update.Model, update.Provider, err)
 		}
 	}
 
-	// 3. Now handle virtual key-level updates (if virtual key exists)
+	// 3. Update user-level governance (enterprise-only, before VK-level)
+	if update.UserID != "" {
+		// Update user rate limit usage
+		if err := t.store.UpdateUserRateLimitUsageInMemory(ctx, update.UserID, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
+			t.logger.Error("failed to update user rate limit usage for user %s: %v", update.UserID, err)
+		}
+		// Update user budget usage
+		if shouldUpdateBudget && update.Cost > 0 {
+			if err := t.store.UpdateUserBudgetUsageInMemory(ctx, update.UserID, update.Cost); err != nil {
+				t.logger.Error("failed to update user budget usage for user %s: %v", update.UserID, err)
+			}
+		}
+	}
+
+	// 4. Now handle virtual key-level updates (if virtual key exists)
 	if update.VirtualKey == "" {
 		// No virtual key, provider-level and model-level updates already done above
 		return
@@ -105,8 +124,9 @@ func (t *UsageTracker) UpdateUsage(ctx context.Context, update *UsageUpdate) {
 		return
 	}
 
-	// Update rate limit usage (both provider-level and VK-level) if applicable
-	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 {
+	// Update rate limit usage (VK-level, provider-config-level, team-level, customer-level) if applicable
+	// Include TeamID and CustomerID checks since rate limits can be configured at those levels
+	if vk.RateLimit != nil || len(vk.ProviderConfigs) > 0 || vk.TeamID != nil || vk.CustomerID != nil {
 		if err := t.store.UpdateVirtualKeyRateLimitUsageInMemory(ctx, vk, update.Provider, update.TokensUsed, shouldUpdateTokens, shouldUpdateRequests); err != nil {
 			t.logger.Error("failed to update rate limit usage for VK %s: %v", vk.ID, err)
 		}

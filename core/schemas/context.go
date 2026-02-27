@@ -220,7 +220,7 @@ func (bc *BifrostContext) Value(key any) any {
 func (bc *BifrostContext) SetValue(key, value any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return
 	}
 	bc.valuesMu.Lock()
@@ -232,17 +232,17 @@ func (bc *BifrostContext) SetValue(key, value any) {
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it
-func (bc *BifrostContext) GetAndSetValue(key any, value any) any {	
+func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
-		// we silently drop writes for these reserved keys				
+		// we silently drop writes for these reserved keys
 		return bc.userValues[key]
 	}
 	if bc.userValues == nil {
 		bc.userValues = make(map[any]any)
-	}	
+	}
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
 	return oldValue
@@ -280,4 +280,49 @@ func (bc *BifrostContext) GetParentCtxWithUserValues() context.Context {
 	}
 	bc.valuesMu.RUnlock()
 	return parentCtx
+}
+
+// AppendRoutingEngineLog appends a routing engine log entry to the context.
+// Parameters:
+//   - ctx: The Bifrost context
+//   - engineName: Name of the routing engine (e.g., "governance", "routing-rule")
+//   - message: Human-readable log message describing the decision/action
+func (bc *BifrostContext) AppendRoutingEngineLog(engineName string, message string) {
+	entry := RoutingEngineLogEntry{
+		Engine:    engineName,
+		Message:   message,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	AppendToContextList(bc, BifrostContextKeyRoutingEngineLogs, entry)
+}
+
+// GetRoutingEngineLogs retrieves all routing engine logs from the context.
+// Parameters:
+//   - ctx: The Bifrost context
+//
+// Returns:
+//   - []RoutingEngineLogEntry: Slice of routing engine log entries (nil if none)
+func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
+	if val := bc.Value(BifrostContextKeyRoutingEngineLogs); val != nil {
+		if logs, ok := val.([]RoutingEngineLogEntry); ok {
+			return logs
+		}
+	}
+	return nil
+}
+
+// AppendToContext appends a value to the context list value.
+// Parameters:
+//   - ctx: The Bifrost context
+//   - key: The key to append the value to
+//   - value: The value to append
+func AppendToContextList[T any](ctx *BifrostContext, key BifrostContextKey, value T) {
+	if ctx == nil {
+		return
+	}
+	existingValues, ok := ctx.Value(key).([]T)
+	if !ok {
+		existingValues = []T{}
+	}
+	ctx.SetValue(key, append(existingValues, value))
 }

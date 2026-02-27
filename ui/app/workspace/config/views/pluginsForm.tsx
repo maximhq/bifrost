@@ -208,7 +208,7 @@ export default function PluginsForm({ isVectorStoreEnabled }: PluginsFormProps) 
 												<SelectValue placeholder="Select provider" />
 											</SelectTrigger>
 											<SelectContent>
-												{providers.map((provider) => (
+												{providers.filter((provider) => provider.name).map((provider) => (
 													<SelectItem key={provider.name} value={provider.name}>
 														{getProviderLabel(provider.name)}
 													</SelectItem>

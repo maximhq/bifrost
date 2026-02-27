@@ -9,7 +9,7 @@ icon: "water"
 Stream plain text completions as they are generated, ideal for autocomplete, summaries, and single-output generation.
 
 ```go
-stream, err := client.TextCompletionStreamRequest(context.Background(), &schemas.BifrostTextCompletionRequest{
+stream, err := client.TextCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTextCompletionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input: &schemas.TextCompletionInput{
@@ -48,7 +48,7 @@ for chunk := range stream {
 Receive incremental chat deltas in real-time. Append delta content to progressively render assistant messages.
 
 ```go
-stream, err := client.ChatCompletionStreamRequest(context.Background(), &schemas.BifrostChatRequest{
+stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input:    messages,
@@ -102,7 +102,7 @@ messages := []schemas.ResponsesMessage{
 	},
 }
 
-stream, err := client.ResponsesStreamRequest(context.Background(), &schemas.BifrostResponsesRequest{
+stream, err := client.ResponsesStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-mini",
 	Input:    messages,
@@ -137,7 +137,7 @@ for chunk := range stream {
 Stream audio generation in real-time as text is converted to speech. Ideal for long texts or when you need immediate audio playback.
 
 ```go
-stream, err := client.SpeechStreamRequest(context.Background(), &schemas.BifrostSpeechRequest{
+stream, err := client.SpeechStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostSpeechRequest{
 	Provider: schemas.OpenAI,
 	Model:    "tts-1", // Using text-to-speech model
 	Input: &schemas.SpeechInput{
@@ -199,7 +199,7 @@ if err != nil {
 
 fmt.Printf("Loaded audio file %s (%d bytes) for transcription...\n", audioFilename, len(audioData))
 
-stream, err := client.TranscriptionStreamRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+stream, err := client.TranscriptionStreamRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "whisper-1", // Using Whisper model for transcription
 	Input: &schemas.TranscriptionInput{
@@ -265,7 +265,7 @@ Use context to control streaming duration:
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 defer cancel()
 
-stream, err := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+stream, err := client.ChatCompletionStreamRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
 	// ... your request
 })
 

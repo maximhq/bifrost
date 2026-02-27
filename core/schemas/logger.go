@@ -52,4 +52,28 @@ type Logger interface {
 
 	// SetOutputType sets the output type for the logger.
 	SetOutputType(outputType LoggerOutputType)
+
+	// LogHTTPRequest returns a LogEventBuilder for structured HTTP access logging.
+	// The level parameter controls the log severity, msg is sent when Send() is called.
+	// Use the fluent builder to attach typed fields before calling Send().
+	LogHTTPRequest(level LogLevel, msg string) LogEventBuilder
 }
+
+// LogEventBuilder provides a fluent interface for building structured log entries.
+type LogEventBuilder interface {
+	Str(key, val string) LogEventBuilder
+	Int(key string, val int) LogEventBuilder
+	Int64(key string, val int64) LogEventBuilder
+	Send()
+}
+
+// noopLogEventBuilder is a no-op builder for loggers that don't need structured logging.
+type noopLogEventBuilder struct{}
+
+func (noopLogEventBuilder) Str(string, string) LogEventBuilder  { return noopLogEventBuilder{} }
+func (noopLogEventBuilder) Int(string, int) LogEventBuilder     { return noopLogEventBuilder{} }
+func (noopLogEventBuilder) Int64(string, int64) LogEventBuilder { return noopLogEventBuilder{} }
+func (noopLogEventBuilder) Send()                               {}
+
+// NoopLogEvent is a shared singleton no-op LogEventBuilder.
+var NoopLogEvent LogEventBuilder = noopLogEventBuilder{}

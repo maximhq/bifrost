@@ -63,13 +63,6 @@ export default function ObservabilityView() {
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-2xl font-semibold tracking-tight">Observability Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure monitoring and observability features.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
 			</div>
 
 			<Alert variant="destructive">
@@ -100,6 +93,11 @@ export default function ObservabilityView() {
 					</div>
 					{needsRestart && <RestartWarning />}
 				</div>
+			</div>
+			<div className="pt-2 flex justify-end">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);

@@ -10,12 +10,14 @@ ModelProvider:
     - bedrock
     - cohere
     - vertex
+    - vllm
     - mistral
     - ollama
     - groq
     - sgl
     - parasail
     - perplexity
+    - replicate
     - cerebras
     - gemini
     - openrouter

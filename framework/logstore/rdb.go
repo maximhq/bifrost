@@ -5,9 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -60,6 +63,41 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.VirtualKeyIDs) > 0 {
 		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
 	}
+	if len(filters.RoutingRuleIDs) > 0 {
+		baseQuery = baseQuery.Where("routing_rule_id IN ?", filters.RoutingRuleIDs)
+	}
+	if len(filters.RoutingEngineUsed) > 0 {
+		// Query routing engines (comma-separated values) - find logs containing ANY of the specified engines
+		// Use delimiter-aware matching to avoid partial token matches
+		var engineConditions []string
+		var engineArgs []interface{}
+
+		// Use dialect-aware concatenation expression
+		dialect := s.db.Dialector.Name()
+		var concatExpr string
+		switch dialect {
+		case "sqlite":
+			// SQLite: use || operator for string concatenation
+			concatExpr = "',' || routing_engines_used || ','"
+		default:
+			// MySQL, Postgres, and others: use CONCAT function
+			concatExpr = "CONCAT(',', routing_engines_used, ',')"
+		}
+
+		for _, engine := range filters.RoutingEngineUsed {
+			engine = strings.TrimSpace(engine)
+			if engine == "" {
+				continue // Skip empty engine filters
+			}
+			// Match whole comma-separated tokens: expr LIKE '%,engine,%'
+			engineConditions = append(engineConditions, concatExpr+" LIKE ?")
+			engineArgs = append(engineArgs, "%,"+engine+",%")
+		}
+		// Build OR condition: (expr LIKE ? OR expr LIKE ? ...)
+		if len(engineConditions) > 0 {
+			baseQuery = baseQuery.Where(strings.Join(engineConditions, " OR "), engineArgs...)
+		}
+	}
 	if filters.StartTime != nil {
 		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
 	}
@@ -85,7 +123,8 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("cost <= ?", *filters.MaxCost)
 	}
 	if filters.MissingCostOnly {
-		baseQuery = baseQuery.Where("cost IS NULL OR cost <= 0")
+		// cost is null and status is not error
+		baseQuery = baseQuery.Where("(cost IS NULL OR cost <= 0) AND status NOT IN ('error')")
 	}
 	if filters.ContentSearch != "" {
 		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
@@ -616,13 +655,9 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 		}
 
 		// Sort by timestamp
-		for i := 0; i < len(buckets)-1; i++ {
-			for j := i + 1; j < len(buckets); j++ {
-				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
-					buckets[i], buckets[j] = buckets[j], buckets[i]
-				}
-			}
-		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
 
 		return &CostHistogramResult{
 			Buckets:           buckets,
@@ -753,13 +788,9 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 		}
 
 		// Sort by timestamp
-		for i := 0; i < len(buckets)-1; i++ {
-			for j := i + 1; j < len(buckets); j++ {
-				if buckets[i].Timestamp.After(buckets[j].Timestamp) {
-					buckets[i], buckets[j] = buckets[j], buckets[i]
-				}
-			}
-		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
 
 		return &ModelHistogramResult{
 			Buckets:           buckets,
@@ -834,6 +865,75 @@ func (s *RDBLogStore) Flush(ctx context.Context, since time.Time) error {
 	return nil
 }
 
+// GetDistinctModels returns all unique non-empty model values using SELECT DISTINCT.
+func (s *RDBLogStore) GetDistinctModels(ctx context.Context) ([]string, error) {
+	var models []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("model IS NOT NULL AND model != ''").
+		Distinct("model").Pluck("model", &models).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct models: %w", err)
+	}
+	return models, nil
+}
+
+// allowedKeyPairColumns is a whitelist of column names that can be used in GetDistinctKeyPairs
+// to prevent SQL injection from interpolated column names.
+var allowedKeyPairColumns = map[string]struct{}{
+	"selected_key_id":   {},
+	"selected_key_name": {},
+	"virtual_key_id":    {},
+	"virtual_key_name":  {},
+	"routing_rule_id":   {},
+	"routing_rule_name": {},
+}
+
+// GetDistinctKeyPairs returns unique non-empty ID-Name pairs for the given columns using SELECT DISTINCT.
+// idCol and nameCol must be valid column names (e.g., "selected_key_id", "selected_key_name").
+func (s *RDBLogStore) GetDistinctKeyPairs(ctx context.Context, idCol, nameCol string) ([]KeyPairResult, error) {
+	if _, ok := allowedKeyPairColumns[idCol]; !ok {
+		return nil, fmt.Errorf("invalid id column: %s", idCol)
+	}
+	if _, ok := allowedKeyPairColumns[nameCol]; !ok {
+		return nil, fmt.Errorf("invalid name column: %s", nameCol)
+	}
+	var results []KeyPairResult
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Select(fmt.Sprintf("DISTINCT %s as id, %s as name", idCol, nameCol)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != '' AND %s IS NOT NULL AND %s != ''", idCol, idCol, nameCol, nameCol)).
+		Find(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct key pairs (%s, %s): %w", idCol, nameCol, err)
+	}
+	return results, nil
+}
+
+// GetDistinctRoutingEngines returns all unique routing engine values from the comma-separated column.
+func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, error) {
+	var rawValues []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("routing_engines_used IS NOT NULL AND routing_engines_used != ''").
+		Distinct("routing_engines_used").Pluck("routing_engines_used", &rawValues).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get distinct routing engines: %w", err)
+	}
+	// Each row may contain comma-separated values; deduplicate across all rows
+	uniqueEngines := make(map[string]struct{})
+	for _, raw := range rawValues {
+		for _, engine := range strings.Split(raw, ",") {
+			engine = strings.TrimSpace(engine)
+			if engine != "" {
+				uniqueEngines[engine] = struct{}{}
+			}
+		}
+	}
+	engines := make([]string, 0, len(uniqueEngines))
+	for engine := range uniqueEngines {
+		engines = append(engines, engine)
+	}
+	return engines, nil
+}
+
 // FindAll finds all log entries from the database.
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
@@ -898,4 +998,336 @@ func (s *RDBLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 		return err
 	}
 	return nil
+}
+
+// ============================================================================
+// MCP Tool Log Methods
+// ============================================================================
+
+// applyMCPFilters applies search filters to a GORM query for MCP tool logs
+func (s *RDBLogStore) applyMCPFilters(baseQuery *gorm.DB, filters MCPToolLogSearchFilters) *gorm.DB {
+	if len(filters.ToolNames) > 0 {
+		baseQuery = baseQuery.Where("tool_name IN ?", filters.ToolNames)
+	}
+	if len(filters.ServerLabels) > 0 {
+		baseQuery = baseQuery.Where("server_label IN ?", filters.ServerLabels)
+	}
+	if len(filters.Status) > 0 {
+		baseQuery = baseQuery.Where("status IN ?", filters.Status)
+	}
+	if len(filters.VirtualKeyIDs) > 0 {
+		baseQuery = baseQuery.Where("virtual_key_id IN ?", filters.VirtualKeyIDs)
+	}
+	if len(filters.LLMRequestIDs) > 0 {
+		baseQuery = baseQuery.Where("llm_request_id IN ?", filters.LLMRequestIDs)
+	}
+	if filters.StartTime != nil {
+		baseQuery = baseQuery.Where("timestamp >= ?", *filters.StartTime)
+	}
+	if filters.EndTime != nil {
+		baseQuery = baseQuery.Where("timestamp <= ?", *filters.EndTime)
+	}
+	if filters.MinLatency != nil {
+		baseQuery = baseQuery.Where("latency >= ?", *filters.MinLatency)
+	}
+	if filters.MaxLatency != nil {
+		baseQuery = baseQuery.Where("latency <= ?", *filters.MaxLatency)
+	}
+	if filters.ContentSearch != "" {
+		// Search in both arguments and result fields
+		baseQuery = baseQuery.Where("(arguments LIKE ? OR result LIKE ?)", "%"+filters.ContentSearch+"%", "%"+filters.ContentSearch+"%")
+	}
+	return baseQuery
+}
+
+// CreateMCPToolLog inserts a new MCP tool log entry into the database.
+func (s *RDBLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog) error {
+	return s.db.WithContext(ctx).Create(entry).Error
+}
+
+// FindMCPToolLog retrieves a single MCP tool log entry by its ID.
+func (s *RDBLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLog, error) {
+	var log MCPToolLog
+	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&log).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &log, nil
+}
+
+// UpdateMCPToolLog updates an MCP tool log entry in the database.
+func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
+	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(entry)
+	if tx.Error != nil {
+		return tx.Error
+	}
+	if tx.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SearchMCPToolLogs searches for MCP tool logs in the database.
+func (s *RDBLogStore) SearchMCPToolLogs(ctx context.Context, filters MCPToolLogSearchFilters, pagination PaginationOptions) (*MCPToolLogSearchResult, error) {
+	var err error
+	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+
+	// Apply filters
+	baseQuery = s.applyMCPFilters(baseQuery, filters)
+
+	// Get total count for pagination
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, err
+	}
+
+	// Build order clause
+	direction := "DESC"
+	if pagination.Order == "asc" {
+		direction = "ASC"
+	}
+
+	var orderClause string
+	switch pagination.SortBy {
+	case "timestamp":
+		orderClause = "timestamp " + direction
+	case "latency":
+		orderClause = "latency " + direction
+	case "cost":
+		orderClause = "cost " + direction
+	default:
+		orderClause = "timestamp " + direction
+	}
+
+	// Execute main query with sorting and pagination
+	var logs []MCPToolLog
+	mainQuery := baseQuery.Order(orderClause)
+
+	if pagination.Limit > 0 {
+		mainQuery = mainQuery.Limit(pagination.Limit)
+	}
+	if pagination.Offset > 0 {
+		mainQuery = mainQuery.Offset(pagination.Offset)
+	}
+
+	if err = mainQuery.Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			pagination.TotalCount = totalCount
+			return &MCPToolLogSearchResult{
+				Logs:       logs,
+				Pagination: pagination,
+				Stats: MCPToolLogStats{
+					TotalExecutions: totalCount,
+				},
+			}, nil
+		}
+		return nil, err
+	}
+
+	// Populate virtual key objects for logs that have virtual key information
+	for i := range logs {
+		if logs[i].VirtualKeyID != nil && logs[i].VirtualKeyName != nil {
+			logs[i].VirtualKey = &tables.TableVirtualKey{
+				ID:   *logs[i].VirtualKeyID,
+				Name: *logs[i].VirtualKeyName,
+			}
+		}
+	}
+
+	hasLogs := len(logs) > 0
+	if !hasLogs {
+		hasLogs, err = s.HasMCPToolLogs(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	pagination.TotalCount = totalCount
+	return &MCPToolLogSearchResult{
+		Logs:       logs,
+		Pagination: pagination,
+		Stats: MCPToolLogStats{
+			TotalExecutions: totalCount,
+		},
+		HasLogs: hasLogs,
+	}, nil
+}
+
+// GetMCPToolLogStats calculates statistics for MCP tool logs matching the given filters.
+func (s *RDBLogStore) GetMCPToolLogStats(ctx context.Context, filters MCPToolLogSearchFilters) (*MCPToolLogStats, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+
+	// Apply filters
+	baseQuery = s.applyMCPFilters(baseQuery, filters)
+
+	// Get total count
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, err
+	}
+
+	// Initialize stats
+	stats := &MCPToolLogStats{
+		TotalExecutions: totalCount,
+	}
+
+	// Calculate statistics only if we have data
+	if totalCount > 0 {
+		// Build a completed query (success + error, excluding processing)
+		completedQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+		completedQuery = s.applyMCPFilters(completedQuery, filters)
+		completedQuery = completedQuery.Where("status IN ?", []string{"success", "error"})
+
+		// Get completed executions count
+		var completedCount int64
+		if err := completedQuery.Count(&completedCount).Error; err != nil {
+			return nil, err
+		}
+
+		if completedCount > 0 {
+			// Calculate success rate based on completed executions only
+			successQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+			successQuery = s.applyMCPFilters(successQuery, filters)
+			successQuery = successQuery.Where("status = ?", "success")
+
+			var successCount int64
+			if err := successQuery.Count(&successCount).Error; err != nil {
+				return nil, err
+			}
+			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
+
+			// Calculate average latency and total cost
+			var result struct {
+				AvgLatency sql.NullFloat64 `json:"avg_latency"`
+				TotalCost  sql.NullFloat64 `json:"total_cost"`
+			}
+
+			statsQuery := s.db.WithContext(ctx).Model(&MCPToolLog{})
+			statsQuery = s.applyMCPFilters(statsQuery, filters)
+			statsQuery = statsQuery.Where("status IN ?", []string{"success", "error"})
+
+			if err := statsQuery.Select("AVG(latency) as avg_latency, SUM(cost) as total_cost").Scan(&result).Error; err != nil {
+				return nil, err
+			}
+
+			if result.AvgLatency.Valid {
+				stats.AverageLatency = result.AvgLatency.Float64
+			}
+			if result.TotalCost.Valid {
+				stats.TotalCost = result.TotalCost.Float64
+			}
+		}
+	}
+
+	return stats, nil
+}
+
+// HasMCPToolLogs checks if there are any MCP tool logs in the database.
+func (s *RDBLogStore) HasMCPToolLogs(ctx context.Context) (bool, error) {
+	var log MCPToolLog
+	err := s.db.WithContext(ctx).Select("id").Limit(1).Take(&log).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// DeleteMCPToolLogs deletes multiple MCP tool log entries from the database by their IDs.
+func (s *RDBLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := s.db.WithContext(ctx).Where("id IN ?", ids).Delete(&MCPToolLog{}).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// FlushMCPToolLogs deletes old processing MCP tool log entries from the database.
+func (s *RDBLogStore) FlushMCPToolLogs(ctx context.Context, since time.Time) error {
+	result := s.db.WithContext(ctx).Where("status = ? AND created_at < ?", "processing", since).Delete(&MCPToolLog{})
+	if result.Error != nil {
+		return fmt.Errorf("failed to cleanup old processing MCP tool logs: %w", result.Error)
+	}
+	return nil
+}
+
+// GetAvailableToolNames returns all unique tool names from the MCP tool logs.
+func (s *RDBLogStore) GetAvailableToolNames(ctx context.Context) ([]string, error) {
+	var toolNames []string
+	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("tool_name").Pluck("tool_name", &toolNames)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available tool names: %w", result.Error)
+	}
+	return toolNames, nil
+}
+
+// GetAvailableServerLabels returns all unique server labels from the MCP tool logs.
+func (s *RDBLogStore) GetAvailableServerLabels(ctx context.Context) ([]string, error) {
+	var serverLabels []string
+	result := s.db.WithContext(ctx).Model(&MCPToolLog{}).Distinct("server_label").Where("server_label != ''").Pluck("server_label", &serverLabels)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available server labels: %w", result.Error)
+	}
+	return serverLabels, nil
+}
+
+// GetAvailableMCPVirtualKeys returns all unique virtual key ID-Name pairs from MCP tool logs.
+func (s *RDBLogStore) GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error) {
+	var logs []MCPToolLog
+	result := s.db.WithContext(ctx).
+		Model(&MCPToolLog{}).
+		Select("DISTINCT virtual_key_id, virtual_key_name").
+		Where("virtual_key_id IS NOT NULL AND virtual_key_id != '' AND virtual_key_name IS NOT NULL AND virtual_key_name != ''").
+		Find(&logs)
+	if result.Error != nil {
+		return nil, fmt.Errorf("failed to get available virtual keys from MCP logs: %w", result.Error)
+	}
+	return logs, nil
+}
+
+// CreateAsyncJob creates a new async job record in the database.
+func (s *RDBLogStore) CreateAsyncJob(ctx context.Context, job *AsyncJob) error {
+	return s.db.WithContext(ctx).Create(job).Error
+}
+
+// FindAsyncJobByID retrieves an async job by its ID.
+func (s *RDBLogStore) FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error) {
+	var job AsyncJob
+	result := s.db.WithContext(ctx).Where("id = ? AND (expires_at IS NULL OR expires_at > ?)", id, time.Now().UTC()).First(&job)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, result.Error
+	}
+	return &job, nil
+}
+
+// UpdateAsyncJob updates an async job record with the provided fields.
+func (s *RDBLogStore) UpdateAsyncJob(ctx context.Context, id string, updates map[string]interface{}) error {
+	return s.db.WithContext(ctx).Model(&AsyncJob{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// DeleteExpiredAsyncJobs deletes async jobs whose expires_at has passed.
+// Only deletes jobs that have a non-null expires_at (i.e., completed or failed jobs).
+func (s *RDBLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
+	result := s.db.WithContext(ctx).
+		Where("expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC()).
+		Delete(&AsyncJob{})
+	return result.RowsAffected, result.Error
+}
+
+// DeleteStaleAsyncJobs deletes async jobs stuck in "processing" status since before the given time.
+// This handles edge cases like marshal failures or server crashes that leave jobs permanently stuck.
+func (s *RDBLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
+	result := s.db.WithContext(ctx).
+		Where("status = ? AND created_at < ?", "processing", staleSince).
+		Delete(&AsyncJob{})
+	return result.RowsAffected, result.Error
 }

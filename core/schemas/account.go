@@ -3,42 +3,54 @@ package schemas
 
 import "context"
 
+type KeyStatusType string
+
+const (
+	KeyStatusSuccess          KeyStatusType = "success"
+	KeyStatusListModelsFailed KeyStatusType = "list_models_failed"
+)
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
 	ID                   string                `json:"id"`                               // The unique identifier for the key (used by bifrost to identify the key)
 	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
-	Value                EnvVar              `json:"value"`                            // The actual API key value
+	Value                EnvVar                `json:"value"`                            // The actual API key value
 	Models               []string              `json:"models"`                           // List of models this key can access
 	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
 	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
 	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration
 	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
+	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
+	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
+	Status               KeyStatusType         `json:"status,omitempty"`                 // Status of key
+	Description          string                `json:"description,omitempty"`            // Description of key
 }
 
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
-	Endpoint    EnvVar          `json:"endpoint"`              // Azure service endpoint URL
+	Endpoint    EnvVar            `json:"endpoint"`              // Azure service endpoint URL
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment names
-	APIVersion  *EnvVar         `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
+	APIVersion  *EnvVar           `json:"api_version,omitempty"` // Azure API version to use; defaults to "2024-10-21"
 
-	ClientID     *EnvVar `json:"client_id,omitempty"`     // Azure client ID for authentication
-	ClientSecret *EnvVar `json:"client_secret,omitempty"` // Azure client secret for authentication
-	TenantID     *EnvVar `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+	ClientID     *EnvVar  `json:"client_id,omitempty"`     // Azure client ID for authentication
+	ClientSecret *EnvVar  `json:"client_secret,omitempty"` // Azure client secret for authentication
+	TenantID     *EnvVar  `json:"tenant_id,omitempty"`     // Azure tenant ID for authentication
+	Scopes       []string `json:"scopes,omitempty"`
 }
 
 // VertexKeyConfig represents the Vertex-specific configuration.
 // It contains Vertex-specific settings required for authentication and service access.
 type VertexKeyConfig struct {
-	ProjectID       EnvVar          `json:"project_id"`
-	ProjectNumber   EnvVar          `json:"project_number"`
-	Region          EnvVar          `json:"region"`
-	AuthCredentials EnvVar          `json:"auth_credentials"`
+	ProjectID       EnvVar            `json:"project_id"`
+	ProjectNumber   EnvVar            `json:"project_number"`
+	Region          EnvVar            `json:"region"`
+	AuthCredentials EnvVar            `json:"auth_credentials"`
 	Deployments     map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to inference profiles
 }
 
@@ -60,11 +72,11 @@ type BatchS3Config struct {
 // BedrockKeyConfig represents the AWS Bedrock-specific configuration.
 // It contains AWS-specific settings required for authentication and service access.
 type BedrockKeyConfig struct {
-	AccessKey     EnvVar          `json:"access_key,omitempty"`      // AWS access key for authentication
-	SecretKey     EnvVar          `json:"secret_key,omitempty"`      // AWS secret access key for authentication
-	SessionToken  *EnvVar         `json:"session_token,omitempty"`   // AWS session token for temporary credentials
-	Region        *EnvVar         `json:"region,omitempty"`          // AWS region for service access
-	ARN           *EnvVar         `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
+	AccessKey     EnvVar            `json:"access_key,omitempty"`      // AWS access key for authentication
+	SecretKey     EnvVar            `json:"secret_key,omitempty"`      // AWS secret access key for authentication
+	SessionToken  *EnvVar           `json:"session_token,omitempty"`   // AWS session token for temporary credentials
+	Region        *EnvVar           `json:"region,omitempty"`          // AWS region for service access
+	ARN           *EnvVar           `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
 	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
 	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }
@@ -74,6 +86,18 @@ type BedrockKeyConfig struct {
 
 type HuggingFaceKeyConfig struct {
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+type ReplicateKeyConfig struct {
+	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+// VLLMKeyConfig represents the vLLM-specific key configuration.
+// It allows each key to target a different vLLM server URL and model name,
+// enabling per-key routing and round-robin load balancing across multiple vLLM instances.
+type VLLMKeyConfig struct {
+	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
+	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

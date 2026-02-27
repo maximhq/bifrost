@@ -36,10 +36,11 @@ type Config struct {
 	Dimension            int           `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
-	ConversationHistoryThreshold int   `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool `json:"cache_by_model,omitempty"`                 // Include model in cache key (default: true)
-	CacheByProvider              *bool `json:"cache_by_provider,omitempty"`              // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool `json:"exclude_system_prompt,omitempty"`          // Exclude system prompt in cache key (default: false)
+	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
+	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
+	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -125,7 +126,7 @@ type StreamAccumulator struct {
 	mu             sync.Mutex             // Protects chunk operations
 }
 
-// Plugin implements the schemas.Plugin interface for semantic caching.
+// Plugin implements the schemas.LLMPlugin interface for semantic caching.
 // It caches responses using a two-tier approach: direct hash matching for exact requests
 // and semantic similarity search for related content. The plugin supports configurable caching behavior
 // via the VectorStore abstraction, including TTL management and streaming response handling.
@@ -220,6 +221,22 @@ func (pa *PluginAccount) GetConfigForProvider(providerKey schemas.ModelProvider)
 // Dependencies is a list of dependencies that the plugin requires.
 var Dependencies []framework.FrameworkDependency = []framework.FrameworkDependency{framework.FrameworkDependencyVectorStore}
 
+// ProvidersWithEmbeddingSupport lists all providers that support embedding operations.
+// Providers not in this list will return UnsupportedOperationError for embedding requests.
+var ProvidersWithEmbeddingSupport = map[schemas.ModelProvider]bool{
+	schemas.OpenAI:      true,
+	schemas.Azure:       true,
+	schemas.Bedrock:     true,
+	schemas.Cohere:      true,
+	schemas.Gemini:      true,
+	schemas.Vertex:      true,
+	schemas.Mistral:     true,
+	schemas.Ollama:      true,
+	schemas.Nebius:      true,
+	schemas.HuggingFace: true,
+	schemas.SGL:         true,
+}
+
 const (
 	CacheKey          schemas.BifrostContextKey = "semantic_cache_key"        // To set the cache key for a request - REQUIRED for all requests
 	CacheTTLKey       schemas.BifrostContextKey = "semantic_cache_ttl"        // To explicitly set the TTL for a request
@@ -258,9 +275,9 @@ const (
 //   - store: VectorStore instance for cache operations
 //
 // Returns:
-//   - schemas.Plugin: A configured semantic cache plugin instance
+//   - schemas.LLMPlugin: A configured semantic cache plugin instance
 //   - error: Any error that occurred during plugin initialization
-func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.Plugin, error) {
+func Init(ctx context.Context, config *Config, logger schemas.Logger, store vectorstore.VectorStore) (schemas.LLMPlugin, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -303,6 +320,11 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 	if config.Provider == "" || len(config.Keys) == 0 {
 		logger.Warn(PluginLoggerPrefix + " Provider and keys are required for semantic cache, falling back to direct search only")
 	} else {
+		// Validate that the provider supports embeddings
+		if bifrost.IsStandardProvider(config.Provider) && !ProvidersWithEmbeddingSupport[config.Provider] {
+			return nil, fmt.Errorf("provider '%s' does not support embedding operations required for semantic cache. Supported providers: openai, azure, bedrock, cohere, gemini, vertex, mistral, ollama, nebius, huggingface, sgl. Note: custom providers based on embedding-capable providers are also supported", config.Provider)
+		}
+
 		bifrost, err := bifrost.Init(ctx, schemas.BifrostConfig{
 			Logger: logger,
 			Account: &PluginAccount{
@@ -350,7 +372,7 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 	return chunk, nil
 }
 
-// PreHook is called before a request is processed by Bifrost.
+// PreLLMHook is called before a request is processed by Bifrost.
 // It performs a two-stage cache lookup: first direct hash matching, then semantic similarity search.
 // Uses UUID-based keys for entries stored in the VectorStore.
 //
@@ -362,7 +384,7 @@ func (plugin *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, 
 //   - *schemas.BifrostRequest: The original request
 //   - *schemas.BifrostResponse: Cached response if found, nil otherwise
 //   - error: Any error that occurred during cache lookup
-func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	provider, model, _ := req.GetRequestFields()
 	// Get the cache key from the context
 	var cacheKey string
@@ -370,8 +392,13 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 
 	cacheKey, ok = ctx.Value(CacheKey).(string)
 	if !ok || cacheKey == "" {
-		plugin.logger.Debug(PluginLoggerPrefix + " No cache key found in context, continuing without caching")
-		return req, nil, nil
+		if plugin.config.DefaultCacheKey != "" {
+			cacheKey = plugin.config.DefaultCacheKey
+			plugin.logger.Debug(PluginLoggerPrefix + " Using default cache key: " + cacheKey)
+		} else {
+			plugin.logger.Debug(PluginLoggerPrefix + " No cache key found in context, continuing without caching")
+			return req, nil, nil
+		}
 	}
 
 	if plugin.isConversationHistoryThresholdExceeded(req) {
@@ -382,7 +409,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 	// Generate UUID for this request
 	requestID := uuid.New().String()
 
-	// Store request ID, model, and provider in context for PostHook
+	// Store request ID, model, and provider in context for PostLLMHook
 	ctx.SetValue(requestIDKey, requestID)
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
@@ -448,24 +475,25 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 			return req, nil, nil
 		}
 
-		plugin.logger.Debug(PluginLoggerPrefix + " Generating embeddings for storage (vector store requires vectors)")
-		err := plugin.generateEmbeddingsForStorage(ctx, req)
-		if err != nil {
-			plugin.logger.Warn(PluginLoggerPrefix + " Failed to generate embeddings for storage: " + err.Error())
-			// Continue without embeddings - caching will fail but request will proceed
+		// Use zero vector for direct-only cache type to prevent semantic search matches
+		// This preserves cache type isolation - direct-only entries won't be found by semantic search
+		if plugin.config.Dimension > 0 {
+			zeroVector := make([]float32, plugin.config.Dimension)
+			ctx.SetValue(requestEmbeddingKey, zeroVector)
+			plugin.logger.Debug(PluginLoggerPrefix + " Using zero vector for direct-only cache storage (preserves isolation)")
 		}
 	}
 
 	return req, nil, nil
 }
 
-// PostHook is called after a response is received from a provider.
+// PostLLMHook is called after a response is received from a provider.
 // It caches responses in the VectorStore using UUID-based keys with unified metadata structure
 // including provider, model, request hash, and TTL. Handles both single and streaming responses.
 //
 // The function performs the following operations:
 // 1. Checks configurable caching behavior and skips caching for unsuccessful responses if configured
-// 2. Retrieves the request hash and ID from the context (set during PreHook)
+// 2. Retrieves the request hash and ID from the context (set during PreLLMHook)
 // 3. Marshals the response for storage
 // 4. Stores the unified cache entry in the VectorStore asynchronously (non-blocking)
 //
@@ -482,7 +510,7 @@ func (plugin *Plugin) PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostR
 //   - *schemas.BifrostResponse: The original response, unmodified
 //   - *schemas.BifrostError: The original error, unmodified
 //   - error: Any error that occurred during caching preparation (always nil as errors are handled gracefully)
-func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if bifrostErr != nil {
 		return res, bifrostErr, nil
 	}
@@ -507,8 +535,12 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 
 	// Get the cache key from context
 	cacheKey, ok := ctx.Value(CacheKey).(string)
-	if !ok {
-		return res, nil, nil
+	if !ok || cacheKey == "" {
+		if plugin.config.DefaultCacheKey != "" {
+			cacheKey = plugin.config.DefaultCacheKey
+		} else {
+			return res, nil, nil
+		}
 	}
 
 	// Get the request ID from context
@@ -654,6 +686,12 @@ func (plugin *Plugin) PostHook(ctx *schemas.BifrostContext, res *schemas.Bifrost
 	}()
 
 	return res, nil, nil
+}
+
+// WaitForPendingOperations blocks until all pending cache operations (goroutines) complete.
+// This is useful in tests to ensure cache entries are stored before checking for cache hits.
+func (plugin *Plugin) WaitForPendingOperations() {
+	plugin.waitGroup.Wait()
 }
 
 // Cleanup performs cleanup operations for the semantic cache plugin.

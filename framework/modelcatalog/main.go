@@ -37,7 +37,14 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	modelPool map[schemas.ModelProvider][]string
+	// Provider-level pricing overrides are maintained separately to avoid contention
+	// with pricing cache rebuilds.
+	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
+	overridesMu       sync.RWMutex
+
+	modelPool           map[schemas.ModelProvider][]string
+	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
+	baseModelIndex      map[string]string                  // model string → canonical base model name
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -49,6 +56,8 @@ type ModelCatalog struct {
 
 // PricingEntry represents a single model's pricing information
 type PricingEntry struct {
+	// Base model name (pre-computed canonical name, e.g., "gpt-4o" for "gpt-4o-2024-08-06")
+	BaseModel string `json:"base_model,omitempty"`
 	// Basic pricing
 	InputCostPerToken  float64 `json:"input_cost_per_token"`
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
@@ -82,7 +91,10 @@ type PricingEntry struct {
 	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
 	InputCostPerImage            *float64 `json:"input_cost_per_image,omitempty"`
 	OutputCostPerImage           *float64 `json:"output_cost_per_image,omitempty"`
-	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`	
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+	// Video generation pricing
+	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 }
 
 // ShouldSyncPricingFunc is a function that determines if pricing data should be synced
@@ -91,7 +103,7 @@ type PricingEntry struct {
 // syncPricing function will be called if this function returns true
 type ShouldSyncPricingFunc func(ctx context.Context) bool
 
-// Init initializes the pricing manager
+// Init initializes the model catalog
 func Init(ctx context.Context, config *Config, configStore configstore.ConfigStore, shouldSyncPricingFunc ShouldSyncPricingFunc, logger schemas.Logger) (*ModelCatalog, error) {
 	// Initialize pricing URL and sync interval
 	pricingURL := DefaultPricingURL
@@ -109,13 +121,16 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		modelPool:              make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
+		baseModelIndex:         make(map[string]string),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
 	}
 
-	logger.Info("initializing pricing manager...")
+	logger.Info("initializing model catalog...")
 	if configStore != nil {
 		if mc.distributedLockManager == nil {
 			if err := mc.loadPricingFromDatabase(ctx); err != nil {
@@ -160,7 +175,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	return mc, nil
 }
 
-// ReloadPricing reloads the pricing manager from config
+// ReloadPricing reloads the model catalog from config
 func (mc *ModelCatalog) ReloadPricing(ctx context.Context, config *Config) error {
 	// Acquire pricing mutex to update configuration atomically
 	mc.pricingMu.Lock()
@@ -216,6 +231,8 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		return fmt.Errorf("failed to sync pricing data: %w", err)
 	}
 
+	// Rebuild model pool from updated pricing data
+	mc.populateModelPoolFromPricingData()
 	return nil
 }
 
@@ -243,6 +260,7 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 		schemas.ChatCompletionRequest,
 		schemas.ResponsesRequest,
 		schemas.EmbeddingRequest,
+		schemas.RerankRequest,
 		schemas.SpeechRequest,
 		schemas.TranscriptionRequest,
 	} {
@@ -271,6 +289,40 @@ func (mc *ModelCatalog) GetModelsForProvider(provider schemas.ModelProvider) []s
 	return result
 }
 
+// GetUnfilteredModelsForProvider returns all available models for a given provider (thread-safe)
+func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	models, exists := mc.unfilteredModelPool[provider]
+	if !exists {
+		return []string{}
+	}
+
+	// Return a copy to prevent external modification
+	result := make([]string, len(models))
+	copy(result, models)
+	return result
+}
+
+// GetDistinctBaseModelNames returns all unique base model names from the catalog (thread-safe).
+// This is used for governance model selection when no specific provider is chosen.
+func (mc *ModelCatalog) GetDistinctBaseModelNames() []string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	for _, baseName := range mc.baseModelIndex {
+		seen[baseName] = true
+	}
+
+	result := make([]string, 0, len(seen))
+	for name := range seen {
+		result = append(result, name)
+	}
+	return result
+}
+
 // GetProvidersForModel returns all providers for a given model (thread-safe)
 func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvider {
 	mc.mu.RLock()
@@ -278,7 +330,14 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 
 	providers := make([]schemas.ModelProvider, 0)
 	for provider, models := range mc.modelPool {
-		if slices.Contains(models, model) {
+		isModelMatch := false
+		for _, m := range models {
+			if m == model || mc.getBaseModelNameUnsafe(m) == mc.getBaseModelNameUnsafe(model) {
+				isModelMatch = true
+				break
+			}
+		}
+		if isModelMatch {
 			providers = append(providers, provider)
 		}
 	}
@@ -405,22 +464,59 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 	return false
 }
 
-// AddModelDataToPool adds model data to the model pool.
-func (mc *ModelCatalog) AddModelDataToPool(modelData *schemas.BifrostListModelsResponse) {
-	if modelData == nil {
-		return
-	}
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
+// GetBaseModelName returns the canonical base model name for a given model string.
+// It uses the pre-computed base_model from the pricing catalog when available,
+// falling back to algorithmic date/version stripping for models not in the catalog.
+//
+// Examples:
+//
+//	mc.GetBaseModelName("gpt-4o")                    // Returns: "gpt-4o"
+//	mc.GetBaseModelName("openai/gpt-4o")             // Returns: "gpt-4o"
+//	mc.GetBaseModelName("gpt-4o-2024-08-06")         // Returns: "gpt-4o" (algorithmic fallback)
+func (mc *ModelCatalog) GetBaseModelName(model string) string {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	return mc.getBaseModelNameUnsafe(model)
+}
 
-	for _, model := range modelData.Data {
-		provider, model := schemas.ParseModelString(model.ID, "")
-		if provider == "" {
-			continue
-		}
-		provider = schemas.ModelProvider(provider)
-		mc.modelPool[provider] = append(mc.modelPool[provider], model)
+// getBaseModelNameUnsafe returns the canonical base model name for a given model string without locking.
+// This is used to avoid locking overhead when getting the base model name for many models.
+// Make sure the caller function is holding the read lock before calling this function.
+// It is not safe to use this function when the model pool is being updated.
+func (mc *ModelCatalog) getBaseModelNameUnsafe(model string) string {
+	// Step 1: Direct lookup in base model index
+	if base, ok := mc.baseModelIndex[model]; ok {
+		return base
 	}
+
+	// Step 2: Strip provider prefix and try again
+	_, baseName := schemas.ParseModelString(model, "")
+	if baseName != model {
+		if base, ok := mc.baseModelIndex[baseName]; ok {
+			return base
+		}
+	}
+
+	// Step 3: Fallback to algorithmic date/version stripping
+	// (for models not in the catalog, e.g., user-configured custom models)
+	return schemas.BaseModelName(baseName)
+}
+
+// IsSameModel checks if two model strings refer to the same underlying model.
+// It compares the canonical base model names derived from the pricing catalog
+// (or algorithmic fallback for models not in the catalog).
+//
+// Examples:
+//
+//	mc.IsSameModel("gpt-4o", "gpt-4o")                            // true (direct match)
+//	mc.IsSameModel("openai/gpt-4o", "gpt-4o")                     // true (same base model)
+//	mc.IsSameModel("gpt-4o", "claude-3-5-sonnet")                  // false (different models)
+//	mc.IsSameModel("openai/gpt-4o", "anthropic/claude-3-5-sonnet") // false
+func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
+	if model1 == model2 {
+		return true
+	}
+	return mc.GetBaseModelName(model1) == mc.GetBaseModelName(model2)
 }
 
 // DeleteModelDataForProvider deletes all model data from the pool for a given provider
@@ -429,6 +525,114 @@ func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvide
 	defer mc.mu.Unlock()
 
 	delete(mc.modelPool, provider)
+	delete(mc.unfilteredModelPool, provider)
+}
+
+// UpsertModelDataForProvider upserts model data for a given provider
+func (mc *ModelCatalog) UpsertModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse, allowedModels []schemas.Model) {
+	if modelData == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	// Populating models from pricing data for the given provider
+	// Provider models map
+	providerModels := []string{}
+	// Iterate through all pricing data to collect models per provider
+	for _, pricing := range mc.pricingData {
+		// Normalize provider before adding to model pool
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+		// We will only add models for the given provider
+		if normalizedProvider != provider {
+			continue
+		}
+		// Add model to the provider's model set (using map for deduplication)
+		if slices.Contains(providerModels, pricing.Model) {
+			continue
+		}
+		providerModels = append(providerModels, pricing.Model)
+		// Build base model index from pre-computed base_model field
+		if pricing.BaseModel != "" {
+			mc.baseModelIndex[pricing.Model] = pricing.BaseModel
+		}
+	}
+	// If modelData is empty, then we allow all models
+	if len(modelData.Data) == 0 && len(allowedModels) == 0 {
+		mc.modelPool[provider] = providerModels
+		return
+	}
+	// Here we make sure that we still keep the backup for model catalog intact
+	// So we start with a existing model pool and add the new models from incoming data
+	finalModelList := make([]string, 0)
+	seenModels := make(map[string]bool)
+	// Case where list models failed but we have allowed models from keys
+	if len(modelData.Data) == 0 && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			parsedProvider, parsedModel := schemas.ParseModelString(allowedModel.ID, "")
+			if parsedProvider != provider {
+				continue
+			}
+			if !seenModels[parsedModel] {
+				seenModels[parsedModel] = true
+				finalModelList = append(finalModelList, parsedModel)
+			}
+		}
+	}
+	for _, model := range modelData.Data {
+		parsedProvider, parsedModel := schemas.ParseModelString(model.ID, "")
+		if parsedProvider != provider {
+			continue
+		}
+		if !seenModels[parsedModel] {
+			seenModels[parsedModel] = true
+			finalModelList = append(finalModelList, parsedModel)
+		}
+	}
+	// If there are no allowed models, we add all models from the provider models
+	if len(allowedModels) == 0 {
+		for _, model := range providerModels {
+			if !seenModels[model] {
+				seenModels[model] = true
+				finalModelList = append(finalModelList, model)
+			}
+		}
+	}
+	mc.modelPool[provider] = finalModelList
+}
+
+// UpsertUnfilteredModelDataForProvider upserts unfiltered model data for a given provider
+func (mc *ModelCatalog) UpsertUnfilteredModelDataForProvider(provider schemas.ModelProvider, modelData *schemas.BifrostListModelsResponse) {
+	if modelData == nil {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+
+	// Populating models from pricing data for the given provider
+	providerModels := []string{}
+	seenModels := make(map[string]bool)
+	for _, pricing := range mc.pricingData {
+		normalizedProvider := schemas.ModelProvider(normalizeProvider(pricing.Provider))
+		if normalizedProvider != provider {
+			continue
+		}
+		if !seenModels[pricing.Model] {
+			seenModels[pricing.Model] = true
+			providerModels = append(providerModels, pricing.Model)
+		}
+	}
+	for _, model := range modelData.Data {
+		parsedProvider, parsedModel := schemas.ParseModelString(model.ID, "")
+		if parsedProvider != provider {
+			continue
+		}
+		if !seenModels[parsedModel] {
+			seenModels[parsedModel] = true
+			providerModels = append(providerModels, parsedModel)
+		}
+	}
+	mc.unfilteredModelPool[provider] = providerModels
 }
 
 // RefineModelForProvider refines the model for a given provider by performing a lookup
@@ -494,8 +698,10 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 
-	// Clear existing model pool
+	// Clear existing model pool and base model index
 	mc.modelPool = make(map[schemas.ModelProvider][]string)
+	mc.unfilteredModelPool = make(map[schemas.ModelProvider][]string)
+	mc.baseModelIndex = make(map[string]string)
 
 	// Map to track unique models per provider
 	providerModels := make(map[schemas.ModelProvider]map[string]bool)
@@ -512,6 +718,11 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 
 		// Add model to the provider's model set (using map for deduplication)
 		providerModels[normalizedProvider][pricing.Model] = true
+
+		// Build base model index from pre-computed base_model field
+		if pricing.BaseModel != "" {
+			mc.baseModelIndex[pricing.Model] = pricing.BaseModel
+		}
 	}
 
 	// Convert sets to slices and assign to modelPool
@@ -521,6 +732,7 @@ func (mc *ModelCatalog) populateModelPoolFromPricingData() {
 			models = append(models, model)
 		}
 		mc.modelPool[provider] = models
+		mc.unfilteredModelPool[provider] = models
 	}
 
 	// Log the populated model pool for debugging
@@ -548,4 +760,20 @@ func (mc *ModelCatalog) Cleanup() error {
 	mc.wg.Wait()
 
 	return nil
+}
+
+// NewTestCatalog creates a minimal ModelCatalog for testing purposes.
+// It does not start background sync workers or connect to external services.
+func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
+	if baseModelIndex == nil {
+		baseModelIndex = make(map[string]string)
+	}
+	return &ModelCatalog{
+		modelPool:           make(map[schemas.ModelProvider][]string),
+		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
+		baseModelIndex:      baseModelIndex,
+		pricingData:         make(map[string]configstoreTables.TableModelPricing),
+		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		done:                make(chan struct{}),
+	}
 }

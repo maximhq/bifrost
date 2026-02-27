@@ -4,14 +4,17 @@ package tables
 type TableModelPricing struct {
 	ID                 uint    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Model              string  `gorm:"type:varchar(255);not null;uniqueIndex:idx_model_provider_mode" json:"model"`
+	BaseModel          string  `gorm:"type:varchar(255);default:null" json:"base_model,omitempty"`
 	Provider           string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"provider"`
 	InputCostPerToken  float64 `gorm:"not null" json:"input_cost_per_token"`
 	OutputCostPerToken float64 `gorm:"not null" json:"output_cost_per_token"`
 	Mode               string  `gorm:"type:varchar(50);not null;uniqueIndex:idx_model_provider_mode" json:"mode"`
 
 	// Additional pricing for media
-	InputCostPerVideoPerSecond *float64 `gorm:"default:null" json:"input_cost_per_video_per_second,omitempty"`
-	InputCostPerAudioPerSecond *float64 `gorm:"default:null" json:"input_cost_per_audio_per_second,omitempty"`
+	InputCostPerVideoPerSecond  *float64 `gorm:"default:null" json:"input_cost_per_video_per_second,omitempty"`
+	OutputCostPerVideoPerSecond *float64 `gorm:"default:null" json:"output_cost_per_video_per_second,omitempty"`
+	OutputCostPerSecond         *float64 `gorm:"default:null" json:"output_cost_per_second,omitempty"`
+	InputCostPerAudioPerSecond  *float64 `gorm:"default:null" json:"input_cost_per_audio_per_second,omitempty"`
 
 	// Character-based pricing
 	InputCostPerCharacter  *float64 `gorm:"default:null" json:"input_cost_per_character,omitempty"`

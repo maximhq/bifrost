@@ -57,7 +57,6 @@
       "*"
     ],
     "enable_logging": true,
-    "enable_governance": true,
     "enforce_governance_header": true,
     "allow_direct_keys": false,
     "max_request_body_size_mb": 100,

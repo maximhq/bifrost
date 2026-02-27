@@ -60,18 +60,23 @@ func ToHuggingFaceEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) 
 		// Check for HuggingFace-specific parameters in ExtraParams
 		if params.ExtraParams != nil {
 			if normalize, ok := params.ExtraParams["normalize"].(bool); ok {
+				delete(params.ExtraParams, "normalize")
 				hfReq.Normalize = &normalize
 			}
 			if promptName, ok := params.ExtraParams["prompt_name"].(string); ok {
+				delete(params.ExtraParams, "prompt_name")
 				hfReq.PromptName = &promptName
 			}
 			if truncate, ok := params.ExtraParams["truncate"].(bool); ok {
+				delete(params.ExtraParams, "truncate")
 				hfReq.Truncate = &truncate
 			}
 			if truncationDirection, ok := params.ExtraParams["truncation_direction"].(string); ok {
+				delete(params.ExtraParams, "truncation_direction")
 				hfReq.TruncationDirection = &truncationDirection
 			}
 		}
+		hfReq.ExtraParams = params.ExtraParams
 	}
 
 	return hfReq, nil

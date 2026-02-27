@@ -23,7 +23,21 @@ export const pluginsApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["Plugins"],
+			transformResponse: (response: { message: string; plugin: Plugin }) => response.plugin,
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data: newPlugin } = await queryFulfilled;
+					dispatch(
+						pluginsApi.util.updateQueryData("getPlugins", undefined, (draft) => {
+							draft.push(newPlugin);
+						})
+					);
+					// Also update the individual plugin cache
+					dispatch(
+						pluginsApi.util.updateQueryData("getPlugin", newPlugin.name, () => newPlugin)
+					);
+				} catch {}
+			},
 		}),
 
 		// Update existing plugin
@@ -33,16 +47,45 @@ export const pluginsApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["Plugins"],
+			transformResponse: (response: { message: string; plugin: Plugin }) => response.plugin,
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data: updatedPlugin } = await queryFulfilled;
+					dispatch(
+						pluginsApi.util.updateQueryData("getPlugins", undefined, (draft) => {
+							const index = draft.findIndex((p) => p.name === arg.name);
+							if (index !== -1) {
+								draft[index] = updatedPlugin;
+							}
+						})
+					);
+					// Also update the individual plugin cache
+					dispatch(
+						pluginsApi.util.updateQueryData("getPlugin", arg.name, () => updatedPlugin)
+					);
+				} catch {}
+			},
 		}),
-		
+
 		// Delete plugin
 		deletePlugin: builder.mutation<Plugin, string>({
 			query: (name) => ({
 				url: `/plugins/${name}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["Plugins"],
+			async onQueryStarted(pluginName, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						pluginsApi.util.updateQueryData("getPlugins", undefined, (draft) => {
+							const index = draft.findIndex((p) => p.name === pluginName);
+							if (index !== -1) {
+								draft.splice(index, 1);
+							}
+						})
+					);
+				} catch {}
+			},
 		}),
 	}),
 });

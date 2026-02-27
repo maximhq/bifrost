@@ -23,6 +23,9 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Responses API | ✅ | ✅ | `/messages` |
 | Embeddings | ✅ | - | `/embeddings` |
 | Image Generation | ✅ | - | `/generateContent` or `/predict` (Imagen) |
+| Image Edit | ✅ | - | `/generateContent` or `/predict` (Imagen) |
+| Video Generation | ✅ | - | `/predictLongRunning` (Veo models only) |
+| Image Variation | ❌ | - | Not supported |
 | List Models | ✅ | - | `/models` |
 | Text Completions | ❌ | ❌ | - |
 | Speech (TTS) | ❌ | ❌ | - |
@@ -185,7 +188,7 @@ curl -X POST http://localhost:8080/v1/responses \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostResponsesRequest{
     Provider: schemas.Vertex,
     Model:    "claude-3-5-sonnet",
     Input:    messages,
@@ -248,7 +251,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
+resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Vertex,
     Model:    "text-embedding-004",
     Input: &schemas.EmbeddingInput{
@@ -355,7 +358,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 <Tab title="Go SDK">
 
 ```go
-resp, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{
+resp, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
     Provider: schemas.Vertex,
     Model:    "imagen-4.0-generate-001",
     Input: &schemas.ImageGenerationInput{
@@ -399,7 +402,70 @@ Image generation streaming is not supported by Vertex AI.
 
 ---
 
-# 5. List Models
+# 5. Image Edit
+
+<Warning>
+Requests use **multipart/form-data**, not JSON.
+</Warning>
+
+Image Edit is supported for Gemini and Imagen models on Vertex AI. The provider automatically routes to the appropriate format based on the model type.
+
+**Request Parameters**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Model identifier (must be Gemini or Imagen model) |
+| `prompt` | string | ✅ | Text description of the edit |
+| `image[]` | binary | ✅ | Image file(s) to edit (supports multiple images) |
+| `mask` | binary | ❌ | Mask image file |
+| `type` | string | ❌ | Edit type: `"inpainting"`, `"outpainting"`, `"inpaint_removal"`, `"bgswap"` (Imagen only) |
+| `n` | int | ❌ | Number of images to generate (1-10) |
+| `output_format` | string | ❌ | Output format: `"png"`, `"webp"`, `"jpeg"` |
+| `output_compression` | int | ❌ | Compression level (0-100%) |
+| `seed` | int | ❌ | Seed for reproducibility (via `ExtraParams["seed"]`) |
+| `negative_prompt` | string | ❌ | Negative prompt (via `ExtraParams["negativePrompt"]`) |
+| `maskMode` | string | ❌ | Mask mode (via `ExtraParams["maskMode"]`, Imagen only): `"MASK_MODE_USER_PROVIDED"`, `"MASK_MODE_BACKGROUND"`, `"MASK_MODE_FOREGROUND"`, `"MASK_MODE_SEMANTIC"` |
+| `dilation` | float | ❌ | Mask dilation (via `ExtraParams["dilation"]`, Imagen only): Range [0, 1] |
+| `maskClasses` | int[] | ❌ | Mask classes (via `ExtraParams["maskClasses"]`, Imagen only): For `MASK_MODE_SEMANTIC` |
+
+---
+
+**Request Conversion**
+
+Vertex uses the same conversion functions as Gemini:
+
+1. **Gemini Models**: Uses `gemini.ToGeminiImageEditRequest()` - same conversion as standard Gemini (see [Gemini Image Edit](/providers/supported-providers/gemini#9-image-edit))
+2. **Imagen Models**: Uses `gemini.ToImagenImageEditRequest()` - Imagen-specific format with edit mode mapping and mask configuration (see [Gemini Image Edit](/providers/supported-providers/gemini#9-image-edit))
+
+**Model Validation**: Only Gemini and Imagen models are supported. Other models return `ConfigurationError`.
+
+**Request Body Processing**:
+- All request bodies are converted to `map[string]interface{}` for Vertex API compatibility
+- The `region` field is removed before sending to Vertex API
+- For Gemini models, unsupported fields are stripped via `stripVertexGeminiUnsupportedFields()` (removes `id` from function_call and function_response)
+
+**Response Conversion**
+
+- **Gemini Models**: Responses converted using `GenerateContentResponse.ToBifrostImageGenerationResponse()` - same as standard Gemini
+- **Imagen Models**: Responses converted using `GeminiImagenResponse.ToBifrostImageGenerationResponse()` - Imagen-specific format
+
+**Endpoint Selection**
+
+The provider automatically selects the endpoint based on model type:
+- **Gemini models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:generateContent`
+- **Imagen models**: `/v1/projects/{projectID}/locations/{region}/publishers/google/models/{model}:predict`
+
+**Streaming**
+
+Image edit streaming is not supported by Vertex AI.
+
+**Image Variation**
+
+Image variation is not supported by Vertex AI.
+
+---
+
+# 6. List Models
 
 ## Request Parameters
 
@@ -617,3 +683,24 @@ See **[Provider-Specific Authentication - Google Vertex](../../quickstart/go-sdk
 
 </Tab>
 </Tabs>
+
+---
+
+## Video Generation
+
+Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
+
+<Note>
+Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a non-Veo model name returns a configuration error.
+</Note>
+
+**Supported Operations**
+
+| Operation | Supported | Notes |
+|-----------|-----------|-------|
+| Generate | ✅ | `POST /v1/videos` |
+| Retrieve | ✅ | `GET /v1/videos/{id}` |
+| Download | ✅ | `GET /v1/videos/{id}/content` |
+| Delete | ❌ | Not supported |
+| List | ❌ | Not supported |
+| Remix | ❌ | Not supported |

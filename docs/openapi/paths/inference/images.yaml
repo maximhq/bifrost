@@ -3,11 +3,11 @@
 image-generation:
   post:
     operationId: imageGeneration
-    summary: Generate image
+    summary: Generate an image
     description: |
       Generates images from text prompts using the specified model.
     tags:
-      - Image Generations
+      - Images
     requestBody:
       required: true
       content:
@@ -29,6 +29,68 @@ image-generation:
           text/event-stream:
             schema:
               $ref: '../../schemas/inference/images.yaml#/ImageGenerationStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+image-edit:
+  post:
+    operationId: imageEdit
+    summary: Edit an image
+    description: |
+      Edits an image using a text prompt and optional mask. Request must be sent as multipart/form-data
+      with at least `model`, `prompt` (unless `type` is `background_removal`), and `image` (or `image[]`).
+    tags:
+      - Images
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditRequest'
+    responses:
+      '200':
+        description: |
+          Successful response. Returns JSON for non-streaming requests, or Server-Sent Events (SSE) stream when `stream=true`.
+          When streaming, events are sent with the following event types:
+          - `image_edit.partial_image`: Intermediate image chunks with base64-encoded image data
+          - `image_edit.completed`: Final event for each image with usage information
+          - `error`: Error events with error details
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageGenerationResponse'
+          text/event-stream:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageEditStreamResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+image-variation:
+  post:
+    operationId: imageVariation
+    summary: Create Variation
+    description: |
+      Creates variations of an image. Request must be sent as multipart/form-data with `model` and `image` (or `image[]`).
+      Does not support streaming.
+    tags:
+      - Images
+    requestBody:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageVariationRequest'
+    responses:
+      '200':
+        description: Successful response. Returns JSON with generated image variation(s).
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageGenerationResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':

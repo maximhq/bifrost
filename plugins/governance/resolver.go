@@ -31,7 +31,7 @@ type EvaluationRequest struct {
 	VirtualKey string                `json:"virtual_key"` // Virtual key value
 	Provider   schemas.ModelProvider `json:"provider"`
 	Model      string                `json:"model"`
-	RequestID  string                `json:"request_id"`
+	UserID     string                `json:"user_id,omitempty"` // User ID for user-level governance (enterprise only)
 }
 
 // EvaluationResult contains the complete result of governance evaluation
@@ -78,14 +78,12 @@ func NewBudgetResolver(store GovernanceStore, modelCatalog *modelcatalog.ModelCa
 
 // EvaluateModelAndProviderRequest evaluates provider-level and model-level rate limits and budgets
 // This applies even when virtual keys are disabled or not present
-func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
+func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *EvaluationResult {
 	// Create evaluation request for the checks
 	request := &EvaluationRequest{
-		Provider:  provider,
-		Model:     model,
-		RequestID: requestID,
+		Provider: provider,
+		Model:    model,
 	}
-
 	// 1. Check provider-level rate limits FIRST (before model-level checks)
 	if provider != "" {
 		if err, decision := r.store.CheckProviderRateLimit(ctx, request, nil, nil); err != nil {
@@ -94,7 +92,6 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 				Reason:   fmt.Sprintf("Provider-level rate limit check failed: %s", err.Error()),
 			}
 		}
-
 		// 2. Check provider-level budgets FIRST (before model-level checks)
 		if err := r.store.CheckProviderBudget(ctx, request, nil); err != nil {
 			return &EvaluationResult{
@@ -103,7 +100,6 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 			}
 		}
 	}
-
 	// 3. Check model-level rate limits (after provider-level checks)
 	if model != "" {
 		if err, decision := r.store.CheckModelRateLimit(ctx, request, nil, nil); err != nil {
@@ -121,7 +117,6 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 			}
 		}
 	}
-
 	// All provider-level and model-level checks passed
 	return &EvaluationResult{
 		Decision: DecisionAllow,
@@ -129,8 +124,53 @@ func (r *BudgetResolver) EvaluateModelAndProviderRequest(ctx *schemas.BifrostCon
 	}
 }
 
+// EvaluateUserRequest evaluates user-level rate limits and budgets (enterprise-only)
+// This runs after provider/model checks but before VK checks
+// Returns DecisionAllow if userID is empty or user has no governance configured
+func (r *BudgetResolver) EvaluateUserRequest(ctx *schemas.BifrostContext, userID string, request *EvaluationRequest) *EvaluationResult {
+	// Skip if no userID (non-enterprise or anonymous request)
+	if userID == "" {
+		return &EvaluationResult{
+			Decision: DecisionAllow,
+			Reason:   "No user ID provided, skipping user-level checks",
+		}
+	}
+
+	// Check user-level rate limits
+	if err, decision := r.store.CheckUserRateLimit(ctx, userID, request, nil, nil); err != nil {
+		return &EvaluationResult{
+			Decision: decision,
+			Reason:   fmt.Sprintf("User-level rate limit exceeded: %s", err.Error()),
+		}
+	}
+
+	// Check user-level budget
+	if err := r.store.CheckUserBudget(ctx, userID, request, nil); err != nil {
+		return &EvaluationResult{
+			Decision: DecisionBudgetExceeded,
+			Reason:   fmt.Sprintf("User-level budget exceeded: %s", err.Error()),
+		}
+	}
+
+	return &EvaluationResult{
+		Decision: DecisionAllow,
+		Reason:   "User-level checks passed",
+	}
+}
+
+// isModelRequired checks if the requested model is required for this request
+func (r *BudgetResolver) isModelRequired(requestType schemas.RequestType) bool {
+	// Here we will have to check for some requests which do not need model
+	// For example, batches, container, files requests
+	// For these requests, we will only check for provider filtering
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest {
+		return false
+	}
+	return true
+}
+
 // EvaluateVirtualKeyRequest evaluates virtual key-specific checks including validation, filtering, rate limits, and budgets
-func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestID string) *EvaluationResult {
+func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
 	// 1. Validate virtual key exists and is active
 	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
 	if !exists {
@@ -139,41 +179,37 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 			Reason:   "Virtual key not found",
 		}
 	}
-
 	// Set virtual key id and name in context
-	ctx.SetValue(schemas.BifrostContextKey("bf-governance-virtual-key-id"), vk.ID)
-	ctx.SetValue(schemas.BifrostContextKey("bf-governance-virtual-key-name"), vk.Name)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
 	if vk.Team != nil {
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-team-id"), vk.Team.ID)
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-team-name"), vk.Team.Name)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
 		if vk.Team.Customer != nil {
-			ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-id"), vk.Team.Customer.ID)
-			ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-name"), vk.Team.Customer.Name)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
 		}
 	}
 	if vk.Customer != nil {
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-id"), vk.Customer.ID)
-		ctx.SetValue(schemas.BifrostContextKey("bf-governance-customer-name"), vk.Customer.Name)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
 	}
-
 	if !vk.IsActive {
 		return &EvaluationResult{
 			Decision: DecisionVirtualKeyBlocked,
 			Reason:   "Virtual key is inactive",
 		}
 	}
-
 	// 2. Check provider filtering
-	if !r.isProviderAllowed(vk, provider) {
+	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
 		return &EvaluationResult{
 			Decision:   DecisionProviderBlocked,
 			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
 			VirtualKey: vk,
 		}
 	}
-
 	// 3. Check model filtering
-	if !r.isModelAllowed(vk, provider, model) {
+	if r.isModelRequired(requestType) && !r.isModelAllowed(vk, provider, model) {
 		return &EvaluationResult{
 			Decision:   DecisionModelBlocked,
 			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
@@ -185,7 +221,6 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		VirtualKey: virtualKeyValue,
 		Provider:   provider,
 		Model:      model,
-		RequestID:  requestID,
 	}
 
 	// 4. Check rate limits hierarchy (VK level)
@@ -205,7 +240,7 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 			for _, dbKey := range pc.Keys {
 				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
 			}
-			ctx.SetValue(schemas.BifrostContextKey("bf-governance-include-only-keys"), includeOnlyKeys)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
 			break
 		}
 	}
@@ -214,6 +249,75 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 	return &EvaluationResult{
 		Decision:   DecisionAllow,
 		Reason:     "Request allowed by governance policy",
+		VirtualKey: vk,
+	}
+}
+
+// EvaluateVirtualKeyFiltering evaluates virtual key checks for routing and model/provider filtering only,
+// skipping rate limits and budgets. Used when user auth is present (user governance handles limits).
+func (r *BudgetResolver) EvaluateVirtualKeyFiltering(ctx *schemas.BifrostContext, virtualKeyValue string, provider schemas.ModelProvider, model string, requestType schemas.RequestType) *EvaluationResult {
+	// 1. Validate virtual key exists and is active
+	vk, exists := r.store.GetVirtualKey(virtualKeyValue)
+	if !exists {
+		return &EvaluationResult{
+			Decision: DecisionVirtualKeyNotFound,
+			Reason:   "Virtual key not found",
+		}
+	}
+	// Set virtual key id and name in context
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
+	if vk.Team != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
+		if vk.Team.Customer != nil {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Team.Customer.ID)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Team.Customer.Name)
+		}
+	}
+	if vk.Customer != nil {
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, vk.Customer.ID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerName, vk.Customer.Name)
+	}
+	if !vk.IsActive {
+		return &EvaluationResult{
+			Decision: DecisionVirtualKeyBlocked,
+			Reason:   "Virtual key is inactive",
+		}
+	}
+	// 2. Check provider filtering
+	if requestType != schemas.MCPToolExecutionRequest && !r.isProviderAllowed(vk, provider) {
+		return &EvaluationResult{
+			Decision:   DecisionProviderBlocked,
+			Reason:     fmt.Sprintf("Provider '%s' is not allowed for this virtual key", provider),
+			VirtualKey: vk,
+		}
+	}
+	// 3. Check model filtering
+	if r.isModelRequired(requestType) && !r.isModelAllowed(vk, provider, model) {
+		return &EvaluationResult{
+			Decision:   DecisionModelBlocked,
+			Reason:     fmt.Sprintf("Model '%s' is not allowed for this virtual key", model),
+			VirtualKey: vk,
+		}
+	}
+
+	// Set include-only keys for provider config routing
+	for _, pc := range vk.ProviderConfigs {
+		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
+			includeOnlyKeys := make([]string, 0, len(pc.Keys))
+			for _, dbKey := range pc.Keys {
+				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+			}
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
+			break
+		}
+	}
+
+	// Skip rate limits and budgets — user auth handles those
+	return &EvaluationResult{
+		Decision:   DecisionAllow,
+		Reason:     "Request allowed by governance policy (VK filtering only)",
 		VirtualKey: vk,
 	}
 }

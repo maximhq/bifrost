@@ -61,24 +61,9 @@ export default function ProxyView() {
 		<div className="mx-auto w-full max-w-4xl space-y-4">
 			<Form {...form}>
 				<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-					<div className="flex items-center justify-between">
-						<div>
-							<h2 className="text-2xl font-semibold tracking-tight">Proxy Settings</h2>
-							<p className="text-muted-foreground text-sm">Configure global proxy settings for outbound requests.</p>
-						</div>
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
-									<Button
-										type="submit"
-										disabled={!form.formState.isDirty || !form.formState.isValid || isLoading || !hasSettingsUpdateAccess}
-									>
-										{isLoading ? "Saving..." : "Save Changes"}
-									</Button>
-								</span>
-							</TooltipTrigger>
-							{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
-						</Tooltip>
+					<div>
+						<h2 className="text-lg font-semibold tracking-tight">Proxy Settings</h2>
+						<p className="text-muted-foreground text-sm">Configure global proxy settings for outbound requests.</p>
 					</div>
 
 					<fieldset disabled={!hasSettingsUpdateAccess} className="space-y-4">
@@ -367,6 +352,21 @@ export default function ProxyView() {
 							)}
 						</div>
 					</fieldset>
+					<div className="flex justify-end pt-2">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
+									<Button
+										type="submit"
+										disabled={!form.formState.isDirty || !form.formState.isValid || isLoading || !hasSettingsUpdateAccess}
+									>
+										{isLoading ? "Saving..." : "Save Changes"}
+									</Button>
+								</span>
+							</TooltipTrigger>
+							{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+						</Tooltip>
+					</div>
 				</form>
 			</Form>
 		</div>

@@ -1,6 +1,7 @@
 package modelcatalog
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -17,7 +18,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 	var audioSeconds *int
 	var audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails
 	var imageUsage *schemas.ImageUsage
-
+	var videoSeconds *int
 	//TODO: Detect batch operations
 	isBatch := false
 
@@ -41,6 +42,8 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		}
 	case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
 		usage = result.EmbeddingResponse.Usage
+	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
+		usage = result.RerankResponse.Usage
 	case result.SpeechResponse != nil:
 		if result.SpeechResponse.Usage != nil {
 			usage = &schemas.BifrostLLMUsage{
@@ -103,12 +106,20 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		imageUsage = result.ImageGenerationResponse.Usage
 	case result.ImageGenerationStreamResponse != nil && result.ImageGenerationStreamResponse.Usage != nil:
 		imageUsage = result.ImageGenerationStreamResponse.Usage
+	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
+		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
+		if err != nil {
+			mc.logger.Warn("failed to convert video seconds to int: %v", err)
+			videoSeconds = nil
+		} else {
+			videoSeconds = &seconds
+		}
 	default:
 		return 0
 	}
 
 	cost := 0.0
-	if usage != nil || audioSeconds != nil || audioTokenDetails != nil || imageUsage != nil {
+	if usage != nil || audioSeconds != nil || audioTokenDetails != nil || imageUsage != nil || videoSeconds != nil {
 		extraFields := result.GetExtraFields()
 		requestType := extraFields.RequestType
 		// Normalize stream request types to their base request type for pricing
@@ -117,7 +128,7 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 		if imageUsage != nil && requestType == schemas.ImageGenerationStreamRequest {
 			requestType = schemas.ImageGenerationRequest
 		}
-		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage)
+		cost = mc.CalculateCostFromUsage(string(extraFields.Provider), extraFields.ModelRequested, extraFields.ModelDeployment, usage, requestType, isBatch, audioSeconds, audioTokenDetails, imageUsage, videoSeconds)
 	}
 
 	return cost
@@ -138,7 +149,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, nil)
 			}
 
 			// Don't over-bill cache hits if fields are missing.
@@ -151,7 +162,7 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 					PromptTokens:     *cacheDebug.InputTokens,
 					CompletionTokens: 0,
 					TotalTokens:      *cacheDebug.InputTokens,
-				}, schemas.EmbeddingRequest, false, nil, nil, nil)
+				}, schemas.EmbeddingRequest, false, nil, nil, nil, nil)
 			}
 
 			return baseCost + semanticCacheCost
@@ -162,9 +173,9 @@ func (mc *ModelCatalog) CalculateCostWithCacheDebug(result *schemas.BifrostRespo
 }
 
 // CalculateCostFromUsage calculates cost in dollars using pricing manager and usage data with conditional pricing
-func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage) float64 {
+func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, deployment string, usage *schemas.BifrostLLMUsage, requestType schemas.RequestType, isBatch bool, audioSeconds *int, audioTokenDetails *schemas.TranscriptionUsageInputTokenDetails, imageUsage *schemas.ImageUsage, videoSeconds *int) float64 {
 	// Allow audio-only and image-only flows by only returning early if we have no usage data at all
-	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil {
+	if usage == nil && audioSeconds == nil && audioTokenDetails == nil && imageUsage == nil && videoSeconds == nil {
 		return 0.0
 	}
 
@@ -426,6 +437,27 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		return inputCost + outputCost
 	}
 
+	// Handle video generation if available (for duration-based video generation pricing)
+	if videoSeconds != nil && requestType == schemas.VideoGenerationRequest {
+		// Use duration-based pricing for video output when available
+		if pricing.OutputCostPerVideoPerSecond != nil {
+			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerVideoPerSecond
+		} else if pricing.OutputCostPerSecond != nil {
+			outputCost = float64(*videoSeconds) * *pricing.OutputCostPerSecond
+		} else {
+			mc.logger.Debug("no output cost per video per second found for model %s and provider %s", model, provider)
+			outputCost = 0.0
+		}
+
+		// Input cost is typically zero for video generation, but check if there's input media
+		inputCost = 0.0
+		if usage != nil && promptTokens > 0 {
+			inputCost = float64(promptTokens) * pricing.InputCostPerToken
+		}
+
+		return inputCost + outputCost
+	}
+
 	// Use conditional pricing based on request characteristics
 	if isBatch {
 		// Use batch pricing if available, otherwise fall back to regular pricing
@@ -449,7 +481,7 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
 		if pricing.CacheCreationInputTokenCost != nil {
 			outputCost += float64(cachedCompletionTokens) * *pricing.CacheCreationInputTokenCost
-		}
+		} 
 	}
 
 	totalCost := inputCost + outputCost
@@ -460,79 +492,93 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 // getPricing returns pricing information for a model (thread-safe)
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-
-	pricing, ok := mc.pricingData[makeKey(model, provider, normalizeRequestType(requestType))]
+	pricing, ok := mc.resolvePricingEntryLocked(model, provider, requestType)
+	mc.mu.RUnlock()
 	if !ok {
-		// Lookup in vertex if gemini not found
-		if provider == string(schemas.Gemini) {
-			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
-			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(requestType))]
+		return nil, false
+	}
+
+	patched := mc.applyPricingOverrides(schemas.ModelProvider(provider), model, requestType, pricing)
+	return &patched, true
+}
+
+// resolvePricingEntryLocked resolves pricing data from the base catalog including all existing fallback logic.
+// Caller must hold mc.mu read lock.
+func (mc *ModelCatalog) resolvePricingEntryLocked(model, provider string, requestType schemas.RequestType) (configstoreTables.TableModelPricing, bool) {
+	mode := normalizeRequestType(requestType)
+
+	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
+	if ok {
+		return pricing, true
+	}
+
+	// Lookup in vertex if gemini not found
+	if provider == string(schemas.Gemini) {
+		mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
+		pricing, ok = mc.pricingData[makeKey(model, "vertex", mode)]
+		if ok {
+			return pricing, true
+		}
+
+		// Lookup in chat if responses not found
+		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
+			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
-				return &pricing, true
+				return pricing, true
+			}
+		}
+	}
+
+	if provider == string(schemas.Vertex) {
+		// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
+		if strings.Contains(model, "/") {
+			modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
+			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
+			pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
+			if ok {
+				return pricing, true
 			}
 
 			// Lookup in chat if responses not found
 			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-				pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
+				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return pricing, true
 				}
 			}
 		}
-
-		if provider == string(schemas.Vertex) {
-			// Vertex models can be of the form "provider/model", so try to lookup the model without the provider prefix and keep the original provider
-			if strings.Contains(model, "/") {
-				modelWithoutProvider := strings.SplitN(model, "/", 2)[1]
-				mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
-				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(requestType))]
-				if ok {
-					return &pricing, true
-				}
-
-				// Lookup in chat if responses not found
-				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-					mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
-					pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
-					if ok {
-						return &pricing, true
-					}
-				}
-			}
-		}
-
-		if provider == string(schemas.Bedrock) {
-			// If model is claude without "anthropic." prefix, try with "anthropic." prefix
-			if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
-				mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
-				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(requestType))]
-				if ok {
-					return &pricing, true
-				}
-
-				// Lookup in chat if responses not found
-				if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-					mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
-					pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
-					if ok {
-						return &pricing, true
-					}
-				}
-			}
-		}
-
-		// Lookup in chat if responses not found
-		if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
-			mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
-			pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
-			if ok {
-				return &pricing, true
-			}
-		}
-
-		return nil, false
 	}
-	return &pricing, true
+
+	if provider == string(schemas.Bedrock) {
+		// If model is claude without "anthropic." prefix, try with "anthropic." prefix
+		if !strings.Contains(model, "anthropic.") && schemas.IsAnthropicModel(model) {
+			mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
+			pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, mode)]
+			if ok {
+				return pricing, true
+			}
+
+			// Lookup in chat if responses not found
+			if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
+				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+				if ok {
+					return pricing, true
+				}
+			}
+		}
+	}
+
+	// Lookup in chat if responses not found
+	if requestType == schemas.ResponsesRequest || requestType == schemas.ResponsesStreamRequest {
+		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
+		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
+		if ok {
+			return pricing, true
+		}
+	}
+
+	return configstoreTables.TableModelPricing{}, false
 }

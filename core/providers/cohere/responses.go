@@ -1092,28 +1092,36 @@ func ToCohereResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*Coh
 			cohereReq.ResponseFormat = convertResponsesTextFormatToCohere(bifrostReq.Params.Text.Format)
 		}
 		if bifrostReq.Params.ExtraParams != nil {
+			cohereReq.ExtraParams = bifrostReq.Params.ExtraParams
 			if topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"]); ok {
+				delete(cohereReq.ExtraParams, "top_k")
 				cohereReq.K = topK
 			}
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
+				delete(cohereReq.ExtraParams, "stop")
 				cohereReq.StopSequences = stop
 			}
 			if frequencyPenalty, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["frequency_penalty"]); ok {
+				delete(cohereReq.ExtraParams, "frequency_penalty")
 				cohereReq.FrequencyPenalty = frequencyPenalty
 			}
 			if presencePenalty, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["presence_penalty"]); ok {
+				delete(cohereReq.ExtraParams, "presence_penalty")
 				cohereReq.PresencePenalty = presencePenalty
 			}
 			if thinkingParam, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "thinking"); ok {
 				if thinkingMap, ok := thinkingParam.(map[string]interface{}); ok {
 					thinking := &CohereThinking{}
 					if typeStr, ok := schemas.SafeExtractString(thinkingMap["type"]); ok {
+						delete(thinkingMap, "type")
 						thinking.Type = CohereThinkingType(typeStr)
 					}
 					if tokenBudget, ok := schemas.SafeExtractIntPointer(thinkingMap["token_budget"]); ok {
+						delete(thinkingMap, "token_budget")
 						thinking.TokenBudget = tokenBudget
 					}
 					cohereReq.Thinking = thinking
+					bifrostReq.Params.ExtraParams["thinking"] = thinkingMap
 				}
 			}
 		}
@@ -1694,6 +1702,16 @@ func convertResponsesMessageContentBlocksToCohere(blocks []schemas.ResponsesMess
 					Type:     CohereContentBlockTypeThinking,
 					Thinking: block.Text,
 				})
+			}
+		case schemas.ResponsesOutputMessageContentTypeCompaction:
+			// Convert compaction to text block for Cohere (compaction is Anthropic-specific)
+			if block.ResponsesOutputMessageContentCompaction != nil {
+				if summary := strings.TrimSpace(block.ResponsesOutputMessageContentCompaction.Summary); summary != "" {
+					cohereBlocks = append(cohereBlocks, CohereContentBlock{
+						Type: CohereContentBlockTypeText,
+						Text: schemas.Ptr(summary),
+					})
+				}
 			}
 		}
 	}

@@ -30,6 +30,11 @@ Bifrost traces comprehensive information for every request, without any changes 
 - **Performance Metrics**: Latency and token usage
 - **Status Information**: Success or error details
 
+### **Custom Metadata**
+- **Logging Headers**: Capture configured request headers (e.g., `X-Tenant-ID`) into log metadata
+- **Ad-hoc Headers**: Any `x-bf-lh-*` prefixed header is automatically captured into metadata
+- See [Logging Headers](#logging-headers) below for full details
+
 ### **Multimodal & Tool Support**
 - **Audio Processing**: Speech synthesis and transcription inputs/outputs
 - **Vision Analysis**: Image URLs and vision model responses
@@ -43,9 +48,9 @@ Bifrost traces comprehensive information for every request, without any changes 
 
 The logging plugin intercepts all requests flowing through Bifrost using the plugin architecture, ensuring your LLM requests maintain optimal performance:
 
-1. **PreHook**: Captures request metadata (provider, model, input messages, parameters).
+1. **PreLLMHook**: Captures request metadata (provider, model, input messages, parameters).
 2. **Async Processing**: Logs are written in background goroutines with `sync.Pool` optimization.
-3. **PostHook**: Updates log entry with response data (output, tokens, cost, latency, errors).
+3. **PostLLMHook**: Updates log entry with response data (output, tokens, cost, latency, errors).
 4. **Real-time Updates**: WebSocket broadcasts keep the UI synchronized.
 
 All logging operations are non-blocking, ensuring your LLM requests maintain optimal performance.
@@ -81,8 +86,7 @@ curl --location 'http://localhost:8080/api/config' \
         "disable_content_logging": false,
         "drop_excess_requests": false,
         "initial_pool_size": 300,
-        "enable_governance": true,
-        "enforce_governance_header": false,
+         "enforce_governance_header": false,
         "allow_direct_keys": false,
         "prometheus_labels": [],
         "allowed_origins": []
@@ -121,7 +125,6 @@ In your `config.json` file, you can enable logging and configure the log store:
         "disable_content_logging": false,
         "drop_excess_requests": false,
         "initial_pool_size": 300,
-        "enable_governance": true,
         "allow_direct_keys": false
     },
     "logs_store": {
@@ -183,7 +186,7 @@ func main() {
     // Initialize Bifrost with logging plugin
     client, err := bifrost.Init(ctx, schemas.BifrostConfig{
         Account: &yourAccount,
-        Plugins: []schemas.Plugin{loggingPlugin},
+        LLMPlugins: []schemas.LLMPlugin{loggingPlugin},
     })
     if err != nil {
         panic(err)
@@ -360,6 +363,134 @@ The logging plugin captures all Bifrost request types:
 - Embeddings
 - Speech Generation (streaming and non-streaming)
 - Transcription (streaming and non-streaming)
+- Video Generation
+
+---
+
+## Logging Headers
+
+Capture specific HTTP request headers into the **metadata** field of every LLM and MCP log entry. This enables request tracing, tenant identification, and custom debugging without modifying your application code.
+
+### How It Works
+
+There are two ways headers get captured into log metadata:
+
+**1. Configured Logging Headers** — Define a list of header names in the configuration. The logging plugin looks up each configured header (case-insensitive) and stores its value in the metadata.
+
+**2. `x-bf-lh-*` Prefix (Automatic)** — Any request header with the `x-bf-lh-` prefix is automatically captured into metadata with no configuration needed. The prefix is stripped and the remainder becomes the metadata key.
+
+| Request Header | Metadata Key | Metadata Value |
+|----------------|-------------|----------------|
+| `x-bf-lh-tenant-id: acme` | `tenant-id` | `acme` |
+| `x-bf-lh-env: production` | `env` | `production` |
+| `x-bf-lh-region: us-east-1` | `region` | `us-east-1` |
+
+Both methods can be used together — configured headers and `x-bf-lh-*` headers are merged into the same metadata map.
+
+### Configuring Logging Headers
+
+<Tabs group="logging-headers-config">
+<Tab title="Web UI">
+
+1. Navigate to **Config** > **Logging**
+2. Ensure **Enable Logs** is toggled on
+3. Scroll to **Logging Headers**
+
+![Logging Headers Configuration](../../media/ui-logging-headers-setting.png)
+
+4. Enter a comma-separated list of header names (e.g., `X-Tenant-ID, X-Correlation-ID`)
+5. Click **Save Changes**
+
+Changes take effect immediately — no restart required.
+
+</Tab>
+<Tab title="API">
+
+Include `logging_headers` in the `client_config` when updating the configuration:
+
+```bash
+curl -X PUT http://localhost:8080/api/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_config": {
+      "logging_headers": ["X-Tenant-ID", "X-Correlation-ID"]
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+Add `logging_headers` to the `client` section:
+
+```json
+{
+  "client": {
+    "enable_logging": true,
+    "logging_headers": ["X-Tenant-ID", "X-Correlation-ID"]
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `logging_headers` | `string[]` | No | List of header names to capture in log metadata. Case-insensitive. No restart required. |
+
+</Tab>
+</Tabs>
+
+### Usage Examples
+
+**Configured headers:**
+
+```bash
+# Config has: logging_headers: ["X-Tenant-ID", "X-Correlation-ID"]
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: tenant-123" \
+  -H "X-Correlation-ID: req-abc-456" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Log metadata: `{"x-tenant-id": "tenant-123", "x-correlation-id": "req-abc-456"}`
+
+**Ad-hoc `x-bf-lh-*` headers (no config needed):**
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-lh-env: production" \
+  -H "x-bf-lh-version: v2.1.0" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+Log metadata: `{"env": "production", "version": "v2.1.0"}`
+
+### Viewing Metadata in the UI
+
+Metadata is displayed in the log detail view for both LLM and MCP logs as individual key-value entries alongside other request details.
+
+![Log Entry with Metadata](../../media/ui-log-metadata-display.png)
+
+### Combining with Required Headers
+
+[Required headers](../governance/required-headers) and logging headers serve different purposes and can be used together:
+
+| Feature | Purpose | Effect on Request |
+|---------|---------|-------------------|
+| **Required Headers** | Enforce header presence | Rejects request if missing (400) |
+| **Logging Headers** | Capture header values | No effect on request — only logs metadata |
+
+A common pattern is to require a header **and** log it:
+
+```json
+{
+  "client": {
+    "required_headers": ["X-Tenant-ID"],
+    "logging_headers": ["X-Tenant-ID"]
+  }
+}
+```
 
 ---
 

@@ -122,7 +122,7 @@ Filter tools dynamically on a per-request basis using headers (Gateway) or conte
 | Filter | Purpose |
 |--------|---------|
 | `mcp-include-clients` | Only include tools from specified clients |
-| `mcp-include-tools` | Only include specified tools (format: `clientName/toolName`) |
+| `mcp-include-tools` | Only include specified tools (format: `clientName-toolName`) |
 
 ### Gateway Headers
 
@@ -134,13 +134,30 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 # Include only specific tools
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/read_file,web_search/search" \
+  -H "x-bf-mcp-include-tools: filesystem-read_file,web_search-search" \
   -d '...'
 
 # Include all tools from one client, specific tools from another
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/*,web_search/search" \
+  -H "x-bf-mcp-include-tools: filesystem-*,web_search-search" \
   -d '...'
+
+# Include internal tools registered via RegisterTool()
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-tools: bifrostInternal-echo,bifrostInternal-calculator" \
+  -d '...'
+
+# Empty clients filter blocks ALL tools - no tools available to LLM
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-clients:" \
+  -d '...'
+# Result: No MCP tools available (deny-all)
+
+# Empty tools filter also blocks ALL tools
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "x-bf-mcp-include-tools:" \
+  -d '...'
+# Result: No MCP tools available (deny-all)
 ```
 
 ### Go SDK Context Values
@@ -154,14 +171,31 @@ ctx := context.WithValue(context.Background(),
 // Include only specific tools
 ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/read_file", "web_search/search"})
+    []string{"filesystem-read_file", "web_search-search"})
 
 // Wildcard for all tools from a client
 ctx = context.WithValue(ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/*", "web_search/search"})
+    []string{"filesystem-*", "web_search-search"})
 
-response, err := client.ChatCompletionRequest(ctx, request)
+// Include all internal tools (registered via RegisterTool)
+ctx = context.WithValue(ctx,
+    schemas.BifrostContextKey("mcp-include-tools"),
+    []string{"bifrostInternal-*"})
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
+
+// Empty include-clients blocks ALL tools - no tools available
+ctx = context.WithValue(context.Background(),
+    schemas.BifrostContextKey("mcp-include-clients"),
+    []string{})  // Empty slice = deny-all
+// Result: No MCP tools available to LLM
+
+// Empty include-tools also blocks ALL tools
+ctx = context.WithValue(context.Background(),
+    schemas.BifrostContextKey("mcp-include-tools"),
+    []string{})  // Empty slice = deny-all
+// Result: No MCP tools available to LLM
 ```
 
 ### Wildcard Support
@@ -169,8 +203,22 @@ response, err := client.ChatCompletionRequest(ctx, request)
 | Pattern | Meaning |
 |---------|---------|
 | `*` (in include-clients) | Include all clients |
-| `clientName/*` (in include-tools) | Include all tools from that client |
-| `clientName/toolName` | Include specific tool |
+| `clientName-*` (in include-tools) | Include all tools from that client |
+| `clientName-toolName` | Include specific tool |
+
+### Tool Naming Convention
+
+**Important:** All MCP tools follow a consistent naming convention using the **prefixed format** `clientName-toolName`:
+
+- **External MCP Clients** (HTTP, SSE, STDIO): Tools use the format `clientName-toolName`
+  - Example: `filesystem-read_file`, `web_search-search`
+  - The `clientName` is the name configured for the MCP client
+
+- **Internal (In-Process) Tools**: Tools registered via `RegisterTool()` use the prefix `bifrostInternal-`
+  - Example: `bifrostInternal-echo`, `bifrostInternal-my_custom_tool`
+  - These tools are registered via `RegisterTool()` in the SDK
+
+This consistent naming convention ensures clear separation between tools from different clients and prevents naming conflicts across all MCP client types.
 
 ---
 
@@ -275,7 +323,7 @@ Learn more in [MCP Tool Filtering for Virtual Keys](../features/governance/mcp-t
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer vk_prod_key" \
-  -H "x-bf-mcp-include-tools: filesystem/write_file" \  # This is IGNORED
+  -H "x-bf-mcp-include-tools: filesystem-write_file" \  # This is IGNORED
   -d '...'
 ```
 
@@ -284,7 +332,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 **Request without VK (if allowed):**
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "x-bf-mcp-include-tools: filesystem/write_file" \
+  -H "x-bf-mcp-include-tools: filesystem-write_file" \
   -d '...'
 ```
 
@@ -383,11 +431,11 @@ ctx := context.WithValue(
 ctx = context.WithValue(
     ctx,
     schemas.BifrostContextKey("mcp-include-tools"),
-    []string{"filesystem/read_file", "web_search/search"},
+    []string{"filesystem-read_file", "web_search-search"},
 )
 
 // Request will only see filtered tools
-response, _ := client.ChatCompletionRequest(ctx, request)
+response, _ := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 ```
 
 ### Filter Precedence

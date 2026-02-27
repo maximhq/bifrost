@@ -1,6 +1,11 @@
+{{- /* Use Deployment when: postgres mode, OR sqlite without persistence, OR sqlite with existingClaim */}}
+{{- /* StatefulSet is used for: sqlite mode with persistence enabled and no existingClaim */}}
+{{- $useStatefulSet := and (eq .Values.storage.mode "sqlite") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
+{{- if not $useStatefulSet }}
 {{- if not .Values.image.tag }}
 {{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/maximhq/bifrost/tags" }}
 {{- end }}
+{{- include "bifrost.validate" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,7 +26,7 @@ spec:
   {{- end }}
   selector:
     matchLabels:
-      {{- include "bifrost.selectorLabels" . | nindent 6 }}
+      {{- include "bifrost.serverSelectorLabels" . | nindent 6 }}
   template:
     metadata:
       annotations:
@@ -31,6 +36,7 @@ spec:
         {{- end }}
       labels:
         {{- include "bifrost.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -90,7 +96,7 @@ spec:
                   key: {{ .Values.bifrost.plugins.semanticCache.secretRef.key | default "api-key" }}
             {{- end }}
             {{- /* PostgreSQL password from existing secret */ -}}
-            {{- if and (eq .Values.storage.mode "postgres") .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}
+            {{- if and .Values.postgresql.external.enabled .Values.postgresql.external.existingSecret }}
             - name: BIFROST_POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -120,6 +126,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.vectorStore.qdrant.external.existingSecret }}
                   key: {{ .Values.vectorStore.qdrant.external.apiKeyKey | default "api-key" }}
+            {{- end }}
+            {{- /* Pinecone API key from existing secret */ -}}
+            {{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "pinecone") .Values.vectorStore.pinecone.external.enabled .Values.vectorStore.pinecone.external.existingSecret }}
+            - name: BIFROST_PINECONE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.vectorStore.pinecone.external.existingSecret }}
+                  key: {{ .Values.vectorStore.pinecone.external.apiKeyKey | default "api-key" }}
             {{- end }}
             {{- /* Maxim API key from existing secret */ -}}
             {{- if and .Values.bifrost.plugins.maxim.enabled .Values.bifrost.plugins.maxim.secretRef .Values.bifrost.plugins.maxim.secretRef.name }}
@@ -218,3 +232,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

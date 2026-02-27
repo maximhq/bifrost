@@ -3,7 +3,6 @@ package schemas
 import (
 	"bytes"
 	"fmt"
-	"sort"
 )
 
 // BifrostChatRequest is the request struct for chat completion requests
@@ -21,6 +20,13 @@ func (cr *BifrostChatRequest) GetRawRequestBody() []byte {
 	return cr.RawRequestBody
 }
 
+func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
+	if cr.Params == nil {
+		return make(map[string]interface{}, 0)
+	}
+	return cr.Params.ExtraParams
+}
+
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
 	ID                string                     `json:"id"`
@@ -32,6 +38,7 @@ type BifrostChatResponse struct {
 	SystemFingerprint string                     `json:"system_fingerprint"`
 	Usage             *BifrostLLMUsage           `json:"usage"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -152,31 +159,34 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 
 // ChatParameters represents the parameters for a chat completion.
 type ChatParameters struct {
-	Audio               *ChatAudioParameters `json:"audio,omitempty"`                 // Audio parameters
-	FrequencyPenalty    *float64             `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
-	LogitBias           *map[string]float64  `json:"logit_bias,omitempty"`            // Bias for logit values
-	LogProbs            *bool                `json:"logprobs,omitempty"`              // Number of logprobs to return
-	MaxCompletionTokens *int                 `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
-	Metadata            *map[string]any      `json:"metadata,omitempty"`              // Metadata to be returned with the response
-	Modalities          []string             `json:"modalities,omitempty"`            // Modalities to be returned with the response
-	ParallelToolCalls   *bool                `json:"parallel_tool_calls,omitempty"`
-	PresencePenalty     *float64             `json:"presence_penalty,omitempty"`  // Penalizes repeated tokens
-	PromptCacheKey      *string              `json:"prompt_cache_key,omitempty"`  // Prompt cache key
-	Reasoning           *ChatReasoning       `json:"reasoning,omitempty"`         // Reasoning parameters
-	ResponseFormat      *interface{}         `json:"response_format,omitempty"`   // Format for the response
-	SafetyIdentifier    *string              `json:"safety_identifier,omitempty"` // Safety identifier
-	Seed                *int                 `json:"seed,omitempty"`
-	ServiceTier         *string              `json:"service_tier,omitempty"`
-	StreamOptions       *ChatStreamOptions   `json:"stream_options,omitempty"`
-	Stop                []string             `json:"stop,omitempty"`
-	Store               *bool                `json:"store,omitempty"`
-	Temperature         *float64             `json:"temperature,omitempty"`
-	TopLogProbs         *int                 `json:"top_logprobs,omitempty"`
-	TopP                *float64             `json:"top_p,omitempty"`       // Controls diversity via nucleus sampling
-	ToolChoice          *ChatToolChoice      `json:"tool_choice,omitempty"` // Whether to call a tool
-	Tools               []ChatTool           `json:"tools,omitempty"`       // Tools to use
-	User                *string              `json:"user,omitempty"`        // User identifier for tracking
-	Verbosity           *string              `json:"verbosity,omitempty"`   // "low" | "medium" | "high"
+	Audio                *ChatAudioParameters  `json:"audio,omitempty"`                 // Audio parameters
+	FrequencyPenalty     *float64              `json:"frequency_penalty,omitempty"`     // Penalizes frequent tokens
+	LogitBias            *map[string]float64   `json:"logit_bias,omitempty"`            // Bias for logit values
+	LogProbs             *bool                 `json:"logprobs,omitempty"`              // Number of logprobs to return
+	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
+	Metadata             *map[string]any       `json:"metadata,omitempty"`              // Metadata to be returned with the response
+	Modalities           []string              `json:"modalities,omitempty"`            // Modalities to be returned with the response
+	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
+	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
+	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
+	PromptCacheKey       *string               `json:"prompt_cache_key,omitempty"`       // Prompt cache key
+	PromptCacheRetention *string               `json:"prompt_cache_retention,omitempty"` // Prompt cache retention ("in-memory" or "24h")
+	Reasoning            *ChatReasoning        `json:"reasoning,omitempty"`              // Reasoning parameters
+	ResponseFormat       *interface{}          `json:"response_format,omitempty"`        // Format for the response
+	SafetyIdentifier     *string               `json:"safety_identifier,omitempty"`      // Safety identifier
+	Seed                 *int                  `json:"seed,omitempty"`
+	ServiceTier          *string               `json:"service_tier,omitempty"`
+	StreamOptions        *ChatStreamOptions    `json:"stream_options,omitempty"`
+	Stop                 []string              `json:"stop,omitempty"`
+	Store                *bool                 `json:"store,omitempty"`
+	Temperature          *float64              `json:"temperature,omitempty"`
+	TopLogProbs          *int                  `json:"top_logprobs,omitempty"`
+	TopP                 *float64              `json:"top_p,omitempty"`              // Controls diversity via nucleus sampling
+	ToolChoice           *ChatToolChoice       `json:"tool_choice,omitempty"`        // Whether to call a tool
+	Tools                []ChatTool            `json:"tools,omitempty"`              // Tools to use
+	User                 *string               `json:"user,omitempty"`               // User identifier for tracking
+	Verbosity            *string               `json:"verbosity,omitempty"`          // "low" | "medium" | "high"
+	WebSearchOptions     *ChatWebSearchOptions `json:"web_search_options,omitempty"` // Web search options (OpenAI only)
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -240,6 +250,33 @@ type ChatReasoning struct {
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
 
+// ChatPrediction represents predicted output content for the model to reference (OpenAI only).
+// Providing prediction content can significantly reduce latency for certain models.
+type ChatPrediction struct {
+	Type    string      `json:"type"`    // Always "content"
+	Content interface{} `json:"content"` // String or array of content parts
+}
+
+// ChatWebSearchOptions represents web search options for chat completions (OpenAI only).
+type ChatWebSearchOptions struct {
+	SearchContextSize *string                           `json:"search_context_size,omitempty"` // "low" | "medium" | "high"
+	UserLocation      *ChatWebSearchOptionsUserLocation `json:"user_location,omitempty"`
+}
+
+// ChatWebSearchOptionsUserLocation represents user location for web search.
+type ChatWebSearchOptionsUserLocation struct {
+	Type        string                                       `json:"type"` // "approximate"
+	Approximate *ChatWebSearchOptionsUserLocationApproximate `json:"approximate,omitempty"`
+}
+
+// ChatWebSearchOptionsUserLocationApproximate represents approximate user location details.
+type ChatWebSearchOptionsUserLocationApproximate struct {
+	City     *string `json:"city,omitempty"`
+	Country  *string `json:"country,omitempty"`  // Two-letter ISO country code (e.g., "US")
+	Region   *string `json:"region,omitempty"`   // e.g., "California"
+	Timezone *string `json:"timezone,omitempty"` // IANA timezone (e.g., "America/Los_Angeles")
+}
+
 // ChatStreamOptions represents the stream options for a chat completion.
 type ChatStreamOptions struct {
 	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
@@ -273,13 +310,19 @@ type ChatToolFunction struct {
 
 // ToolFunctionParameters represents the parameters for a function definition.
 // It supports JSON Schema fields used by various providers (OpenAI, Anthropic, Gemini, etc.).
+// Field order follows JSON Schema / OpenAI conventions for consistent serialization.
+//
+// IMPORTANT: When marshalling to JSON, key order is preserved from the original input
+// (captured during UnmarshalJSON). When constructing programmatically, the default
+// struct field declaration order is used. This is critical because LLMs are
+// sensitive to JSON key ordering in tool schemas.
 type ToolFunctionParameters struct {
 	Type                 string                      `json:"type"`                           // Type of the parameters
 	Description          *string                     `json:"description,omitempty"`          // Description of the parameters
+	Properties           *OrderedMap                 `json:"properties"`                     // Parameter properties - always include even if empty (required by JSON Schema and some providers like OpenAI)
 	Required             []string                    `json:"required,omitempty"`             // Required parameter names
-	Properties           *OrderedMap                 `json:"properties,omitempty"`           // Parameter properties
-	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
 	AdditionalProperties *AdditionalPropertiesStruct `json:"additionalProperties,omitempty"` // Whether to allow additional properties
+	Enum                 []string                    `json:"enum,omitempty"`                 // Enum values for the parameters
 
 	// JSON Schema definition fields
 	Defs        *OrderedMap `json:"$defs,omitempty"`       // JSON Schema draft 2019-09+ definitions
@@ -310,47 +353,55 @@ type ToolFunctionParameters struct {
 	Title    *string     `json:"title,omitempty"`    // Schema title
 	Default  interface{} `json:"default,omitempty"`  // Default value
 	Nullable *bool       `json:"nullable,omitempty"` // Nullable indicator (OpenAPI 3.0 style)
+
+	// keyOrder preserves the JSON key order from the original input so that
+	// MarshalJSON can emit keys in the same order the client sent them.
+	keyOrder JSONKeyOrder `json:"-"`
+}
+
+// MarshalJSON serializes ToolFunctionParameters to JSON, preserving the original key
+// order from the input JSON. If no original order was captured (programmatic construction),
+// it falls back to the default struct field declaration order.
+// Properties is always emitted as an object, never null.
+func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
+	if t.Properties == nil {
+		t.Properties = &OrderedMap{}
+	}
+	type Alias ToolFunctionParameters
+	data, err := Marshal(Alias(t))
+	if err != nil {
+		return nil, err
+	}
+	return t.keyOrder.Apply(data)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ToolFunctionParameters.
 // It handles both JSON object format (standard) and JSON string format (used by some providers like xAI).
+// It captures the original key order for order-preserving re-serialization.
 func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
-	// First, try to unmarshal as a JSON string (xAI format)
+	// Try to unmarshal as a JSON string first (xAI sends parameters as a string)
 	var jsonStr string
 	if err := Unmarshal(data, &jsonStr); err == nil {
-		// It's a string, so parse the string as JSON
-		type Alias ToolFunctionParameters
-		var temp Alias
-		if err := Unmarshal([]byte(jsonStr), &temp); err != nil {
-			return fmt.Errorf("failed to unmarshal parameters string: %w", err)
-		}
-		*t = ToolFunctionParameters(temp)
-		// Normalize additionalProperties: null to omitted field
-		if t.AdditionalProperties != nil &&
-			t.AdditionalProperties.AdditionalPropertiesBool == nil &&
-			t.AdditionalProperties.AdditionalPropertiesMap == nil {
-			t.AdditionalProperties = nil
-		}
-		return nil
+		data = []byte(jsonStr)
 	}
 
-	// Otherwise, unmarshal as a normal JSON object
 	type Alias ToolFunctionParameters
 	var temp Alias
 	if err := Unmarshal(data, &temp); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal ToolFunctionParameters: %w", err)
 	}
 	*t = ToolFunctionParameters(temp)
+
 	// Normalize additionalProperties: null to omitted field
 	if t.AdditionalProperties != nil &&
 		t.AdditionalProperties.AdditionalPropertiesBool == nil &&
 		t.AdditionalProperties.AdditionalPropertiesMap == nil {
 		t.AdditionalProperties = nil
 	}
+
+	t.keyOrder.Capture(data)
 	return nil
 }
-
-type OrderedMap map[string]interface{}
 
 type AdditionalPropertiesStruct struct {
 	AdditionalPropertiesBool *bool
@@ -409,84 +460,6 @@ func (a *AdditionalPropertiesStruct) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("additionalProperties must be either a boolean or an object")
 }
 
-// normalizeOrderedMap recursively converts JSON-like data into a tree where
-// all objects are OrderedMap, and arrays are []interface{} of normalized values.
-func normalizeValueToOrderedMap(v interface{}) interface{} {
-	switch x := v.(type) {
-	case OrderedMap:
-		// normalize nested values
-		n := OrderedMap{}
-		for k, v2 := range x {
-			n[k] = normalizeValueToOrderedMap(v2)
-		}
-		return n
-
-	case map[string]interface{}:
-		n := OrderedMap{}
-		for k, v2 := range x {
-			n[k] = normalizeValueToOrderedMap(v2)
-		}
-		return n
-
-	case []interface{}:
-		out := make([]interface{}, len(x))
-		for i, elem := range x {
-			out[i] = normalizeValueToOrderedMap(elem)
-		}
-		return out
-
-	default:
-		// primitives, time.Time, types with their own MarshalJSON, etc.
-		return v
-	}
-}
-
-func (om OrderedMap) MarshalJSON() ([]byte, error) {
-	if om == nil {
-		return []byte("null"), nil
-	}
-
-	// Work on a normalized copy so we don't surprise callers by mutating om.
-	norm := OrderedMap{}
-	for k, v := range om {
-		norm[k] = normalizeValueToOrderedMap(v)
-	}
-
-	// Deterministic, sorted-key encoding for the top level.
-	keys := make([]string, 0, len(norm))
-	for k := range norm {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-
-	for i, k := range keys {
-		if i > 0 {
-			buf.WriteByte(',')
-		}
-
-		// key
-		keyBytes, err := Marshal(k)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(keyBytes)
-		buf.WriteByte(':')
-
-		// value
-		valBytes, err := Marshal(norm[k])
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(valBytes)
-	}
-
-	buf.WriteByte('}')
-	return buf.Bytes(), nil
-}
-
 type ChatToolCustom struct {
 	Format *ChatToolCustomFormat `json:"format,omitempty"` // The input format
 }
@@ -509,6 +482,7 @@ type ChatToolChoiceType string
 // ChatToolChoiceType values
 const (
 	ChatToolChoiceTypeNone     ChatToolChoiceType = "none"
+	ChatToolChoiceTypeAuto     ChatToolChoiceType = "auto"
 	ChatToolChoiceTypeAny      ChatToolChoiceType = "any"
 	ChatToolChoiceTypeRequired ChatToolChoiceType = "required"
 	// ChatToolChoiceTypeFunction means a specific tool must be called
@@ -521,10 +495,10 @@ const (
 
 // ChatToolChoiceStruct represents a tool choice.
 type ChatToolChoiceStruct struct {
-	Type         ChatToolChoiceType         `json:"type"`                    // Type of tool choice
-	Function     ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
-	Custom       ChatToolChoiceCustom       `json:"custom,omitempty"`        // Custom tool to call if type is ToolChoiceTypeCustom
-	AllowedTools ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
+	Type         ChatToolChoiceType          `json:"type"`                    // Type of tool choice
+	Function     *ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
+	Custom       *ChatToolChoiceCustom       `json:"custom,omitempty"`        // Custom tool to call if type is ToolChoiceTypeCustom
+	AllowedTools *ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
 }
 
 type ChatToolChoice struct {
@@ -740,6 +714,15 @@ type ChatContentBlock struct {
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 	Citations    *Citations    `json:"citations,omitempty"`
+
+	// CachePoint is a Bedrock-specific field for standalone cache point blocks
+	// When present without other content, this indicates a cache point marker
+	CachePoint *CachePoint `json:"cachePoint,omitempty"`
+}
+
+// CachePoint represents a cache point marker (Bedrock-specific)
+type CachePoint struct {
+	Type string `json:"type"` // "default"
 }
 
 type CacheControlType string
@@ -749,8 +732,9 @@ const (
 )
 
 type CacheControl struct {
-	Type CacheControlType `json:"type"`
-	TTL  *string          `json:"ttl,omitempty"` // "1m" | "1h"
+	Type  CacheControlType `json:"type"`
+	TTL   *string          `json:"ttl,omitempty"`   // "1m" | "1h"
+	Scope *string          `json:"scope,omitempty"` // "user" | "global"
 }
 
 // ChatInputImage represents image data in a message.
@@ -1044,10 +1028,13 @@ type ChatCompletionTokensDetails struct {
 }
 
 type BifrostCost struct {
-	InputTokensCost  float64 `json:"input_tokens_cost,omitempty"`
-	OutputTokensCost float64 `json:"output_tokens_cost,omitempty"`
-	RequestCost      float64 `json:"request_cost,omitempty"`
-	TotalCost        float64 `json:"total_cost,omitempty"`
+	InputTokensCost     float64 `json:"input_tokens_cost,omitempty"`
+	OutputTokensCost    float64 `json:"output_tokens_cost,omitempty"`
+	ReasoningTokensCost float64 `json:"reasoning_tokens_cost,omitempty"`
+	CitationTokensCost  float64 `json:"citation_tokens_cost,omitempty"`
+	SearchQueriesCost   float64 `json:"search_queries_cost,omitempty"`
+	RequestCost         float64 `json:"request_cost,omitempty"`
+	TotalCost           float64 `json:"total_cost,omitempty"`
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for BifrostCost.

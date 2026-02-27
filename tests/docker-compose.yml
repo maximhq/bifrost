@@ -1,7 +1,7 @@
 services:
     # Weaviate instance for basic tests
     weaviate:
-        image: cr.weaviate.io/semitechnologies/weaviate:1.32.4
+        image: semitechnologies/weaviate:1.32.4
         command:
             - --host
             - 0.0.0.0
@@ -72,6 +72,18 @@ services:
         networks:
             bifrost_network:
                 ipv4_address: 172.28.0.15
+    # Postgres instance for configstore and encryption tests
+    postgres:
+        image: postgres:16-alpine
+        environment:
+            POSTGRES_USER: bifrost
+            POSTGRES_PASSWORD: bifrost_password
+            POSTGRES_DB: bifrost
+        ports:
+            - "5432:5432"
+        networks:
+            bifrost_network:
+                ipv4_address: 172.28.0.16
 
 networks:
     bifrost_network:
@@ -84,4 +96,4 @@ networks:
 volumes:
     weaviate_data:
     redis_data:
-    qdrant_data:
+    qdrant_data:    

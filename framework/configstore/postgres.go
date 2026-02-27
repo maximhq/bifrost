@@ -85,5 +85,14 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		}
 		return nil, err
 	}
+	// Encrypt any plaintext rows if encryption is enabled
+	if err := d.EncryptPlaintextRows(ctx); err != nil {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			if closeErr := sqlDB.Close(); closeErr != nil {
+				logger.Error("failed to close DB connection: %v", closeErr)
+			}
+		}
+		return nil, fmt.Errorf("failed to encrypt plaintext rows: %w", err)
+	}
 	return d, nil
 }

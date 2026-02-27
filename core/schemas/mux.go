@@ -269,13 +269,13 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 
 		case ChatToolChoiceTypeFunction:
 			// Map function choice
-			if ctc.ChatToolChoiceStruct.Function.Name != "" {
+			if ctc.ChatToolChoiceStruct.Function != nil && ctc.ChatToolChoiceStruct.Function.Name != "" {
 				rtc.ResponsesToolChoiceStruct.Name = &ctc.ChatToolChoiceStruct.Function.Name
 			}
 
 		case ChatToolChoiceTypeAllowedTools:
 			// Map allowed tools
-			if len(ctc.ChatToolChoiceStruct.AllowedTools.Tools) > 0 {
+			if ctc.ChatToolChoiceStruct.AllowedTools != nil && len(ctc.ChatToolChoiceStruct.AllowedTools.Tools) > 0 {
 				tools := make([]ResponsesToolChoiceAllowedToolDef, len(ctc.ChatToolChoiceStruct.AllowedTools.Tools))
 				for i, tool := range ctc.ChatToolChoiceStruct.AllowedTools.Tools {
 					tools[i] = ResponsesToolChoiceAllowedToolDef{
@@ -289,14 +289,14 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 				rtc.ResponsesToolChoiceStruct.Tools = tools
 			}
 			// Copy the mode (e.g., "auto", "required")
-			if ctc.ChatToolChoiceStruct.AllowedTools.Mode != "" {
+			if ctc.ChatToolChoiceStruct.AllowedTools != nil && ctc.ChatToolChoiceStruct.AllowedTools.Mode != "" {
 				mode := ctc.ChatToolChoiceStruct.AllowedTools.Mode
 				rtc.ResponsesToolChoiceStruct.Mode = &mode
 			}
 
 		case ChatToolChoiceTypeCustom:
 			// Map custom choice
-			if ctc.ChatToolChoiceStruct.Custom.Name != "" {
+			if ctc.ChatToolChoiceStruct.Custom != nil && ctc.ChatToolChoiceStruct.Custom.Name != "" {
 				rtc.ResponsesToolChoiceStruct.Name = &ctc.ChatToolChoiceStruct.Custom.Name
 			}
 		}
@@ -339,14 +339,14 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 
 		// Handle function choice
 		if tc.ResponsesToolChoiceStruct.Type == ResponsesToolChoiceTypeFunction && tc.ResponsesToolChoiceStruct.Name != nil {
-			ctc.ChatToolChoiceStruct.Function = ChatToolChoiceFunction{
+			ctc.ChatToolChoiceStruct.Function = &ChatToolChoiceFunction{
 				Name: *tc.ResponsesToolChoiceStruct.Name,
 			}
 		}
 
 		// Handle custom choice
 		if tc.ResponsesToolChoiceStruct.Type == ResponsesToolChoiceTypeCustom && tc.ResponsesToolChoiceStruct.Name != nil {
-			ctc.ChatToolChoiceStruct.Custom = ChatToolChoiceCustom{
+			ctc.ChatToolChoiceStruct.Custom = &ChatToolChoiceCustom{
 				Name: *tc.ResponsesToolChoiceStruct.Name,
 			}
 		}
@@ -368,7 +368,7 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 			if tc.ResponsesToolChoiceStruct.Mode != nil && *tc.ResponsesToolChoiceStruct.Mode != "" {
 				mode = *tc.ResponsesToolChoiceStruct.Mode
 			}
-			ctc.ChatToolChoiceStruct.AllowedTools = ChatToolChoiceAllowedTools{
+			ctc.ChatToolChoiceStruct.AllowedTools = &ChatToolChoiceAllowedTools{
 				Mode:  mode,
 				Tools: tools,
 			}
@@ -895,6 +895,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			TextTokens:               ru.OutputTokensDetails.TextTokens,
 			AcceptedPredictionTokens: ru.OutputTokensDetails.AcceptedPredictionTokens,
 			AudioTokens:              ru.OutputTokensDetails.AudioTokens,
+			ImageTokens:              ru.OutputTokensDetails.ImageTokens,
 			ReasoningTokens:          ru.OutputTokensDetails.ReasoningTokens,
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
@@ -1085,6 +1086,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	// Create new BifrostResponsesResponse from Chat fields
 	responsesResp := &BifrostResponsesResponse{
 		ID:            Ptr(cr.ID),
+		Object:        "response",
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,
 		Citations:     cr.Citations,

@@ -11,6 +11,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,8 +43,8 @@ func NewInferenceHandler(client *bifrost.Bifrost, config *lib.Config) *Completio
 
 // Known fields for CompletionRequest
 var textParamsKnownFields = map[string]bool{
+	"prompt":            true,
 	"model":             true,
-	"text":              true,
 	"fallbacks":         true,
 	"best_of":           true,
 	"echo":              true,
@@ -127,6 +128,17 @@ var embeddingParamsKnownFields = map[string]bool{
 	"dimensions":      true,
 }
 
+var rerankParamsKnownFields = map[string]bool{
+	"model":              true,
+	"query":              true,
+	"documents":          true,
+	"fallbacks":          true,
+	"top_n":              true,
+	"max_tokens_per_doc": true,
+	"priority":           true,
+	"return_documents":   true,
+}
+
 var speechParamsKnownFields = map[string]bool{
 	"model":           true,
 	"input":           true,
@@ -138,7 +150,9 @@ var speechParamsKnownFields = map[string]bool{
 	"speed":           true,
 }
 
-var imageParamsKnownFields = map[string]bool{
+// imageGenerationParamsKnownFields contains known fields for image generation requests
+// Based on ImageGenerationInput and ImageGenerationParameters structs
+var imageGenerationParamsKnownFields = map[string]bool{
 	"model":               true,
 	"prompt":              true,
 	"fallbacks":           true,
@@ -157,6 +171,65 @@ var imageParamsKnownFields = map[string]bool{
 	"negative_prompt":     true,
 	"num_inference_steps": true,
 	"user":                true,
+}
+
+// imageEditParamsKnownFields contains known fields for image edit requests
+// Based on ImageEditInput and ImageEditParameters structs
+var imageEditParamsKnownFields = map[string]bool{
+	"model":               true,
+	"prompt":              true,
+	"fallbacks":           true,
+	"image":               true,
+	"image[]":             true,
+	"mask":                true,
+	"type":                true,
+	"background":          true,
+	"input_fidelity":      true,
+	"n":                   true,
+	"output_compression":  true,
+	"output_format":       true,
+	"partial_images":      true,
+	"quality":             true,
+	"response_format":     true,
+	"size":                true,
+	"user":                true,
+	"negative_prompt":     true,
+	"seed":                true,
+	"num_inference_steps": true,
+	"stream":              true,
+}
+
+// imageVariationParamsKnownFields contains known fields for image variation requests
+// Based on ImageVariationInput and ImageVariationParameters structs
+var imageVariationParamsKnownFields = map[string]bool{
+	"model":           true,
+	"fallbacks":       true,
+	"image":           true,
+	"image[]":         true,
+	"n":               true,
+	"response_format": true,
+	"size":            true,
+	"user":            true,
+}
+
+// videoGenerationParamsKnownFields contains known fields for video generation requests
+// Based on VideoGenerationInput and VideoGenerationParameters structs
+var videoGenerationParamsKnownFields = map[string]bool{
+	"model":           true,
+	"prompt":          true,
+	"input_reference": true,
+	"seconds":         true,
+	"size":            true,
+	"negative_prompt": true,
+	"seed":            true,
+	"video_uri":       true,
+	"audio":           true,
+	"fallbacks":       true,
+}
+
+var videoRemixParamsKnownFields = map[string]bool{
+	"prompt":    true,
+	"fallbacks": true,
 }
 
 var transcriptionParamsKnownFields = map[string]bool{
@@ -260,6 +333,24 @@ type ImageGenerationHTTPRequest struct {
 	BifrostParams
 }
 
+type ImageEditHTTPRequest struct {
+	*schemas.ImageEditInput
+	*schemas.ImageEditParameters
+	BifrostParams
+}
+
+type ImageVariationHTTPRequest struct {
+	*schemas.ImageVariationInput
+	*schemas.ImageVariationParameters
+	BifrostParams
+}
+
+type VideoGenerationHTTPRequest struct {
+	*schemas.VideoGenerationInput
+	*schemas.VideoGenerationParameters
+	BifrostParams
+}
+
 // UnmarshalJSON unmarshals the responses request input
 func (r *ResponsesRequestInput) UnmarshalJSON(data []byte) error {
 	var str string
@@ -323,6 +414,14 @@ type EmbeddingRequest struct {
 	*schemas.EmbeddingParameters
 }
 
+// RerankRequest is a bifrost rerank request
+type RerankRequest struct {
+	Query     string                   `json:"query"`
+	Documents []schemas.RerankDocument `json:"documents"`
+	BifrostParams
+	*schemas.RerankParameters
+}
+
 type SpeechRequest struct {
 	*schemas.SpeechInput
 	BifrostParams
@@ -333,6 +432,17 @@ type TranscriptionRequest struct {
 	*schemas.TranscriptionInput
 	BifrostParams
 	*schemas.TranscriptionParameters
+}
+
+type VideoGenerationRequest struct {
+	*schemas.VideoGenerationInput
+	BifrostParams
+	*schemas.VideoGenerationParameters
+}
+type VideoRemixRequest struct {
+	*schemas.VideoGenerationInput
+	BifrostParams
+	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
 type CountTokensRequest struct {
@@ -468,47 +578,127 @@ const (
 	AudioMimeFLAC2 = "audio/x-flac" // Alternative FLAC
 )
 
+// PathToTypeMapping maps exact paths to request types (only for non-parameterized paths)
+// Parameterized paths are set per-route in RegisterRoutes
+var PathToTypeMapping = map[string]schemas.RequestType{
+	"/v1/completions":          schemas.TextCompletionRequest,
+	"/v1/chat/completions":     schemas.ChatCompletionRequest,
+	"/v1/responses":            schemas.ResponsesRequest,
+	"/v1/embeddings":           schemas.EmbeddingRequest,
+	"/v1/rerank":               schemas.RerankRequest,
+	"/v1/audio/speech":         schemas.SpeechRequest,
+	"/v1/audio/transcriptions": schemas.TranscriptionRequest,
+	"/v1/images/generations":   schemas.ImageGenerationRequest,
+	"/v1/count_tokens":         schemas.CountTokensRequest,
+	"/v1/images/edits":         schemas.ImageEditRequest,
+	"/v1/images/variations":    schemas.ImageVariationRequest,
+	"/v1/models":               schemas.ListModelsRequest,
+}
+
+// createRequestTypeMiddleware creates a middleware that sets the request type for a specific route
+func createRequestTypeMiddleware(requestType schemas.RequestType) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+			next(ctx)
+		}
+	}
+}
+
+// RegisterRequestTypeMiddleware handles exact path matching for non-parameterized routes
+func RegisterRequestTypeMiddleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		path := string(ctx.Path())
+		if requestType, ok := PathToTypeMapping[path]; ok {
+			ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, requestType)
+		}
+		next(ctx)
+	}
+}
+
 // RegisterRoutes registers all completion-related routes
 func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	// Base middlewares for all routes
+	baseMiddlewares := append([]schemas.BifrostHTTPMiddleware{RegisterRequestTypeMiddleware}, middlewares...)
+
 	// Model endpoints
-	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/v1/models", lib.ChainMiddlewares(h.listModels, baseMiddlewares...))
 
-	// Completion endpoints
-	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, middlewares...))
-	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, middlewares...))
-	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, middlewares...))
-	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, middlewares...))
-	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, middlewares...))
-	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, middlewares...))
-	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, middlewares...))
-	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, middlewares...))
+	// Completion endpoints (non-parameterized)
+	r.POST("/v1/completions", lib.ChainMiddlewares(h.textCompletion, baseMiddlewares...))
+	r.POST("/v1/chat/completions", lib.ChainMiddlewares(h.chatCompletion, baseMiddlewares...))
+	r.POST("/v1/responses", lib.ChainMiddlewares(h.responses, baseMiddlewares...))
+	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
+	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
+	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
+	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
+	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
+	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
+	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
 
-	// Batch API endpoints
-	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, middlewares...))
-	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, middlewares...))
-	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, middlewares...))
-	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, middlewares...))
-	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, middlewares...))
+	// Video API endpoints (parameterized routes need explicit request type middleware)
+	videoListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoListRequest)}, middlewares...)
+	videoRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoRetrieveRequest)}, middlewares...)
+	videoDownloadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDownloadRequest)}, middlewares...)
+	videoDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDeleteRequest)}, middlewares...)
+	videoRemixMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoRemixRequest)}, middlewares...)
+	r.GET("/v1/videos", lib.ChainMiddlewares(h.videoList, videoListMW...))
+	r.GET("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoRetrieve, videoRetrieveMW...))
+	r.GET("/v1/videos/{video_id}/content", lib.ChainMiddlewares(h.videoDownload, videoDownloadMW...))
+	r.DELETE("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoDelete, videoDeleteMW...))
+	r.POST("/v1/videos/{video_id}/remix", lib.ChainMiddlewares(h.videoRemix, videoRemixMW...))
 
-	// File API endpoints
-	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, middlewares...))
-	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, middlewares...))
-	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, middlewares...))
-	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, middlewares...))
-	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, middlewares...))
+	// Batch API endpoints (parameterized routes need explicit request type middleware)
+	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
+	batchListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchListRequest)}, middlewares...)
+	batchRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchRetrieveRequest)}, middlewares...)
+	batchCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCancelRequest)}, middlewares...)
+	batchResultsMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchResultsRequest)}, middlewares...)
 
-	// Container API endpoints
-	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, middlewares...))
-	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, middlewares...))
-	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, middlewares...))
-	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, middlewares...))
+	r.POST("/v1/batches", lib.ChainMiddlewares(h.batchCreate, batchCreateMW...))
+	r.GET("/v1/batches", lib.ChainMiddlewares(h.batchList, batchListMW...))
+	r.GET("/v1/batches/{batch_id}", lib.ChainMiddlewares(h.batchRetrieve, batchRetrieveMW...))
+	r.POST("/v1/batches/{batch_id}/cancel", lib.ChainMiddlewares(h.batchCancel, batchCancelMW...))
+	r.GET("/v1/batches/{batch_id}/results", lib.ChainMiddlewares(h.batchResults, batchResultsMW...))
 
-	// Container Files API endpoints
-	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, middlewares...))
-	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, middlewares...))
-	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, middlewares...))
-	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, middlewares...))
+	// File API endpoints (parameterized routes need explicit request type middleware)
+	fileUploadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileUploadRequest)}, middlewares...)
+	fileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileListRequest)}, middlewares...)
+	fileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileRetrieveRequest)}, middlewares...)
+	fileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileDeleteRequest)}, middlewares...)
+	fileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.FileContentRequest)}, middlewares...)
+
+	r.POST("/v1/files", lib.ChainMiddlewares(h.fileUpload, fileUploadMW...))
+	r.GET("/v1/files", lib.ChainMiddlewares(h.fileList, fileListMW...))
+	r.GET("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileRetrieve, fileRetrieveMW...))
+	r.DELETE("/v1/files/{file_id}", lib.ChainMiddlewares(h.fileDelete, fileDeleteMW...))
+	r.GET("/v1/files/{file_id}/content", lib.ChainMiddlewares(h.fileContent, fileContentMW...))
+
+	// Container API endpoints (parameterized routes need explicit request type middleware)
+	containerCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerCreateRequest)}, middlewares...)
+	containerListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerListRequest)}, middlewares...)
+	containerRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerRetrieveRequest)}, middlewares...)
+	containerDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers", lib.ChainMiddlewares(h.containerCreate, containerCreateMW...))
+	r.GET("/v1/containers", lib.ChainMiddlewares(h.containerList, containerListMW...))
+	r.GET("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerRetrieve, containerRetrieveMW...))
+	r.DELETE("/v1/containers/{container_id}", lib.ChainMiddlewares(h.containerDelete, containerDeleteMW...))
+
+	// Container Files API endpoints (parameterized routes need explicit request type middleware)
+	containerFileCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileCreateRequest)}, middlewares...)
+	containerFileListMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileListRequest)}, middlewares...)
+	containerFileRetrieveMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileRetrieveRequest)}, middlewares...)
+	containerFileContentMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileContentRequest)}, middlewares...)
+	containerFileDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.ContainerFileDeleteRequest)}, middlewares...)
+
+	r.POST("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileCreate, containerFileCreateMW...))
+	r.GET("/v1/containers/{container_id}/files", lib.ChainMiddlewares(h.containerFileList, containerFileListMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileRetrieve, containerFileRetrieveMW...))
+	r.GET("/v1/containers/{container_id}/files/{file_id}/content", lib.ChainMiddlewares(h.containerFileContent, containerFileContentMW...))
+	r.DELETE("/v1/containers/{container_id}/files/{file_id}", lib.ChainMiddlewares(h.containerFileDelete, containerFileDeleteMW...))
 }
 
 // listModels handles GET /v1/models - Process list models requests
@@ -567,13 +757,13 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Add pricing data to the response
-	if len(resp.Data) > 0 && h.config.PricingManager != nil {
+	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {
 			provider, modelName := schemas.ParseModelString(modelEntry.ID, "")
-			pricingEntry := h.config.PricingManager.GetPricingEntryForModel(modelName, provider)
+			pricingEntry := h.config.ModelCatalog.GetPricingEntryForModel(modelName, provider)
 			if pricingEntry == nil && modelEntry.Deployment != nil {
 				// Retry with deployment
-				pricingEntry = h.config.PricingManager.GetPricingEntryForModel(*modelEntry.Deployment, provider)
+				pricingEntry = h.config.ModelCatalog.GetPricingEntryForModel(*modelEntry.Deployment, provider)
 			}
 			if pricingEntry != nil && modelEntry.Pricing == nil {
 				pricing := &schemas.Pricing{
@@ -595,30 +785,23 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// textCompletion handles POST /v1/completions - Process text completion requests
-func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
+// prepareTextCompletionRequest prepares a BifrostTextCompletionRequest from the HTTP request body
+func prepareTextCompletionRequest(ctx *fasthttp.RequestCtx) (*TextRequest, *schemas.BifrostTextCompletionRequest, error) {
 	var req TextRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-	// Create BifrostTextCompletionRequest directly using segregated structure
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
-	// Parse fallbacks using helper function
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, err
 	}
 	if req.Prompt == nil || (req.Prompt.PromptStr == nil && req.Prompt.PromptArray == nil) {
-		SendError(ctx, fasthttp.StatusBadRequest, "prompt is required for text completion")
-		return
+		return nil, nil, fmt.Errorf("prompt is required for text completion")
 	}
-	// Extract extra params
 	if req.TextCompletionParameters == nil {
 		req.TextCompletionParameters = &schemas.TextCompletionParameters{}
 	}
@@ -628,7 +811,6 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	} else {
 		req.TextCompletionParameters.ExtraParams = extraParams
 	}
-	// Create segregated BifrostTextCompletionRequest
 	bifrostTextReq := &schemas.BifrostTextCompletionRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -636,7 +818,16 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		Params:    req.TextCompletionParameters,
 		Fallbacks: fallbacks,
 	}
-	// Convert context
+	return &req, bifrostTextReq, nil
+}
+
+// textCompletion handles POST /v1/completions - Process text completion requests
+func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
+	req, bifrostTextReq, err := prepareTextCompletionRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
@@ -662,33 +853,29 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// chatCompletion handles POST /v1/chat/completions - Process chat completion requests
-func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+// prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
+func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req := ChatRequest{
 		ChatParameters: &schemas.ChatParameters{},
 	}
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Create BifrostChatRequest directly using segregated structure
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
 
 	// Parse fallbacks using helper function
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, fmt.Errorf("failed to parse fallbacks: %v", err)
 	}
 
 	if len(req.Messages) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "Messages is required for chat completion")
-		return
+		return nil, nil, fmt.Errorf("messages is required for chat completion")
 	}
 
 	// Extract extra params
@@ -732,6 +919,17 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		Fallbacks: fallbacks,
 	}
 
+	return &req, bifrostChatReq, nil
+}
+
+// chatCompletion handles POST /v1/chat/completions - Process chat completion requests
+func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
+	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
@@ -754,31 +952,27 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// responses handles POST /v1/responses - Process responses requests
-func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
+// prepareResponsesRequest prepares a BifrostResponsesRequest from a ResponsesRequest
+func prepareResponsesRequest(ctx *fasthttp.RequestCtx) (*ResponsesRequest, *schemas.BifrostResponsesRequest, error) {
 	var req ResponsesRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Create BifrostResponsesRequest directly using segregated structure
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
 
 	// Parse fallbacks using helper function
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, fmt.Errorf("failed to parse fallbacks: %v", err)
 	}
 
 	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for responses")
-		return
+		return nil, nil, fmt.Errorf("input is required for responses")
 	}
 
 	// Extract extra params
@@ -812,6 +1006,17 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		Fallbacks: fallbacks,
 	}
 
+	return &req, bifrostResponsesReq, nil
+}
+
+// responses handles POST /v1/responses - Process responses requests
+func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
+	req, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
@@ -836,46 +1041,32 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// embeddings handles POST /v1/embeddings - Process embeddings requests
-func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
+// prepareEmbeddingRequest prepares a BifrostEmbeddingRequest from the HTTP request body
+func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx) (*EmbeddingRequest, *schemas.BifrostEmbeddingRequest, error) {
 	var req EmbeddingRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-
-	// Create BifrostEmbeddingRequest directly using segregated structure
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
-
-	// Parse fallbacks using helper function
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, err
 	}
-
 	if req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil) {
-		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for embeddings")
-		return
+		return nil, nil, fmt.Errorf("input is required for embeddings")
 	}
-
-	// Extract extra params
 	if req.EmbeddingParameters == nil {
 		req.EmbeddingParameters = &schemas.EmbeddingParameters{}
 	}
-
 	extraParams, err := extractExtraParams(ctx.PostBody(), embeddingParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
 	} else {
 		req.EmbeddingParameters.ExtraParams = extraParams
 	}
-
-	// Create segregated BifrostEmbeddingRequest
 	bifrostEmbeddingReq := &schemas.BifrostEmbeddingRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -883,10 +1074,19 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		Params:    req.EmbeddingParameters,
 		Fallbacks: fallbacks,
 	}
+	return &req, bifrostEmbeddingReq, nil
+}
 
-	// Convert context
+// embeddings handles POST /v1/embeddings - Process embeddings requests
+func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
+	_, bifrostEmbeddingReq, err := prepareEmbeddingRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
-	defer cancel() // Ensure cleanup on function exit
+	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
@@ -902,56 +1102,118 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// speech handles POST /v1/audio/speech - Process speech completion requests
-func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
-	var req SpeechRequest
+// rerank handles POST /v1/rerank - Process rerank requests
+func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
+	var req RerankRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
 		return
 	}
 
-	// Create BifrostSpeechRequest directly using segregated structure
+	// Parse model
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
 		return
 	}
 
-	// Parse fallbacks using helper function
+	// Parse fallbacks
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 
+	if strings.TrimSpace(req.Query) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "query is required for rerank")
+		return
+	}
+
+	if len(req.Documents) == 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "documents are required for rerank")
+		return
+	}
+	for i, doc := range req.Documents {
+		if strings.TrimSpace(doc.Text) == "" {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("document text is required for rerank at index %d", i))
+			return
+		}
+	}
+
+	// Extract extra params
+	if req.RerankParameters == nil {
+		req.RerankParameters = &schemas.RerankParameters{}
+	}
+	if req.RerankParameters.TopN != nil && *req.RerankParameters.TopN < 1 {
+		SendError(ctx, fasthttp.StatusBadRequest, "top_n must be at least 1")
+		return
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), rerankParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.RerankParameters.ExtraParams = extraParams
+	}
+
+	// Create BifrostRerankRequest
+	bifrostRerankReq := &schemas.BifrostRerankRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Query:     req.Query,
+		Documents: req.Documents,
+		Params:    req.RerankParameters,
+		Fallbacks: fallbacks,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.RerankRequest(bifrostCtx, bifrostRerankReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Send successful response
+	SendJSON(ctx, resp)
+}
+
+// prepareSpeechRequest prepares a BifrostSpeechRequest from the HTTP request body
+func prepareSpeechRequest(ctx *fasthttp.RequestCtx) (*SpeechRequest, *schemas.BifrostSpeechRequest, error) {
+
+	var req SpeechRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
+	}
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
+	}
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, nil, err
+	}
 	if req.SpeechInput == nil || req.SpeechInput.Input == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Input is required for speech completion")
-		return
+		return nil, nil, fmt.Errorf("input is required for speech completion")
 	}
-
-	if req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
-		SendError(ctx, fasthttp.StatusBadRequest, "Voice is required for speech completion")
-		return
+	if req.SpeechParameters == nil || req.VoiceConfig == nil || (req.VoiceConfig.Voice == nil && len(req.VoiceConfig.MultiVoiceConfig) == 0) {
+		return nil, nil, fmt.Errorf("voice is required for speech completion")
 	}
-
-	// Extract extra params
 	if req.SpeechParameters == nil {
 		req.SpeechParameters = &schemas.SpeechParameters{}
 	}
-
-	// Extract extra params
-	if req.SpeechParameters == nil {
-		req.SpeechParameters = &schemas.SpeechParameters{}
-	}
-
 	extraParams, err := extractExtraParams(ctx.PostBody(), speechParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
 	} else {
 		req.SpeechParameters.ExtraParams = extraParams
 	}
-
-	// Create segregated BifrostSpeechRequest
 	bifrostSpeechReq := &schemas.BifrostSpeechRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -959,8 +1221,17 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		Params:    req.SpeechParameters,
 		Fallbacks: fallbacks,
 	}
+	return &req, bifrostSpeechReq, nil
+}
 
-	// Convert context
+// speech handles POST /v1/audio/speech - Process speech completion requests
+func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
+	req, bifrostSpeechReq, err := prepareSpeechRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
@@ -984,7 +1255,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	// When with_timestamps is true, Elevenlabs returns base64 encoded audio
 	hasTimestamps := req.WithTimestamps != nil && *req.WithTimestamps
 
-	if provider == schemas.Elevenlabs && hasTimestamps {
+	if bifrostSpeechReq.Provider == schemas.Elevenlabs && hasTimestamps {
 		ctx.Response.Header.Set("Content-Type", "application/json")
 		SendJSON(ctx, resp)
 		return
@@ -1001,114 +1272,90 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	ctx.Response.SetBody(resp.Audio)
 }
 
-// transcription handles POST /v1/audio/transcriptions - Process transcription requests
-func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
-	// Parse multipart form
+// prepareTranscriptionRequest prepares a BifrostTranscriptionRequest from a multipart form.
+// Returns the request, whether streaming was requested, and any error.
+func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTranscriptionRequest, bool, error) {
 	form, err := ctx.MultipartForm()
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to parse multipart form: %v", err))
-		return
+		return nil, false, fmt.Errorf("failed to parse multipart form: %v", err)
 	}
-
-	// Extract model (required)
 	modelValues := form.Value["model"]
 	if len(modelValues) == 0 || modelValues[0] == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "Model is required")
-		return
+		return nil, false, fmt.Errorf("model is required")
 	}
-
 	provider, modelName := schemas.ParseModelString(modelValues[0], "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, false, fmt.Errorf("model should be in provider/model format")
 	}
-
-	// Extract file (required)
 	fileHeaders := form.File["file"]
 	if len(fileHeaders) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "File is required")
-		return
+		return nil, false, fmt.Errorf("file is required")
 	}
-
 	fileHeader := fileHeaders[0]
-
-	// // Validate file size and format
-	// if err := h.validateAudioFile(fileHeader); err != nil {
-	// 	SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-	// 	return
-	// }
-
 	file, err := fileHeader.Open()
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open uploaded file: %v", err))
-		return
+		return nil, false, fmt.Errorf("failed to open uploaded file: %v", err)
 	}
 	defer file.Close()
-
-	// Read file data
-	fileData := make([]byte, fileHeader.Size)
-	if _, err := file.Read(fileData); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file: %v", err))
-		return
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read uploaded file: %v", err)
 	}
-
-	// Create transcription input
 	transcriptionInput := &schemas.TranscriptionInput{
 		File: fileData,
 	}
-
-	// Create transcription parameters
 	transcriptionParams := &schemas.TranscriptionParameters{}
-
-	// Extract optional parameters
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {
 		transcriptionParams.Language = &languageValues[0]
 	}
-
 	if promptValues := form.Value["prompt"]; len(promptValues) > 0 && promptValues[0] != "" {
 		transcriptionParams.Prompt = &promptValues[0]
 	}
-
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		transcriptionParams.ResponseFormat = &responseFormatValues[0]
 	}
-
 	if transcriptionParams.ExtraParams == nil {
 		transcriptionParams.ExtraParams = make(map[string]interface{})
 	}
-
 	for key, value := range form.Value {
 		if len(value) > 0 && value[0] != "" && !transcriptionParamsKnownFields[key] {
 			transcriptionParams.ExtraParams[key] = value[0]
 		}
 	}
-
-	// Create BifrostTranscriptionRequest
+	stream := false
+	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] == "true" {
+		stream = true
+	}
 	bifrostTranscriptionReq := &schemas.BifrostTranscriptionRequest{
 		Model:    modelName,
 		Provider: schemas.ModelProvider(provider),
 		Input:    transcriptionInput,
 		Params:   transcriptionParams,
 	}
+	return bifrostTranscriptionReq, stream, nil
+}
 
-	// Convert context
+// transcription handles POST /v1/audio/transcriptions - Process transcription requests
+func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
+	bifrostTranscriptionReq, stream, err := prepareTranscriptionRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
 
-	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
-		stream := streamValues[0]
-		if stream == "true" {
-			h.handleStreamingTranscriptionRequest(ctx, bifrostTranscriptionReq, bifrostCtx, cancel)
-			return
-		}
+	if stream {
+		h.handleStreamingTranscriptionRequest(ctx, bifrostTranscriptionReq, bifrostCtx, cancel)
+		return
 	}
 
-	defer cancel() // Ensure cleanup on function exit
+	defer cancel()
 
-	// Make transcription request
 	resp, bifrostErr := h.client.TranscriptionRequest(bifrostCtx, bifrostTranscriptionReq)
 
 	// Handle response
@@ -1121,32 +1368,22 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// countTokens handles POST /v1/count_tokens - Process count tokens requests
-func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
-	// Parse request body
+// prepareCountTokensRequest prepares a BifrostResponsesRequest from a CountTokensRequest
+func prepareCountTokensRequest(ctx *fasthttp.RequestCtx) (*CountTokensRequest, *schemas.BifrostResponsesRequest, error) {
 	req := CountTokensRequest{
 		ResponsesParameters: &schemas.ResponsesParameters{},
 	}
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request body: %v", err)
 	}
-
-	// Create BifrostResponsesRequest directly using segregated structure
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
-
-	// Parse fallbacks using helper function
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, err
 	}
-
-	// Extract extra params
 	if req.ResponsesParameters == nil {
 		req.ResponsesParameters = &schemas.ResponsesParameters{}
 	}
@@ -1156,19 +1393,12 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 	} else {
 		req.ResponsesParameters.ExtraParams = extraParams
 	}
-
-	// Set tools if provided
 	if len(req.Tools) > 0 {
 		req.ResponsesParameters.Tools = req.Tools
 	}
-
-	// Create segregated BifrostResponsesRequest
-	// Validate messages are present
 	if len(req.Messages) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "messages is required for count tokens")
-		return
+		return nil, nil, fmt.Errorf("messages is required for count tokens")
 	}
-
 	bifrostReq := &schemas.BifrostResponsesRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -1176,16 +1406,24 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 		Params:    req.ResponsesParameters,
 		Fallbacks: fallbacks,
 	}
+	return &req, bifrostReq, nil
+}
 
-	// Convert context
+// countTokens handles POST /v1/count_tokens - Process count tokens requests
+func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
+	_, bifrostReq, err := prepareCountTokensRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
 		return
 	}
-	defer cancel() // Ensure cleanup on function exit
+	defer cancel()
 
-	// Make count tokens request
 	response, bifrostErr := h.client.CountTokensRequest(bifrostCtx, bifrostReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
@@ -1284,7 +1522,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := h.config.GetStreamChunkInterceptor()
-	var httpReq *schemas.HTTPRequest	
+	var httpReq *schemas.HTTPRequest
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
@@ -1312,7 +1550,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			includeEventType = false
 			if chunk.BifrostResponsesStreamResponse != nil ||
 				chunk.BifrostImageGenerationStreamResponse != nil ||
-				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest)) {
+				(chunk.BifrostError != nil && (chunk.BifrostError.ExtraFields.RequestType == schemas.ResponsesStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageGenerationStreamRequest || chunk.BifrostError.ExtraFields.RequestType == schemas.ImageEditStreamRequest)) {
 				includeEventType = true
 			}
 
@@ -1484,47 +1722,32 @@ func (h *CompletionHandler) validateAudioFile(fileHeader *multipart.FileHeader) 
 	return nil
 }
 
-// imageGeneration handles POST /v1/images/generations - Processes image generation requests
-func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
-
+// prepareImageGenerationRequest prepares a BifrostImageGenerationRequest from the HTTP request body
+func prepareImageGenerationRequest(ctx *fasthttp.RequestCtx) (*ImageGenerationHTTPRequest, *schemas.BifrostImageGenerationRequest, error) {
 	var req ImageGenerationHTTPRequest
-
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
-
-	// Parse model format provider/model
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
-
 	if req.ImageGenerationInput == nil || req.Prompt == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
-		return
+		return nil, nil, fmt.Errorf("prompt cannot be empty")
 	}
-	// Extract extra params
 	if req.ImageGenerationParameters == nil {
 		req.ImageGenerationParameters = &schemas.ImageGenerationParameters{}
 	}
-
-	extraParams, err := extractExtraParams(ctx.PostBody(), imageParamsKnownFields)
+	extraParams, err := extractExtraParams(ctx.PostBody(), imageGenerationParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
-		// Continue without extra params
 	} else {
 		req.ImageGenerationParameters.ExtraParams = extraParams
 	}
-	// Parse fallbacks
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, err
 	}
-
-	// Create Bifrost request
 	bifrostReq := &schemas.BifrostImageGenerationRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
@@ -1532,8 +1755,17 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		Params:    req.ImageGenerationParameters,
 		Fallbacks: fallbacks,
 	}
+	return &req, bifrostReq, nil
+}
 
-	// Convert context
+// imageGeneration handles POST /v1/images/generations - Processes image generation requests
+func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
+	req, bifrostReq, err := prepareImageGenerationRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		cancel()
@@ -1569,6 +1801,655 @@ func (h *CompletionHandler) handleStreamingImageGeneration(ctx *fasthttp.Request
 	}
 
 	h.handleStreamingResponse(ctx, bifrostCtx, getStream, cancel)
+}
+
+// prepareImageEditRequest prepares a BifrostImageEditRequest from a multipart form
+func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *schemas.BifrostImageEditRequest, error) {
+	var req ImageEditHTTPRequest
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse multipart form: %v", err)
+	}
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		return nil, nil, fmt.Errorf("model is required")
+	}
+	req.Model = modelValues[0]
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
+	}
+	var editType string
+	if typeValues := form.Value["type"]; len(typeValues) > 0 && typeValues[0] != "" {
+		editType = typeValues[0]
+	}
+	promptValues := form.Value["prompt"]
+	if editType != "background_removal" {
+		if len(promptValues) == 0 || promptValues[0] == "" {
+			return nil, nil, fmt.Errorf("prompt is required")
+		}
+	}
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+	if len(imageFiles) == 0 {
+		return nil, nil, fmt.Errorf("at least one image is required")
+	}
+	images := make([]schemas.ImageInput, 0, len(imageFiles))
+	for _, fh := range imageFiles {
+		f, err := fh.Open()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open uploaded file: %v", err)
+		}
+		fileData, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read uploaded file: %v", err)
+		}
+		images = append(images, schemas.ImageInput{Image: fileData})
+	}
+	prompt := ""
+	if len(promptValues) > 0 && promptValues[0] != "" {
+		prompt = promptValues[0]
+	}
+	req.ImageEditInput = &schemas.ImageEditInput{
+		Images: images,
+		Prompt: prompt,
+	}
+	req.ImageEditParameters = &schemas.ImageEditParameters{}
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid n value: %v", err)
+		}
+		req.ImageEditParameters.N = &n
+	}
+	if backgroundValues := form.Value["background"]; len(backgroundValues) > 0 && backgroundValues[0] != "" {
+		req.ImageEditParameters.Background = &backgroundValues[0]
+	}
+	if inputFidelityValues := form.Value["input_fidelity"]; len(inputFidelityValues) > 0 && inputFidelityValues[0] != "" {
+		req.ImageEditParameters.InputFidelity = &inputFidelityValues[0]
+	}
+	if partialImagesValues := form.Value["partial_images"]; len(partialImagesValues) > 0 && partialImagesValues[0] != "" {
+		partialImages, err := strconv.Atoi(partialImagesValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid partial_images value: %v", err)
+		}
+		req.ImageEditParameters.PartialImages = &partialImages
+	}
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		req.ImageEditParameters.Size = &sizeValues[0]
+	}
+	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
+		req.ImageEditParameters.Quality = &qualityValues[0]
+	}
+	if outputFormatValues := form.Value["output_format"]; len(outputFormatValues) > 0 && outputFormatValues[0] != "" {
+		req.ImageEditParameters.OutputFormat = &outputFormatValues[0]
+	}
+	if numInferenceStepsValues := form.Value["num_inference_steps"]; len(numInferenceStepsValues) > 0 && numInferenceStepsValues[0] != "" {
+		numInferenceSteps, err := strconv.Atoi(numInferenceStepsValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid num_inference_steps value: %v", err)
+		}
+		req.ImageEditParameters.NumInferenceSteps = &numInferenceSteps
+	}
+	if seedValues := form.Value["seed"]; len(seedValues) > 0 && seedValues[0] != "" {
+		seed, err := strconv.Atoi(seedValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid seed value: %v", err)
+		}
+		req.ImageEditParameters.Seed = &seed
+	}
+	if outputCompressionValues := form.Value["output_compression"]; len(outputCompressionValues) > 0 && outputCompressionValues[0] != "" {
+		outputCompression, err := strconv.Atoi(outputCompressionValues[0])
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid output_compression value: %v", err)
+		}
+		req.ImageEditParameters.OutputCompression = &outputCompression
+	}
+	if negativePromptValues := form.Value["negative_prompt"]; len(negativePromptValues) > 0 && negativePromptValues[0] != "" {
+		req.ImageEditParameters.NegativePrompt = &negativePromptValues[0]
+	}
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		req.ImageEditParameters.ResponseFormat = &responseFormatValues[0]
+	}
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		req.ImageEditParameters.User = &userValues[0]
+	}
+	if editType != "" {
+		req.ImageEditParameters.Type = &editType
+	}
+	if maskFiles := form.File["mask"]; len(maskFiles) > 0 {
+		maskFile := maskFiles[0]
+		f, err := maskFile.Open()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to open mask file: %v", err)
+		}
+		maskData, err := io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read mask file: %v", err)
+		}
+		req.ImageEditParameters.Mask = maskData
+	}
+	if req.ImageEditParameters.ExtraParams == nil {
+		req.ImageEditParameters.ExtraParams = make(map[string]interface{})
+	}
+	for key, value := range form.Value {
+		if len(value) > 0 && value[0] != "" && !imageEditParamsKnownFields[key] {
+			req.ImageEditParameters.ExtraParams[key] = value[0]
+		}
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		req.Fallbacks = fallbackValues
+	}
+	if streamValues := form.Value["stream"]; len(streamValues) > 0 && streamValues[0] != "" {
+		stream := streamValues[0] == "true"
+		req.Stream = &stream
+	}
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		return nil, nil, err
+	}
+	bifrostReq := &schemas.BifrostImageEditRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.ImageEditInput,
+		Params:    req.ImageEditParameters,
+		Fallbacks: fallbacks,
+	}
+	return &req, bifrostReq, nil
+}
+
+// imageEdit handles POST /v1/images/edits - Processes image edit requests
+func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
+	req, bifrostReq, err := prepareImageEditRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	// Handle streaming image edit
+	if req.Stream != nil && *req.Stream {
+		h.handleStreamingImageEditRequest(ctx, bifrostReq, bifrostCtx, cancel)
+		return
+	}
+	defer cancel()
+
+	// Execute request
+	resp, bifrostErr := h.client.ImageEditRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// handleStreamingImageEditRequest handles streaming image edit requests using Server-Sent Events (SSE)
+func (h *CompletionHandler) handleStreamingImageEditRequest(ctx *fasthttp.RequestCtx, req *schemas.BifrostImageEditRequest, bifrostCtx *schemas.BifrostContext, cancel context.CancelFunc) {
+	// Use the cancellable context from ConvertToBifrostContext
+	// See router.go for detailed explanation of why we need a cancellable context
+
+	getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return h.client.ImageEditStreamRequest(bifrostCtx, req)
+	}
+
+	h.handleStreamingResponse(ctx, bifrostCtx, getStream, cancel)
+}
+
+// prepareImageVariationRequest prepares a BifrostImageVariationRequest from a multipart form
+func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostImageVariationRequest, error) {
+	rawBody := ctx.Request.Body()
+	form, err := ctx.MultipartForm()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse multipart form: %v", err)
+	}
+	modelValues := form.Value["model"]
+	if len(modelValues) == 0 || modelValues[0] == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	provider, modelName := schemas.ParseModelString(modelValues[0], "")
+	if provider == "" || modelName == "" {
+		return nil, fmt.Errorf("model should be in provider/model format")
+	}
+	var imageFiles []*multipart.FileHeader
+	if imageFilesArray := form.File["image[]"]; len(imageFilesArray) > 0 {
+		imageFiles = imageFilesArray
+	} else if imageFilesSingle := form.File["image"]; len(imageFilesSingle) > 0 {
+		imageFiles = imageFilesSingle
+	}
+	if len(imageFiles) == 0 {
+		return nil, fmt.Errorf("at least one image is required")
+	}
+	images := make([][]byte, 0, len(imageFiles))
+	for _, fileHeader := range imageFiles {
+		file, err := fileHeader.Open()
+		if err != nil {
+			return nil, fmt.Errorf("failed to open uploaded file: %v", err)
+		}
+		fileData, err := io.ReadAll(file)
+		file.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read uploaded file: %v", err)
+		}
+		images = append(images, fileData)
+	}
+	variationInput := &schemas.ImageVariationInput{
+		Image: schemas.ImageInput{
+			Image: images[0],
+		},
+	}
+	variationParams := &schemas.ImageVariationParameters{}
+	if nValues := form.Value["n"]; len(nValues) > 0 && nValues[0] != "" {
+		n, err := strconv.Atoi(nValues[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid n value: %v", err)
+		}
+		variationParams.N = &n
+	}
+	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
+		variationParams.ResponseFormat = &responseFormatValues[0]
+	}
+	if sizeValues := form.Value["size"]; len(sizeValues) > 0 && sizeValues[0] != "" {
+		variationParams.Size = &sizeValues[0]
+	}
+	if userValues := form.Value["user"]; len(userValues) > 0 && userValues[0] != "" {
+		variationParams.User = &userValues[0]
+	}
+	if variationParams.ExtraParams == nil {
+		variationParams.ExtraParams = make(map[string]interface{})
+	}
+	if len(images) > 1 {
+		variationParams.ExtraParams["images"] = images[1:]
+	}
+	for key, value := range form.Value {
+		if len(value) > 0 && value[0] != "" && !imageVariationParamsKnownFields[key] {
+			variationParams.ExtraParams[key] = value[0]
+		}
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		fallbacks, err := parseFallbacks(fallbackValues)
+		if err != nil {
+			return nil, err
+		}
+		return &schemas.BifrostImageVariationRequest{
+			Provider:       schemas.ModelProvider(provider),
+			Model:          modelName,
+			Input:          variationInput,
+			Params:         variationParams,
+			Fallbacks:      fallbacks,
+			RawRequestBody: rawBody,
+		}, nil
+	}
+	return &schemas.BifrostImageVariationRequest{
+		Provider:       schemas.ModelProvider(provider),
+		Model:          modelName,
+		Input:          variationInput,
+		Params:         variationParams,
+		RawRequestBody: rawBody,
+	}, nil
+}
+
+// imageVariation handles POST /v1/images/variations - Processes image variation requests
+func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
+	bifrostReq, err := prepareImageVariationRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	// Execute request (no streaming for variations)
+	resp, bifrostErr := h.client.ImageVariationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoGeneration handles POST /v1/videos - Processes video generation requests
+func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
+	var req VideoGenerationRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Create BifrostVideoGenerationRequest directly using segregated structure
+	provider, modelName := schemas.ParseModelString(req.Model, "")
+	if provider == "" || modelName == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
+		return
+	}
+
+	fallbacks, err := parseFallbacks(req.Fallbacks)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.VideoGenerationInput == nil || req.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt cannot be empty")
+		return
+	}
+
+	if req.VideoGenerationParameters == nil {
+		req.VideoGenerationParameters = &schemas.VideoGenerationParameters{}
+	}
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.VideoGenerationParameters.ExtraParams = extraParams
+	}
+
+	bifrostReq := &schemas.BifrostVideoGenerationRequest{
+		Provider:  schemas.ModelProvider(provider),
+		Model:     modelName,
+		Input:     req.VideoGenerationInput,
+		Params:    req.VideoGenerationParameters,
+		Fallbacks: fallbacks,
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		cancel()
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	resp, bifrostErr := h.client.VideoGenerationRequest(bifrostCtx, bifrostReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoRetrieve handles GET /v1/videos/{video_id} - Retrieve a video generation job
+func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	provider := schemas.ModelProvider(idParts[1])
+
+	// Build Bifrost video retrieve request
+	bifrostVideoReq := &schemas.BifrostVideoRetrieveRequest{
+		Provider: provider,
+		ID:       idParts[0],
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoRetrieveRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoDownload handles GET /v1/videos/{video_id}/content - Download video content
+func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// take variant from query parameters
+	variant := string(ctx.QueryArgs().Peek("variant"))
+
+	// Build Bifrost video download request
+	bifrostVideoReq := &schemas.BifrostVideoDownloadRequest{
+		Provider: schemas.ModelProvider(idParts[1]),
+		ID:       idParts[0],
+	}
+
+	if variant != "" {
+		bifrostVideoReq.Variant = schemas.Ptr(schemas.VideoDownloadVariant(variant))
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoDownloadRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	// Set appropriate headers for binary download
+	ctx.Response.Header.Set("Content-Type", resp.ContentType)
+	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Content)))
+	ctx.Response.SetBody(resp.Content)
+}
+
+// videoList handles GET /v1/videos - List video generation jobs
+func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
+	// Get provider from query parameters
+	provider := string(ctx.QueryArgs().Peek("provider"))
+	if provider == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
+		return
+	}
+
+	// Build Bifrost video list request
+	bifrostVideoReq := &schemas.BifrostVideoListRequest{
+		Provider: schemas.ModelProvider(provider),
+	}
+
+	// Parse optional query parameters
+	if afterBytes := ctx.QueryArgs().Peek("after"); len(afterBytes) > 0 {
+		after := string(afterBytes)
+		bifrostVideoReq.After = &after
+	}
+
+	if limitBytes := ctx.QueryArgs().Peek("limit"); len(limitBytes) > 0 {
+		limit, err := strconv.Atoi(string(limitBytes))
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "invalid limit parameter")
+			return
+		}
+		bifrostVideoReq.Limit = &limit
+	}
+
+	if orderBytes := ctx.QueryArgs().Peek("order"); len(orderBytes) > 0 {
+		order := string(orderBytes)
+		bifrostVideoReq.Order = &order
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoListRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoDelete handles DELETE /v1/videos/{video_id} - Delete a video generation job
+func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// Build Bifrost video delete request
+	bifrostVideoReq := &schemas.BifrostVideoDeleteRequest{
+		Provider: schemas.ModelProvider(idParts[1]),
+		ID:       idParts[0],
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoDeleteRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
+}
+
+// videoRemix handles POST /v1/videos/{video_id}/remix - Remix an existing video
+func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
+	// Get video ID from URL parameter
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	// Decode URL-encoded video ID
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	// Parse request body
+	var req VideoRemixRequest
+	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
+		return
+	}
+
+	// Validate prompt
+	if req.VideoGenerationInput == nil || req.VideoGenerationInput.Prompt == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	provider := schemas.ModelProvider(idParts[1])
+
+	extraParams, err := extractExtraParams(ctx.PostBody(), videoRemixParamsKnownFields)
+	if err != nil {
+		logger.Warn("Failed to extract extra params: %v", err)
+	} else {
+		req.ExtraParams = extraParams
+	}
+
+	// Build Bifrost video remix request
+	bifrostVideoReq := &schemas.BifrostVideoRemixRequest{
+		Provider: provider,
+		ID:       idParts[0],
+		Input: &schemas.VideoGenerationInput{
+			Prompt: req.VideoGenerationInput.Prompt,
+		},
+		ExtraParams: req.ExtraParams,
+	}
+
+	// Convert context
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoRemixRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	SendJSON(ctx, resp)
 }
 
 // batchCreate handles POST /v1/batches - Create a new batch job

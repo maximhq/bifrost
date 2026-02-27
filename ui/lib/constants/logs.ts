@@ -19,6 +19,9 @@ export const KnownProvidersNames = [
 	"vertex",
 	"nebius",
 	"xai",
+	"replicate",
+	"vllm",
+	"runway",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -29,6 +32,7 @@ export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
+	"list_models",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -36,12 +40,22 @@ export const RequestTypes = [
 	"responses",
 	"responses_stream",
 	"embedding",
+	"rerank",
 	"speech",
 	"speech_stream",
 	"transcription",
 	"transcription_stream",
 	"image_generation",
 	"image_generation_stream",
+	"image_edit",
+	"image_edit_stream",
+	"image_variation",
+	"video_generation",
+	"video_retrieve",
+	"video_download",
+	"video_delete",
+	"video_list",
+	"video_remix",
 	"count_tokens",
 	// Container operations
 	"container_create",
@@ -76,6 +90,9 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	huggingface: "HuggingFace",
 	nebius: "Nebius Token Factory",
 	xai: "xAI",
+	replicate: "Replicate",
+	vllm: "vLLM",
+	runway: "Runway",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -117,6 +134,7 @@ export const RequestTypeLabels = {
 	"audio.transcription.chunk": "Transcription Stream",
 
 	// Request Types
+	list_models: "List Models",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -125,6 +143,7 @@ export const RequestTypeLabels = {
 	responses_stream: "Responses Stream",
 
 	embedding: "Embedding",
+	rerank: "Rerank",
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
@@ -134,7 +153,15 @@ export const RequestTypeLabels = {
 
 	image_generation: "Image Generation",
 	image_generation_stream: "Image Generation Stream",
-
+	image_edit: "Image Edit",
+	image_edit_stream: "Image Edit Stream",
+	image_variation: "Image Variation",
+	video_generation: "Video Generation",
+	video_retrieve: "Video Retrieve",
+	video_download: "Video Download",
+	video_delete: "Video Delete",
+	video_list: "Video List",
+	video_remix: "Video Remix",
 	count_tokens: "Count Tokens",
 
 	batch_create: "Batch Create",
@@ -177,6 +204,7 @@ export const RequestTypeColors = {
 	completion: "bg-yellow-100 text-yellow-800",
 
 	// Request Types
+	list_models: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 
@@ -187,6 +215,7 @@ export const RequestTypeColors = {
 	responses_stream: "bg-violet-100 text-violet-800",
 
 	embedding: "bg-red-100 text-red-800",
+	rerank: "bg-fuchsia-100 text-fuchsia-800",
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",
@@ -196,7 +225,15 @@ export const RequestTypeColors = {
 
 	image_generation: "bg-indigo-100 text-indigo-800",
 	image_generation_stream: "bg-sky-100 text-sky-800",
-
+	image_edit: "bg-emerald-100 text-emerald-800",
+	image_edit_stream: "bg-teal-100 text-teal-800",
+	image_variation: "bg-violet-100 text-violet-800",
+	video_generation: "bg-fuchsia-100 text-fuchsia-800",
+	video_retrieve: "bg-blue-100 text-blue-800",
+	video_download: "bg-purple-100 text-purple-800",
+	video_delete: "bg-rose-100 text-rose-800",
+	video_list: "bg-cyan-100 text-cyan-800",
+	video_remix: "bg-pink-100 text-pink-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
 
 	// Container operations
@@ -223,6 +260,18 @@ export const RequestTypeColors = {
 	file_retrieve: "bg-orange-100 text-orange-800",
 	file_delete: "bg-red-100 text-red-800",
 	file_content: "bg-blue-100 text-blue-800",
+} as const;
+
+export const RoutingEngineUsedLabels = {
+	"routing-rule": "Routing Rule",
+	governance: "Governance",
+	loadbalancing: "Loadbalancing",
+} as const;
+
+export const RoutingEngineUsedColors = {
+	"routing-rule": "bg-blue-100 text-blue-800",
+	governance: "bg-green-100 text-green-800",
+	loadbalancing: "bg-red-100 text-red-800",
 } as const;
 
 export type Status = (typeof Statuses)[number];

@@ -286,3 +286,229 @@ ImageGenerationStreamResponse:
       description: Error information if generation failed
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
+
+# Image Edit Schemas (multipart/form-data)
+
+ImageEditRequest:
+  type: object
+  required:
+    - model
+    - image
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    prompt:
+      type: string
+      description: |
+        Text prompt describing the edit. Required unless `type` is `background_removal`.
+    image:
+      type: string
+      format: binary
+      description: |
+        Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.
+    mask:
+      type: string
+      format: binary
+      description: Optional mask image for inpainting (transparent areas indicate regions to edit)
+    type:
+      type: string
+      enum:
+        - "inpainting"
+        - "outpainting"
+        - "background_removal"
+      description: Type of edit operation
+    n:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: Number of images to generate
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the output image
+    response_format:
+      type: string
+      enum:
+        - "url"
+        - "b64_json"
+      default: "url"
+      description: Format of the response
+    stream:
+      type: boolean
+      default: false
+      description: When true, stream the response via Server-Sent Events
+    background:
+      type: string
+      enum:
+        - "transparent"
+        - "opaque"
+        - "auto"
+      description: Background type for the image
+    input_fidelity:
+      type: string
+      enum:
+        - "low"
+        - "high"
+      description: How closely to follow the original image
+    partial_images:
+      type: integer
+      minimum: 0
+      maximum: 3
+      description: Number of partial images to generate when streaming
+    quality:
+      type: string
+      enum:
+        - "auto"
+        - "high"
+        - "medium"
+        - "low"
+        - "standard"
+      description: Quality of the output image
+    output_format:
+      type: string
+      enum:
+        - "png"
+        - "webp"
+        - "jpeg"
+      description: Output image format
+    num_inference_steps:
+      type: integer
+      description: Number of inference steps
+    seed:
+      type: integer
+      description: Seed for reproducible editing
+    output_compression:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: Compression level (0-100%)
+    negative_prompt:
+      type: string
+      description: What to avoid in the edit
+    user:
+      type: string
+      description: User identifier for tracking
+    fallbacks:
+      type: array
+      items:
+        $ref: './common.yaml#/Fallback'
+      description: Fallback models to try if primary model fails
+
+# Image Variation Schemas (multipart/form-data)
+
+ImageVariationRequest:
+  type: object
+  required:
+    - model
+    - image
+  properties:
+    model:
+      type: string
+      description: Model identifier in format `provider/model`
+    image:
+      type: string
+      format: binary
+      description: |
+        Image file to create variations of. Use field name `image` for a single file or `image[]` for multiple (first image is used).
+    n:
+      type: integer
+      minimum: 1
+      maximum: 10
+      description: Number of variations to generate
+    size:
+      type: string
+      enum:
+        - "256x256"
+        - "512x512"
+        - "1024x1024"
+        - "1792x1024"
+        - "1024x1792"
+        - "1536x1024"
+        - "1024x1536"
+        - "auto"
+      description: Size of the output images
+    response_format:
+      type: string
+      enum:
+        - "url"
+        - "b64_json"
+      default: "url"
+      description: Format of the response
+    user:
+      type: string
+      description: User identifier for tracking
+    fallbacks:
+      type: array
+      items:
+        $ref: './common.yaml#/Fallback'
+      description: Fallback models to try if primary model fails
+
+# Image Edit Streaming (SSE)
+
+ImageEditStreamResponse:
+  type: object
+  description: |
+    Streaming response chunk for image edit.
+    Sent via Server-Sent Events (SSE) when `stream=true`.
+  properties:
+    id:
+      type: string
+      description: Request identifier
+    type:
+      type: string
+      enum:
+        - "image_edit.partial_image"
+        - "image_edit.completed"
+        - "error"
+      description: Type of stream event
+    partial_image_index:
+      type: integer
+      description: Index of the partial image chunk
+    sequence_number:
+      type: integer
+      description: Sequence number for event ordering within the stream
+    b64_json:
+      type: string
+      description: Base64-encoded chunk of image data; optional
+    url:
+      type: string
+      format: uri
+      description: Optional public URL to the image chunk
+    created_at:
+      type: integer
+      format: int64
+      description: Timestamp when chunk was created
+    size:
+      type: string
+      description: Size of the image
+    quality:
+      type: string
+      description: Quality setting used
+    background:
+      type: string
+      description: Background type used
+    output_format:
+      type: string
+      enum:
+        - "png"
+        - "webp"
+        - "jpeg"
+      description: Output format used
+    revised_prompt:
+      type: string
+      description: Revised prompt
+    usage:
+      $ref: '#/ImageUsage'
+      description: Token usage
+    error:
+      $ref: './common.yaml#/BifrostError'
+      description: Error information if edit failed
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

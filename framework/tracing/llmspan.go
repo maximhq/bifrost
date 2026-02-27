@@ -122,11 +122,12 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 	return attrs
 }
 
-// PopulateContextAttributes extracts context-related attributes (virtual keys, retries, etc.)
+// PopulateContextAttributes extracts context-related attributes (virtual keys, retries, routing rules, etc.)
 func PopulateContextAttributes(
 	attrs map[string]any,
 	virtualKeyID, virtualKeyName string,
 	selectedKeyID, selectedKeyName string,
+	routingRuleID, routingRuleName string,
 	teamID, teamName string,
 	customerID, customerName string,
 	numberOfRetries, fallbackIndex int,
@@ -138,6 +139,10 @@ func PopulateContextAttributes(
 	if selectedKeyID != "" {
 		attrs[schemas.AttrSelectedKeyID] = selectedKeyID
 		attrs[schemas.AttrSelectedKeyName] = selectedKeyName
+	}
+	if routingRuleID != "" {
+		attrs[schemas.AttrRoutingRuleID] = routingRuleID
+		attrs[schemas.AttrRoutingRuleName] = routingRuleName
 	}
 	if teamID != "" {
 		attrs[schemas.AttrTeamID] = teamID

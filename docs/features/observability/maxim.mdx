@@ -42,7 +42,7 @@ func main() {
     // Initialize Bifrost with the plugin
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
         Account: &yourAccount,
-        Plugins: []schemas.Plugin{maximPlugin},
+        LLMPlugins: []schemas.LLMPlugin{maximPlugin},
     })
     if err != nil {
         panic(err)

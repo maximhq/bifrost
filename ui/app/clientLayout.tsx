@@ -72,7 +72,7 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
 					<NuqsAdapter>
 						<RbacProvider>
 							<AppContent>{children}</AppContent>
-							{process.env.NODE_ENV === "development" && <DevProfiler />}
+							{process.env.NODE_ENV === "development" && !process.env.NEXT_PUBLIC_DISABLE_PROFILER && <DevProfiler />}
 						</RbacProvider>
 					</NuqsAdapter>
 				</ReduxProvider>

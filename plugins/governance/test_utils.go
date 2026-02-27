@@ -1,6 +1,11 @@
 package governance
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -8,6 +13,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,6 +70,10 @@ func (ml *MockLogger) Fatal(format string, args ...interface{}) {
 	ml.mu.Lock()
 	defer ml.mu.Unlock()
 	ml.errors = append(ml.errors, format)
+}
+
+func (ml *MockLogger) LogHTTPRequest(level schemas.LogLevel, msg string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
 }
 
 // Test data builders
@@ -259,4 +269,69 @@ func buildProviderWithGovernance(name string, budget *configstoreTables.TableBud
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// Datasheet is fetched once per test binary run via sync.Once.
+var (
+	datasheetOnce      sync.Once
+	datasheetBaseIndex map[string]string
+	datasheetErr       error
+)
+
+// fetchDatasheetBaseIndex downloads the default datasheet and builds a
+// model → base_model index, mirroring ModelCatalog.populateModelPoolFromPricingData.
+func fetchDatasheetBaseIndex() {
+	client := &http.Client{Timeout: modelcatalog.DefaultPricingTimeout}
+	resp, err := client.Get(modelcatalog.DefaultPricingURL)
+	if err != nil {
+		datasheetErr = err
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		datasheetErr = fmt.Errorf("datasheet HTTP %d", resp.StatusCode)
+		return
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		datasheetErr = err
+		return
+	}
+
+	var entries map[string]modelcatalog.PricingEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		datasheetErr = err
+		return
+	}
+
+	index := make(map[string]string, len(entries))
+	for modelKey, entry := range entries {
+		if entry.BaseModel == "" {
+			continue
+		}
+		// Strip provider prefix (same as convertPricingDataToTableModelPricing)
+		modelName := modelKey
+		if strings.Contains(modelKey, "/") {
+			parts := strings.Split(modelKey, "/")
+			if len(parts) > 1 {
+				modelName = strings.Join(parts[1:], "/")
+			}
+		}
+		index[modelName] = entry.BaseModel
+	}
+
+	datasheetBaseIndex = index
+}
+
+// newTestModelCatalog creates a test ModelCatalog using the fetched datasheet base model index.
+// This provides proper nil-pointer semantics (unlike an interface wrapper).
+func newTestModelCatalog(t *testing.T) *modelcatalog.ModelCatalog {
+	t.Helper()
+	datasheetOnce.Do(fetchDatasheetBaseIndex)
+	if datasheetErr != nil {
+		t.Skipf("skipping: failed to fetch datasheet for test model catalog: %v", datasheetErr)
+	}
+	return modelcatalog.NewTestCatalog(datasheetBaseIndex)
 }

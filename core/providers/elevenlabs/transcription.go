@@ -33,43 +33,56 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 
 	if params.ExtraParams != nil {
 		if tagAudioEvents, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["tag_audio_events"]); ok {
+			delete(params.ExtraParams, "tag_audio_events")
 			req.TagAudioEvents = tagAudioEvents
 		}
 		if numSpeakers, ok := schemas.SafeExtractIntPointer(params.ExtraParams["num_speakers"]); ok {
+			delete(params.ExtraParams, "num_speakers")
 			req.NumSpeakers = numSpeakers
 		}
 		if timestampsGranularity, ok := schemas.SafeExtractStringPointer(params.ExtraParams["timestamps_granularity"]); ok {
 			granularity := ElevenlabsTimestampsGranularity(*timestampsGranularity)
+			delete(params.ExtraParams, "timestamps_granularity")
 			req.TimestampsGranularity = &granularity
 		}
 		if diarize, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["diarize"]); ok {
+			delete(params.ExtraParams, "diarize")
 			req.Diarize = diarize
 		}
 		if diarizationThreshold, ok := schemas.SafeExtractFloat64Pointer(params.ExtraParams["diarization_threshold"]); ok {
+			delete(params.ExtraParams, "diarization_threshold")
 			req.DiarizationThreshold = diarizationThreshold
 		}
 		if fileFormat, ok := schemas.SafeExtractStringPointer(params.ExtraParams["file_format"]); ok {
 			fileFormat := ElevenlabsFileFormat(*fileFormat)
+			delete(params.ExtraParams, "file_format")
 			req.FileFormat = &fileFormat
 		}
 		if cloudStorageURL, ok := schemas.SafeExtractStringPointer(params.ExtraParams["cloud_storage_url"]); ok {
+			delete(params.ExtraParams, "cloud_storage_url")
 			req.CloudStorageURL = cloudStorageURL
 		}
 		if webhook, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["webhook"]); ok {
+			delete(params.ExtraParams, "webhook")
 			req.Webhook = webhook
 		}
 		if webhookID, ok := schemas.SafeExtractStringPointer(params.ExtraParams["webhook_id"]); ok {
+			delete(params.ExtraParams, "webhook_id")
 			req.WebhookID = webhookID
 		}
 		if temperature, ok := schemas.SafeExtractFloat64Pointer(params.ExtraParams["temperature"]); ok {
+			delete(params.ExtraParams, "temperature")
 			req.Temperature = temperature
 		}
 		if seed, ok := schemas.SafeExtractIntPointer(params.ExtraParams["seed"]); ok {
+			delete(params.ExtraParams, "seed")
 			req.Seed = seed
 		}
 		if useMultiChannel, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["use_multi_channel"]); ok {
+			delete(params.ExtraParams, "use_multi_channel")
 			req.UseMultiChannel = useMultiChannel
 		}
+		req.ExtraParams = bifrostReq.Params.ExtraParams
 	}
 
 	if len(params.AdditionalFormats) > 0 {

@@ -34,8 +34,11 @@ import { baseApi } from "./baseApi";
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Virtual Keys
-		getVirtualKeys: builder.query<GetVirtualKeysResponse, void>({
-			query: () => "/governance/virtual-keys",
+		getVirtualKeys: builder.query<GetVirtualKeysResponse, { fromMemory?: boolean } | void>({
+			query: (params) => ({
+				url: "/governance/virtual-keys",
+				params: { from_memory: params?.fromMemory ?? false },
+			}),
 			providesTags: ["VirtualKeys"],
 		}),
 
@@ -50,7 +53,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
+								if (!draft.virtual_keys) draft.virtual_keys = [];
+								draft.virtual_keys.unshift(data.virtual_key);
+								draft.count = (draft.count || 0) + 1;
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed, do nothing - error handling bubbled up
+				}
+			},
 		}),
 
 		updateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, { vkId: string; data: UpdateVirtualKeyRequest }>({
@@ -59,7 +78,30 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { vkId }) => ["VirtualKeys", { type: "VirtualKeys", id: vkId }],
+			async onQueryStarted({ vkId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
+								if (!draft.virtual_keys) return;
+								const index = draft.virtual_keys.findIndex((vk) => vk.id === vkId);
+								if (index !== -1) {
+									draft.virtual_keys[index] = data.virtual_key;
+								}
+							}),
+						);
+					}
+					dispatch(
+						governanceApi.util.updateQueryData("getVirtualKey", vkId, (draft) => {
+							draft.virtual_key = data.virtual_key;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteVirtualKey: builder.mutation<{ message: string }, string>({
@@ -67,7 +109,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["VirtualKeys"],
+			async onQueryStarted(vkId, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
+								if (!draft.virtual_keys) return;
+								draft.virtual_keys = draft.virtual_keys.filter((vk) => vk.id !== vkId);
+								draft.count = Math.max(0, (draft.count || 0) - 1);
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Teams
@@ -90,7 +148,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["Teams"],
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
+							if (!draft.teams) draft.teams = [];
+							draft.teams.unshift(data.team);
+							draft.count = (draft.count || 0) + 1;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		updateTeam: builder.mutation<{ message: string; team: Team }, { teamId: string; data: UpdateTeamRequest }>({
@@ -99,7 +170,27 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { teamId }) => ["Teams", { type: "Teams", id: teamId }],
+			async onQueryStarted({ teamId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
+							if (!draft.teams) return;
+							const index = draft.teams.findIndex((t) => t.id === teamId);
+							if (index !== -1) {
+								draft.teams[index] = data.team;
+							}
+						}),
+					);
+					dispatch(
+						governanceApi.util.updateQueryData("getTeam", teamId, (draft) => {
+							draft.team = data.team;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteTeam: builder.mutation<{ message: string }, string>({
@@ -107,7 +198,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/teams/${teamId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["Teams"],
+			async onQueryStarted(teamId, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
+							if (!draft.teams) return;
+							draft.teams = draft.teams.filter((t) => t.id !== teamId);
+							draft.count = Math.max(0, (draft.count || 0) - 1);
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Customers
@@ -127,7 +231,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["Customers"],
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
+							if (!draft.customers) draft.customers = [];
+							draft.customers.unshift(data.customer);
+							draft.count = (draft.count || 0) + 1;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		updateCustomer: builder.mutation<{ message: string; customer: Customer }, { customerId: string; data: UpdateCustomerRequest }>({
@@ -136,7 +253,27 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { customerId }) => ["Customers", { type: "Customers", id: customerId }],
+			async onQueryStarted({ customerId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
+							if (!draft.customers) return;
+							const index = draft.customers.findIndex((c) => c.id === customerId);
+							if (index !== -1) {
+								draft.customers[index] = data.customer;
+							}
+						}),
+					);
+					dispatch(
+						governanceApi.util.updateQueryData("getCustomer", customerId, (draft) => {
+							draft.customer = data.customer;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteCustomer: builder.mutation<{ message: string }, string>({
@@ -144,7 +281,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/customers/${customerId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["Customers"],
+			async onQueryStarted(customerId, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
+							if (!draft.customers) return;
+							draft.customers = draft.customers.filter((c) => c.id !== customerId);
+							draft.count = Math.max(0, (draft.count || 0) - 1);
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Budgets
@@ -164,7 +314,27 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { budgetId }) => ["Budgets", { type: "Budgets", id: budgetId }],
+			async onQueryStarted({ budgetId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getBudgets", undefined, (draft) => {
+							if (!draft.budgets) return;
+							const index = draft.budgets.findIndex((b) => b.id === budgetId);
+							if (index !== -1) {
+								draft.budgets[index] = data.budget;
+							}
+						}),
+					);
+					dispatch(
+						governanceApi.util.updateQueryData("getBudget", budgetId, (draft) => {
+							draft.budget = data.budget;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteBudget: builder.mutation<{ message: string }, string>({
@@ -172,7 +342,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/budgets/${budgetId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["Budgets"],
+			async onQueryStarted(budgetId, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getBudgets", undefined, (draft) => {
+							if (!draft.budgets) return;
+							draft.budgets = draft.budgets.filter((b) => b.id !== budgetId);
+							draft.count = Math.max(0, (draft.count || 0) - 1);
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Rate Limits
@@ -192,7 +375,27 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { rateLimitId }) => ["RateLimits", { type: "RateLimits", id: rateLimitId }],
+			async onQueryStarted({ rateLimitId }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getRateLimits", undefined, (draft) => {
+							if (!draft.rate_limits) return;
+							const index = draft.rate_limits.findIndex((r) => r.id === rateLimitId);
+							if (index !== -1) {
+								draft.rate_limits[index] = data.rate_limit;
+							}
+						}),
+					);
+					dispatch(
+						governanceApi.util.updateQueryData("getRateLimit", rateLimitId, (draft) => {
+							draft.rate_limit = data.rate_limit;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteRateLimit: builder.mutation<{ message: string }, string>({
@@ -200,7 +403,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/rate-limits/${rateLimitId}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["RateLimits"],
+			async onQueryStarted(rateLimitId, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					dispatch(
+						governanceApi.util.updateQueryData("getRateLimits", undefined, (draft) => {
+							if (!draft.rate_limits) return;
+							draft.rate_limits = draft.rate_limits.filter((r) => r.id !== rateLimitId);
+							draft.count = Math.max(0, (draft.count || 0) - 1);
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Usage Stats
@@ -233,8 +449,11 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		// Model Configs
-		getModelConfigs: builder.query<GetModelConfigsResponse, void>({
-			query: () => "/governance/model-configs",
+		getModelConfigs: builder.query<GetModelConfigsResponse, { fromMemory?: boolean } | void>({
+			query: (params) => ({
+				url: "/governance/model-configs",
+				params: { from_memory: params?.fromMemory ?? false },
+			}),
 			providesTags: ["ModelConfigs"],
 		}),
 
@@ -249,7 +468,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			invalidatesTags: ["ModelConfigs"],
+			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+								if (!draft.model_configs) draft.model_configs = [];
+								draft.model_configs.unshift(data.model_config);
+								draft.count = (draft.count || 0) + 1;
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed, do nothing - error handling bubbled up
+				}
+			},
 		}),
 
 		updateModelConfig: builder.mutation<{ message: string; model_config: ModelConfig }, { id: string; data: UpdateModelConfigRequest }>({
@@ -258,7 +493,30 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: (result, error, { id }) => ["ModelConfigs", { type: "ModelConfigs", id }],
+			async onQueryStarted({ id }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+								if (!draft.model_configs) return;
+								const index = draft.model_configs.findIndex((mc) => mc.id === id);
+								if (index !== -1) {
+									draft.model_configs[index] = data.model_config;
+								}
+							}),
+						);
+					}
+					dispatch(
+						governanceApi.util.updateQueryData("getModelConfig", id, (draft) => {
+							draft.model_config = data.model_config;
+						}),
+					);
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteModelConfig: builder.mutation<{ message: string }, string>({
@@ -266,12 +524,31 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/model-configs/${id}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["ModelConfigs"],
+			async onQueryStarted(id, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+								if (!draft.model_configs) return;
+								draft.model_configs = draft.model_configs.filter((mc) => mc.id !== id);
+								draft.count = Math.max(0, (draft.count || 0) - 1);
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		// Provider Governance
-		getProviderGovernance: builder.query<GetProviderGovernanceResponse, void>({
-			query: () => "/governance/providers",
+		getProviderGovernance: builder.query<GetProviderGovernanceResponse, { fromMemory?: boolean } | void>({
+			query: (params) => ({
+				url: "/governance/providers",
+				params: { from_memory: params?.fromMemory ?? false },
+			}),
 			providesTags: ["ProviderGovernance"],
 		}),
 
@@ -284,7 +561,29 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			invalidatesTags: ["ProviderGovernance"],
+			async onQueryStarted({ provider }, { dispatch, queryFulfilled }) {
+				try {
+					const { data } = await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getProviderGovernance", variant, (draft) => {
+								if (!draft.providers) draft.providers = [];
+								const index = draft.providers.findIndex((p) => p.provider === provider);
+								if (index !== -1) {
+									draft.providers[index] = data.provider;
+								} else {
+									// New provider governance - add to list
+									draft.providers.push(data.provider);
+									draft.count = (draft.count || 0) + 1;
+								}
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 
 		deleteProviderGovernance: builder.mutation<{ message: string }, string>({
@@ -292,7 +591,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/providers/${encodeURIComponent(provider)}`,
 				method: "DELETE",
 			}),
-			invalidatesTags: ["ProviderGovernance"],
+			async onQueryStarted(provider, { dispatch, queryFulfilled }) {
+				try {
+					await queryFulfilled;
+					const variants = [undefined, { fromMemory: true }] as const;
+					for (const variant of variants) {
+						dispatch(
+							governanceApi.util.updateQueryData("getProviderGovernance", variant, (draft) => {
+								if (!draft.providers) return;
+								draft.providers = draft.providers.filter((p) => p.provider !== provider);
+								draft.count = Math.max(0, (draft.count || 0) - 1);
+							}),
+						);
+					}
+				} catch {
+					// Mutation failed
+				}
+			},
 		}),
 	}),
 });

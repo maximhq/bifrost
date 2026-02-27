@@ -5,6 +5,7 @@ package network
 import (
 	"crypto/tls"
 	"encoding/base64"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -38,7 +39,7 @@ var DefaultClientConfig = struct {
 }{
 	ReadTimeout:         60 * time.Second,
 	WriteTimeout:        60 * time.Second,
-	MaxIdleConnDuration: 120 * time.Second,
+	MaxIdleConnDuration: 30 * time.Second,
 	MaxConnsPerHost:     200,
 }
 
@@ -214,6 +215,7 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 		WriteTimeout:        DefaultClientConfig.WriteTimeout,
 		MaxIdleConnDuration: DefaultClientConfig.MaxIdleConnDuration,
 		MaxConnsPerHost:     DefaultClientConfig.MaxConnsPerHost,
+		RetryIfErr:          StaleConnectionRetryIfErr,
 	}
 
 	// Configure proxy if enabled for this purpose
@@ -233,6 +235,35 @@ func (f *HTTPClientFactory) createFasthttpClient(purpose ClientPurpose) *fasthtt
 	}
 
 	return client
+}
+
+// StaleConnectionRetryIfErr is a RetryIfErr callback that retries requests when the failure
+// is due to a stale/dead connection being reused from the pool. This addresses intermittent
+// "cannot find whitespace in the first line of response" errors caused by connection reuse
+// with leftover chunked transfer encoding data (see: https://github.com/valyala/fasthttp/issues/1743).
+//
+// By default fasthttp only retries idempotent requests (GET/HEAD/PUT). LLM inference requests
+// use POST, so without this they fail immediately on stale connections. Retrying is safe here
+// because the error occurs during response header parsing — before the server processes the
+// new request, or on a connection the server has already closed.
+func StaleConnectionRetryIfErr(_ *fasthttp.Request, attempts int, err error) (resetTimeout bool, retry bool) {
+	if attempts > 1 {
+		return false, false
+	}
+	if err == nil {
+		return false, false
+	}
+	errStr := err.Error()
+	// io.EOF — server closed the connection (fasthttp converts this to
+	//   ErrConnectionClosed AFTER the retry loop, so RetryIfErr sees raw EOF)
+	// "cannot find whitespace in the first line of response" — stale chunked data in buffer
+	// "connection reset by peer" — server RST'd the idle connection
+	if err == io.EOF ||
+		strings.Contains(errStr, "cannot find whitespace") ||
+		strings.Contains(errStr, "connection reset by peer") {
+		return true, true
+	}
+	return false, false
 }
 
 // buildProxyURLWithAuth adds authentication to a proxy URL if credentials are provided

@@ -2,14 +2,77 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 )
 
+const (
+	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
+	// to serialize migrations across cluster nodes.
+	// This is the SAME key used by configstore migrations to ensure
+	// all migrations are fully serialized.
+	migrationAdvisoryLockKey = 1000001
+)
+
+// migrationLock holds a dedicated connection for the advisory lock.
+// This ensures the lock is held on the same connection throughout migrations,
+// preventing race conditions caused by GORM's connection pooling.
+type migrationLock struct {
+	conn *sql.Conn
+}
+
+// acquireMigrationLock gets a dedicated connection and acquires an advisory lock.
+// For non-PostgreSQL databases, returns a no-op lock.
+func acquireMigrationLock(ctx context.Context, db *gorm.DB) (*migrationLock, error) {
+	if db.Dialector.Name() != "postgres" {
+		return &migrationLock{}, nil
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sql.DB: %w", err)
+	}
+
+	// Get a dedicated connection (not returned to pool until Close())
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get dedicated connection: %w", err)
+	}
+
+	// Acquire advisory lock on this dedicated connection.
+	// This will BLOCK if another node holds the lock.
+	_, err = conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", migrationAdvisoryLockKey)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to acquire migration advisory lock: %w", err)
+	}
+
+	return &migrationLock{conn: conn}, nil
+}
+
+// release unlocks and closes the dedicated connection
+func (l *migrationLock) release(ctx context.Context) {
+	if l.conn == nil {
+		return
+	}
+	// Release lock on the SAME connection that acquired it
+	_, _ = l.conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", migrationAdvisoryLockKey)
+	l.conn.Close()
+}
+
 // Migrate performs the necessary database migrations.
 func triggerMigrations(ctx context.Context, db *gorm.DB) error {
+	// Acquire advisory lock to serialize migrations across cluster nodes.
+	// Uses the same key as configstore to ensure all migrations are serialized.
+	lock, err := acquireMigrationLock(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer lock.release(ctx)
+
 	if err := migrationInit(ctx, db); err != nil {
 		return err
 	}
@@ -43,10 +106,52 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddRawRequestColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationCreateMCPToolLogsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddCostColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddImageGenerationOutputColumn(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddImageGenerationInputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVirtualKeyColumnsToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingEngineUsedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingEnginesUsedColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddListModelsOutputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRerankOutputColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingEngineLogsColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationCreateAsyncJobsTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMetadataColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddMetadataColumnToMCPToolLogs(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddHistogramCompositeIndexes(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddVideoColumns(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -681,6 +786,122 @@ func migrationAddRawRequestColumn(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
+// migrationCreateMCPToolLogsTable creates the mcp_tool_logs table for MCP tool execution logs
+func migrationCreateMCPToolLogsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "mcp_tool_logs_init",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&MCPToolLog{}) {
+				if err := migrator.CreateTable(&MCPToolLog{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_llm_request_id"); err != nil {
+					return fmt.Errorf("failed to create index on llm_request_id: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_tool_name"); err != nil {
+					return fmt.Errorf("failed to create index on tool_name: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_server_label") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_server_label"); err != nil {
+					return fmt.Errorf("failed to create index on server_label: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_latency") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_latency"); err != nil {
+					return fmt.Errorf("failed to create index on latency: %w", err)
+				}
+			}
+
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_status") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_status"); err != nil {
+					return fmt.Errorf("failed to create index on status: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropTable(&MCPToolLog{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating mcp_tool_logs table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddCostColumnToMCPToolLogs adds the cost column to the mcp_tool_logs table
+func migrationAddCostColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_cost_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add cost column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "cost") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "cost"); err != nil {
+					return fmt.Errorf("failed to add cost column: %w", err)
+				}
+			}
+
+			// Create index on cost column
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_cost"); err != nil {
+					return fmt.Errorf("failed to create index on cost: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop index first
+			if migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_cost") {
+				if err := migrator.DropIndex(&MCPToolLog{}, "idx_mcp_logs_cost"); err != nil {
+					return err
+				}
+			}
+
+			// Drop column
+			if migrator.HasColumn(&MCPToolLog{}, "cost") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "cost"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding cost column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
 func migrationAddImageGenerationOutputColumn(ctx context.Context, db *gorm.DB) error {
 	opts := *migrator.DefaultOptions
 	opts.UseTransaction = true
@@ -743,6 +964,546 @@ func migrationAddImageGenerationInputColumn(ctx context.Context, db *gorm.DB) er
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding image generation input column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingRuleIDAndRoutingRuleNameColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_rule_id_and_routing_rule_name_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if !migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.AddColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_rule_id") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&Log{}, "routing_rule_name") {
+				if err := migrator.DropColumn(&Log{}, "routing_rule_name"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing rule id and routing rule name columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddVirtualKeyColumnsToMCPToolLogs adds virtual_key_id and virtual_key_name columns to the mcp_tool_logs table
+func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_virtual_key_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Add virtual_key_id column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_id column: %w", err)
+				}
+			}
+
+			// Add virtual_key_name column if it doesn't exist
+			if !migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
+					return fmt.Errorf("failed to add virtual_key_name column: %w", err)
+				}
+			}
+
+			// Create index on virtual_key_id column
+			if !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
+					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop index first
+			if migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+				if err := migrator.DropIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
+					return err
+				}
+			}
+
+			// Drop virtual_key_name column
+			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_name") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_name"); err != nil {
+					return err
+				}
+			}
+
+			// Drop virtual_key_id column
+			if migrator.HasColumn(&MCPToolLog{}, "virtual_key_id") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "virtual_key_id"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding virtual key columns to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingEngineUsedColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_engine_used_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			// Only add the column if it doesn't exist
+			if !migrator.HasColumn(&Log{}, "routing_engine_used") && !migrator.HasColumn(&Log{}, "routing_engines_used") {
+				// Use raw SQL to avoid GORM struct field dependency
+				if err := tx.Exec("ALTER TABLE logs ADD COLUMN routing_engine_used VARCHAR(255)").Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_engine_used") {
+				if err := migrator.DropColumn(&Log{}, "routing_engine_used"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing engine used column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingEnginesUsedColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_engines_used_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			hasOldColumn := migrator.HasColumn(&Log{}, "routing_engine_used")
+			hasNewColumn := migrator.HasColumn(&Log{}, "routing_engines_used")
+
+			if hasOldColumn && !hasNewColumn {
+				// Rename old column to new if new doesn't exist yet
+				if err := migrator.RenameColumn(&Log{}, "routing_engine_used", "routing_engines_used"); err != nil {
+					return fmt.Errorf("failed to rename routing_engine_used to routing_engines_used: %w", err)
+				}
+			} else if hasOldColumn && hasNewColumn {
+				// Both columns exist - drop the old one (new column is already in use)
+				if err := migrator.DropColumn(&Log{}, "routing_engine_used"); err != nil {
+					return fmt.Errorf("failed to drop old routing_engine_used column: %w", err)
+				}
+			}
+			// If only new column exists, do nothing (already migrated)
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			hasNewColumn := migrator.HasColumn(&Log{}, "routing_engines_used")
+			hasOldColumn := migrator.HasColumn(&Log{}, "routing_engine_used")
+
+			if hasNewColumn && !hasOldColumn {
+				// Rename new column back to old if old doesn't exist
+				if err := migrator.RenameColumn(&Log{}, "routing_engines_used", "routing_engine_used"); err != nil {
+					return fmt.Errorf("failed to rename routing_engines_used back to routing_engine_used: %w", err)
+				}
+			}
+			// If old column was dropped, recreate it would be complex, so we skip
+
+			return nil
+		},
+	}})
+
+	return m.Migrate()
+}
+
+func migrationAddListModelsOutputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_list_models_output_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "list_models_output") {
+				if err := migrator.AddColumn(&Log{}, "list_models_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "list_models_output") {
+				if err := migrator.DropColumn(&Log{}, "list_models_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding list models output column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRerankOutputColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_rerank_output_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "rerank_output") {
+				if err := migrator.AddColumn(&Log{}, "rerank_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "rerank_output") {
+				if err := migrator.DropColumn(&Log{}, "rerank_output"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding rerank output column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddRoutingEngineLogsColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_routing_engine_logs_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "routing_engine_logs") {
+				if err := migrator.AddColumn(&Log{}, "routing_engine_logs"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "routing_engine_logs") {
+				if err := migrator.DropColumn(&Log{}, "routing_engine_logs"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding routing engine logs column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationCreateAsyncJobsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "async_jobs_init",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&AsyncJob{}) {
+				if err := dbMigrator.CreateTable(&AsyncJob{}); err != nil {
+					return err
+				}
+			}
+
+			// Explicitly create indexes as declared in struct tags
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_status") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_status"); err != nil {
+					return fmt.Errorf("failed to create index on status: %w", err)
+				}
+			}
+
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_vk_id") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_vk_id"); err != nil {
+					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
+				}
+			}
+
+			if !dbMigrator.HasIndex(&AsyncJob{}, "idx_async_jobs_expires_at") {
+				if err := dbMigrator.CreateIndex(&AsyncJob{}, "idx_async_jobs_expires_at"); err != nil {
+					return fmt.Errorf("failed to create index on expires_at: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return tx.Migrator().DropTable(&AsyncJob{})
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating async_jobs table: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddMetadataColumn(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_metadata_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&Log{}, "metadata") {
+				if err := migrator.AddColumn(&Log{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&Log{}, "metadata") {
+				if err := migrator.DropColumn(&Log{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding metadata column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMetadataColumnToMCPToolLogs adds the metadata column to the mcp_tool_logs table
+func migrationAddMetadataColumnToMCPToolLogs(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "mcp_tool_logs_add_metadata_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&MCPToolLog{}, "metadata") {
+				if err := migrator.AddColumn(&MCPToolLog{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&MCPToolLog{}, "metadata") {
+				if err := migrator.DropColumn(&MCPToolLog{}, "metadata"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding metadata column to mcp_tool_logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddHistogramCompositeIndexes adds a covering index that optimizes all 4 histogram queries.
+// Without this, even though idx_logs_status_timestamp filters the WHERE clause correctly,
+// SQLite must seek back to the main table to read aggregation columns (tokens, cost, model).
+// With large rows (~800 KB of JSON per log entry), these main-table lookups dominate query time.
+// A covering index includes all columns the histogram queries need, so SQLite resolves
+// them entirely from the compact index B-tree (~100 bytes/entry) without touching the main table.
+func migrationAddHistogramCompositeIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_histogram_composite_indexes",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Covering index for all 4 histogram queries with any combination of dashboard filters.
+			//
+			// Leading columns (status, timestamp) drive the range scan.
+			// Filter columns (selected_key_id, virtual_key_id, etc.) let the DB evaluate
+			// WHERE predicates directly from the index without main-table lookups.
+			// Aggregation columns (model, cost, tokens) provide data for GROUP BY / SUM.
+			//
+			// Without these filter columns in the index, the DB must seek back to the
+			// main table (~800 KB per row with JSON blobs) to check each filter,
+			// turning a 17 ms query into a 35+ second one.
+			if !migrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				dialect := tx.Dialector.Name()
+
+				var createSQL string
+				switch dialect {
+				case "mysql":
+					// MySQL/MariaDB: InnoDB has a 3072-byte composite key limit.
+					// With utf8mb4 each varchar(255) uses up to 1020 bytes, so use
+					// prefix lengths (50 chars) to keep the total well under the limit.
+					createSQL = `CREATE INDEX idx_logs_histogram_cover ON logs(
+						status(50), timestamp,
+						selected_key_id(50), virtual_key_id(50), routing_rule_id(50), provider(50), object_type(50),
+						model(50), cost, prompt_tokens, completion_tokens, total_tokens
+					)`
+				default:
+					// SQLite / PostgreSQL: no prefix-index limit concerns.
+					createSQL = `CREATE INDEX IF NOT EXISTS idx_logs_histogram_cover ON logs(
+						status, timestamp,
+						selected_key_id, virtual_key_id, routing_rule_id, provider, object_type,
+						model, cost, prompt_tokens, completion_tokens, total_tokens
+					)`
+				}
+
+				if err := tx.Exec(createSQL).Error; err != nil {
+					return fmt.Errorf("failed to create covering index for histograms: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasIndex(&Log{}, "idx_logs_histogram_cover") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_histogram_cover").Error; err != nil {
+					return fmt.Errorf("failed to drop index idx_logs_histogram_cover: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding histogram covering index: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddVideoColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_video_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			videoColumns := []string{
+				"video_generation_input",
+				"video_generation_output",
+				"video_retrieve_output",
+				"video_download_output",
+				"video_list_output",
+				"video_delete_output",
+			}
+
+			for _, column := range videoColumns {
+				if !migrator.HasColumn(&Log{}, column) {
+					if err := migrator.AddColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			videoColumns := []string{
+				"video_generation_input",
+				"video_generation_output",
+				"video_retrieve_output",
+				"video_download_output",
+				"video_list_output",
+				"video_delete_output",
+			}
+
+			for _, column := range videoColumns {
+				if migrator.HasColumn(&Log{}, column) {
+					if err := migrator.DropColumn(&Log{}, column); err != nil {
+						return err
+					}
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding video columns: %s", err.Error())
 	}
 	return nil
 }

@@ -35,6 +35,7 @@ type Accumulator struct {
 
 	stopCleanup   chan struct{}
 	cleanupWg     sync.WaitGroup
+	cleanupOnce   sync.Once
 	ttl           time.Duration
 	cleanupTicker *time.Ticker
 }
@@ -160,13 +161,40 @@ func (a *Accumulator) createStreamAccumulator(requestID string) *StreamAccumulat
 	return sc
 }
 
-// GetOrCreateStreamAccumulator gets or creates a stream accumulator for a request
+// getOrCreateStreamAccumulator gets or creates a stream accumulator for a request
 func (a *Accumulator) getOrCreateStreamAccumulator(requestID string) *StreamAccumulator {
-	if accumulator, exists := a.streamAccumulators.Load(requestID); exists {
-		return accumulator.(*StreamAccumulator)
+	// Fast path: check if already exists (no allocation)
+	if acc, exists := a.streamAccumulators.Load(requestID); exists {
+		return acc.(*StreamAccumulator)
 	}
-	// Create new accumulator if it doesn't exist
-	return a.createStreamAccumulator(requestID)
+
+	// Slow path: create new accumulator
+	now := time.Now()
+	newAcc := &StreamAccumulator{
+		RequestID:                  requestID,
+		ChatStreamChunks:           make([]*ChatStreamChunk, 0),
+		ResponsesStreamChunks:      make([]*ResponsesStreamChunk, 0),
+		ImageStreamChunks:          make([]*ImageStreamChunk, 0),
+		TranscriptionStreamChunks:  make([]*TranscriptionStreamChunk, 0),
+		AudioStreamChunks:          make([]*AudioStreamChunk, 0),
+		ChatChunksSeen:             make(map[int]struct{}),
+		ResponsesChunksSeen:        make(map[int]struct{}),
+		TranscriptionChunksSeen:    make(map[int]struct{}),
+		AudioChunksSeen:            make(map[int]struct{}),
+		ImageChunksSeen:            make(map[string]struct{}),
+		MaxChatChunkIndex:          -1,
+		MaxResponsesChunkIndex:     -1,
+		MaxTranscriptionChunkIndex: -1,
+		MaxAudioChunkIndex:         -1,
+		IsComplete:                 false,
+		mu:                         sync.Mutex{},
+		Timestamp:                  now,
+		StartTimestamp:             now,
+	}
+
+	// LoadOrStore atomically: if key exists, return existing; else store new
+	actual, _ := a.streamAccumulators.LoadOrStore(requestID, newAcc)
+	return actual.(*StreamAccumulator)
 }
 
 // AddStreamChunk adds a chunk to the stream accumulator
@@ -437,7 +465,7 @@ func (a *Accumulator) ProcessStreamingResponse(ctx *schemas.BifrostContext, resu
 	isChatStreaming := requestType == schemas.ChatCompletionStreamRequest || requestType == schemas.TextCompletionStreamRequest
 	isResponsesStreaming := requestType == schemas.ResponsesStreamRequest
 	// Edit images/ Image variation requests will be added here
-	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest
+	isImageStreaming := requestType == schemas.ImageGenerationStreamRequest || requestType == schemas.ImageEditStreamRequest
 
 	if isChatStreaming {
 		// Handle text-based streaming with ordered accumulation
@@ -488,7 +516,9 @@ func (a *Accumulator) Cleanup() {
 		a.streamAccumulators.Delete(key)
 		return true
 	})
-	close(a.stopCleanup)
+	a.cleanupOnce.Do(func() {
+		close(a.stopCleanup)
+	})
 	a.cleanupTicker.Stop()
 	a.cleanupWg.Wait()
 }

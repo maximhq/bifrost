@@ -142,6 +142,7 @@ bifrost:
     adminUsername: ""
     adminPassword: ""
     isEnabled: false
+    disableAuthOnInference: false
     # Use existing Kubernetes secret for admin credentials
     existingSecret: ""
     usernameKey: "username"
@@ -155,13 +156,17 @@ bifrost:
       - "*"
     enableLogging: true
     disableContentLogging: false
+    disableDbPingsInHealth: false
     logRetentionDays: 365
-    enableGovernance: true
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
     enableLitellmFallbacks: false
     prometheusLabels: []
+    # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
+    headerFilterConfig:
+      allowlist: []
+      denylist: []
 
   # Framework configuration
   framework:
@@ -175,17 +180,79 @@ bifrost:
   # You can specify API keys directly or use env.VAR_NAME syntax to reference environment variables
   # When using existingSecret in providerSecrets, the keys will be injected as env vars and
   # you should use env.VAR_NAME syntax in the value field
+  # Note: The entire providers block is passed through to the config as-is.
+  # See https://getbifrost.ai/schema for the full provider schema.
   providers: {}
     # openai:
     #   keys:
-    #     - value: "sk-..."           # Direct value
+    #     - name: "primary-key"         # Key name (required, must be unique)
+    #       value: "sk-..."             # Direct value
     #       weight: 1
-    #     - value: "env.OPENAI_KEY"   # Reference to environment variable
+    #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
+    #       use_for_batch_api: false     # Whether this key can be used for batch API
+    #     - name: "secondary-key"
+    #       value: "env.OPENAI_KEY"     # Reference to environment variable
     #       weight: 1
+    #   # Network configuration (optional, per-provider)
+    #   network_config:
+    #     base_url: ""                                  # Custom base URL (required for Ollama)
+    #     extra_headers: {}                             # Additional headers to send with requests
+    #     default_request_timeout_in_seconds: 300       # Request timeout
+    #     max_retries: 3                                # Maximum number of retries
+    #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
+    #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms
+    #   # Concurrency configuration (optional)
+    #   concurrency_and_buffer_size:
+    #     concurrency: 100                              # Number of concurrent requests
+    #     buffer_size: 200                              # Buffer size for requests
+    #   # Proxy configuration (optional)
+    #   proxy_config:
+    #     type: "none"                  # Options: none, http, socks5, environment
+    #     url: ""
+    #     username: ""
+    #     password: ""
+    #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
+    #   send_back_raw_response: false   # Include raw response in BifrostResponse
+    #
     # anthropic:
     #   keys:
-    #     - value: "sk-ant-..."
+    #     - name: "anthropic-key"
+    #       value: "sk-ant-..."
     #       weight: 1
+    #
+    # # Azure OpenAI example (requires azure_key_config)
+    # azure:
+    #   keys:
+    #     - name: "azure-key"
+    #       value: "..."
+    #       weight: 1
+    #       azure_key_config:
+    #         endpoint: "https://your-resource.openai.azure.com"
+    #         api_version: "2024-02-15-preview"
+    #         deployments:
+    #           gpt-4o: "my-gpt4o-deployment"
+    #
+    # # Google Vertex AI example (requires vertex_key_config)
+    # vertex:
+    #   keys:
+    #     - name: "vertex-key"
+    #       value: ""
+    #       weight: 1
+    #       vertex_key_config:
+    #         project_id: "my-gcp-project"
+    #         region: "us-central1"
+    #         auth_credentials: "env.GOOGLE_CREDENTIALS"
+    #
+    # # AWS Bedrock example (requires bedrock_key_config)
+    # bedrock:
+    #   keys:
+    #     - name: "bedrock-key"
+    #       value: ""
+    #       weight: 1
+    #       bedrock_key_config:
+    #         region: "us-east-1"
+    #         access_key: "env.AWS_ACCESS_KEY_ID"
+    #         secret_key: "env.AWS_SECRET_ACCESS_KEY"
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -209,6 +276,10 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+    # Tool manager configuration
+    toolManagerConfig:
+      toolExecutionTimeout: 30
+      maxAgentDepth: 10
 
   # Plugins configuration
   plugins:
@@ -238,6 +309,8 @@ bifrost:
     semanticCache:
       enabled: false
       config:
+        # Semantic caching mode (dimension > 1): requires provider, keys, and embedding_model
+        # Direct caching mode (dimension: 1): hash-based exact matching, no embedding provider needed
         provider: "openai"
         keys: []
         embedding_model: "text-embedding-3-small"
@@ -248,6 +321,8 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: false
+        cleanup_on_shutdown: false
+        vector_store_namespace: ""
 
     otel:
       enabled: false
@@ -256,6 +331,10 @@ bifrost:
         collector_url: ""
         trace_type: "otel"
         protocol: "grpc"
+        # Push-based metrics export via OTLP (recommended for multi-node clusters)
+        metrics_enabled: false
+        metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
+        metrics_push_interval: 15     # Push interval in seconds (1-300)
 
     datadog:
       enabled: false
@@ -267,12 +346,21 @@ bifrost:
         custom_tags: {}
         enable_traces: true
 
-  # Governance configuration for budgets, rate limits, customers, teams, and virtual keys
+    # Custom/dynamic plugins
+    custom: []
+      # - name: "my-custom-plugin"
+      #   enabled: true
+      #   path: "/plugins/my-plugin.so"
+      #   version: 1
+      #   config:
+      #     key: value
+
+  # Governance configuration for budgets, rate limits, customers, teams, virtual keys, and routing rules
   governance:
     budgets: []
       # - id: "budget-1"
       #   max_limit: 100
-      #   reset_duration: "1M"
+      #   reset_duration: "1M"     # Supports: 30s, 5m, 1h, 1d, 1w, 1M, 1Y
     rateLimits: []
       # - id: "rate-limit-1"
       #   token_max_limit: 100000
@@ -283,19 +371,53 @@ bifrost:
       # - id: "customer-1"
       #   name: "Customer Name"
       #   budget_id: "budget-1"
+      #   rate_limit_id: "rate-limit-1"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
       #   customer_id: "customer-1"
       #   budget_id: "budget-1"
+      #   rate_limit_id: "rate-limit-1"
+      #   profile: {}              # Team profile data
+      #   config: {}               # Team configuration data
+      #   claims: {}               # Team claims data
     virtualKeys: []
       # - id: "vk-1"
       #   name: "Virtual Key 1"
+      #   description: "Virtual key description"
       #   value: "vk-..."
       #   is_active: true
-      #   team_id: "team-1"
+      #   team_id: "team-1"        # Mutually exclusive with customer_id
+      #   customer_id: ""          # Mutually exclusive with team_id
       #   budget_id: "budget-1"
       #   rate_limit_id: "rate-limit-1"
+      #   # Provider-specific configurations (empty means all providers allowed)
+      #   provider_configs:
+      #     - provider: "openai"
+      #       weight: 1.0
+      #       allowed_models: ["gpt-4o"]
+      #       budget_id: ""
+      #       rate_limit_id: ""
+      #       keys:
+      #         - key_id: "uuid-of-key"
+      #           name: "my-key"
+      #           value: "sk-..."
+      #   # MCP configurations for this virtual key
+      #   mcp_configs:
+      #     - mcp_client_id: 1
+      #       tools_to_execute: ["tool1", "tool2"]
+    routingRules: []
+      # - id: "route-1"
+      #   name: "Route to Azure"
+      #   description: "Route GPT requests to Azure"
+      #   enabled: true
+      #   cel_expression: "request.model.startsWith('gpt-')"
+      #   provider: "azure"
+      #   model: ""                # Empty means use original model
+      #   fallbacks: ["openai"]
+      #   scope: "global"          # Options: global, team, customer, virtual_key
+      #   scope_id: ""             # Required for non-global scopes
+      #   priority: 0              # Lower = evaluated first
     authConfig:
       adminUsername: ""
       adminPassword: ""
@@ -386,6 +508,11 @@ bifrost:
       #   enabled: true
       #   config: {}
 
+  # Audit logs configuration for CADF-compliant activity logging
+  auditLogs:
+    disabled: false
+    hmacKey: ""
+
 # Storage configuration
 storage:
   # Default storage mode: sqlite or postgres
@@ -405,12 +532,18 @@ storage:
     enabled: true
     # Backend type for config store. Empty string uses storage.mode as default
     type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    # PostgreSQL connection pool tuning (only applies when type is postgres)
+    # maxIdleConns: 5
+    # maxOpenConns: 50
 
   # Logs store settings
   logsStore:
     enabled: true
     # Backend type for logs store. Empty string uses storage.mode as default
     type: ""  # Options: sqlite, postgres, or "" (uses storage.mode)
+    # PostgreSQL connection pool tuning (only applies when type is postgres)
+    # maxIdleConns: 5
+    # maxOpenConns: 50
 
 # PostgreSQL configuration (when any store uses postgres)
 postgresql:
@@ -477,6 +610,8 @@ vectorStore:
       apiKey: ""
       grpcHost: ""
       grpcSecured: false
+      # timeout: "5s"           # Timeout for operations (e.g., "5s", "30s")
+      # className: ""           # Class name for vector store
       # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
       existingSecret: ""
       apiKeyKey: "api-key"
@@ -518,8 +653,20 @@ vectorStore:
       enabled: false
       host: ""
       port: 6379
+      username: ""
       password: ""
       database: 0
+      # Connection pool tuning (optional)
+      # poolSize: 10             # Maximum number of socket connections
+      # maxActiveConns: 0        # Maximum number of active connections
+      # minIdleConns: 0          # Minimum number of idle connections
+      # maxIdleConns: 0          # Maximum number of idle connections
+      # connMaxLifetime: ""      # Connection max lifetime (e.g., "30m")
+      # connMaxIdleTime: ""      # Connection max idle time (e.g., "5m")
+      # dialTimeout: ""          # Socket connection timeout (e.g., "5s")
+      # readTimeout: ""          # Socket read timeout (e.g., "3s")
+      # writeTimeout: ""         # Socket write timeout (e.g., "3s")
+      # contextTimeout: ""       # Redis operation timeout (e.g., "10s")
       # Use existing Kubernetes secret for password (takes precedence over password field)
       existingSecret: ""
       passwordKey: "password"
@@ -585,6 +732,16 @@ vectorStore:
       requests:
         cpu: 500m
         memory: 1Gi
+
+  # Pinecone configuration (external only, no self-hosted option)
+  pinecone:
+    external:
+      enabled: false
+      apiKey: ""
+      indexHost: ""            # Index host URL from Pinecone console (e.g., your-index.svc.environment.pinecone.io)
+      # Use existing Kubernetes secret for API key (takes precedence over apiKey field)
+      existingSecret: ""
+      apiKeyKey: "api-key"
 
 # Environment variables
 env: []

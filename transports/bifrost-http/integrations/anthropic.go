@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,7 +28,10 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/complete",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.TextCompletionRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicTextRequest{}
 		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -53,7 +57,7 @@ func createAnthropicCompleteRouteConfig(pathPrefix string) RouteConfig {
 }
 
 // createAnthropicMessagesRouteConfig creates a route configuration for the `/v1/messages` endpoint.
-func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
+func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger) []RouteConfig {
 	var routes []RouteConfig
 	for _, path := range []string{
 		"/v1/messages",
@@ -63,7 +67,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + path,
 			Method: "POST",
-			GetRequestTypeInstance: func() interface{} {
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ResponsesRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -82,6 +89,22 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 				}
 				return anthropic.ToAnthropicResponsesResponse(ctx, resp), nil
 			},
+			AsyncResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error) {
+				if resp.Status == schemas.AsyncJobStatusCompleted {
+					responsesResp, ok := resp.Result.(*schemas.BifrostResponsesResponse)
+					if !ok {
+						return nil, nil, errors.New("invalid responses response type")
+					}
+					response, err := responsesResponseConverter(ctx, responsesResp)
+					if err != nil {
+						return nil, nil, err
+					}
+					return response, nil, nil
+				}
+				return &anthropic.AnthropicMessageResponse{
+					ID: resp.ID,
+				}, nil, nil
+			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
@@ -98,29 +121,27 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 								return string(rawResponseJSON.Type), raw, nil
 							}
 						}
-						return "", nil, nil
+						// Fallback: if RawResponse is not available, use bifrost-to-anthropic conversion
+						// instead of silently dropping all events
 					}
 					anthropicResponse := anthropic.ToAnthropicResponsesStreamResponse(ctx, resp)
 					// Can happen for openai lifecycle events
 					if len(anthropicResponse) == 0 {
 						return "", nil, nil
-					} else {
-						if len(anthropicResponse) > 1 {
-							combinedContent := ""
-							for _, event := range anthropicResponse {
-								responseJSON, err := sonic.Marshal(event)
-								if err != nil {
-									continue
-								}
-								combinedContent += fmt.Sprintf("event: %s\ndata: %s\n\n", event.Type, responseJSON)
-							}
-							return "", combinedContent, nil
-						} else if len(anthropicResponse) == 1 {
-							return string(anthropicResponse[0].Type), anthropicResponse[0], nil
-						} else {
-							return "", nil, nil
-						}
 					}
+					if len(anthropicResponse) > 1 {
+						var combinedContent strings.Builder
+						for _, event := range anthropicResponse {
+							responseJSON, err := sonic.Marshal(event)
+							if err != nil {
+								logger.Error("failed to marshal anthropic streaming message: %v", err)
+								continue
+							}
+							fmt.Fprintf(&combinedContent, "event: %s\ndata: %s\n\n", event.Type, responseJSON)
+						}
+						return "", combinedContent.String(), nil
+					}
+					return string(anthropicResponse[0].Type), anthropicResponse[0], nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return anthropic.ToAnthropicResponsesStreamError(err)
@@ -133,10 +154,93 @@ func createAnthropicMessagesRouteConfig(pathPrefix string) []RouteConfig {
 }
 
 // CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
-func CreateAnthropicRouteConfigs(pathPrefix string) []RouteConfig {
+func CreateAnthropicRouteConfigs(pathPrefix string, logger schemas.Logger) []RouteConfig {
 	return append([]RouteConfig{
 		createAnthropicCompleteRouteConfig(pathPrefix),
-	}, createAnthropicMessagesRouteConfig(pathPrefix)...)
+	}, createAnthropicMessagesRouteConfig(pathPrefix, logger)...)
+}
+
+// passthroughSafeHeaders is a whitelist of headers that are safe to pass through
+var passthroughSafeHeaders = map[string]bool{
+	"anthropic-beta": true,
+	"anthropic-dangerous-direct-browser-access": true,
+	"anthropic-version":                         true,
+}
+
+func hasPromptCachingScopeBetaHeader(headers map[string][]string) bool {
+	for k, v := range headers {
+		if strings.ToLower(k) == "anthropic-beta" {
+			for _, headerValue := range v {
+				if strings.Contains(headerValue, anthropic.AnthropicPromptCachingScopeBetaHeader) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// filterVertexUnsupportedBetaHeaders removes beta headers that Vertex AI doesn't support.
+// Vertex AI doesn't support: structured-outputs, advanced-tool-use, prompt-caching-scope, mcp-client.
+func filterVertexUnsupportedBetaHeaders(headers map[string][]string) map[string][]string {
+	var betaHeaderKey string
+	var betaHeaders []string
+	var found bool
+	for k, v := range headers {
+		if strings.ToLower(k) == "anthropic-beta" {
+			betaHeaderKey = k
+			betaHeaders = v
+			found = true
+			break
+		}
+	}
+
+	if found {
+		var filteredBetas []string
+		for _, headerValue := range betaHeaders {
+			// Split comma-separated beta headers
+			for beta := range strings.SplitSeq(headerValue, ",") {
+				beta = strings.TrimSpace(beta)
+				if beta == "" {
+					continue
+				}
+				// Skip unsupported headers for Vertex.
+				// Use prefix matching so that future date bumps
+				// (e.g. structured-outputs-2025-12-15) are still caught.
+				if strings.HasPrefix(beta, anthropic.AnthropicAdvancedToolUseBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicStructuredOutputsBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicPromptCachingScopeBetaHeaderPrefix) ||
+					strings.HasPrefix(beta, anthropic.AnthropicMCPClientBetaHeaderPrefix) {
+					continue
+				}
+				filteredBetas = append(filteredBetas, beta)
+			}
+		}
+		if len(filteredBetas) > 0 {
+			headers[betaHeaderKey] = []string{strings.Join(filteredBetas, ",")}
+		} else {
+			delete(headers, betaHeaderKey)
+		}
+	}
+
+	return headers
+}
+
+// extractPassthroughHeaders filters headers to only include those in the safe whitelist.
+// Header matching is case-insensitive.
+func extractPassthroughHeaders(allHeaders map[string][]string, provider schemas.ModelProvider) map[string][]string {
+	filtered := make(map[string][]string)
+	for k, v := range allHeaders {
+		if passthroughSafeHeaders[strings.ToLower(k)] {
+			filtered[k] = v
+		}
+	}
+
+	if provider == schemas.Vertex {
+		filtered = filterVertexUnsupportedBetaHeaders(filtered)
+	}
+
+	return filtered
 }
 
 func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
@@ -145,7 +249,10 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/models",
 			Method: "GET",
-			GetRequestTypeInstance: func() interface{} {
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ListModelsRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &schemas.BifrostListModelsRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -211,6 +318,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 		if !isAnthropicAPIKeyAuth(ctx) && (provider == schemas.Anthropic || provider == "") {
 			url := extractExactPath(ctx)
 			if !strings.HasPrefix(url, "/") {
@@ -218,20 +326,27 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			}
 			bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, headers)
 			bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, url)
+			// This key is also used in IsClaudeCodeMaxMode
+			// So if you are changing the behaviour of this key, make sure to change IsClaudeCodeMaxMode as well
 			bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+		} else {
+			// API key flow: pass only whitelisted safe headers (like anthropic-beta for feature detection)
+			passthroughHeaders := extractPassthroughHeaders(headers, provider)
+			if len(passthroughHeaders) > 0 {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, passthroughHeaders)
+			}
+		}
+		if provider == schemas.Vertex && hasPromptCachingScopeBetaHeader(headers) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			return nil
 		}
 	}
 	return nil
 }
 
+// shouldUsePassthrough checks if the request should be sent to the passthrough endpoint.
 func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, deployment string) bool {
-	isClaudeCode := false
-	if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
-		if strings.Contains(userAgent, "claude-cli") {
-			isClaudeCode = true
-		}
-	}
-	return isClaudeCode && isClaudeModel(model, deployment, string(provider))
+	return anthropic.IsClaudeCodeRequest(ctx) && isClaudeModel(model, deployment, string(provider))
 }
 
 func isClaudeModel(model, deployment, provider string) bool {
@@ -282,7 +397,10 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			Type:   RouteConfigTypeAnthropic,
 			Path:   pathPrefix + "/v1/messages/count_tokens",
 			Method: "POST",
-			GetRequestTypeInstance: func() interface{} {
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.CountTokensRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &anthropic.AnthropicMessageRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -299,6 +417,7 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return anthropic.ToAnthropicChatCompletionError(err)
 			},
+			PreCallback: checkAnthropicPassthrough,
 		},
 	}
 }
@@ -311,7 +430,10 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches",
 		Method: "POST",
-		GetRequestTypeInstance: func() any {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCreateRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicBatchCreateRequest{}
 		},
 		BatchRequestConverter: func(ctx *schemas.BifrostContext, req any) (*BatchRequest, error) {
@@ -386,7 +508,10 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchListRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicBatchListRequest{}
 		},
 		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -428,7 +553,10 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchRetrieveRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicBatchRetrieveRequest{}
 		},
 		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -464,7 +592,10 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}/cancel",
 		Method: "POST",
-		GetRequestTypeInstance: func() any {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchCancelRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicBatchCancelRequest{}
 		},
 		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -500,7 +631,10 @@ func CreateAnthropicBatchRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/messages/batches/{batch_id}/results",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.BatchResultsRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicBatchResultsRequest{}
 		},
 		BatchRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*BatchRequest, error) {
@@ -680,7 +814,10 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files",
 		Method: "POST",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileUploadRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileUploadRequest{}
 		},
 		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
@@ -769,7 +906,10 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileListRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileListRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -810,7 +950,10 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files/{file_id}/content",
 		Method: "GET",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileContentRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileRetrieveRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -847,7 +990,10 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 		Type:   RouteConfigTypeAnthropic,
 		Path:   pathPrefix + "/v1/files/{file_id}",
 		Method: "DELETE",
-		GetRequestTypeInstance: func() interface{} {
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.FileDeleteRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
 			return &anthropic.AnthropicFileDeleteRequest{}
 		},
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
@@ -883,7 +1029,7 @@ func CreateAnthropicFilesRouteConfigs(pathPrefix string, handlerStore lib.Handle
 
 // NewAnthropicRouter creates a new AnthropicRouter with the given bifrost client.
 func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *AnthropicRouter {
-	routes := CreateAnthropicRouteConfigs("/anthropic")
+	routes := CreateAnthropicRouteConfigs("/anthropic", logger)
 	routes = append(routes, CreateAnthropicListModelsRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/anthropic", handlerStore)...)
 	routes = append(routes, CreateAnthropicBatchRouteConfigs("/anthropic", handlerStore)...)

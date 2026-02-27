@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getErrorMessage, setAuthToken, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
+import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
@@ -34,6 +35,7 @@ export default function LoginView() {
 	const [mounted, setMounted] = useState(false);
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
+	const [showPassword, setShowPassword] = useState(false);
 	const [errorMessage, setErrorMessage] = useState("");
 	const [isCheckingAuth, setIsCheckingAuth] = useState(true);
 	const router = useRouter();
@@ -146,19 +148,33 @@ export default function LoginView() {
 							<Label htmlFor="password" className="text-sm font-medium">
 								Password
 							</Label>
-							<Input
-								id="password"
-								type="password"
-								placeholder="Enter your password"
-								value={password}
-								onChange={(e) => setPassword(e.target.value)}
-								required
-								className="text-sm"
-								autoComplete="current-password"
-							/>
+							<div className="relative">
+								<Input
+									id="password"
+									type={showPassword ? "text" : "password"}
+									placeholder="Enter your password"
+									value={password}
+									onChange={(e) => setPassword(e.target.value)}
+									required
+									className="text-sm pr-10"
+									autoComplete="current-password"
+								/>
+								<button
+									type="button"
+									onClick={() => setShowPassword(!showPassword)}
+									className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+									aria-label={showPassword ? "Hide password" : "Show password"}
+								>
+									{showPassword ? (
+										<EyeOff className="h-4 w-4" />
+									) : (
+										<Eye className="h-4 w-4" />
+									)}
+								</button>
+							</div>
 						</div>
 
-						<Button type="submit" className="w-full text-sm" isLoading={isLoading} disabled={isLoading}>
+						<Button type="submit" className="h-9 w-full text-sm" isLoading={isLoading} disabled={isLoading}>
 							{isLoading || isLoggingIn ? "Signing in..." : "Sign in"}
 						</Button>
 					</form>

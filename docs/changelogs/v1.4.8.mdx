@@ -1,0 +1,102 @@
+---
+title: "v1.4.8"
+description: "v1.4.8 changelog - 2026-02-25"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.8
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.8
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.8
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.8">
+- feat: added support for logging headers to capture request headers into log metadata
+- fix: OAuth callback URL now respects X-Forwarded-Proto header for correct HTTPS scheme behind reverse proxies
+- feat: add asynchronous inference support
+- feat: added required headers support — configure headers that must be present on every request
+- fix: routing rules CEL builder UI fixes
+- fix: routing rules now support case-insensitive header matching
+- fix: azure openai sdk requests handling in openai integration
+- feat: support multiple credential types in vertex auth credentials
+- fix: semantic caching plugin initialization when configured using UI
+- fix: added replicate and huggingface model allowlist on list models response
+- fix: added support for unfiltered list models response when updating keys' allowed models field
+- fix: backfill allowed models that were not in the list models response
+- feat: support for video generation requests
+- feat: add runway provider support
+- enhancement: improved model matching logic in model catalog
+- feat: support for preserving JSON key order in tool function parameters
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="Core" description="1.4.4">
+- refactor: ListModelsRequest to use the common request handling pipeline instead of its own implementation
+- feat: added support for filtering /v1/models responses based on virtual key configurations in the governance plugin
+- feat: add vllm provider support
+- feat: support multiple credential types in vertex auth credentials
+- fix: added replicate and huggingface model allowlist on list models response
+- feat: added support for unfiltered list models response
+- fix: backfill allowed models that were not in the list models response
+- feat: support for video generation requests
+- feat: add runway provider support
+- feat: support for preserving JSON key order in tool function parameters
+- fix: empty json marshalling fixes for tool choice struct
+
+</Update>
+<Update label="Framework" description="1.2.22">
+- feat: added logging_headers config field and metadata column to MCP tool logs
+- feat: add tables for async job results
+- feat: added required_headers config field with DB persistence and migration
+- feat: added support for unfiltered models for provider in model catalog
+- enhancement: improved model matching logic in model catalog
+- chore: bump core version to 1.4.4
+
+</Update>
+<Update label="governance" description="1.4.23">
+- fix: routing rules now support case-insensitive header matching
+- feat: added required headers validation — requests missing configured headers are rejected with a 400 error
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="jsonparser" description="1.4.22">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="litellmcompat" description="0.0.12">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="logging" description="1.4.22">
+- feat: added support for capturing configured logging headers and x-bf-lh-* prefixed headers into log metadata for both LLM and MCP requests
+- feat: add metadata column to logging table for async request tracking
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="maxim" description="1.5.21">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="mocker" description="1.4.22">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="otel" description="1.1.22">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="semanticcache" description="1.4.21">
+- fix: invalid providers which do not support embedding requests are rejected during initialization
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>
+<Update label="telemetry" description="1.4.23">
+- chore: bump core version to 1.4.4 and framework to 1.2.22
+
+</Update>

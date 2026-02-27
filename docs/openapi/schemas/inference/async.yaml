@@ -1,0 +1,43 @@
+# Async Job schemas
+
+AsyncJobStatus:
+  type: string
+  description: The status of an async job
+  enum:
+    - pending
+    - processing
+    - completed
+    - failed
+
+AsyncJobResponse:
+  type: object
+  description: Response returned when creating or polling an async job
+  required:
+    - id
+    - status
+    - created_at
+  properties:
+    id:
+      type: string
+      description: Unique identifier for the async job
+    status:
+      $ref: '#/AsyncJobStatus'
+    expires_at:
+      type: string
+      format: date-time
+      description: When the job result expires and will be cleaned up
+    created_at:
+      type: string
+      format: date-time
+      description: When the job was created
+    completed_at:
+      type: string
+      format: date-time
+      description: When the job completed (successfully or with failure)
+    status_code:
+      type: integer
+      description: HTTP status code of the completed operation
+    result:
+      description: The result of the completed operation (shape depends on the request type)
+    error:
+      $ref: './common.yaml#/BifrostError'

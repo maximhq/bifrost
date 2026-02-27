@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"fmt"
 	"mime/multipart"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -43,8 +44,8 @@ func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 	return openaiReq
 }
 
-// parseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
-func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+// ParseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
+func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add file field
 	fileWriter, err := writer.CreateFormFile("file", "audio.mp3") // OpenAI requires a filename
 	if err != nil {
@@ -75,6 +76,24 @@ func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	if openaiReq.ResponseFormat != nil {
 		if err := writer.WriteField("response_format", *openaiReq.ResponseFormat); err != nil {
 			return utils.NewBifrostOperationError("failed to write response_format field", err, providerName)
+		}
+	}
+
+	if openaiReq.Temperature != nil {
+		if err := writer.WriteField("temperature", fmt.Sprintf("%g", *openaiReq.Temperature)); err != nil {
+			return utils.NewBifrostOperationError("failed to write temperature field", err, providerName)
+		}
+	}
+
+	for _, granularity := range openaiReq.TimestampGranularities {
+		if err := writer.WriteField("timestamp_granularities[]", granularity); err != nil {
+			return utils.NewBifrostOperationError("failed to write timestamp_granularities field", err, providerName)
+		}
+	}
+
+	for _, include := range openaiReq.Include {
+		if err := writer.WriteField("include[]", include); err != nil {
+			return utils.NewBifrostOperationError("failed to write include field", err, providerName)
 		}
 	}
 

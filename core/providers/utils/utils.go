@@ -19,18 +19,62 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/network"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
 
-var logger schemas.Logger
+// sortedAPI is a sonic encoder/decoder that sorts map keys during marshaling.
+// This ensures deterministic JSON output for map[string]interface{} values,
+// which is critical for LLM prompt caching (e.g., Anthropic cache keying).
+var sortedAPI = sonic.Config{SortMapKeys: true}.Froze()
 
+// MarshalSorted marshals v to JSON with map keys sorted alphabetically.
+func MarshalSorted(v interface{}) ([]byte, error) {
+	return sortedAPI.Marshal(v)
+}
+
+// MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
+func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
+	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
+// logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
+var logger atomic.Pointer[schemas.Logger]
+
+// noopLogger is a no-op implementation of schemas.Logger.
+type noopLogger struct{}
+
+func (noopLogger) Debug(string, ...any)                   {}
+func (noopLogger) Info(string, ...any)                    {}
+func (noopLogger) Warn(string, ...any)                    {}
+func (noopLogger) Error(string, ...any)                   {}
+func (noopLogger) Fatal(string, ...any)                   {}
+func (noopLogger) SetLevel(schemas.LogLevel)              {}
+func (noopLogger) SetOutputType(schemas.LoggerOutputType) {}
+func (noopLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
+	return schemas.NoopLogEvent
+}
+
+// Initialize with noop logger
+func init() {
+	var noop schemas.Logger = &noopLogger{}
+	logger.Store(&noop)
+}
+
+// SetLogger sets the logger for the provider utils (thread-safe).
 func SetLogger(l schemas.Logger) {
-	logger = l
+	logger.Store(&l)
+}
+
+// getLogger returns the current logger (thread-safe).
+func getLogger() schemas.Logger {
+	return *logger.Load()
 }
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
@@ -115,6 +159,73 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 	}
 }
 
+// Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
+// This function is kept for backward compatibility but is no longer needed.
+func ConfigureRetry(client *fasthttp.Client) *fasthttp.Client {
+	client.RetryIfErr = network.StaleConnectionRetryIfErr
+	return client
+}
+
+// ConfigureDialer configures the client's connection behavior:
+//  1. Sets up the stale-connection retry policy (see network.StaleConnectionRetryIfErr).
+//  2. Wraps the Dial function to enable TCP keepalive on all connections,
+//     proactively detecting dead connections before fasthttp tries to reuse them.
+//
+// Must be called AFTER ConfigureProxy (which may set client.Dial to a proxy
+// dialer), so the keepalive wrapper composes on top of the proxy connection.
+//
+// Keepalive parameters:
+//   - Idle 10s: first probe after 10s of inactivity (well under the 30s MaxIdleConnDuration)
+//   - Interval 5s: subsequent probes every 5s
+//   - Count 3: close after 3 failed probes
+//
+// Dead connections are detected within ~25s (10 + 5*3), before the 30s
+// MaxIdleConnDuration expires and the connection is reused.
+func ConfigureDialer(client *fasthttp.Client) *fasthttp.Client {
+	// Configure stale-connection retry policy
+	client.RetryIfErr = network.StaleConnectionRetryIfErr
+
+	existingDial := client.Dial
+	existingDialTimeout := client.DialTimeout
+
+	keepAliveCfg := net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     10 * time.Second,
+		Interval: 5 * time.Second,
+		Count:    3,
+	}
+
+	client.Dial = func(addr string) (net.Conn, error) {
+		var conn net.Conn
+		var err error
+
+		switch {
+		case existingDial != nil:
+			// Proxy or custom dial function is set — use it, then enable keepalive
+			conn, err = existingDial(addr)
+		case existingDialTimeout != nil:
+			// Preserve dial-timeout behavior
+			conn, err = existingDialTimeout(addr, client.ReadTimeout)
+		default:
+			conn, err = (&net.Dialer{
+				Timeout:         client.ReadTimeout,
+				KeepAliveConfig: keepAliveCfg,
+			}).Dial("tcp", addr)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		// Enable TCP keepalive on the connection
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.SetKeepAliveConfig(keepAliveCfg)
+		}
+		return conn, nil
+	}
+
+	return client
+}
+
 // ConfigureProxy sets up a proxy for the fasthttp client based on the provided configuration.
 // It supports HTTP, SOCKS5, and environment-based proxy configurations.
 // Returns the configured client or the original client if proxy configuration is invalid.
@@ -130,14 +241,14 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		return client
 	case schemas.HTTPProxy:
 		if proxyConfig.URL == "" {
-			logger.Warn("Warning: HTTP proxy URL is required for setting up proxy")
+			getLogger().Warn("Warning: HTTP proxy URL is required for setting up proxy")
 			return client
 		}
 		proxyURL := proxyConfig.URL
 		if proxyConfig.Username != "" && proxyConfig.Password != "" {
 			parsedURL, err := url.Parse(proxyConfig.URL)
 			if err != nil {
-				logger.Warn("Invalid proxy configuration: invalid HTTP proxy URL")
+				getLogger().Warn("Invalid proxy configuration: invalid HTTP proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
@@ -147,7 +258,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		dialFunc = fasthttpproxy.FasthttpHTTPDialer(proxyURL)
 	case schemas.Socks5Proxy:
 		if proxyConfig.URL == "" {
-			logger.Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
+			getLogger().Warn("Warning: SOCKS5 proxy URL is required for setting up proxy")
 			return client
 		}
 		proxyURL := proxyConfig.URL
@@ -155,7 +266,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		if proxyConfig.Username != "" && proxyConfig.Password != "" {
 			parsedURL, err := url.Parse(proxyConfig.URL)
 			if err != nil {
-				logger.Warn("Invalid proxy configuration: invalid SOCKS5 proxy URL")
+				getLogger().Warn("Invalid proxy configuration: invalid SOCKS5 proxy URL")
 				return client
 			}
 			// Set user and password in the parsed URL
@@ -167,7 +278,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 		// Use environment variables for proxy configuration
 		dialFunc = fasthttpproxy.FasthttpProxyHTTPDialer()
 	default:
-		logger.Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
+		getLogger().Warn("Invalid proxy configuration: unsupported proxy type: %s", proxyConfig.Type)
 		return client
 	}
 
@@ -179,7 +290,7 @@ func ConfigureProxy(client *fasthttp.Client, proxyConfig *schemas.ProxyConfig, l
 	if proxyConfig.CACertPEM != "" {
 		tlsConfig, err := createTLSConfigWithCA(proxyConfig.CACertPEM)
 		if err != nil {
-			logger.Warn("Failed to configure custom CA certificate: %v", err)
+			getLogger().Warn("Failed to configure custom CA certificate: %v", err)
 		} else {
 			client.TLSConfig = tlsConfig
 		}
@@ -274,26 +385,41 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 }
 
 // GetRequestPath gets the request path from the context, if it exists, checking for path overrides in the custom provider config.
-func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) string {
-	// If path set in context, return it
+// It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
+// If the boolean is false, the returned string is a path (leading slash ensured).
+func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
+	// If path/url set in context, return it.
 	if pathInContext, ok := ctx.Value(schemas.BifrostContextKeyURLPath).(string); ok {
-		return pathInContext
+		trimmed := strings.TrimSpace(pathInContext)
+		if u, err := url.Parse(trimmed); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			return trimmed, true
+		}
+		return trimmed, false
 	}
-	// If path override set in custom provider config, return it
+
+	// If path override set in custom provider config, return it.
 	if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
-			pathOverride := strings.TrimSpace(raw)
-			if pathOverride == "" {
-				return defaultPath
+			override := strings.TrimSpace(raw)
+			if override == "" {
+				return defaultPath, false
 			}
-			if !strings.HasPrefix(pathOverride, "/") {
-				pathOverride = "/" + pathOverride
+
+			// Treat absolute URLs with scheme+host as full URLs.
+			if u, err := url.Parse(override); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+				return override, true
 			}
-			return pathOverride
+
+			// Otherwise treat as a path override (ensure leading slash).
+			if !strings.HasPrefix(override, "/") {
+				override = "/" + override
+			}
+			return override, false
 		}
 	}
-	// Return default path
-	return defaultPath
+
+	// Return default path.
+	return defaultPath, false
 }
 
 type RequestBodyGetter interface {
@@ -308,7 +434,26 @@ func CheckAndGetRawRequestBody(ctx context.Context, request RequestBodyGetter) (
 	return nil, false
 }
 
-type RequestBodyConverter func() (any, error)
+type RequestBodyWithExtraParams interface {
+	GetExtraParams() map[string]interface{}
+}
+
+type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
+
+// MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
+func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) {
+	for k, v := range extraParams {
+		if existingVal, exists := jsonMap[k]; exists {
+			if existingMap, ok := existingVal.(map[string]interface{}); ok {
+				if newMap, ok := v.(map[string]interface{}); ok {
+					MergeExtraParams(existingMap, newMap)
+					continue
+				}
+			}
+		}
+		jsonMap[k] = v
+	}
+}
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
@@ -321,9 +466,29 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if convertedBody == nil {
 			return nil, NewBifrostOperationError("request body is not provided", nil, providerType)
 		}
+
 		jsonBody, err := sonic.MarshalIndent(convertedBody, "", "  ")
 		if err != nil {
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+		}
+		// Merge ExtraParams into the JSON if passthrough is enabled
+		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			extraParams := convertedBody.GetExtraParams()
+			if len(extraParams) > 0 {
+				var jsonMap map[string]interface{}
+				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+				}
+
+				// Merge ExtraParams recursively (handles nested maps)
+				MergeExtraParams(jsonMap, extraParams)
+
+				// Re-marshal the merged map
+				jsonBody, err = MarshalSortedIndent(jsonMap, "", "  ")
+				if err != nil {
+					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
+				}
+			}
 		}
 		return jsonBody, nil
 	} else {
@@ -480,7 +645,7 @@ func EnrichError(
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
 		var rawRequest interface{}
 		if err := sonic.Unmarshal(requestBody, &rawRequest); err != nil {
-			logger.Warn("Failed to parse raw request for error: %v", err)
+			getLogger().Warn("Failed to parse raw request for error: %v", err)
 			return bifrostErr
 		}
 		bifrostErr.ExtraFields.RawRequest = rawRequest
@@ -493,7 +658,7 @@ func EnrichError(
 			// We have a responseBody to set
 			var rawResponse interface{}
 			if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-				logger.Warn("Failed to parse raw response for error: %v", err)
+				getLogger().Warn("Failed to parse raw response for error: %v", err)
 				return bifrostErr
 			}
 			bifrostErr.ExtraFields.RawResponse = rawResponse
@@ -622,7 +787,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	var rawRequest interface{}
 	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
-		logger.Warn("Failed to parse raw request: %v", err)
+		getLogger().Warn("failed to parse raw request: %v", err)
 	} else {
 		extraFields.RawRequest = rawRequest
 	}
@@ -663,13 +828,20 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 }
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
+// It returns a copy of the body to avoid race conditions when the response is released
+// back to fasthttp's buffer pool.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
 	switch contentEncoding {
 	case "gzip":
+		// BodyGunzip already returns a new slice, so it's safe
 		return resp.BodyGunzip()
 	default:
-		return resp.Body(), nil
+		// Copy the body to avoid race conditions when response is released back to pool
+		body := resp.Body()
+		result := make([]byte, len(body))
+		copy(result, body)
+		return result, nil
 	}
 }
 
@@ -1078,8 +1250,8 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 		case <-ctx.Done():
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
 			if closer, ok := bodyStream.(io.Closer); ok {
-				if err := closer.Close(); err != nil && logger != nil {
-					logger.Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
+				if err := closer.Close(); err != nil {
+					getLogger().Debug(fmt.Sprintf("Error closing body stream on context done: %v", err))
 				}
 			}
 		case <-done:
@@ -1293,7 +1465,7 @@ func HandleStreamControlSkip(bifrostErr *schemas.BifrostError) bool {
 	}
 	if bifrostErr.StreamControl.SkipStream != nil && *bifrostErr.StreamControl.SkipStream {
 		if bifrostErr.StreamControl.LogError != nil && *bifrostErr.StreamControl.LogError {
-			logger.Warn("Error in stream: " + bifrostErr.Error.Message)
+			getLogger().Warn("Error in stream: " + bifrostErr.Error.Message)
 		}
 		return true
 	}
@@ -1337,11 +1509,18 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
-	// Drain any remaining data from the body stream before releasing
-	// This prevents "whitespace in header" errors when the response is reused
-	if resp.BodyStream() != nil {
-		// Drain the body stream
-		io.Copy(io.Discard, resp.BodyStream())
+	// Drain any remaining data from the body stream before releasing.
+	// This prevents "whitespace in header" errors when the connection is reused
+	// (see: https://github.com/valyala/fasthttp/issues/1743).
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
+			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		}
+		if closer, ok := bodyStream.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				getLogger().Warn("failed to close streaming response body: %v", err)
+			}
+		}
 	}
 	fasthttp.ReleaseResponse(resp)
 }
@@ -1435,31 +1614,50 @@ func aggregateListModelsResponses(responses []*schemas.BifrostListModelsResponse
 }
 
 // extractSuccessfulListModelsResponses extracts successful responses from a results channel
-// and tracks the last error encountered. This utility reduces code duplication across providers
+// and tracks per-key status information. This utility reduces code duplication across providers
 // for handling multi-key ListModels requests.
 func extractSuccessfulListModelsResponses(
 	results chan schemas.ListModelsByKeyResult,
 	providerName schemas.ModelProvider,
-	logger schemas.Logger,
-) ([]*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+) ([]*schemas.BifrostListModelsResponse, []schemas.KeyStatus, *schemas.BifrostError) {
 	var successfulResponses []*schemas.BifrostListModelsResponse
+	var keyStatuses []schemas.KeyStatus
 	var lastError *schemas.BifrostError
 
 	for result := range results {
 		if result.Err != nil {
-			logger.Debug(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, result.Err.Error.Message))
+			errMsg := "unknown error"
+			if errorField := result.Err.Error; errorField != nil {
+				if errorField.Message != "" {
+					errMsg = errorField.Message
+				} else if errorField.Error != nil {
+					errMsg = errorField.Error.Error()
+				}
+			}
+			getLogger().Warn(fmt.Sprintf("failed to list models with key %s: %s", result.KeyID, errMsg))
+			keyStatuses = append(keyStatuses, schemas.KeyStatus{
+				KeyID:    result.KeyID,
+				Provider: providerName,
+				Status:   schemas.KeyStatusListModelsFailed,
+				Error:    result.Err,
+			})
 			lastError = result.Err
 			continue
 		}
 
+		keyStatuses = append(keyStatuses, schemas.KeyStatus{
+			KeyID:    result.KeyID,
+			Provider: providerName,
+			Status:   schemas.KeyStatusSuccess,
+		})
 		successfulResponses = append(successfulResponses, result.Response)
 	}
 
 	if len(successfulResponses) == 0 {
 		if lastError != nil {
-			return nil, lastError
+			return nil, keyStatuses, lastError
 		}
-		return nil, &schemas.BifrostError{
+		return nil, keyStatuses, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: "all keys failed to list models",
@@ -1471,18 +1669,49 @@ func extractSuccessfulListModelsResponses(
 		}
 	}
 
-	return successfulResponses, nil
+	return successfulResponses, keyStatuses, nil
+}
+
+// HandleKeylessListModelsRequest wraps a list models request for keyless providers
+// and automatically populates the KeyStatuses field with provider-level status tracking.
+// This centralizes the status tracking logic for keyless providers.
+func HandleKeylessListModelsRequest(
+	provider schemas.ModelProvider,
+	listFunc func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
+) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	resp, bifrostErr := listFunc()
+
+	keyStatus := schemas.KeyStatus{
+		KeyID:    "", // Empty for keyless providers
+		Provider: provider,
+	}
+
+	// If request failed, attach status to error
+	if bifrostErr != nil {
+		keyStatus.Status = schemas.KeyStatusListModelsFailed
+		keyStatus.Error = bifrostErr
+		bifrostErr.ExtraFields.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		return nil, bifrostErr
+	}
+
+	// Success case
+	if resp != nil {
+		keyStatus.Status = schemas.KeyStatusSuccess
+		resp.KeyStatuses = []schemas.KeyStatus{keyStatus}
+		return resp, nil
+	}
+
+	return resp, bifrostErr
 }
 
 // HandleMultipleListModelsRequests handles multiple list models requests concurrently for different keys.
 // It launches concurrent requests for all keys and waits for all goroutines to complete.
-// It returns the aggregated response or an error if the request fails.
+// It returns the aggregated response with per-key status information or an error if the request fails.
 func HandleMultipleListModelsRequests(
 	ctx *schemas.BifrostContext,
 	keys []schemas.Key,
 	request *schemas.BifrostListModelsRequest,
 	listModelsByKey func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError),
-	logger schemas.Logger,
 ) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	startTime := time.Now()
 
@@ -1503,14 +1732,19 @@ func HandleMultipleListModelsRequests(
 	wg.Wait()
 	close(results)
 
-	successfulResponses, err := extractSuccessfulListModelsResponses(results, request.Provider, logger)
+	successfulResponses, keyStatuses, err := extractSuccessfulListModelsResponses(results, request.Provider)
 	if err != nil {
+		// Attach key statuses to error's ExtraFields
+		err.ExtraFields.KeyStatuses = keyStatuses
 		return nil, err
 	}
 
 	// Aggregate all successful responses
 	response := aggregateListModelsResponses(successfulResponses)
 	response = response.ApplyPagination(request.PageSize, request.PageToken)
+
+	// Attach key statuses to response
+	response.KeyStatuses = keyStatuses
 
 	// Set ExtraFields
 	latency := time.Since(startTime)
@@ -1723,7 +1957,7 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 			if !ok || len(availableProviders) == 0 {
 				return ""
 			}
-			logger.Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
+			getLogger().Debug("[Provider] Available providers: %v, checking %s", availableProviders, defaultProvider)
 			if slices.Contains(availableProviders, defaultProvider) {
 				return defaultProvider
 			}

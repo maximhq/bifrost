@@ -74,12 +74,19 @@ type BifrostBatchCreateRequest struct {
 	Requests []BatchRequestItem `json:"requests,omitempty"` // Inline request items
 
 	// Common fields
-	Endpoint         BatchEndpoint     `json:"endpoint,omitempty"`          // Target endpoint for batch requests
-	CompletionWindow string            `json:"completion_window,omitempty"` // Time window (e.g., "24h")
-	Metadata         map[string]string `json:"metadata,omitempty"`          // User-provided metadata
+	Endpoint            BatchEndpoint      `json:"endpoint,omitempty"`              // Target endpoint for batch requests
+	CompletionWindow    string             `json:"completion_window,omitempty"`     // Time window (e.g., "24h")
+	Metadata            map[string]string  `json:"metadata,omitempty"`              // User-provided metadata
+	OutputExpiresAfter  *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// BatchExpiresAfter represents an expiration configuration for batch output.
+type BatchExpiresAfter struct {
+	Anchor  string `json:"anchor"`  // e.g., "created_at"
+	Seconds int    `json:"seconds"` // 3600-2592000 (1 hour to 30 days)
 }
 
 // GetRawRequestBody returns the raw request body.

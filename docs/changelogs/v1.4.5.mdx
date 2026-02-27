@@ -1,0 +1,102 @@
+---
+title: "v1.4.5"
+description: "v1.4.5 changelog - 2026-02-10"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.5
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.5
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.5
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.5">
+- fix: duplicate mcp server creation when adding non oauth mcp client
+- feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
+- feat: cross-provider model matching - governance configs for `gpt-4o` now correctly apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: add `from_memory=true` query parameter for faster governance reads (virtual keys, model configs, provider governance)
+- feat: added routing rules for dynamic routing of requests based on predefined rules
+- feat: add `GET /api/models/base` endpoint for listing distinct base model names with search/filter support
+- feat: base model selection in model limits UI when no provider is selected
+- fix: edit sheets now show live data instead of stale cached values
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage
+- fix: embedding thought signature in tool call id for valid tool calling cycle in gemini chat
+- feat: request path override functionality to support full URLs (with scheme and host) as well as custom paths
+- fix: missing and duplicated tool results in Bedrock - [@hhieuu](https://github.com/hhieuu)
+- fix: errored request logs are now not counted in missing cost filter
+- feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID
+- fix: if governance is disabled set enforce virtual key header to false
+- feat: adds retry logic to MCP client connection establishment and tool retrieval
+- fix: MCP server edit fixes for headers, ping available toggle and tool sync interval
+- fix: force reload pricing now correctly resets the model pool and adds new models to the catalog
+- feat: add routing engine used to log entries and telemetry metrics
+- fix: tool sync interval in mcp catalog
+
+</Update>
+<Update label="Core" description="1.4.1">
+- fix: model names with namespaces (e.g., `meta-llama/Llama-3.1-8B`) are now correctly preserved instead of being incorrectly split as provider-prefixed models
+- fix: mapping of multiple modality tokens from gemini usage metadata to bifrost usage
+- fix: embedding thought signature in tool call id for valid tool calling cycle in gemini chat
+- feat: request path override functionality to support full URLs (with scheme and host) as well as custom paths
+- fix: missing and duplicated tool results in Bedrock - [@hhieuu](https://github.com/hhieuu)
+- fix: support HuggingFace model names without an explicit provider prefix
+- feat: adds support for custom OAuth scopes when authenticating with Azure Entra ID
+- feat: adds retry logic to MCP client connection establishment and tool retrieval
+
+</Update>
+<Update label="Framework" description="1.2.19">
+- feat: add base_model support to model catalog for cross-provider model matching
+- feat: add GetBaseModelName, IsSameModel, and GetDistinctBaseModelNames methods to ModelCatalog for resolving model aliases and checking model equivalence
+- feat: add database migration for base_model column on model pricing table
+- chore: upgrade core to 1.4.1
+- feat: add database migration for routing_engine_used column on logs table
+
+</Update>
+<Update label="governance" description="1.4.20">
+- feat: cross-provider model matching - budget/rate-limit configs for `gpt-4o` now apply to `openai/gpt-4o`, `gpt-4o-2024-08-06`, etc.
+- feat: expand GovernanceData with ModelConfigs and Providers for in-memory reads
+- feat: added routing rules for dynamic routing of requests based on predefined rules
+- feat: add model and provider level governance - set budgets and rate limits on specific models or providers independent of virtual keys
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="jsonparser" description="1.4.19">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="litellmcompat" description="0.0.9">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="logging" description="1.4.19">
+- feat: add routing engine used to log entries
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="maxim" description="1.5.18">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="mocker" description="1.4.19">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="otel" description="1.1.19">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="semanticcache" description="1.4.18">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+
+</Update>
+<Update label="telemetry" description="1.4.20">
+- chore: upgrade core to 1.4.1 and framework to 1.2.19
+- feat: add routing engine used to telemetry metrics
+
+</Update>

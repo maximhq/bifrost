@@ -4,6 +4,7 @@
         "openai": {
             "keys": [
                 {
+                    "name": "OpenAI API Key",
                     "value": "env.OPENAI_API_KEY",
                     "weight": 1,
                     "use_for_batch_api": true
@@ -16,6 +17,7 @@
         "anthropic": {
             "keys": [
                 {
+                    "name": "Anthropic API Key",
                     "value": "env.ANTHROPIC_API_KEY",
                     "weight": 1,
                     "use_for_batch_api": true
@@ -40,6 +42,7 @@
         "vertex": {
             "keys": [
                 {
+                    "name": "Vertex API Key",
                     "vertex_key_config": {
                         "project_id": "env.VERTEX_PROJECT_ID",
                         "region": "env.GOOGLE_LOCATION",
@@ -55,6 +58,7 @@
         "mistral": {
             "keys": [
                 {
+                    "name": "Mistral API Key",
                     "value": "env.MISTRAL_API_KEY",
                     "weight": 1
                 }
@@ -66,6 +70,7 @@
         "cohere": {
             "keys": [
                 {
+                    "name": "Cohere API Key",
                     "value": "env.COHERE_API_KEY",
                     "weight": 1
                 }
@@ -77,6 +82,7 @@
         "groq": {
             "keys": [
                 {
+                    "name": "Groq API Key",
                     "value": "env.GROQ_API_KEY",
                     "weight": 1
                 }
@@ -88,6 +94,7 @@
         "perplexity": {
             "keys": [
                 {
+                    "name": "Perplexity API Key",
                     "value": "env.PERPLEXITY_API_KEY",
                     "weight": 1
                 }
@@ -99,6 +106,7 @@
         "cerebras": {
             "keys": [
                 {
+                    "name": "Cerebras API Key",
                     "value": "env.CEREBRAS_API_KEY",
                     "weight": 1
                 }
@@ -110,6 +118,7 @@
         "openrouter": {
             "keys": [
                 {
+                    "name": "OpenRouter API Key",
                     "value": "env.OPENROUTER_API_KEY",
                     "weight": 1
                 }
@@ -121,10 +130,14 @@
         "azure": {
             "keys": [
                 {
+                    "name": "Azure API Key",
                     "value": "env.AZURE_API_KEY",
                     "azure_key_config": {
                         "endpoint": "env.AZURE_ENDPOINT",
-                        "api_version": "env.AZURE_API_VERSION"
+                        "api_version": "env.AZURE_API_VERSION",
+                        "deployments": {
+                            "gpt-4o": "gpt-4o"  
+                        }
                     },
                     "weight": 1
                 }
@@ -136,6 +149,7 @@
         "bedrock": {
             "keys": [
                 {
+                    "name": "Bedrock API Key",
                     "bedrock_key_config": {
                         "access_key": "env.AWS_ACCESS_KEY_ID",
                         "secret_key": "env.AWS_SECRET_ACCESS_KEY",
@@ -181,7 +195,6 @@
             "*"
         ],
         "enable_logging": true,
-        "enable_governance": false,
         "enforce_governance_header": false,
         "allow_direct_keys": false,
         "max_request_body_size_mb": 100,

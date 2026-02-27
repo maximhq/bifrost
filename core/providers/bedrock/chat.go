@@ -7,7 +7,6 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
-	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -146,8 +145,22 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					switch contentBlock.Document.Format {
 					case "pdf":
 						fileType = "application/pdf"
-					case "txt", "md", "html", "csv":
+					case "txt":
 						fileType = "text/plain"
+					case "md":
+						fileType = "text/markdown"
+					case "html":
+						fileType = "text/html"
+					case "csv":
+						fileType = "text/csv"
+					case "doc":
+						fileType = "application/msword"
+					case "docx":
+						fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+					case "xls":
+						fileType = "application/vnd.ms-excel"
+					case "xlsx":
+						fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 					default:
 						fileType = "application/pdf"
 					}
@@ -205,7 +218,7 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 					ChatAssistantMessage: assistantMessage,
 				},
 			},
-			FinishReason: schemas.Ptr(anthropic.ConvertAnthropicFinishReasonToBifrost(anthropic.AnthropicStopReason(response.StopReason))),
+			FinishReason: schemas.Ptr(convertBedrockStopReason(response.StopReason)),
 		},
 	}
 	var usage *schemas.BifrostLLMUsage

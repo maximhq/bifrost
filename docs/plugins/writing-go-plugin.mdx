@@ -150,18 +150,19 @@ func HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTP
 	// return modifiedChunk, nil
 }
 
-// PreHook is called before the request is sent to the provider
+
+// PreLLMHook is called before the request is sent to the provider
 // This is where you can modify requests or short-circuit the flow
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
-	fmt.Println("PreHook called")
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	fmt.Println("PreLLMHook called")
 	// Modify the request or return a short-circuit to skip provider call
 	return req, nil, nil
 }
 
-// PostHook is called after receiving a response from the provider
+// PostLLMHook is called after receiving a response from the provider
 // This is where you can modify responses or handle errors
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	fmt.Println("PostHook called")
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	fmt.Println("PostLLMHook called")
 	// Modify the response or error before returning to caller
 	return resp, bifrostErr, nil
 }
@@ -348,7 +349,7 @@ This function is **only called** when using `bifrost-http`. It's **not invoked**
   </Tab>
 </Tabs>
 
-#### `PreHook(...)`
+#### `PreLLMHook(...)`
 
 Called before each provider request. Use this to:
 - Modify request parameters
@@ -360,10 +361,10 @@ Called before each provider request. Use this to:
 **Short-Circuiting Example:**
 
 ```go
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Return cached response without calling provider
 	if cachedResponse := checkCache(req) {
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Response: cachedResponse,
 		}, nil
 	}
@@ -371,7 +372,7 @@ func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas
 }
 ```
 
-#### `PostHook(...)`
+#### `PostLLMHook(...)`
 
 Called after provider responses (or short-circuits). Use this to:
 - Transform responses
@@ -383,7 +384,7 @@ Called after provider responses (or short-circuits). Use this to:
 **Response Transformation Example:**
 
 ```go
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if resp != nil && resp.ChatResponse != nil {
 		// Add custom metadata
 		resp.ChatResponse.ExtraFields.RawResponse = map[string]interface{}{
@@ -538,16 +539,16 @@ Check the logs for plugin hook calls:
   <Tab title="v1.4.x+ (non-streaming)">
 ```
 HTTPTransportPreHook called
-PreHook called
-PostHook called
+PreLLMHook called
+PostLLMHook called
 HTTPTransportPostHook called
 ```
   </Tab>
   <Tab title="v1.4.x+ (streaming)">
 ```
 HTTPTransportPreHook called
-PreHook called
-PostHook called
+PreLLMHook called
+PostLLMHook called
 HTTPTransportStreamChunkHook called (per chunk)
 ```
   </Tab>
@@ -579,7 +580,7 @@ var (
 	mu           sync.Mutex
 )
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	mu.Lock()
 	requestCount++
 	count := requestCount
@@ -595,7 +596,7 @@ func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas
 Control whether Bifrost should try fallback providers:
 
 ```go
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if bifrostErr != nil {
 		// Allow fallbacks for rate limit errors
 		if bifrostErr.Error.Type != nil && *bifrostErr.Error.Type == "rate_limit" {
@@ -616,13 +617,13 @@ func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifros
 ```go
 var cache sync.Map
 
-func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.PluginShortCircuit, error) {
+func PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Generate cache key from request
 	key := generateCacheKey(req)
 	
 	// Check cache
 	if cached, ok := cache.Load(key); ok {
-		return req, &schemas.PluginShortCircuit{
+		return req, &schemas.LLMPluginShortCircuit{
 			Response: cached.(*schemas.BifrostResponse),
 		}, nil
 	}
@@ -630,7 +631,7 @@ func PreHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas
 	return req, nil, nil
 }
 
-func PostHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+func PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	if resp != nil && bifrostErr == nil {
 		// Store in cache
 		key := generateCacheKeyFromResponse(resp)
@@ -891,7 +892,7 @@ plugin was built with a different version of package github.com/maximhq/bifrost/
    ```go
    func TestPreHook(t *testing.T) {
        req := &schemas.BifrostRequest{...}
-       modifiedReq, shortCircuit, err := PreHook(&ctx, req)
+       modifiedReq, shortCircuit, err := PreLLMHook(&ctx, req)
        assert.NoError(t, err)
        assert.Nil(t, shortCircuit)
    }
@@ -936,7 +937,7 @@ plugin was built with a different version of package github.com/maximhq/bifrost/
 
 ```bash
 # List symbols exported by plugin
-go tool nm my-plugin.so | grep -E 'Init|GetName|PreHook'
+go tool nm my-plugin.so | grep -E 'Init|GetName|PreLLMHook'
 ```
 
 **Verify Go version:**

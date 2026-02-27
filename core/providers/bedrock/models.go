@@ -7,6 +7,80 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// BedrockRerankRequest is the Bedrock Agent Runtime rerank request body.
+type BedrockRerankRequest struct {
+	Queries                []BedrockRerankQuery          `json:"queries"`
+	Sources                []BedrockRerankSource         `json:"sources"`
+	RerankingConfiguration BedrockRerankingConfiguration `json:"rerankingConfiguration"`
+}
+
+// GetExtraParams implements RequestBodyWithExtraParams.
+func (*BedrockRerankRequest) GetExtraParams() map[string]interface{} {
+	return nil
+}
+
+const (
+	bedrockRerankQueryTypeText            = "TEXT"
+	bedrockRerankSourceTypeInline         = "INLINE"
+	bedrockRerankInlineDocumentTypeText   = "TEXT"
+	bedrockRerankConfigurationTypeBedrock = "BEDROCK_RERANKING_MODEL"
+)
+
+type BedrockRerankQuery struct {
+	Type      string               `json:"type"`
+	TextQuery BedrockRerankTextRef `json:"textQuery"`
+}
+
+type BedrockRerankSource struct {
+	Type                 string                    `json:"type"`
+	InlineDocumentSource BedrockRerankInlineSource `json:"inlineDocumentSource"`
+}
+
+type BedrockRerankInlineSource struct {
+	Type         string                 `json:"type"`
+	TextDocument BedrockRerankTextValue `json:"textDocument"`
+}
+
+type BedrockRerankTextRef struct {
+	Text string `json:"text"`
+}
+
+type BedrockRerankTextValue struct {
+	Text string `json:"text"`
+}
+
+type BedrockRerankingConfiguration struct {
+	Type                          string                             `json:"type"`
+	BedrockRerankingConfiguration BedrockRerankingModelConfiguration `json:"bedrockRerankingConfiguration"`
+}
+
+type BedrockRerankingModelConfiguration struct {
+	ModelConfiguration BedrockRerankModelConfiguration `json:"modelConfiguration"`
+	NumberOfResults    *int                            `json:"numberOfResults,omitempty"`
+}
+
+type BedrockRerankModelConfiguration struct {
+	ModelARN                     string                 `json:"modelArn"`
+	AdditionalModelRequestFields map[string]interface{} `json:"additionalModelRequestFields,omitempty"`
+}
+
+// BedrockRerankResponse is the Bedrock Agent Runtime rerank response body.
+type BedrockRerankResponse struct {
+	Results   []BedrockRerankResult `json:"results"`
+	NextToken *string               `json:"nextToken,omitempty"`
+}
+
+type BedrockRerankResult struct {
+	Index          int                            `json:"index"`
+	RelevanceScore float64                        `json:"relevanceScore"`
+	Document       *BedrockRerankResponseDocument `json:"document,omitempty"`
+}
+
+type BedrockRerankResponseDocument struct {
+	Type         string                  `json:"type,omitempty"`
+	TextDocument *BedrockRerankTextValue `json:"textDocument,omitempty"`
+}
+
 // regionPrefixes is a list of region prefixes used in Bedrock deployments
 // Based on AWS region naming patterns and Bedrock deployment configurations
 var regionPrefixes = []string{
@@ -103,31 +177,32 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	// Check if any deployment value matches the modelID (with or without prefix)
 	for aliasKey, deploymentValue := range deployments {
 		// Exact match
-		if deploymentValue == modelID {
+		if deploymentValue == modelID || aliasKey == modelID {
 			return deploymentValue, aliasKey
 		}
 
 		// Check prefix variations
 		deploymentPrefix := extractPrefix(deploymentValue)
 		modelIDPrefix := extractPrefix(modelID)
+		aliasKeyPrefix := extractPrefix(aliasKey)
 
-		// Case 1: deploymentValue has prefix, modelID doesn't
-		if deploymentPrefix != "" && modelIDPrefix == "" {
-			if removePrefix(deploymentValue) == modelID {
+		// Case 1: deploymentValue or aliasKey has prefix, modelID doesn't
+		if (deploymentPrefix != "" && modelIDPrefix == "") || (aliasKeyPrefix != "" && modelIDPrefix == "") {
+			if removePrefix(deploymentValue) == modelID || removePrefix(aliasKey) == modelID {
 				return deploymentValue, aliasKey
 			}
 		}
 
-		// Case 2: modelID has prefix, deploymentValue doesn't
-		if modelIDPrefix != "" && deploymentPrefix == "" {
-			if removePrefix(modelID) == deploymentValue {
+		// Case 2: modelID or aliasKey has prefix, deploymentValue doesn't
+		if (modelIDPrefix != "" && deploymentPrefix == "") || (aliasKeyPrefix != "" && deploymentPrefix == "") {
+			if removePrefix(modelID) == deploymentValue || removePrefix(modelID) == aliasKey {
 				return deploymentValue, aliasKey
 			}
 		}
 
 		// Case 3: Both have prefixes but different prefixes
-		if deploymentPrefix != "" && modelIDPrefix != "" && deploymentPrefix != modelIDPrefix {
-			if removePrefix(deploymentValue) == removePrefix(modelID) {
+		if (deploymentPrefix != "" && modelIDPrefix != "" && deploymentPrefix != modelIDPrefix) || (aliasKeyPrefix != "" && modelIDPrefix != "" && aliasKeyPrefix != modelIDPrefix) {
+			if removePrefix(deploymentValue) == removePrefix(modelID) || removePrefix(aliasKey) == removePrefix(modelID) {
 				return deploymentValue, aliasKey
 			}
 		}
@@ -146,7 +221,7 @@ func findDeploymentMatch(deployments map[string]string, modelID string) (deploym
 	return "", ""
 }
 
-func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string) *schemas.BifrostListModelsResponse {
+func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, deployments map[string]string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -160,6 +235,7 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		deploymentValues = append(deploymentValues, deployment)
 	}
 
+	includedModels := make(map[string]bool)
 	for _, model := range response.ModelSummaries {
 		modelID := model.ModelID
 		matchedAllowedModel := ""
@@ -170,7 +246,7 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 		// Empty lists mean "allow all" for that dimension
 		// Check considering global prefix variations
 		shouldFilter := false
-		if len(allowedModels) > 0 && len(deploymentValues) > 0 {
+		if !unfiltered && len(allowedModels) > 0 && len(deploymentValues) > 0 {
 			// Both lists are present: model must be in allowedModels AND deployments
 			// AND the deployment alias must also be in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
@@ -185,11 +261,11 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 
 			// Filter if: model not in deployments OR deployment alias not in allowedModels
 			shouldFilter = !inDeployments || !deploymentAliasInAllowedModels
-		} else if len(allowedModels) > 0 {
+		} else if !unfiltered && len(allowedModels) > 0 {
 			// Only allowedModels is present: filter if model is not in allowedModels
 			matchedAllowedModel = findMatchingAllowedModel(allowedModels, model.ModelID)
 			shouldFilter = matchedAllowedModel == ""
-		} else if len(deploymentValues) > 0 {
+		} else if !unfiltered && len(deploymentValues) > 0 {
 			// Only deployments is present: filter if model is not in deployments
 			deploymentValue, deploymentAlias = findDeploymentMatch(deployments, model.ModelID)
 			shouldFilter = deploymentValue == ""
@@ -222,8 +298,42 @@ func (response *BedrockListModelsResponse) ToBifrostListModelsResponse(providerK
 			modelEntry.ID = string(providerKey) + "/" + deploymentAlias
 			// Use the actual deployment value (which might have global prefix)
 			modelEntry.Deployment = schemas.Ptr(deploymentValue)
+			includedModels[deploymentAlias] = true
+		} else {
+			includedModels[modelID] = true
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+	}
+
+	// Backfill deployments that were not matched from the API response
+	if !unfiltered && len(deployments) > 0 {
+		for alias, deploymentValue := range deployments {
+			if includedModels[alias] {
+				continue
+			}
+			// If allowedModels is non-empty, only include if alias is in the list
+			if len(allowedModels) > 0 && !slices.Contains(allowedModels, alias) {
+				continue
+			}
+			bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+				ID:         string(providerKey) + "/" + alias,
+				Name:       schemas.Ptr(alias),
+				Deployment: schemas.Ptr(deploymentValue),
+			})
+			includedModels[alias] = true
+		}
+	}
+
+	// Backfill allowed models that were not in the response
+	if !unfiltered && len(allowedModels) > 0 {
+		for _, allowedModel := range allowedModels {
+			if !includedModels[allowedModel] {
+				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
+					ID:   string(providerKey) + "/" + allowedModel,
+					Name: schemas.Ptr(allowedModel),
+				})
+			}
+		}
 	}
 
 	return bifrostResponse

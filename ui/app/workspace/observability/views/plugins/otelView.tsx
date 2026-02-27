@@ -1,13 +1,24 @@
 "use client";
 
-import { Input } from "@/components/ui/input";
 import { getErrorMessage, useAppSelector, useUpdatePluginMutation } from "@/lib/store";
 import { OtelConfigSchema, OtelFormSchema } from "@/lib/types/schemas";
 import { useMemo } from "react";
 import { toast } from "sonner";
 import { OtelFormFragment } from "../../fragments/otelFormFragment";
 
-export default function OtelView() {
+interface EnableToggleProps {
+	enabled: boolean;
+	onToggle: () => void;
+	disabled?: boolean;
+}
+
+interface OtelViewProps {
+	onDelete?: () => void;
+	isDeleting?: boolean;
+	enableToggle?: EnableToggleProps;
+}
+
+export default function OtelView({ onDelete, isDeleting, enableToggle }: OtelViewProps) {
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const currentConfig = useMemo(
 		() => ({ ...((selectedPlugin?.config as OtelConfigSchema) ?? {}), enabled: selectedPlugin?.enabled }),
@@ -41,13 +52,8 @@ export default function OtelView() {
 
 	return (
 		<div className="flex w-full flex-col gap-4">
-			<div className="flex w-full flex-col gap-2">
-				<div className="text-muted-foreground mb-2 text-xs font-medium">Metrics (scraping endpoint)</div>
-				<Input className="bg-accent mb-2 font-mono" value={`${baseUrl}/metrics`} readOnly showCopyButton />
-			</div>
 			<div className="flex w-full flex-col gap-3">
-				<div className="text-muted-foreground mb-2 text-xs font-medium">Traces Configuration</div>
-				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} />
+				<OtelFormFragment onSave={handleOtelConfigSave} currentConfig={currentConfig} onDelete={onDelete} isDeleting={isDeleting} enableToggle={enableToggle} />
 			</div>
 		</div>
 	);

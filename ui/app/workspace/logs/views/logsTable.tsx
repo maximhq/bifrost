@@ -187,13 +187,13 @@ export function LogsDataTable({
 			</div>
 
 			{/* Pagination Footer */}
-			<div className="flex shrink-0 items-center justify-between text-xs">
+			<div className="flex shrink-0 items-center justify-between text-xs" data-testid="pagination">
 				<div className="text-muted-foreground flex items-center gap-2">
 					{startItem.toLocaleString()}-{endItem.toLocaleString()} of {totalItems.toLocaleString()} entries
 				</div>
 
 				<div className="flex items-center gap-2">
-					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1}>
+					<Button variant="ghost" size="sm" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1} data-testid="prev-page" aria-label="Previous page">
 						<ChevronLeft className="size-3" />
 					</Button>
 
@@ -208,6 +208,8 @@ export function LogsDataTable({
 						size="sm"
 						onClick={() => goToPage(currentPage + 1)}
 						disabled={totalPages === 0 || currentPage >= totalPages}
+						data-testid="next-page"
+						aria-label="Next page"
 					>
 						<ChevronRight className="size-3" />
 					</Button>

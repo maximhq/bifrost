@@ -64,7 +64,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.5"
+          go-version: "1.26"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -80,6 +85,7 @@ jobs:
 
           **Test Suite Includes:**
           - 📦 Core Build Validation
+          - 🔌 MCP Test Servers Build
           - 🔧 Core Provider Tests
           - 🛡️ Governance Tests
           - 🔗 Integration Tests
@@ -116,6 +122,9 @@ jobs:
           VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
           VERTEX_PROJECT_ID: ${{ secrets.VERTEX_PROJECT_ID }}
           HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
+          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
+          REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
+          RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

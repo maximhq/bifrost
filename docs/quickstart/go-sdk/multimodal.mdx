@@ -9,7 +9,7 @@ icon: "images"
 Send images to vision-capable models for analysis, description, and understanding. This example shows how to analyze an image from a URL using GPT-4o with high detail processing for better accuracy.
 
 ```go
-response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o", // Using vision-capable model
 	Input: []schemas.ChatMessage{
@@ -46,7 +46,7 @@ fmt.Println("Response:", *response.Choices[0].Message.Content.ContentStr)
 Generate images from text prompts using OpenAI-compatible image generation models via the Go SDK.
 
 ```go
-response, err := client.ImageGenerationRequest(context.Background(), &schemas.BifrostImageGenerationRequest{
+response, err := client.ImageGenerationRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostImageGenerationRequest{
 	Provider: schemas.OpenAI,
 	Model:    "dall-e-3",
 	Input: &schemas.ImageGenerationInput{
@@ -97,7 +97,7 @@ If your chat application supports text input, you can add audio input and output
 ### Audio Input to Model
 
 ```go
-response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o-audio-preview",
 	Input: []schemas.ChatMessage{
@@ -128,7 +128,7 @@ response, err := client.ChatCompletionRequest(context.Background(), &schemas.Bif
 Convert text into natural-sounding speech using AI voice models. This example demonstrates generating an MP3 audio file from text using the "alloy" voice. The result is saved to a local file for playback.
 
 ```go
-response, err := client.SpeechRequest(context.Background(), &schemas.BifrostSpeechRequest{
+response, err := client.SpeechRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostSpeechRequest{
 	Provider: schemas.OpenAI,
 	Model:    "tts-1", // Using text-to-speech model
 	Input: &schemas.SpeechInput{
@@ -173,7 +173,7 @@ if err != nil {
 
 fmt.Printf("Loaded audio file %s (%d bytes) for transcription...\n", audioFilename, len(audioData))
 
-response, err := client.TranscriptionRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "whisper-1", // Using Whisper model for transcription
 	Input: &schemas.TranscriptionInput{
@@ -198,7 +198,7 @@ fmt.Printf("Transcription Result: %s\n", response.Transcribe.Text)
 Send multiple images in a single request for comparison or analysis. This is useful for comparing products, analyzing changes over time, or understanding relationships between different visual elements.
 
 ```go
-response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o",
 	Input: []schemas.ChatMessage{
@@ -242,7 +242,7 @@ if err != nil {
 base64Image := base64.StdEncoding.EncodeToString(imageData)
 dataURL := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
 
-response, err := client.ChatCompletionRequest(context.Background(), &schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
 	Provider: schemas.OpenAI,
 	Model:    "gpt-4o",
 	Input: []schemas.ChatMessage{
@@ -279,7 +279,7 @@ OpenAI provides six distinct voice options, each with different characteristics.
 voices := []string{"alloy", "echo", "fable", "onyx", "nova", "shimmer"}
 
 for _, voice := range voices {
-	response, err := client.SpeechRequest(context.Background(), &schemas.BifrostSpeechRequest{
+	response, err := client.SpeechRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostSpeechRequest{
 		Provider: schemas.OpenAI,
 		Model:    "tts-1",
 		Input: &schemas.SpeechInput{
@@ -309,7 +309,7 @@ Generate audio in different formats depending on your use case. MP3 for general 
 formats := []string{"mp3", "opus", "aac", "flac"}
 
 for _, format := range formats {
-	response, err := client.SpeechRequest(context.Background(), &schemas.BifrostSpeechRequest{
+	response, err := client.SpeechRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostSpeechRequest{
 		Provider: schemas.OpenAI,
 		Model:    "tts-1",
 		Input: &schemas.SpeechInput{
@@ -337,7 +337,7 @@ for _, format := range formats {
 Improve transcription accuracy by specifying the source language. This is particularly helpful for non-English audio or when the audio contains technical terms or specific domain vocabulary.
 
 ```go
-response, err := client.TranscriptionRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "whisper-1",
 	Input: &schemas.TranscriptionInput{
@@ -356,7 +356,7 @@ Choose between simple text output or detailed JSON responses with timestamps. Th
 
 ```go
 // Text only
-response, err := client.TranscriptionRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "whisper-1",
 	Input: &schemas.TranscriptionInput{
@@ -368,7 +368,7 @@ response, err := client.TranscriptionRequest(context.Background(), &schemas.Bifr
 })
 
 // JSON with timestamps
-response, err := client.TranscriptionRequest(context.Background(), &schemas.BifrostTranscriptionRequest{
+response, err := client.TranscriptionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostTranscriptionRequest{
 	Provider: schemas.OpenAI,
 	Model:    "whisper-1",
 	Input: &schemas.TranscriptionInput{

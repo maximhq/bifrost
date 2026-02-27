@@ -1,0 +1,111 @@
+# Prometheus + Push Gateway + Grafana for testing Bifrost push-based metrics (development only)
+#
+# Usage:
+#   docker compose -f docker-compose.pushgateway.yml up -d
+#
+# Then configure Bifrost telemetry plugin with:
+#   push_gateway_url: http://localhost:9091
+#   job_name: bifrost
+#   push_interval: 15
+#   basic_auth:
+#     username: admin
+#     password: admin
+
+services:
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    command:
+      - "--web.config.file=/etc/pushgateway/web.yml"
+    ports:
+      - "9091:9091"
+    configs:
+      - source: pushgateway-web-config
+        target: /etc/pushgateway/web.yml
+    restart: always
+    networks:
+      - bifrost_pushgateway_network
+
+  prometheus-pg:
+    image: prom/prometheus:latest
+    container_name: prometheus-pg
+    depends_on:
+      - pushgateway
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+    restart: always
+    networks:
+      - bifrost_pushgateway_network
+
+  grafana-pg:
+    image: grafana/grafana:latest
+    container_name: grafana-pg
+    depends_on:
+      - prometheus-pg
+    ports:
+      - "4000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+    volumes:
+      - ./sample-grafana-dashboard.json:/var/lib/grafana/dashboards/bifrost-dashboard.json
+    configs:
+      - source: grafana-datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yml
+      - source: grafana-dashboards
+        target: /etc/grafana/provisioning/dashboards/dashboards.yml
+    restart: always
+    networks:
+      - bifrost_pushgateway_network
+
+networks:
+  bifrost_pushgateway_network:
+    driver: bridge
+
+configs:
+  pushgateway-web-config:
+    content: |
+      basic_auth_users:
+        # admin:admin (bcrypt hash)
+        admin: "$$2y$$10$$xfmgGnMSClSfhHo/dTsVmexbS1FJ5zZfEmvKm4F/ZpYul9aewIXZ."
+
+  prometheus-config:
+    content: |
+      global:
+        scrape_interval: 5s
+      scrape_configs:
+        - job_name: "pushgateway"
+          honor_labels: true
+          basic_auth:
+            username: admin
+            password: admin
+          static_configs:
+            - targets: ["pushgateway:9091"]
+
+  grafana-datasources:
+    content: |
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          access: proxy
+          url: http://prometheus-pg:9090
+          isDefault: true
+          editable: true
+
+  grafana-dashboards:
+    content: |
+      apiVersion: 1
+      providers:
+        - name: 'default'
+          orgId: 1
+          folder: ''
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 10
+          allowUiUpdates: true
+          options:
+            path: /var/lib/grafana/dashboards
+            foldersFromFilesStructure: false

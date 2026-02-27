@@ -19,6 +19,7 @@ var (
 		AnthropicStopReasonMaxTokens:    "length",
 		AnthropicStopReasonStopSequence: "stop",
 		AnthropicStopReasonToolUse:      "tool_calls",
+		AnthropicStopReasonCompaction:   "compaction",
 	}
 
 	// Maps Bifrost finish reasons to provider-specific format
@@ -26,8 +27,55 @@ var (
 		"stop":       AnthropicStopReasonEndTurn, // canonical default
 		"length":     AnthropicStopReasonMaxTokens,
 		"tool_calls": AnthropicStopReasonToolUse,
+		"compaction": AnthropicStopReasonCompaction,
 	}
 )
+
+// SupportsNativeEffort returns true if the model supports Anthropic's native output_config.effort parameter.
+// Currently supported on Claude Opus 4.5 and Opus 4.6.
+func SupportsNativeEffort(model string) bool {
+	model = strings.ToLower(model)
+	if !strings.Contains(model, "opus") {
+		return false
+	}
+	return strings.Contains(model, "4-5") || strings.Contains(model, "4.5") ||
+		strings.Contains(model, "4-6") || strings.Contains(model, "4.6")
+}
+
+// SupportsAdaptiveThinking returns true if the model supports thinking.type: "adaptive".
+// Currently only supported on Claude Opus 4.6.
+func SupportsAdaptiveThinking(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "opus") &&
+		(strings.Contains(model, "4-6") || strings.Contains(model, "4.6"))
+}
+
+// MapBifrostEffortToAnthropic maps a Bifrost effort level to an Anthropic effort level.
+// Anthropic supports "low", "medium", "high", "max"; Bifrost also has "minimal" which maps to "low".
+func MapBifrostEffortToAnthropic(effort string) string {
+	if effort == "minimal" {
+		return "low"
+	}
+	return effort
+}
+
+// MapAnthropicEffortToBifrost maps an Anthropic effort level to a Bifrost effort level.
+// Anthropic supports "max" (Opus 4.6+) which is not in Bifrost's enum; it maps to "high".
+func MapAnthropicEffortToBifrost(effort string) string {
+	if effort == "max" {
+		return "high"
+	}
+	return effort
+}
+
+// setEffortOnOutputConfig merges the effort value into the request's OutputConfig,
+// preserving any existing Format field (used for structured outputs).
+func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
+	if req.OutputConfig == nil {
+		req.OutputConfig = &AnthropicOutputConfig{}
+	}
+	req.OutputConfig.Effort = &effort
+}
 
 func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
 	var jsonBody []byte
@@ -78,6 +126,23 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, fmt.Errorf("failed to marshal request body: %w", err), providerName)
 		}
+		// Merge ExtraParams into the JSON if passthrough is enabled
+		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			extraParams := reqBody.GetExtraParams()
+			if len(extraParams) > 0 {
+				var jsonMap map[string]interface{}
+				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+				// Merge ExtraParams recursively (handles nested maps)
+				providerUtils.MergeExtraParams(jsonMap, extraParams)
+				// Re-marshal the merged map
+				jsonBody, err = providerUtils.MarshalSorted(jsonMap)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+			}
+		}
 	}
 	return jsonBody, nil
 }
@@ -85,6 +150,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 // addMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context
 func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest) error {
 	headers := []string{}
+	hasCachingScope := false
 	if req.Tools != nil {
 		for _, tool := range req.Tools {
 			// Check for strict (structured-outputs)
@@ -101,6 +167,22 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			if len(tool.AllowedCallers) > 0 {
 				headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
 			}
+			// Check for cache control with scope
+			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
+				headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+				hasCachingScope = true
+			}
+		}
+	}
+	// Check for compaction
+	if req.ContextManagement != nil {
+		for _, edit := range req.ContextManagement.Edits {
+			if edit.Type == ContextManagementEditTypeCompact {
+				headers = appendUniqueHeader(headers, AnthropicCompactionBetaHeader)
+			}
+			if edit.Type == ContextManagementEditTypeClearToolUses || edit.Type == ContextManagementEditTypeClearThinking {
+				headers = appendUniqueHeader(headers, AnthropicContextManagementBetaHeader)
+			}
 		}
 	}
 	// Check for MCP servers
@@ -110,6 +192,33 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	// Check for output format (structured outputs)
 	if req.OutputFormat != nil {
 		headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+	}
+	// Check for cache control with scope in system message (only if not already found)
+	if !hasCachingScope && req.System != nil && req.System.ContentBlocks != nil {
+		for _, block := range req.System.ContentBlocks {
+			if block.CacheControl != nil && block.CacheControl.Scope != nil {
+				headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+				hasCachingScope = true
+				break
+			}
+		}
+	}
+	// Check for cache control with scope in messages (only if not already found)
+	if !hasCachingScope {
+		for _, message := range req.Messages {
+			if message.Content.ContentBlocks != nil {
+				for _, block := range message.Content.ContentBlocks {
+					if block.CacheControl != nil && block.CacheControl.Scope != nil {
+						headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+						hasCachingScope = true
+						break
+					}
+				}
+				if hasCachingScope {
+					break
+				}
+			}
+		}
 	}
 	if len(headers) == 0 {
 		return nil
@@ -288,28 +397,28 @@ func convertJSONSchemaToToolParameters(schema *schemas.ResponsesTextConfigFormat
 	// Convert map[string]any to OrderedMap for Properties
 	if schema.Properties != nil {
 		if orderedMap, ok := schemas.SafeExtractOrderedMap(*schema.Properties); ok {
-			params.Properties = &orderedMap
+			params.Properties = orderedMap
 		}
 	}
 
 	// Convert map[string]any to OrderedMap for Defs
 	if schema.Defs != nil {
 		if orderedMap, ok := schemas.SafeExtractOrderedMap(*schema.Defs); ok {
-			params.Defs = &orderedMap
+			params.Defs = orderedMap
 		}
 	}
 
 	// Convert map[string]any to OrderedMap for Definitions
 	if schema.Definitions != nil {
 		if orderedMap, ok := schemas.SafeExtractOrderedMap(*schema.Definitions); ok {
-			params.Definitions = &orderedMap
+			params.Definitions = orderedMap
 		}
 	}
 
 	// Convert map[string]any to OrderedMap for Items
 	if schema.Items != nil {
 		if orderedMap, ok := schemas.SafeExtractOrderedMap(*schema.Items); ok {
-			params.Items = &orderedMap
+			params.Items = orderedMap
 		}
 	}
 
@@ -318,7 +427,7 @@ func convertJSONSchemaToToolParameters(schema *schemas.ResponsesTextConfigFormat
 		params.AnyOf = make([]schemas.OrderedMap, 0, len(schema.AnyOf))
 		for _, item := range schema.AnyOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				params.AnyOf = append(params.AnyOf, orderedMap)
+				params.AnyOf = append(params.AnyOf, *orderedMap)
 			}
 		}
 	}
@@ -327,7 +436,7 @@ func convertJSONSchemaToToolParameters(schema *schemas.ResponsesTextConfigFormat
 		params.OneOf = make([]schemas.OrderedMap, 0, len(schema.OneOf))
 		for _, item := range schema.OneOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				params.OneOf = append(params.OneOf, orderedMap)
+				params.OneOf = append(params.OneOf, *orderedMap)
 			}
 		}
 	}
@@ -336,7 +445,7 @@ func convertJSONSchemaToToolParameters(schema *schemas.ResponsesTextConfigFormat
 		params.AllOf = make([]schemas.OrderedMap, 0, len(schema.AllOf))
 		for _, item := range schema.AllOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				params.AllOf = append(params.AllOf, orderedMap)
+				params.AllOf = append(params.AllOf, *orderedMap)
 			}
 		}
 	}
@@ -355,7 +464,7 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 		params.Description = &desc
 	}
 	if props, ok := schemas.SafeExtractOrderedMap(m["properties"]); ok {
-		params.Properties = &props
+		params.Properties = props
 	}
 	if req, ok := m["required"].([]interface{}); ok {
 		required := make([]string, 0, len(req))
@@ -373,21 +482,21 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 			}
 		} else if addPropsMap, ok := schemas.SafeExtractOrderedMap(addProps); ok {
 			params.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-				AdditionalPropertiesMap: &addPropsMap,
+				AdditionalPropertiesMap: addPropsMap,
 			}
 		}
 	}
 	if defs, ok := schemas.SafeExtractOrderedMap(m["$defs"]); ok {
-		params.Defs = &defs
+		params.Defs = defs
 	}
 	if definitions, ok := schemas.SafeExtractOrderedMap(m["definitions"]); ok {
-		params.Definitions = &definitions
+		params.Definitions = definitions
 	}
 	if ref, ok := m["$ref"].(string); ok {
 		params.Ref = &ref
 	}
 	if items, ok := schemas.SafeExtractOrderedMap(m["items"]); ok {
-		params.Items = &items
+		params.Items = items
 	}
 	if minItems, ok := anthropicExtractInt64(m["minItems"]); ok {
 		params.MinItems = schemas.Ptr(minItems)
@@ -399,7 +508,7 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 		anyOfMaps := make([]schemas.OrderedMap, 0, len(anyOf))
 		for _, item := range anyOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				anyOfMaps = append(anyOfMaps, orderedMap)
+				anyOfMaps = append(anyOfMaps, *orderedMap)
 			}
 		}
 		if len(anyOfMaps) > 0 {
@@ -410,7 +519,7 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 		oneOfMaps := make([]schemas.OrderedMap, 0, len(oneOf))
 		for _, item := range oneOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				oneOfMaps = append(oneOfMaps, orderedMap)
+				oneOfMaps = append(oneOfMaps, *orderedMap)
 			}
 		}
 		if len(oneOfMaps) > 0 {
@@ -421,7 +530,7 @@ func convertMapToToolFunctionParameters(m map[string]interface{}) *schemas.ToolF
 		allOfMaps := make([]schemas.OrderedMap, 0, len(allOf))
 		for _, item := range allOf {
 			if orderedMap, ok := schemas.SafeExtractOrderedMap(item); ok {
-				allOfMaps = append(allOfMaps, orderedMap)
+				allOfMaps = append(allOfMaps, *orderedMap)
 			}
 		}
 		if len(allOfMaps) > 0 {
@@ -1032,6 +1141,8 @@ func convertChatResponseFormatToAnthropicOutputFormat(responseFormat *interface{
 	}
 
 	// Build the flattened Anthropic-compatible output_format structure
+	// Note: name, description, and strict are NOT included as they are not permitted
+	// in Anthropic's GA structured outputs API (output_config.format)
 	outputFormat := map[string]interface{}{
 		"type": formatType,
 	}
@@ -1154,6 +1265,13 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{})
 		Type: formatType,
 	}
 
+	// Extract name if present
+	if name, ok := formatMap["name"].(string); ok && strings.TrimSpace(name) != "" {
+		format.Name = schemas.Ptr(strings.TrimSpace(name))
+	} else {
+		format.Name = schemas.Ptr("output_format")
+	}
+
 	// Extract schema if present
 	if schemaMap, ok := formatMap["schema"].(map[string]interface{}); ok {
 		jsonSchema := &schemas.ResponsesTextConfigFormatJSONSchema{}
@@ -1186,7 +1304,7 @@ func convertAnthropicOutputFormatToResponsesTextConfig(outputFormat interface{})
 
 		if additionalProps, ok := schemas.SafeExtractOrderedMap(schemaMap["additionalProperties"]); ok {
 			jsonSchema.AdditionalProperties = &schemas.AdditionalPropertiesStruct{
-				AdditionalPropertiesMap: &additionalProps,
+				AdditionalPropertiesMap: additionalProps,
 			}
 		}
 
@@ -1477,4 +1595,20 @@ func anthropicExtractFloat64(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// IsClaudeCodeMaxMode checks if the request is a Claude Code max mode request.
+// In the max mode - we don't need to forward the key
+func IsClaudeCodeMaxMode(ctx *schemas.BifrostContext) bool {
+	userAgent, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
+	skipKeySelection, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	return strings.Contains(strings.ToLower(userAgent), "claude-cli") && skipKeySelection
+}
+
+// IsClaudeCodeRequest checks if the request is a Claude Code request.
+func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
+	if userAgent, ok := ctx.Value(schemas.BifrostContextKeyUserAgent).(string); ok {
+		return strings.Contains(strings.ToLower(userAgent), "claude-cli")
+	}
+	return false
 }

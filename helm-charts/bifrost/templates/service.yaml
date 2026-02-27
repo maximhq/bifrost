@@ -27,4 +27,4 @@ spec:
       name: gossip-udp
     {{- end }}
   selector:
-    {{- include "bifrost.selectorLabels" . | nindent 4 }}
+    {{- include "bifrost.serverSelectorLabels" . | nindent 4 }}

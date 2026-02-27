@@ -816,6 +816,7 @@ func escapeSearchValue(value string) string {
 		"'", "\\'",
 		" ", "\\ ",
 		"-", "\\-",
+		".", "\\.",
 		",", "|",
 	)
 	return replacer.Replace(value)

@@ -8,5 +8,9 @@ export default function LogsLayout({ children }: { children: React.ReactNode }) 
   if (!hasViewLogsAccess) {
     return <NoPermissionView entity="logs" />
   }
-  return <div>{children}</div>
+  return (
+    <div className="flex flex-col h-full">
+      {children}
+    </div>
+  )
 }

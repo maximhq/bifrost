@@ -48,13 +48,12 @@
 package integrations
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
-
-	"bufio"
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
@@ -62,6 +61,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -75,6 +75,14 @@ type ExtensionRouter interface {
 // StreamingRequest interface for requests that support streaming
 type StreamingRequest interface {
 	IsStreamingRequested() bool
+}
+
+// RequestWithSettableExtraParams is implemented by request types that accept
+// provider-specific extra parameters via the extra_params JSON key. The
+// integration router extracts extra_params from the raw request body and
+// passes them through so they propagate to the downstream provider.
+type RequestWithSettableExtraParams interface {
+	SetExtraParams(params map[string]interface{})
 }
 
 // BatchRequest wraps a Bifrost batch request with its type information.
@@ -144,13 +152,25 @@ type TextResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.Bifro
 // It takes a BifrostChatResponse and returns the format expected by the specific integration.
 type ChatResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error)
 
+// AsyncChatResponseConverter is a function that converts an async job response to an integration-specific format.
+// It takes an async job response and a method to convert the chat response, and returns the integration-specific format, extra headers, and an error.
+type AsyncChatResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, chatResponseConverter ChatResponseConverter) (interface{}, map[string]string, error)
+
 // ResponsesResponseConverter is a function that converts BifrostResponsesResponse to integration-specific format.
 // It takes a BifrostResponsesResponse and returns the format expected by the specific integration.
 type ResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error)
 
+// AsyncResponsesResponseConverter is a function that converts an async job response to an integration-specific format.
+// It takes an async job response and a method to convert the responses response, and returns the integration-specific format, extra headers, and an error.
+type AsyncResponsesResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.AsyncJobResponse, responsesResponseConverter ResponsesResponseConverter) (interface{}, map[string]string, error)
+
 // EmbeddingResponseConverter is a function that converts BifrostEmbeddingResponse to integration-specific format.
 // It takes a BifrostEmbeddingResponse and returns the format expected by the specific integration.
 type EmbeddingResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error)
+
+// RerankResponseConverter is a function that converts BifrostRerankResponse to integration-specific format.
+// It takes a BifrostRerankResponse and returns the format expected by the specific integration.
+type RerankResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostRerankResponse) (interface{}, error)
 
 // SpeechResponseConverter is a function that converts BifrostSpeechResponse to integration-specific format.
 // It takes a BifrostSpeechResponse and returns the format expected by the specific integration.
@@ -269,6 +289,30 @@ type ImageGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *sc
 // It takes a BifrostImageGenerationStreamResponse and returns the event type and the streaming format expected by the specific integration.
 type ImageGenerationStreamResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationStreamResponse) (string, interface{}, error)
 
+// ImageEditResponseConverter is a function that converts BifrostImageGenerationResponse to integration-specific format.
+// It takes a BifrostImageGenerationResponse and returns the format expected by the specific integration.
+type ImageEditResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error)
+
+// VideoGenerationResponseConverter is a function that converts BifrostVideoGenerationResponse to integration-specific format.
+// It takes a BifrostVideoGenerationResponse and returns the format expected by the specific integration.
+type VideoGenerationResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error)
+
+// VideoDownloadResponseConverter is a function that converts BifrostVideoDownloadResponse to integration-specific format.
+// It takes a BifrostVideoDownloadResponse and returns the format expected by the specific integration.
+type VideoDownloadResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDownloadResponse) (interface{}, error)
+
+// VideoRetrieveAsDownloadConverter is a function that converts BifrostVideoGenerationResponse to integration-specific format.
+// It takes a BifrostVideoGenerationResponse and returns the format expected by the specific integration.
+type VideoRetrieveAsDownloadConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error)
+
+// VideoDeleteResponseConverter is a function that converts BifrostVideoDeleteResponse to integration-specific format.
+// It takes a BifrostVideoDeleteResponse and returns the format expected by the specific integration.
+type VideoDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoDeleteResponse) (interface{}, error)
+
+// VideoListResponseConverter is a function that converts BifrostVideoListResponse to integration-specific format.
+// It takes a BifrostVideoListResponse and returns the format expected by the specific integration.
+type VideoListResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoListResponse) (interface{}, error)
+
 // ErrorConverter is a function that converts BifrostError to integration-specific format.
 // It takes a BifrostError and returns the format expected by the specific integration.
 type ErrorConverter func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{}
@@ -293,6 +337,10 @@ type PreRequestCallback func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bifro
 // It can be used to modify the response or perform additional logging/metrics.
 // If it returns an error, an error response is sent instead of the success response.
 type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp interface{}) error
+
+// HTTPRequestTypeGetter is a function type that accepts only a *fasthttp.RequestCtx and
+// returns a schemas.RequestType indicating the HTTP request type derived from the context.
+type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
 // StreamConfig defines streaming-specific configuration for an integration
 //
@@ -331,6 +379,7 @@ const (
 	RouteConfigTypeAnthropic RouteConfigType = "anthropic"
 	RouteConfigTypeGenAI     RouteConfigType = "genai"
 	RouteConfigTypeBedrock   RouteConfigType = "bedrock"
+	RouteConfigTypeCohere    RouteConfigType = "cohere"
 )
 
 // RouteConfig defines the configuration for a single route in an integration.
@@ -339,7 +388,8 @@ type RouteConfig struct {
 	Type                                   RouteConfigType                        // Type of the route
 	Path                                   string                                 // HTTP path pattern (e.g., "/openai/v1/chat/completions")
 	Method                                 string                                 // HTTP method (POST, GET, PUT, DELETE)
-	GetRequestTypeInstance                 func() interface{}                     // Factory function to create request instance (SHOULD NOT BE NIL)
+	GetHTTPRequestType                     HTTPRequestTypeGetter                  // Function to get the HTTP request type from the context (SHOULD NOT BE NIL)
+	GetRequestTypeInstance                 func(ctx context.Context) interface{}  // Factory function to create request instance (SHOULD NOT BE NIL)
 	RequestParser                          RequestParser                          // Optional: custom request parsing (e.g., multipart/form-data)
 	RequestConverter                       RequestConverter                       // Function to convert request to BifrostRequest (for inference requests)
 	BatchRequestConverter                  BatchRequestConverter                  // Function to convert request to BatchRequest (for batch operations)
@@ -349,11 +399,18 @@ type RouteConfig struct {
 	ListModelsResponseConverter            ListModelsResponseConverter            // Function to convert BifrostListModelsResponse to integration format (SHOULD NOT BE NIL)
 	TextResponseConverter                  TextResponseConverter                  // Function to convert BifrostTextCompletionResponse to integration format (SHOULD NOT BE NIL)
 	ChatResponseConverter                  ChatResponseConverter                  // Function to convert BifrostChatResponse to integration format (SHOULD NOT BE NIL)
+	AsyncChatResponseConverter             AsyncChatResponseConverter             // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
 	ResponsesResponseConverter             ResponsesResponseConverter             // Function to convert BifrostResponsesResponse to integration format (SHOULD NOT BE NIL)
+	AsyncResponsesResponseConverter        AsyncResponsesResponseConverter        // Function to convert AsyncJobResponse to integration format (SHOULD NOT BE NIL)
 	EmbeddingResponseConverter             EmbeddingResponseConverter             // Function to convert BifrostEmbeddingResponse to integration format (SHOULD NOT BE NIL)
+	RerankResponseConverter                RerankResponseConverter                // Function to convert BifrostRerankResponse to integration format
 	SpeechResponseConverter                SpeechResponseConverter                // Function to convert BifrostSpeechResponse to integration format (SHOULD NOT BE NIL)
 	TranscriptionResponseConverter         TranscriptionResponseConverter         // Function to convert BifrostTranscriptionResponse to integration format (SHOULD NOT BE NIL)
 	ImageGenerationResponseConverter       ImageGenerationResponseConverter       // Function to convert BifrostImageGenerationResponse to integration format (SHOULD NOT BE NIL)
+	VideoGenerationResponseConverter       VideoGenerationResponseConverter       // Function to convert BifrostVideoGenerationResponse to integration format (SHOULD NOT BE NIL)
+	VideoDownloadResponseConverter         VideoDownloadResponseConverter         // Function to convert BifrostVideoDownloadResponse to integration format (SHOULD NOT BE NIL)
+	VideoDeleteResponseConverter           VideoDeleteResponseConverter           // Function to convert BifrostVideoDeleteResponse to integration format (SHOULD NOT BE NIL)
+	VideoListResponseConverter             VideoListResponseConverter             // Function to convert BifrostVideoListResponse to integration format (SHOULD NOT BE NIL)
 	BatchCreateResponseConverter           BatchCreateResponseConverter           // Function to convert BifrostBatchCreateResponse to integration format
 	BatchListResponseConverter             BatchListResponseConverter             // Function to convert BifrostBatchListResponse to integration format
 	BatchRetrieveResponseConverter         BatchRetrieveResponseConverter         // Function to convert BifrostBatchRetrieveResponse to integration format
@@ -414,7 +471,7 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 		}
 
 		// Test that GetRequestTypeInstance returns a valid instance
-		if testInstance := route.GetRequestTypeInstance(); testInstance == nil {
+		if testInstance := route.GetRequestTypeInstance(context.Background()); testInstance == nil {
 			g.logger.Warn("route configuration is invalid: GetRequestTypeInstance returned nil for route " + route.Path)
 			continue
 		}
@@ -437,20 +494,33 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			continue
 		}
 
+		registerRequestTypeMiddleware := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+			return func(ctx *fasthttp.RequestCtx) {
+				if route.GetHTTPRequestType != nil {
+					ctx.SetUserValue(schemas.BifrostContextKeyHTTPRequestType, route.GetHTTPRequestType(ctx))
+				}
+				next(ctx)
+			}
+		}
+
+		// Create a fresh middlewares list for this route (don't mutate the original)
+		// This ensures each route only has its own middleware plus the originally passed middlewares
+		routeMiddlewares := append([]schemas.BifrostHTTPMiddleware{registerRequestTypeMiddleware}, middlewares...)
+
 		handler := g.createHandler(route)
 		switch method {
 		case fasthttp.MethodPost:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodGet:
-			r.GET(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.GET(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodPut:
-			r.PUT(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.PUT(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodDelete:
-			r.DELETE(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.DELETE(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		case fasthttp.MethodHead:
-			r.HEAD(route.Path, lib.ChainMiddlewares(handler, middlewares...))
+			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
-			r.POST(route.Path, lib.ChainMiddlewares(handler, middlewares...)) // Default to POST
+			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...)) // Default to POST
 		}
 	}
 }
@@ -469,7 +539,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 
 		// Parse request body into the integration-specific request type
 		// Note: config validation is performed at startup in RegisterRoutes
-		req := config.GetRequestTypeInstance()
+		req := config.GetRequestTypeInstance(ctx)
 		var rawBody []byte
 
 		// Execute the request through Bifrost
@@ -481,6 +551,13 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set available providers to context
 		availableProviders := g.handlerStore.GetAvailableProviders()
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
+
+		// Async retrieve: check x-bf-async-id header early (before body parsing)
+		if asyncID := string(ctx.Request.Header.Peek(schemas.AsyncHeaderGetID)); asyncID != "" {
+			defer cancel()
+			g.handleAsyncRetrieve(ctx, config, bifrostCtx)
+			return
+		}
 
 		// Parse request body based on configuration
 		if method != fasthttp.MethodGet && method != fasthttp.MethodHead {
@@ -497,6 +574,20 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 					if err := sonic.Unmarshal(rawBody, req); err != nil {
 						g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "Invalid JSON"))
 						return
+					}
+					// Extract the "extra_params" JSON key when passthrough is
+					// explicitly enabled via x-bf-passthrough-extra-params: true.
+					// Provider-specific fields (e.g. Bedrock guardrailConfig)
+					// must be nested under "extra_params" in the request body.
+					if bifrostCtx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+						if rws, ok := req.(RequestWithSettableExtraParams); ok {
+							var wrapper struct {
+								ExtraParams map[string]interface{} `json:"extra_params"`
+							}
+							if err := sonic.Unmarshal(rawBody, &wrapper); err == nil && len(wrapper.ExtraParams) > 0 {
+								rws.SetExtraParams(wrapper.ExtraParams)
+							}
+						}
 					}
 				}
 			}
@@ -601,6 +692,13 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Extract and parse fallbacks from the request if present
 		if err := g.extractAndParseFallbacks(req, bifrostReq); err != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to parse fallbacks: "+err.Error()))
+			return
+		}
+
+		// Async create: check x-bf-async header (needs parsed bifrostReq)
+		if string(ctx.Request.Header.Peek(schemas.AsyncHeaderCreate)) != "" {
+			defer cancel()
+			g.handleAsyncCreate(ctx, config, req, bifrostReq, bifrostCtx)
 			return
 		}
 
@@ -758,6 +856,30 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.EmbeddingResponseConverter(bifrostCtx, embeddingResponse)
+	case bifrostReq.RerankRequest != nil:
+		rerankResponse, bifrostErr := g.client.RerankRequest(bifrostCtx, bifrostReq.RerankRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, rerankResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if rerankResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.RerankResponseConverter != nil {
+			response, err = config.RerankResponseConverter(bifrostCtx, rerankResponse)
+		} else {
+			response = rerankResponse
+		}
 	case bifrostReq.SpeechRequest != nil:
 		speechResponse, bifrostErr := g.client.SpeechRequest(bifrostCtx, bifrostReq.SpeechRequest)
 		if bifrostErr != nil {
@@ -783,7 +905,7 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert speech response"))
 				return
 			}
-			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			return
 		} else {
 			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
@@ -843,6 +965,234 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		// Convert Bifrost response to integration-specific format and send
 		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageGenerationResponse)
+	case bifrostReq.ImageEditRequest != nil:
+		imageEditResponse, bifrostErr := g.client.ImageEditRequest(bifrostCtx, bifrostReq.ImageEditRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageEditResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageEditResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageEditResponse)
+	case bifrostReq.ImageVariationRequest != nil:
+		imageVariationResponse, bifrostErr := g.client.ImageVariationRequest(bifrostCtx, bifrostReq.ImageVariationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		// Execute post-request callback if configured
+		// This is typically used for response modification or additional processing
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, imageVariationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if imageVariationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.ImageGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing ImageGenerationResponseConverter for integration"))
+			return
+		}
+
+		// Convert Bifrost response to integration-specific format and send
+		response, err = config.ImageGenerationResponseConverter(bifrostCtx, imageVariationResponse)
+	case bifrostReq.VideoGenerationRequest != nil:
+		videoGenerationResponse, bifrostErr := g.client.VideoGenerationRequest(bifrostCtx, bifrostReq.VideoGenerationRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoGenerationResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoGenerationResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoGenerationResponse)
+	case bifrostReq.VideoRetrieveRequest != nil:
+		videoRetrieveResponse, bifrostErr := g.client.VideoRetrieveRequest(bifrostCtx, bifrostReq.VideoRetrieveRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoRetrieveResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoRetrieveResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoRetrieveResponse)
+	case bifrostReq.VideoDownloadRequest != nil:
+		videoDownloadResponse, bifrostErr := g.client.VideoDownloadRequest(bifrostCtx, bifrostReq.VideoDownloadRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoDownloadResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoDownloadResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoDownloadResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDownloadResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoDownloadResponseConverter(bifrostCtx, videoDownloadResponse)
+
+		// If converter returns binary content, write directly with content-type.
+		if err == nil {
+			if rawBytes, ok := response.([]byte); ok {
+				contentType := videoDownloadResponse.ContentType
+				if contentType == "" {
+					contentType = "application/octet-stream"
+				}
+				ctx.Response.Header.Set("Content-Type", contentType)
+				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
+				ctx.Response.SetBody(rawBytes)
+				return
+			}
+		}
+	case bifrostReq.VideoDeleteRequest != nil:
+		videoDeleteResponse, bifrostErr := g.client.VideoDeleteRequest(bifrostCtx, bifrostReq.VideoDeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoDeleteResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoDeleteResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoDeleteResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDeleteResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoDeleteResponseConverter(bifrostCtx, videoDeleteResponse)
+	case bifrostReq.VideoRemixRequest != nil:
+		videoRemixResponse, bifrostErr := g.client.VideoRemixRequest(bifrostCtx, bifrostReq.VideoRemixRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoRemixResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoRemixResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoGenerationResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoGenerationResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoRemixResponse)
+	case bifrostReq.VideoListRequest != nil:
+
+		// extract provider from header
+		providerHeader := strings.ToLower(string(ctx.Request.Header.Peek("x-bf-video-list-provider")))
+		if providerHeader != "" {
+			bifrostReq.VideoListRequest.Provider = schemas.ModelProvider(providerHeader)
+		} else if bifrostReq.VideoListRequest.Provider == "" {
+			bifrostReq.VideoListRequest.Provider = schemas.OpenAI
+		}
+		videoListResponse, bifrostErr := g.client.VideoListRequest(bifrostCtx, bifrostReq.VideoListRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, videoListResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+
+		if videoListResponse == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Bifrost response is nil after post-request callback"))
+			return
+		}
+
+		if config.VideoListResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoListResponseConverter for integration"))
+			return
+		}
+
+		response, err = config.VideoListResponseConverter(bifrostCtx, videoListResponse)
+
 	case bifrostReq.CountTokensRequest != nil:
 		countTokensResponse, bifrostErr := g.client.CountTokensRequest(bifrostCtx, bifrostReq.CountTokensRequest)
 		if bifrostErr != nil {
@@ -880,7 +1230,173 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		return
 	}
 
-	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
+}
+
+// --- Async integration handlers ---
+
+// handleAsyncCreate submits an async job for the current inference request.
+// It stores the raw Bifrost response in the DB; the response converter is applied at retrieval time.
+func (g *GenericRouter) handleAsyncCreate(
+	ctx *fasthttp.RequestCtx,
+	config RouteConfig,
+	req interface{},
+	bifrostReq *schemas.BifrostRequest,
+	bifrostCtx *schemas.BifrostContext,
+) {
+	executor := g.handlerStore.GetAsyncJobExecutor()
+	if executor == nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(nil, "async operations not available: logs store not configured"))
+		return
+	}
+
+	// Reject streaming + async
+	if streamingReq, ok := req.(StreamingRequest); ok && streamingReq.IsStreamingRequested() {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(nil, "streaming is not supported for async requests"))
+		return
+	}
+
+	// Reject non-inference routes (batch, file, container)
+	if config.BatchRequestConverter != nil || config.FileRequestConverter != nil ||
+		config.ContainerRequestConverter != nil || config.ContainerFileRequestConverter != nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(nil, "async is not supported for batch, file, or container operations"))
+		return
+	}
+
+	switch config.GetHTTPRequestType(ctx) {
+	case schemas.ChatCompletionRequest:
+		if config.AsyncChatResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "async operation is not supported on this route"))
+			return
+		}
+	case schemas.ResponsesRequest:
+		if config.AsyncResponsesResponseConverter == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "async operation is not supported on this route"))
+			return
+		}
+	default:
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "async operation is not supported on this route"))
+		return
+	}
+
+	operationType := config.GetHTTPRequestType(ctx)
+	vkValue := getVirtualKeyFromBifrostContext(bifrostCtx)
+	resultTTL := getResultTTLFromHeaderWithDefault(ctx, g.handlerStore.GetAsyncJobResultTTL())
+
+	// The operation closure runs the Bifrost client call in the background.
+	// It returns the raw typed Bifrost response (NOT provider-converted).
+	// The response converter is applied at retrieval time via handleAsyncRetrieve.
+	operation := func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+		switch {
+		case bifrostReq.ChatRequest != nil:
+			return g.client.ChatCompletionRequest(bgCtx, bifrostReq.ChatRequest)
+		case bifrostReq.ResponsesRequest != nil:
+			return g.client.ResponsesRequest(bgCtx, bifrostReq.ResponsesRequest)
+		default:
+			return nil, newBifrostError(nil, "unsupported request type for async execution")
+		}
+	}
+
+	job, err := executor.SubmitJob(vkValue, resultTTL, operation, operationType)
+	if err != nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(err, "failed to create async job"))
+		return
+	}
+
+	g.handleAsyncJobResponse(ctx, bifrostCtx, config, job)
+	return
+}
+
+// handleAsyncRetrieve retrieves an async job by ID and returns the response
+// using the route's response converter for completed jobs.
+func (g *GenericRouter) handleAsyncRetrieve(
+	ctx *fasthttp.RequestCtx,
+	config RouteConfig,
+	bifrostCtx *schemas.BifrostContext,
+) {
+	executor := g.handlerStore.GetAsyncJobExecutor()
+	if executor == nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(nil, "async operations not available: logs store not configured"))
+		return
+	}
+
+	jobID := string(ctx.Request.Header.Peek(schemas.AsyncHeaderGetID))
+	if jobID == "" {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(nil, "x-bf-async-id header value is empty"))
+		return
+	}
+
+	vkValue := getVirtualKeyFromBifrostContext(bifrostCtx)
+
+	job, err := executor.RetrieveJob(bifrostCtx, jobID, vkValue, config.GetHTTPRequestType(ctx))
+	if err != nil {
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter,
+			newBifrostError(err, "job not found or expired"))
+		return
+	}
+
+	g.handleAsyncJobResponse(ctx, bifrostCtx, config, job)
+	return
+}
+
+func (g *GenericRouter) handleAsyncJobResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, job *logstore.AsyncJob) {
+	ctx.SetContentType("application/json")
+
+	resp := job.ToResponse()
+
+	switch job.Status {
+	case schemas.AsyncJobStatusPending, schemas.AsyncJobStatusProcessing, schemas.AsyncJobStatusCompleted:
+		switch job.RequestType {
+		case schemas.ChatCompletionRequest:
+			if config.AsyncChatResponseConverter == nil || config.ChatResponseConverter == nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "async operation is not supported on this route"))
+				return
+			}
+			response, extraHeaders, err := config.AsyncChatResponseConverter(bifrostCtx, resp, config.ChatResponseConverter)
+			if err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert async chat response"))
+				return
+			}
+			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, extraHeaders)
+			return
+		case schemas.ResponsesRequest:
+			if config.AsyncResponsesResponseConverter == nil || config.ResponsesResponseConverter == nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "either async responses response converter or responses response converter not configured"))
+				return
+			}
+			response, extraHeaders, err := config.AsyncResponsesResponseConverter(bifrostCtx, resp, config.ResponsesResponseConverter)
+			if err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to convert async responses response"))
+				return
+			}
+			g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, extraHeaders)
+			return
+		default:
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "unknown request type"))
+			return
+		}
+
+	case schemas.AsyncJobStatusFailed:
+		var err schemas.BifrostError
+		// Deserialize the stored BifrostError and send through provider error converter
+		if job.Error != "" {
+			if unmarshalErr := sonic.Unmarshal([]byte(job.Error), &err); unmarshalErr != nil {
+				// If unmarshal fails, create a basic error with the raw error string
+				err = schemas.BifrostError{
+					Error: &schemas.ErrorField{
+						Message: job.Error,
+					},
+				}
+			}
+		}
+		g.sendError(ctx, bifrostCtx, config.ErrorConverter, &err)
+	}
 }
 
 // handleBatchRequest handles batch API requests (create, list, retrieve, cancel, results)
@@ -1009,7 +1525,7 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 		return
 	}
 
-	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
 // handleFileRequest handles file API requests (upload, list, retrieve, delete, content)
@@ -1145,7 +1661,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
 				ctx.Response.SetBody(rawBytes)
 			} else {
-				g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+				g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			}
 		} else {
 			// Return raw file content
@@ -1170,7 +1686,7 @@ func (g *GenericRouter) handleFileRequest(ctx *fasthttp.RequestCtx, config Route
 		return
 	}
 
-	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
 // handleContainerRequest handles container API requests (create, list, retrieve, delete)
@@ -1277,7 +1793,7 @@ func (g *GenericRouter) handleContainerRequest(ctx *fasthttp.RequestCtx, config 
 		return
 	}
 
-	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
 // handleContainerFileRequest handles container file API requests (create, list, retrieve, content, delete)
@@ -1381,7 +1897,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 				ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(rawBytes)))
 				ctx.Response.SetBody(rawBytes)
 			} else {
-				g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+				g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 			}
 		} else {
 			// Return raw binary content
@@ -1423,7 +1939,7 @@ func (g *GenericRouter) handleContainerFileRequest(ctx *fasthttp.RequestCtx, con
 		return
 	}
 
-	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response)
+	g.sendSuccess(ctx, bifrostCtx, config.ErrorConverter, response, nil)
 }
 
 // handleStreamingRequest handles streaming requests using Server-Sent Events (SSE)
@@ -1464,6 +1980,8 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		stream, bifrostErr = g.client.TranscriptionStreamRequest(bifrostCtx, bifrostReq.TranscriptionRequest)
 	} else if bifrostReq.ImageGenerationRequest != nil {
 		stream, bifrostErr = g.client.ImageGenerationStreamRequest(bifrostCtx, bifrostReq.ImageGenerationRequest)
+	} else if bifrostReq.ImageEditRequest != nil {
+		stream, bifrostErr = g.client.ImageEditStreamRequest(bifrostCtx, bifrostReq.ImageEditRequest)
 	}
 
 	// Get the streaming channel from Bifrost
@@ -1552,7 +2070,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
-	var httpReq *schemas.HTTPRequest	
+	var httpReq *schemas.HTTPRequest
 	if interceptor != nil {
 		httpReq = lib.BuildHTTPRequestFromFastHTTP(ctx)
 	}
@@ -1658,10 +2176,10 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					var err error
 					chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 					if err != nil {
-						if chunk == nil {							
+						if chunk == nil {
 							errorJSON, marshalErr := sonic.Marshal(map[string]string{"error": err.Error()})
 							if marshalErr != nil {
-								cancel()								
+								cancel()
 								return
 							}
 							// Return error event and stopping the streaming
@@ -1669,7 +2187,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 								cancel()
 								return
 							}
-							_ = w.Flush() 
+							_ = w.Flush()
 							cancel()
 							return
 						}

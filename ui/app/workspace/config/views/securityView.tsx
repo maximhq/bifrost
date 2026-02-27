@@ -3,13 +3,14 @@
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { EnvVarInput } from "@/components/ui/envVarInput";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { EnvVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -29,14 +30,16 @@ export default function SecurityView() {
 	const [localValues, setLocalValues] = useState<{
 		allowed_origins: string;
 		allowed_headers: string;
+		required_headers: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
+		required_headers: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
-		admin_username: "",
-		admin_password: "",
+		admin_username: { value: "", env_var: "", from_env: false },
+		admin_password: { value: "", env_var: "", from_env: false },
 		is_enabled: false,
 		disable_auth_on_inference: false,
 	});
@@ -47,6 +50,7 @@ export default function SecurityView() {
 			setLocalValues({
 				allowed_origins: config?.allowed_origins?.join(", ") || "",
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
+				required_headers: config?.required_headers?.join(", ") || "",
 			});
 		}
 		if (bifrostConfig?.auth_config) {
@@ -64,16 +68,28 @@ export default function SecurityView() {
 		const serverHeaders = config.allowed_headers?.slice().sort().join(",");
 		const headersChanged = localHeaders !== serverHeaders;
 
+		const usernameChanged =
+			authConfig.admin_username?.value !== bifrostConfig?.auth_config?.admin_username?.value ||
+			authConfig.admin_username?.env_var !== bifrostConfig?.auth_config?.admin_username?.env_var ||
+			authConfig.admin_username?.from_env !== bifrostConfig?.auth_config?.admin_username?.from_env;
+		const passwordChanged =
+			authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value ||
+			authConfig.admin_password?.env_var !== bifrostConfig?.auth_config?.admin_password?.env_var ||
+			authConfig.admin_password?.from_env !== bifrostConfig?.auth_config?.admin_password?.from_env;
 		const authChanged =
 			authConfig.is_enabled !== bifrostConfig?.auth_config?.is_enabled ||
-			authConfig.admin_username !== bifrostConfig?.auth_config?.admin_username ||
-			authConfig.admin_password !== bifrostConfig?.auth_config?.admin_password ||
+			usernameChanged ||
+			passwordChanged ||
 			authConfig.disable_auth_on_inference !== bifrostConfig?.auth_config?.disable_auth_on_inference;
 
-		const enforceVirtualKeyChanged = localConfig.enforce_governance_header !== config.enforce_governance_header;
+		const localRequired = localConfig.required_headers?.slice().sort().join(",");
+		const serverRequired = config.required_headers?.slice().sort().join(",");
+		const requiredChanged = localRequired !== serverRequired;
+
+		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 
-		return originsChanged || headersChanged || authChanged || enforceVirtualKeyChanged || allowDirectKeysChanged;
+		return originsChanged || headersChanged || requiredChanged || authChanged || enforceAuthOnInferenceChanged || allowDirectKeysChanged;
 	}, [config, localConfig, authConfig, bifrostConfig]);
 
 	const needsRestart = useMemo(() => {
@@ -87,7 +103,9 @@ export default function SecurityView() {
 		const serverHeaders = config.allowed_headers?.slice().sort().join(",");
 		const headersChanged = localHeaders !== serverHeaders;
 
-		return originsChanged || headersChanged;
+		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference && IS_ENTERPRISE;
+
+		return originsChanged || headersChanged || enforceAuthOnInferenceChanged;
 	}, [config, localConfig]);
 
 	const handleAllowedOriginsChange = useCallback((value: string) => {
@@ -98,6 +116,11 @@ export default function SecurityView() {
 	const handleAllowedHeadersChange = useCallback((value: string) => {
 		setLocalValues((prev) => ({ ...prev, allowed_headers: value }));
 		setLocalConfig((prev) => ({ ...prev, allowed_headers: parseArrayFromText(value) }));
+	}, []);
+
+	const handleRequiredHeadersChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, required_headers: value }));
+		setLocalConfig((prev) => ({ ...prev, required_headers: parseArrayFromText(value) }));
 	}, []);
 
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean) => {
@@ -112,7 +135,7 @@ export default function SecurityView() {
 		setAuthConfig((prev) => ({ ...prev, disable_auth_on_inference: checked }));
 	}, []);
 
-	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: string) => {
+	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: EnvVar) => {
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -126,13 +149,12 @@ export default function SecurityView() {
 				);
 				return;
 			}
+			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.env_var;
+			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.env_var;
 			await updateCoreConfig({
 				...bifrostConfig!,
 				client_config: localConfig,
-				auth_config:
-					authConfig.is_enabled && authConfig.admin_username && authConfig.admin_password
-						? authConfig
-						: { ...authConfig, is_enabled: false },
+				auth_config: authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false },
 			}).unwrap();
 			toast.success("Security settings updated successfully.");
 		} catch (error) {
@@ -142,14 +164,9 @@ export default function SecurityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div className="flex items-center justify-between">
-				<div>
-					<h2 className="text-2xl font-semibold tracking-tight">Security Settings</h2>
-					<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-				</div>
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
-					{isLoading ? "Saving..." : "Save Changes"}
-				</Button>
+			<div>
+				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
+				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
 			</div>
 
 			<div className="space-y-4">
@@ -191,24 +208,24 @@ export default function SecurityView() {
 							<div className="space-y-4">
 								<div className="space-y-2">
 									<Label htmlFor="admin-username">Username</Label>
-									<Input
+									<EnvVarInput
 										id="admin-username"
 										type="text"
-										placeholder="Enter admin username"
+										placeholder="Enter admin username or env.VAR_NAME"
 										value={authConfig.admin_username}
 										disabled={!authConfig.is_enabled}
-										onChange={(e) => handleAuthFieldChange("admin_username", e.target.value)}
+										onChange={(value) => handleAuthFieldChange("admin_username", value)}
 									/>
 								</div>
 								<div className="space-y-2">
 									<Label htmlFor="admin-password">Password</Label>
-									<Input
+									<EnvVarInput
 										id="admin-password"
 										type="password"
-										placeholder="Enter admin password"
+										placeholder="Enter admin password or env.VAR_NAME"
 										value={authConfig.admin_password}
 										disabled={!authConfig.is_enabled}
-										onChange={(e) => handleAuthFieldChange("admin_password", e.target.value)}
+										onChange={(value) => handleAuthFieldChange("admin_password", value)}
 									/>
 								</div>
 								<div className="flex items-center justify-between">
@@ -233,24 +250,37 @@ export default function SecurityView() {
 						</div>
 					</div>
 				)}
-				{/* Enforce Virtual Keys */}
-				{localConfig.enable_governance && (
-					<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
-						<div className="space-y-0.5">
-							<label htmlFor="enforce-governance" className="text-sm font-medium">
-								Enforce Virtual Keys
-							</label>
-							<p className="text-muted-foreground text-sm">
-								Enforce the use of a virtual key for all requests. If enabled, requests without the <b>x-bf-vk</b> header will be rejected.
-							</p>
-						</div>
-						<Switch
-							id="enforce-governance"
-							checked={localConfig.enforce_governance_header}
-							onCheckedChange={(checked) => handleConfigChange("enforce_governance_header", checked)}
-						/>
+				{/* Enable Auth on Inference */}
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
+							Enable Auth on Inference
+						</label>
+						<p className="text-muted-foreground text-sm">
+							{IS_ENTERPRISE
+								? "Require authentication (virtual key, API key, or user token) for all inference endpoints."
+								: "Require a virtual key for all inference requests."}{" "}
+							See{" "}
+							<Link
+								href="https://docs.getbifrost.ai/features/governance/virtual-keys"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="text-primary underline"
+							>
+								documentation
+							</Link>{" "}
+							for details.
+						</p>
 					</div>
-				)}
+					<Switch
+						id="enforce-auth-on-inference"
+						data-testid="enforce-auth-on-inference-switch"
+						checked={localConfig.enforce_auth_on_inference}
+						onCheckedChange={(checked) => handleConfigChange("enforce_auth_on_inference", checked)}
+					/>
+				</div>
+				{/* Allowed Origins */}
+				{needsRestart && <RestartWarning />}
 				{/* Allow Direct API Keys */}
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 					<div className="space-y-0.5">
@@ -268,8 +298,6 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("allow_direct_keys", checked)}
 					/>
 				</div>
-				{/* Allowed Origins */}
-				{needsRestart && <RestartWarning />}
 				<div>
 					<div className="space-y-2 rounded-lg border p-4">
 						<div className="space-y-0.5">
@@ -309,6 +337,33 @@ export default function SecurityView() {
 						/>
 					</div>
 				</div>
+				{/* Required Headers */}
+				<div>
+					<div className="space-y-2 rounded-lg border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="required-headers" className="text-sm font-medium">
+								Required Headers
+							</label>
+							<p className="text-muted-foreground text-sm">
+								Comma-separated list of headers that must be present on every request. Requests missing any of these headers will be
+								rejected with a 400 error. Header names are case-insensitive.
+							</p>
+						</div>
+						<Textarea
+							id="required-headers"
+							data-testid="required-headers-textarea"
+							className="h-24"
+							placeholder="X-Tenant-ID, X-Custom-Header"
+							value={localValues.required_headers}
+							onChange={(e) => handleRequiredHeadersChange(e.target.value)}
+						/>
+					</div>
+				</div>
+			</div>
+			<div className="flex justify-end pt-2">
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					{isLoading ? "Saving..." : "Save Changes"}
+				</Button>
 			</div>
 		</div>
 	);
