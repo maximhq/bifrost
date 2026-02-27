@@ -2,7 +2,7 @@ name: E2E Tests
 
 on:
   push:
-    branches: ["02-11-fix_fix_mcp_and_virtual-key_tests"]
+    branches: ["02-27-feat_extend_e2e_ui_tests"]
 
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}

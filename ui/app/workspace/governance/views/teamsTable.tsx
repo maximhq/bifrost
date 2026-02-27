@@ -163,7 +163,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 									const isExhausted = isBudgetExhausted || isRateLimitExhausted;
 
 									return (
-										<TableRow key={team.id} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
+										<TableRow key={team.id} data-testid={`team-row-${team.name}`} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
 											<TableCell className="max-w-[200px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-medium">{team.name}</span>
@@ -313,6 +313,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 														onClick={() => handleEditTeam(team)}
 														disabled={!hasUpdateAccess}
 														aria-label={`Edit team ${team.name}`}
+														data-testid={`team-edit-btn-${team.name}`}
 													>
 														<Edit className="h-4 w-4" />
 													</Button>
@@ -324,6 +325,7 @@ export default function TeamsTable({ teams, customers, virtualKeys }: TeamsTable
 																className="h-8 w-8 text-red-500 hover:bg-red-500/10 hover:text-red-500"
 																disabled={!hasDeleteAccess}
 																aria-label={`Delete team ${team.name}`}
+																data-testid={`team-delete-btn-${team.name}`}
 															>
 																<Trash2 className="h-4 w-4" />
 															</Button>

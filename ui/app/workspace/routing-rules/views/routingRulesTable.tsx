@@ -125,7 +125,7 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 									<div className="flex flex-col gap-1">
 										<span className="truncate max-w-xs">{rule.name}</span>
 										{rule.description && (
-											<span className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</span>
+											<span data-testid="routing-rule-description" className="text-xs text-muted-foreground truncate max-w-xs">{rule.description}</span>
 										)}
 									</div>
 								</TableCell>

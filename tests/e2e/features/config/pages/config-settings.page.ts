@@ -18,14 +18,18 @@ export class ConfigSettingsPage extends BasePage {
   readonly dropExcessRequestsSwitch: Locator
   readonly enableLiteLLMFallbacksSwitch: Locator
   readonly disableDBPingsSwitch: Locator
+  readonly asyncJobResultTtlInput: Locator
 
   // Logging Settings
   readonly enableLoggingSwitch: Locator
   readonly disableContentLoggingSwitch: Locator
   readonly logRetentionDaysInput: Locator
+  readonly workspaceLoggingHeadersTextarea: Locator
 
   // Security Settings
   readonly rateLimitingSection: Locator
+  readonly enforceAuthOnInferenceSwitch: Locator
+  readonly requiredHeadersTextarea: Locator
 
   // Performance Tuning Settings
   readonly workerPoolSizeInput: Locator
@@ -33,6 +37,12 @@ export class ConfigSettingsPage extends BasePage {
 
   // Observability Settings
   readonly observabilityToggles: Locator
+
+  // Pricing Config
+  readonly pricingConfigView: Locator
+  readonly pricingDatasheetUrlInput: Locator
+  readonly pricingForceSyncBtn: Locator
+  readonly pricingSaveBtn: Locator
 
   constructor(page: Page) {
     super(page)
@@ -42,6 +52,7 @@ export class ConfigSettingsPage extends BasePage {
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
     this.enableLiteLLMFallbacksSwitch = page.locator('#enable-litellm-fallbacks')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
+    this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
 
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
@@ -49,9 +60,12 @@ export class ConfigSettingsPage extends BasePage {
     this.logRetentionDaysInput = page.getByLabel(/Log Retention Days/i).or(
       page.locator('#log-n-days')
     )
+    this.workspaceLoggingHeadersTextarea = page.getByTestId('workspace-logging-headers-textarea')
 
     // Security Settings locators
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
+    this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
+    this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
 
     // Performance Tuning locators
     this.workerPoolSizeInput = page.getByLabel(/Worker Pool Size/i)
@@ -59,6 +73,12 @@ export class ConfigSettingsPage extends BasePage {
 
     // Observability locators
     this.observabilityToggles = page.locator('button[role="switch"]')
+
+    // Pricing Config locators
+    this.pricingConfigView = page.getByTestId('pricing-config-view')
+    this.pricingDatasheetUrlInput = page.getByTestId('pricing-datasheet-url-input')
+    this.pricingForceSyncBtn = page.getByTestId('pricing-force-sync-btn')
+    this.pricingSaveBtn = page.getByTestId('pricing-save-btn')
   }
 
   async goto(path: string): Promise<void> {
@@ -258,6 +278,25 @@ export class ConfigSettingsPage extends BasePage {
     return await this.page.getByText(/Rate Limiting/i).isVisible()
   }
 
+  async toggleEnforceAuthOnInference(): Promise<void> {
+    await this.enforceAuthOnInferenceSwitch.click()
+  }
+
+  async setRequiredHeaders(value: string): Promise<void> {
+    await this.requiredHeadersTextarea.clear()
+    await this.requiredHeadersTextarea.fill(value)
+  }
+
+  async setWorkspaceLoggingHeaders(value: string): Promise<void> {
+    await this.workspaceLoggingHeadersTextarea.clear()
+    await this.workspaceLoggingHeadersTextarea.fill(value)
+  }
+
+  async setAsyncJobResultTtl(value: string): Promise<void> {
+    await this.asyncJobResultTtlInput.clear()
+    await this.asyncJobResultTtlInput.fill(value)
+  }
+
   // === Observability Settings Methods ===
 
   async getObservabilityConnectors(): Promise<string[]> {
@@ -277,5 +316,22 @@ export class ConfigSettingsPage extends BasePage {
     const connectorSection = this.page.locator('div').filter({ hasText: new RegExp(connectorName, 'i') }).first()
     const toggleSwitch = connectorSection.locator('button[role="switch"]').first()
     await toggleSwitch.click()
+  }
+
+  // === Pricing Config Methods ===
+
+  async setPricingDatasheetUrl(url: string): Promise<void> {
+    await this.pricingDatasheetUrlInput.clear()
+    await this.pricingDatasheetUrlInput.fill(url)
+  }
+
+  async triggerForceSync(): Promise<void> {
+    await this.pricingForceSyncBtn.click()
+    await this.waitForSuccessToast()
+  }
+
+  async savePricingConfig(): Promise<void> {
+    await this.pricingSaveBtn.click()
+    await this.waitForSuccessToast()
   }
 }

@@ -101,14 +101,14 @@ test.describe('Routing Rules', () => {
 
       await routingRulesPage.createRoutingRule(ruleData)
 
-      // Edit it
+      // Edit it - change description
       await routingRulesPage.editRoutingRule(ruleData.name, {
         description: 'Updated description',
       })
 
-      // Verify it still exists
-      const exists = await routingRulesPage.ruleExists(ruleData.name)
-      expect(exists).toBe(true)
+      // Verify description was saved and displayed in table
+      const description = await routingRulesPage.getRuleDescription(ruleData.name)
+      expect(description).toContain('Updated description')
     })
 
     test('should delete routing rule', async ({ routingRulesPage }) => {
@@ -169,9 +169,14 @@ test.describe('Routing Rules', () => {
   test.describe('Table Display', () => {
     test('should display routing rules table', async ({ routingRulesPage }) => {
       // With 0 rules the view shows empty state (no table); with 1+ rules it shows the table
-      const tableVisible = await routingRulesPage.table.isVisible().catch(() => false)
-      const emptyVisible = await routingRulesPage.emptyState.isVisible().catch(() => false)
-      expect(tableVisible || emptyVisible).toBe(true)
+      const count = await routingRulesPage.getRuleCount()
+      if (count === 0) {
+        await expect(routingRulesPage.emptyState).toBeVisible()
+        await expect(routingRulesPage.table).not.toBeVisible()
+      } else {
+        await expect(routingRulesPage.table).toBeVisible()
+        await expect(routingRulesPage.emptyState).not.toBeVisible()
+      }
     })
 
     test('should show empty state when no rules', async ({ routingRulesPage }) => {
@@ -224,9 +229,9 @@ test.describe('Routing Rules', () => {
       const newPriority = (rule1.priority! + 100) % 901
       await routingRulesPage.editRoutingRule(rule1.name, { priority: newPriority })
 
-      // Verify rules still exist
-      expect(await routingRulesPage.ruleExists(rule1.name)).toBe(true)
-      expect(await routingRulesPage.ruleExists(rule2.name)).toBe(true)
+      // Verify priority was saved and displayed
+      const displayedPriority = await routingRulesPage.getRulePriority(rule1.name)
+      expect(displayedPriority).toBe(newPriority)
     })
 
     test('should create rule with virtual key scope', async ({ routingRulesPage }) => {

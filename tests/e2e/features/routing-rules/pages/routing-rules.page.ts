@@ -588,6 +588,17 @@ export class RoutingRulesPage extends BasePage {
   }
 
   /**
+   * Get rule's description from the table (first column contains name + description)
+   */
+  async getRuleDescription(name: string): Promise<string> {
+    const row = this.getRuleRow(name)
+    const descEl = row.getByTestId('routing-rule-description')
+    const count = await descEl.count()
+    if (count === 0) return ''
+    return (await descEl.textContent()) ?? ''
+  }
+
+  /**
    * Get rule's current priority
    */
   async getRulePriority(name: string): Promise<number | null> {

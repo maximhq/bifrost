@@ -36,6 +36,7 @@ export function PluginFormFragment({ form, isEditMode = false }: PluginFormFragm
 						target="_blank"
 						rel="noopener noreferrer"
 						className="text-primary hover:underline"
+						data-testid="plugins-form-docs-link"
 					>
 						Learn more
 					</a>

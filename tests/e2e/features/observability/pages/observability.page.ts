@@ -7,50 +7,59 @@ import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
  */
 export interface ObservabilityState {
   otelEnabled: boolean
+  prometheusEnabled: boolean
   maximEnabled: boolean
   datadogEnabled: boolean
+  bigqueryEnabled: boolean
   newRelicEnabled: boolean
 }
 
+export type ObservabilityConnector = 'otel' | 'prometheus' | 'maxim' | 'datadog' | 'bigquery' | 'newrelic'
+
 export class ObservabilityPage extends BasePage {
-  // Connector tabs/buttons - using exact names from the UI
-  readonly otelTab: Locator
-  readonly maximTab: Locator
-  readonly datadogTab: Locator
-  readonly newRelicTab: Locator
-  
   // Save button (within the active view)
   readonly saveBtn: Locator
-  
-  // OTel form elements
-  readonly otelToggle: Locator
-  readonly otelEndpointInput: Locator
-  readonly otelHeadersTable: Locator
-  
-  // Maxim form elements
-  readonly maximToggle: Locator
-  readonly maximApiKeyInput: Locator
 
   constructor(page: Page) {
     super(page)
-    
-    // Connector tabs - using text content to find the exact button
-    this.otelTab = page.locator('button:has-text("Open Telemetry")')
-    this.maximTab = page.locator('button:has-text("Maxim"):not(:has-text("Save"))')
-    this.datadogTab = page.locator('button:has-text("Datadog"):not(:has-text("Save"))')
-    this.newRelicTab = page.locator('button:has-text("New Relic")')
-    
+
     // Save button
     this.saveBtn = page.getByRole('button', { name: /Save/i })
-    
-    // OTel elements
-    this.otelToggle = page.locator('button[role="switch"]').first()
-    this.otelEndpointInput = page.getByPlaceholder(/otel-collector/i)
-    this.otelHeadersTable = page.locator('[data-testid="headers-table"]')
-    
-    // Maxim elements
-    this.maximToggle = page.locator('button[role="switch"]').first()
-    this.maximApiKeyInput = page.getByPlaceholder(/API Key/i)
+  }
+
+  /** Map of connector -> data-testid for enable toggle (otel/prometheus have specific testids) */
+  private static readonly CONNECTOR_TOGGLE_TESTIDS: Partial<Record<ObservabilityConnector, string>> = {
+    otel: 'otel-connector-enable-toggle',
+    prometheus: 'prometheus-connector-enable-toggle',
+  }
+
+  /** Map of connector -> data-testid for delete button (otel/prometheus have specific testids) */
+  private static readonly CONNECTOR_DELETE_TESTIDS: Partial<Record<ObservabilityConnector, string>> = {
+    otel: 'otel-connector-delete-btn',
+    prometheus: 'prometheus-connector-delete-btn',
+  }
+
+  /**
+   * Get connector tab locator by data-testid
+   */
+  getConnectorTab(connector: ObservabilityConnector): Locator {
+    return this.page.getByTestId(`observability-provider-btn-${connector}`)
+  }
+
+  /**
+   * Get connector enable toggle locator. Uses specific data-testid for otel/prometheus.
+   */
+  getConnectorToggle(connector: ObservabilityConnector): Locator {
+    const testId = ObservabilityPage.CONNECTOR_TOGGLE_TESTIDS[connector]
+    return testId ? this.page.getByTestId(testId) : this.page.locator('button[role="switch"]').first()
+  }
+
+  /**
+   * Get connector delete button locator. Returns locator for otel/prometheus; for others returns a no-match locator.
+   */
+  getConnectorDeleteBtn(connector: ObservabilityConnector): Locator {
+    const testId = ObservabilityPage.CONNECTOR_DELETE_TESTIDS[connector]
+    return testId ? this.page.getByTestId(testId) : this.page.locator('[data-testid="connector-delete-unused"]')
   }
 
   async goto(): Promise<void> {
@@ -61,22 +70,14 @@ export class ObservabilityPage extends BasePage {
   /**
    * Select a connector tab
    */
-  async selectConnector(connector: 'otel' | 'maxim' | 'datadog' | 'newrelic'): Promise<void> {
-    const tabs = {
-      'otel': this.otelTab,
-      'maxim': this.maximTab,
-      'datadog': this.datadogTab,
-      'newrelic': this.newRelicTab,
-    }
-    
-    const tab = tabs[connector]
-    
+  async selectConnector(connector: ObservabilityConnector): Promise<void> {
+    const tab = this.getConnectorTab(connector)
+
     // Wait for tab to be visible first
     await tab.waitFor({ state: 'visible', timeout: 10000 })
-    
-    const isDisabled = await tab.getAttribute('aria-disabled') === 'true' || 
-                       await tab.isDisabled()
-    
+
+    const isDisabled = (await tab.getAttribute('aria-disabled')) === 'true' || (await tab.isDisabled())
+
     if (!isDisabled) {
       await tab.click()
       await waitForNetworkIdle(this.page)
@@ -86,29 +87,21 @@ export class ObservabilityPage extends BasePage {
   /**
    * Check if a connector tab is available (not disabled)
    */
-  async isConnectorAvailable(connector: 'otel' | 'maxim' | 'datadog' | 'newrelic'): Promise<boolean> {
-    const tabs = {
-      'otel': this.otelTab,
-      'maxim': this.maximTab,
-      'datadog': this.datadogTab,
-      'newrelic': this.newRelicTab,
-    }
-    
-    const tab = tabs[connector]
+  async isConnectorAvailable(connector: ObservabilityConnector): Promise<boolean> {
+    const tab = this.getConnectorTab(connector)
     const isVisible = await tab.isVisible().catch(() => false)
     if (!isVisible) return false
-    
-    const isDisabled = await tab.getAttribute('aria-disabled') === 'true' ||
-                       await tab.isDisabled()
+
+    const isDisabled = (await tab.getAttribute('aria-disabled')) === 'true' || (await tab.isDisabled())
     return !isDisabled
   }
 
   /**
-   * Get the currently selected connector
+   * Get the currently selected connector (display name)
    */
   async getSelectedConnector(): Promise<string | null> {
-    // The selected connector has aria-current="page"
-    const selected = this.page.locator('button[aria-current="page"]')
+    // The selected tab has data-state="active" (Radix Tabs)
+    const selected = this.page.locator('[data-testid^="observability-provider-btn-"][data-state="active"]')
     const isVisible = await selected.isVisible().catch(() => false)
     if (!isVisible) return null
     return await selected.textContent()
@@ -117,8 +110,8 @@ export class ObservabilityPage extends BasePage {
   /**
    * Check if a connector is enabled (toggle is checked)
    */
-  async isConnectorEnabled(): Promise<boolean> {
-    const toggle = this.page.locator('button[role="switch"]').first()
+  async isConnectorEnabled(connector: ObservabilityConnector): Promise<boolean> {
+    const toggle = this.getConnectorToggle(connector)
     const isVisible = await toggle.isVisible().catch(() => false)
     if (!isVisible) return false
     const state = await toggle.getAttribute('data-state')
@@ -128,8 +121,8 @@ export class ObservabilityPage extends BasePage {
   /**
    * Check if the toggle is clickable (not disabled)
    */
-  async isToggleEnabled(): Promise<boolean> {
-    const toggle = this.page.locator('button[role="switch"]').first()
+  async isToggleEnabled(connector: ObservabilityConnector): Promise<boolean> {
+    const toggle = this.getConnectorToggle(connector)
     const isVisible = await toggle.isVisible().catch(() => false)
     if (!isVisible) return false
     const isDisabled = await toggle.isDisabled()
@@ -139,14 +132,14 @@ export class ObservabilityPage extends BasePage {
   /**
    * Toggle the current connector enabled state (only if toggle is enabled)
    */
-  async toggleConnector(): Promise<boolean> {
-    const toggle = this.page.locator('button[role="switch"]').first()
+  async toggleConnector(connector: ObservabilityConnector): Promise<boolean> {
+    const toggle = this.getConnectorToggle(connector)
     const isVisible = await toggle.isVisible().catch(() => false)
     if (!isVisible) return false
-    
+
     const isDisabled = await toggle.isDisabled()
     if (isDisabled) return false
-    
+
     await toggle.click()
     return true
   }
@@ -233,27 +226,25 @@ export class ObservabilityPage extends BasePage {
   async getCurrentState(): Promise<ObservabilityState> {
     const state: ObservabilityState = {
       otelEnabled: false,
+      prometheusEnabled: false,
       maximEnabled: false,
       datadogEnabled: false,
+      bigqueryEnabled: false,
       newRelicEnabled: false,
     }
 
-    // Check OTel
-    if (await this.isConnectorAvailable('otel')) {
-      await this.selectConnector('otel')
-      state.otelEnabled = await this.isConnectorEnabled()
-    }
-
-    // Check Maxim
-    if (await this.isConnectorAvailable('maxim')) {
-      await this.selectConnector('maxim')
-      state.maximEnabled = await this.isConnectorEnabled()
-    }
-
-    // Datadog might require enterprise
-    if (await this.isConnectorAvailable('datadog')) {
-      await this.selectConnector('datadog')
-      state.datadogEnabled = await this.isConnectorEnabled()
+    const connectors: ObservabilityConnector[] = ['otel', 'prometheus', 'maxim', 'datadog', 'bigquery', 'newrelic']
+    for (const connector of connectors) {
+      if (await this.isConnectorAvailable(connector)) {
+        await this.selectConnector(connector)
+        const enabled = await this.isConnectorEnabled(connector)
+        if (connector === 'otel') state.otelEnabled = enabled
+        else if (connector === 'prometheus') state.prometheusEnabled = enabled
+        else if (connector === 'maxim') state.maximEnabled = enabled
+        else if (connector === 'datadog') state.datadogEnabled = enabled
+        else if (connector === 'bigquery') state.bigqueryEnabled = enabled
+        else if (connector === 'newrelic') state.newRelicEnabled = enabled
+      }
     }
 
     return state
@@ -263,43 +254,25 @@ export class ObservabilityPage extends BasePage {
    * Disable all connectors
    */
   async disableAllConnectors(): Promise<void> {
-    // Disable OTel
-    if (await this.isConnectorAvailable('otel')) {
-      try {
-        await this.selectConnector('otel')
-        if (await this.isConnectorEnabled() && await this.isToggleEnabled()) {
-          await this.toggleConnector()
-          await this.saveConfiguration().catch(() => {})
+    const cleanupErrors: string[] = []
+    const connectors: ObservabilityConnector[] = ['otel', 'prometheus', 'maxim', 'datadog', 'bigquery', 'newrelic']
+    for (const connector of connectors) {
+      if (await this.isConnectorAvailable(connector)) {
+        try {
+          await this.selectConnector(connector)
+          if ((await this.isConnectorEnabled(connector)) && (await this.isToggleEnabled(connector))) {
+            await this.toggleConnector(connector)
+            await this.saveConfiguration().catch((e) => {
+              cleanupErrors.push(`${connector} save: ${e instanceof Error ? e.message : String(e)}`)
+            })
+          }
+        } catch (error) {
+          cleanupErrors.push(`${connector}: ${error instanceof Error ? error.message : String(error)}`)
         }
-      } catch {
-        // Ignore errors
       }
     }
-
-    // Disable Maxim
-    if (await this.isConnectorAvailable('maxim')) {
-      try {
-        await this.selectConnector('maxim')
-        if (await this.isConnectorEnabled() && await this.isToggleEnabled()) {
-          await this.toggleConnector()
-          await this.saveConfiguration().catch(() => {})
-        }
-      } catch {
-        // Ignore errors
-      }
-    }
-
-    // Disable Datadog (enterprise)
-    if (await this.isConnectorAvailable('datadog')) {
-      try {
-        await this.selectConnector('datadog')
-        if (await this.isConnectorEnabled() && await this.isToggleEnabled()) {
-          await this.toggleConnector()
-          await this.saveConfiguration().catch(() => {})
-        }
-      } catch {
-        // Ignore errors - might be enterprise only
-      }
+    if (cleanupErrors.length > 0) {
+      throw new Error(`disableAllConnectors failed for: ${cleanupErrors.join('; ')}`)
     }
   }
 

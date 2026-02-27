@@ -106,13 +106,13 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 							Configure budgets and rate limits at the model level. For provider-specific limits, visit each provider&apos;s settings.
 						</p>
 					</div>
-					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess}>
+					<Button onClick={handleAddModelLimit} disabled={!hasCreateAccess} data-testid="model-limits-button-create">
 						<Plus className="h-4 w-4" />
 						Add Model Limit
 					</Button>
 				</div>
 
-				<div className="rounded-sm border">
+				<div className="rounded-sm border" data-testid="model-limits-table">
 					<Table>
 							<TableHeader>
 								<TableRow className="hover:bg-transparent">
@@ -151,7 +151,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 											: 0;
 
 									return (
-										<TableRow key={config.id} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
+										<TableRow key={config.id} data-testid={`model-limit-row-${config.model_name}-${config.provider || "all"}`} className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}>
 											<TableCell className="max-w-[280px] py-4">
 												<div className="flex flex-col gap-2">
 													<span className="truncate font-mono text-sm font-medium">{config.model_name}</span>
@@ -300,7 +300,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 														onClick={(e) => handleEditModelLimit(config, e)}
 														disabled={!hasUpdateAccess}
 														aria-label={`Edit model limit for ${config.model_name}`}
-														data-testid="model-limit-button-edit"
+														data-testid={`model-limit-button-edit-${config.model_name}-${config.provider || "all"}`}
 													>
 														<Edit className="h-4 w-4" />
 													</Button>
@@ -313,7 +313,7 @@ export default function ModelLimitsTable({ modelConfigs }: ModelLimitsTableProps
 																onClick={(e) => e.stopPropagation()}
 																disabled={!hasDeleteAccess}
 																aria-label={`Delete model limit for ${config.model_name}`}
-																data-testid="model-limit-button-delete"
+																data-testid={`model-limit-button-delete-${config.model_name}-${config.provider || "all"}`}
 															>
 																<Trash2 className="h-4 w-4" />
 															</Button>

@@ -596,6 +596,22 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
+   * Get connection type displayed in the table (HTTP, SSE, STDIO)
+   */
+  async getClientConnectionType(name: string): Promise<string> {
+    const row = this.getClientRow(name)
+    const typeCell = row.getByTestId('mcp-client-connection-type')
+    if ((await typeCell.count()) > 0) {
+      return (await typeCell.first().textContent())?.trim() ?? ''
+    }
+    const cells = row.locator('td')
+    if ((await cells.count()) >= 2) {
+      return (await cells.nth(1).textContent())?.trim() ?? ''
+    }
+    return ''
+  }
+
+  /**
    * Get tools count from the client details sheet
    * Assumes the detail sheet is already open
    */

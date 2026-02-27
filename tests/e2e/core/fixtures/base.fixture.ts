@@ -10,6 +10,11 @@ import { MCPRegistryPage } from '../../features/mcp-registry/pages/mcp-registry.
 import { PluginsPage } from '../../features/plugins/pages/plugins.page'
 import { ObservabilityPage } from '../../features/observability/pages/observability.page'
 import { ConfigSettingsPage } from '../../features/config/pages/config-settings.page'
+import { GovernancePage } from '../../features/governance/pages/governance.page'
+import { MCPAuthConfigPage } from '../../features/mcp-auth-config/pages/mcp-auth-config.page'
+import { MCPSettingsPage } from '../../features/mcp-settings/pages/mcp-settings.page'
+import { MCPToolGroupsPage } from '../../features/mcp-tool-groups/pages/mcp-tool-groups.page'
+import { ModelLimitsPage } from '../../features/model-limits/pages/model-limits.page'
 
 /**
  * Custom test fixtures type
@@ -27,6 +32,11 @@ type BifrostFixtures = {
   pluginsPage: PluginsPage
   observabilityPage: ObservabilityPage
   configSettingsPage: ConfigSettingsPage
+  governancePage: GovernancePage
+  modelLimitsPage: ModelLimitsPage
+  mcpSettingsPage: MCPSettingsPage
+  mcpToolGroupsPage: MCPToolGroupsPage
+  mcpAuthConfigPage: MCPAuthConfigPage
 }
 
 /**
@@ -87,6 +97,26 @@ export const test = base.extend<BifrostFixtures>({
 
   configSettingsPage: async ({ page }, use) => {
     await use(new ConfigSettingsPage(page))
+  },
+
+  governancePage: async ({ page }, use) => {
+    await use(new GovernancePage(page))
+  },
+
+  modelLimitsPage: async ({ page }, use) => {
+    await use(new ModelLimitsPage(page))
+  },
+
+  mcpSettingsPage: async ({ page }, use) => {
+    await use(new MCPSettingsPage(page))
+  },
+
+  mcpToolGroupsPage: async ({ page }, use) => {
+    await use(new MCPToolGroupsPage(page))
+  },
+
+  mcpAuthConfigPage: async ({ page }, use) => {
+    await use(new MCPAuthConfigPage(page))
   },
 })
 
