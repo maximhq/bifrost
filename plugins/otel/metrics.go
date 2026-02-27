@@ -78,7 +78,7 @@ func initOTELMeterProvider(ctx context.Context, serviceName string, config *Conf
 	case ProtocolGRPC:
 		exporter, exporterErr = initOTELGRPCExporter(ctx, config)
 	default:
-		exporterErr = errors.New(fmt.Sprintf("invalid protocol '%s'", string(config.MetricsProtocol)))
+		exporterErr = fmt.Errorf("invalid protocol '%s'", string(config.MetricsProtocol))
 	}
 	if exporterErr != nil {
 		return nil, errors.Wrap(exporterErr, "fail to init OTEL metrics exporter")
