@@ -263,7 +263,7 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
 	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
-		mc.logger.Warn("failed to load pricing overrides: %v", err)
+		return fmt.Errorf("failed to load pricing overrides: %w", err)
 	}
 	return nil
 }

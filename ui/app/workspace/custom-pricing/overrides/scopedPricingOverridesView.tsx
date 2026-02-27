@@ -196,7 +196,7 @@ export default function ScopedPricingOverridesView() {
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Overrides</h2>
 				</div>
-				<Button onClick={openCreateDrawer}>Create Override</Button>
+				<Button data-testid="pricing-override-create-btn" onClick={openCreateDrawer}>Create Override</Button>
 			</div>
 
 			<div className="rounded-sm border">
@@ -228,10 +228,10 @@ export default function ScopedPricingOverridesView() {
 									<TableCell>{row.pattern}</TableCell>
 									<TableCell>
 										<div className="flex gap-2">
-											<Button size="sm" variant="outline" onClick={() => openEditDrawer(row)}>
+											<Button data-testid={`pricing-override-edit-btn-${row.id}`} size="sm" variant="outline" onClick={() => openEditDrawer(row)}>
 												Edit
 											</Button>
-											<Button size="sm" variant="destructive" onClick={() => setDeleteTarget(row)}>
+											<Button data-testid={`pricing-override-delete-btn-${row.id}`} size="sm" variant="destructive" onClick={() => setDeleteTarget(row)}>
 												Delete
 											</Button>
 										</div>
@@ -257,8 +257,8 @@ export default function ScopedPricingOverridesView() {
 						<AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
 					</AlertDialogHeader>
 					<AlertDialogFooter>
-						<AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-						<AlertDialogAction onClick={handleDeleteConfirm} disabled={isDeleting}>
+						<AlertDialogCancel data-testid="pricing-override-delete-cancel-btn" disabled={isDeleting}>Cancel</AlertDialogCancel>
+						<AlertDialogAction data-testid="pricing-override-delete-confirm-btn" onClick={handleDeleteConfirm} disabled={isDeleting}>
 							Delete
 						</AlertDialogAction>
 					</AlertDialogFooter>

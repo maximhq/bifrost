@@ -265,10 +265,11 @@ export function renderFields(
 			{fields.map((field) => (
 				<div key={field.key} className="space-y-2 pb-1">
 					<Label>{field.label}</Label>
-					<Input
-						type="text"
-						inputMode="decimal"
-						className={cn(form.pricingValues[field.key]?.trim() && "ring-primary/40 ring-1")}
+						<Input
+							data-testid={`pricing-override-field-input-${field.key}`}
+							type="text"
+							inputMode="decimal"
+							className={cn(form.pricingValues[field.key]?.trim() && "ring-primary/40 ring-1")}
 						value={form.pricingValues[field.key] ?? ""}
 						onChange={(e) =>
 							setForm((prev) => ({
@@ -504,7 +505,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 				provider_key_id: scopedProviderKeyID,
 				match_type: form.matchType,
 				pattern: form.pattern.trim(),
-				request_types: form.requestTypes.length > 0 ? form.requestTypes : undefined,
+				request_types: form.requestTypes.length > 0 ? form.requestTypes : [],
 			patch: validation.patch,
 		};
 
@@ -553,16 +554,16 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 					<div className="space-y-4">
 						<div className="space-y-2">
 							<Label>Name</Label>
-							<Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
+							<Input data-testid="pricing-override-name-input" value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} />
 							{validation.errors.name && <p className="text-destructive text-xs">{validation.errors.name}</p>}
 						</div>
 
-						{scopeLock ? (
-							<div className="space-y-2">
-								<Label>Scope</Label>
-								<Input value={scopeLock.label ?? scopeLock.scopeKind} readOnly />
-							</div>
-						) : (
+							{scopeLock ? (
+								<div className="space-y-2">
+									<Label>Scope</Label>
+									<Input data-testid="pricing-override-scope-lock-input" value={scopeLock.label ?? scopeLock.scopeKind} readOnly />
+								</div>
+							) : (
 							<>
 								<div className="space-y-2">
 									<Label>Scope root</Label>
@@ -572,7 +573,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 											setForm((prev) => ({ ...prev, scopeRoot: value, virtualKeyID: "", providerID: "", providerKeyID: "" }))
 										}
 									>
-										<SelectTrigger>
+										<SelectTrigger data-testid="pricing-override-scope-root-select">
 											<SelectValue />
 										</SelectTrigger>
 										<SelectContent>
@@ -591,7 +592,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 												setForm((prev) => ({ ...prev, virtualKeyID: value === "__none__" ? "" : value, providerID: "", providerKeyID: "" }))
 											}
 										>
-											<SelectTrigger>
+											<SelectTrigger data-testid="pricing-override-virtual-key-select">
 												<SelectValue placeholder="Select virtual key" />
 											</SelectTrigger>
 											<SelectContent>
@@ -614,7 +615,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 											setForm((prev) => ({ ...prev, providerID: value === "__none__" ? "" : value, providerKeyID: "" }))
 										}
 									>
-										<SelectTrigger>
+										<SelectTrigger data-testid="pricing-override-provider-select">
 											<SelectValue placeholder="All providers" />
 										</SelectTrigger>
 										<SelectContent>
@@ -635,7 +636,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 											value={form.providerKeyID || "__none__"}
 											onValueChange={(value) => setForm((prev) => ({ ...prev, providerKeyID: value === "__none__" ? "" : value }))}
 										>
-											<SelectTrigger>
+											<SelectTrigger data-testid="pricing-override-provider-key-select">
 												<SelectValue placeholder="All provider keys" />
 											</SelectTrigger>
 											<SelectContent>
@@ -668,7 +669,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 									value={form.matchType}
 									onValueChange={(value: PricingOverrideMatchType) => setForm((prev) => ({ ...prev, matchType: value }))}
 								>
-									<SelectTrigger>
+									<SelectTrigger data-testid="pricing-override-match-type-select">
 										<SelectValue placeholder="Select match type" />
 									</SelectTrigger>
 									<SelectContent>
@@ -679,7 +680,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 							</div>
 							<div className="space-y-2">
 								<Label>Pattern</Label>
-								<Input
+								<Input data-testid="pricing-override-pattern-input"
 									value={form.pattern}
 									onChange={(e) => setForm((prev) => ({ ...prev, pattern: e.target.value }))}
 									placeholder={form.matchType === "exact" ? "gpt-5-mini" : "gpt-5*"}
@@ -695,7 +696,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 						<Label>Request types</Label>
 						<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
 							<PopoverTrigger asChild>
-								<Button type="button" variant="outline" className="w-full justify-between">
+								<Button data-testid="pricing-override-request-types-btn" type="button" variant="outline" className="w-full justify-between">
 									<span className="truncate">
 										{form.requestTypes.length > 0
 											? `${getRequestTypeGroup(form.requestTypes[0])} (${form.requestTypes.length})`
@@ -726,10 +727,11 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 																	isGroupDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-muted cursor-pointer",
 																)}
 															>
-																<Checkbox
-																	checked={checked}
-																	disabled={isGroupDisabled}
-																	onCheckedChange={() => toggleRequestType(requestType)}
+																	<Checkbox
+																		data-testid={`pricing-override-request-type-checkbox-${requestType}`}
+																		checked={checked}
+																		disabled={isGroupDisabled}
+																		onCheckedChange={() => toggleRequestType(requestType)}
 																/>
 																<span>{RequestTypeLabels[requestType as keyof typeof RequestTypeLabels] ?? requestType}</span>
 															</label>
@@ -741,10 +743,16 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 									})()}
 								</div>
 								<div className="mt-2 flex justify-end">
-									<Button type="button" size="sm" variant="ghost" onClick={() => setForm((prev) => ({ ...prev, requestTypes: [] }))}>
-										Clear (All)
-									</Button>
-								</div>
+										<Button
+											data-testid="pricing-override-request-types-clear-btn"
+											type="button"
+											size="sm"
+											variant="ghost"
+											onClick={() => setForm((prev) => ({ ...prev, requestTypes: [] }))}
+										>
+											Clear (All)
+										</Button>
+									</div>
 							</PopoverContent>
 						</Popover>
 					</div>
@@ -842,10 +850,10 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 				</div>
 
 				<SheetFooter className="gap-2 border-t px-3 pt-4">
-					<Button type="button" variant="outline" onClick={handleCloseDrawer} disabled={isSaving}>
+					<Button data-testid="pricing-override-cancel-btn" type="button" variant="outline" onClick={handleCloseDrawer} disabled={isSaving}>
 						Cancel
 					</Button>
-					<Button type="button" onClick={handleSave} disabled={!isFormValid || isSaving}>
+					<Button data-testid="pricing-override-save-btn" type="button" onClick={handleSave} disabled={!isFormValid || isSaving}>
 						Save Override
 					</Button>
 				</SheetFooter>

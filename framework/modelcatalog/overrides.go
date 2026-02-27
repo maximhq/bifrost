@@ -17,6 +17,17 @@ type PricingLookupScopes struct {
 	ProviderID    string
 }
 
+func normalizeScopeIDPointer(id *string) *string {
+	if id == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*id)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
 type compiledPricingOverride struct {
 	override         schemas.PricingOverride
 	pricingPatch     schemas.PricingOverridePatch
@@ -280,6 +291,10 @@ func isBetterOverrideCandidate(candidate, current *compiledPricingOverride) bool
 }
 
 func compilePricingOverride(order int, override schemas.PricingOverride) (compiledPricingOverride, error) {
+	override.VirtualKeyID = normalizeScopeIDPointer(override.VirtualKeyID)
+	override.ProviderID = normalizeScopeIDPointer(override.ProviderID)
+	override.ProviderKeyID = normalizeScopeIDPointer(override.ProviderKeyID)
+
 	if err := schemas.ValidatePricingOverrideScopeKind(override.ScopeKind, override.VirtualKeyID, override.ProviderID, override.ProviderKeyID); err != nil {
 		return compiledPricingOverride{}, err
 	}

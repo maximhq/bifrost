@@ -63,6 +63,9 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
 		return 0
 	}
+	if scopes.ProviderID == "" {
+		scopes.ProviderID = *cacheDebug.ProviderUsed
+	}
 	pricing, exists := mc.getPricingWithScopes(*cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest, scopes)
 	if !exists {
 		return 0

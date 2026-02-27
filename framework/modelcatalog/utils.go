@@ -69,6 +69,8 @@ func normalizeStreamRequestType(rt schemas.RequestType) schemas.RequestType {
 		return schemas.TranscriptionRequest
 	case schemas.ImageGenerationStreamRequest:
 		return schemas.ImageGenerationRequest
+	case schemas.ImageEditStreamRequest:
+		return schemas.ImageEditRequest
 	default:
 		return rt
 	}
