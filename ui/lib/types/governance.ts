@@ -321,6 +321,109 @@ export interface GetModelConfigsResponse {
 	count: number;
 }
 
+export type PricingOverrideScopeKind =
+	| "global"
+	| "provider"
+	| "provider_key"
+	| "virtual_key"
+	| "virtual_key_provider"
+	| "virtual_key_provider_key";
+export type PricingOverrideMatchType = "exact" | "wildcard";
+
+export interface PricingOverridePatch {
+	input_cost_per_token?: number;
+	output_cost_per_token?: number;
+	input_cost_per_token_priority?: number;
+	output_cost_per_token_priority?: number;
+	input_cost_per_character?: number;
+	output_cost_per_character?: number;
+	input_cost_per_audio_token?: number;
+	input_cost_per_video_per_second?: number;
+	input_cost_per_second?: number;
+	output_cost_per_audio_token?: number;
+	output_cost_per_video_per_second?: number;
+	output_cost_per_second?: number;
+	input_cost_per_audio_per_second?: number;
+	input_cost_per_token_above_128k_tokens?: number;
+	input_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_image_above_128k_tokens?: number;
+	input_cost_per_video_per_second_above_128k_tokens?: number;
+	input_cost_per_audio_per_second_above_128k_tokens?: number;
+	output_cost_per_token_above_128k_tokens?: number;
+	output_cost_per_character_above_128k_tokens?: number;
+	input_cost_per_token_above_200k_tokens?: number;
+	output_cost_per_token_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_200k_tokens?: number;
+	cache_read_input_token_cost_above_200k_tokens?: number;
+	cache_creation_input_token_cost_above_1hr?: number;
+	cache_creation_input_token_cost_above_1hr_above_200k_tokens?: number;
+	cache_creation_input_audio_token_cost?: number;
+	cache_read_input_token_cost_priority?: number;
+	cache_read_input_token_cost?: number;
+	cache_creation_input_token_cost?: number;
+	input_cost_per_token_batches?: number;
+	output_cost_per_token_batches?: number;
+	input_cost_per_image_token?: number;
+	output_cost_per_image_token?: number;
+	input_cost_per_image?: number;
+	input_cost_per_pixel?: number;
+	output_cost_per_image?: number;
+	output_cost_per_pixel?: number;
+	output_cost_per_image_premium_image?: number;
+	output_cost_per_image_above_512_and_512_pixels?: number;
+	output_cost_per_image_above_512_and_512_pixels_and_premium_image?: number;
+	output_cost_per_image_above_1024_and_1024_pixels?: number;
+	output_cost_per_image_above_1024_and_1024_pixels_and_premium_image?: number;
+	cache_read_input_image_token_cost?: number;
+	search_context_cost_per_query?: number;
+	code_interpreter_cost_per_session?: number;
+}
+
+export interface PricingOverride {
+	id: string;
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types?: string[];
+	patch: PricingOverridePatch;
+	config_hash?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CreatePricingOverrideRequest {
+	name: string;
+	scope_kind: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type: PricingOverrideMatchType;
+	pattern: string;
+	request_types?: string[];
+	patch?: PricingOverridePatch;
+}
+
+export interface PatchPricingOverrideRequest {
+	name?: string;
+	scope_kind?: PricingOverrideScopeKind;
+	virtual_key_id?: string;
+	provider_id?: string;
+	provider_key_id?: string;
+	match_type?: PricingOverrideMatchType;
+	pattern?: string;
+	request_types?: string[];
+	patch?: PricingOverridePatch;
+}
+
+export interface GetPricingOverridesResponse {
+	pricing_overrides: PricingOverride[];
+	count: number;
+}
+
 // Provider governance - for extending provider with budget/rate limit
 export interface ProviderGovernance {
 	provider: string;

@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -44,10 +45,11 @@ type GovernanceManager interface {
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
+	modelCatalog      *modelcatalog.ModelCatalog
 }
 
 // NewGovernanceHandler creates a new governance handler instance
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, modelCatalog *modelcatalog.ModelCatalog) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -57,6 +59,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
+		modelCatalog:      modelCatalog,
 	}, nil
 }
 
@@ -263,6 +266,12 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
 	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
 	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+
+	// Pricing override operations
+	r.GET("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.getPricingOverrides, middlewares...))
+	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
+	r.PATCH("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.patchPricingOverride, middlewares...))
+	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 }
 
 // Virtual Key CRUD Operations

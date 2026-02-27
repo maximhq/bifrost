@@ -1068,7 +1068,7 @@ func TestResolvePricing_DeploymentFallback(t *testing.T) {
 	})
 
 	// Model not found directly, but deployment matches
-	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
@@ -1080,14 +1080,14 @@ func TestResolvePricing_ModelFoundDirectly(t *testing.T) {
 	})
 
 	// Model found directly — doesn't fall back to deployment
-	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	assert.Nil(t, p)
 }
 
