@@ -16,6 +16,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/valyala/fasthttp"
+
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -42,7 +44,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/vllm"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/valyala/fasthttp"
 )
 
 // ChannelMessage represents a message passed through the request channel.
@@ -4607,7 +4608,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		key := schemas.Key{}
 		var keys []schemas.Key
-		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
+		if providerRequiresKey(baseProvider, config.CustomProviderConfig, config.NetworkConfig.BaseURL) {
 			// ListModels needs all enabled/supported keys so providers can aggregate
 			// and report per-key statuses (KeyStatuses).
 			if req.RequestType == schemas.ListModelsRequest {
