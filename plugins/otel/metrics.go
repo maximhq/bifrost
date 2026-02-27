@@ -20,11 +20,15 @@ import (
 // initOTELHTTPExporter creates an OTLP metrics exporter using HTTP transport.
 func initOTELHTTPExporter(ctx context.Context, config *Config) (metric.Exporter, error) {
 	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(config.MetricsEndpoint)}
-	tlsConfig, err := createTLSConfig(config.MetricsTLSCACert, config.MetricsInsecure)
-	if err != nil {
-		return nil, err
+	if config.MetricsTLSCACert == "" && config.MetricsInsecure {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	} else {
+		tlsConfig, err := createTLSConfig(config.MetricsTLSCACert, config.MetricsInsecure)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
 	}
-	opts = append(opts, otlpmetrichttp.WithTLSClientConfig(tlsConfig))
 	if len(config.MetricsHeaders) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(config.MetricsHeaders))
 	}
