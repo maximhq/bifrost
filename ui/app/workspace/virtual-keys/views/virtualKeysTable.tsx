@@ -19,8 +19,7 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Copy, Edit, Eye, EyeOff, Plus, SlidersHorizontal, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
@@ -34,7 +33,6 @@ interface VirtualKeysTableProps {
 }
 
 export default function VirtualKeysTable({ virtualKeys, teams, customers }: VirtualKeysTableProps) {
-	const router = useRouter();
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
 	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
@@ -54,7 +52,6 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
 	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete);
-	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
 
 	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
 
@@ -220,26 +217,11 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 												{vk.is_active ? (isExhausted ? "Exhausted" : "Active") : "Inactive"}
 											</Badge>
 										</TableCell>
-										<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-											<div className="flex items-center justify-end gap-2">
-												<Button
-													variant="ghost"
-													size="sm"
-													title="Pricing overrides"
-													disabled={!hasSettingsAccess}
-													onClick={(e) => {
-														e.stopPropagation();
-														router.push(
-															`/workspace/custom-pricing/overrides?scope_kind=virtual_key&virtual_key_id=${encodeURIComponent(vk.id)}`,
-														);
-													}}
-													data-testid={`vk-pricing-overrides-btn-${vk.name}`}
-												>
-													<SlidersHorizontal className="h-4 w-4" />
-												</Button>
-												<Button
-													variant="ghost"
-													size="sm"
+											<TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+												<div className="flex items-center justify-end gap-2">
+													<Button
+														variant="ghost"
+														size="sm"
 													onClick={(e) => handleEditVirtualKey(vk, e)}
 													disabled={!hasUpdateAccess}
 													data-testid={`vk-edit-btn-${vk.name}`}
