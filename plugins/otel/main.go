@@ -139,6 +139,9 @@ func Init(ctx context.Context, config *Config, _logger schemas.Logger, pricingMa
 			if p.client != nil {
 				p.client.Close()
 			}
+			if p.cancel != nil {
+				p.cancel()
+			}
 			return nil, fmt.Errorf("failed to initialize metrics exporter: %w", err)
 		}
 		p.meterProvider = provider
@@ -193,6 +196,13 @@ func ValidateConfig(config *Config) (*Config, error) {
 		}
 		if config.MetricsEndpoint == "" {
 			return nil, fmt.Errorf("otel metrics collector endpoint is required")
+		}
+		if config.MetricsProtocol == "" {
+			// Backward-compatible fallback.
+			config.MetricsProtocol = config.Protocol
+		}
+		if config.MetricsProtocol != ProtocolHTTP && config.MetricsProtocol != ProtocolGRPC {
+			return nil, fmt.Errorf("metrics export protocol must be either %q or %q, got %q", ProtocolHTTP, ProtocolGRPC, config.MetricsProtocol)
 		}
 		// Some defaults
 		if config.MetricsPushInterval <= 0 {
