@@ -72,6 +72,7 @@ export default function PluginsPage() {
 								<button
 									type="button"
 									key={plugin.name}
+									data-testid="plugin-list-item"
 									aria-current={selectedPlugin?.name === plugin.name ? "page" : undefined}
 									className={cn(
 										"mb-1 flex max-h-[32px] w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm",
@@ -99,6 +100,7 @@ export default function PluginsPage() {
 							))}
 							<div className="my-4">
 								<Button
+									data-testid="plugins-create-button"
 									variant="outline"
 									size="sm"
 									className="w-full justify-start"
