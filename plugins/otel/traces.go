@@ -27,14 +27,14 @@ type OtelClientGRPC struct {
 
 // NewOtelClientGRPC creates a new OpenTelemetry client for gRPC
 func NewOtelClientGRPC(endpoint string, headers map[string]string, tlsCACert string, insecureMode bool) (*OtelClientGRPC, error) {
-	tlsConfig, err := createTLSConfig(tlsCACert, insecureMode)
-	if err != nil {
-		return nil, err
-	}
 	var creds credentials.TransportCredentials
-	if tlsConfig.InsecureSkipVerify {
+	if tlsCACert == "" && insecureMode {
 		creds = insecure.NewCredentials()
 	} else {
+		tlsConfig, err := createTLSConfig(tlsCACert, insecureMode)
+		if err != nil {
+			return nil, err
+		}
 		creds = credentials.NewTLS(tlsConfig)
 	}
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))

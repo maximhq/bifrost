@@ -36,14 +36,14 @@ func initOTELHTTPExporter(ctx context.Context, config *Config) (metric.Exporter,
 // initOTELGRPCExporter creates an OTLP metrics exporter using gRPC transport.
 func initOTELGRPCExporter(ctx context.Context, config *Config) (metric.Exporter, error) {
 	opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(config.MetricsEndpoint)}
-	tlsConfig, err := createTLSConfig(config.MetricsTLSCACert, config.MetricsInsecure)
-	if err != nil {
-		return nil, err
-	}
 	var creds credentials.TransportCredentials
-	if tlsConfig.InsecureSkipVerify {
+	if config.MetricsTLSCACert == "" && config.MetricsInsecure {
 		creds = insecure.NewCredentials()
 	} else {
+		tlsConfig, err := createTLSConfig(config.MetricsTLSCACert, config.MetricsInsecure)
+		if err != nil {
+			return nil, err
+		}
 		creds = credentials.NewTLS(tlsConfig)
 	}
 	opts = append(opts, otlpmetricgrpc.WithTLSCredentials(creds))
