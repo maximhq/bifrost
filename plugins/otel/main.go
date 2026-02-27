@@ -170,6 +170,9 @@ func (p *OtelPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, r
 
 // ValidateConfig validates values of PluginConfig and set up defaults where needed.
 func ValidateConfig(config *Config) (*Config, error) {
+	if config == nil {
+		return nil, fmt.Errorf("config is required")
+	}
 	// Validating fields
 	if config.ServiceName == "" {
 		config.ServiceName = "bifrost"
