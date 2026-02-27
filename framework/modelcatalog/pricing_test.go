@@ -853,7 +853,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -892,7 +892,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Only embedding cost: 500 * 0.00000002 = 0.00001
 	assert.InDelta(t, 0.00001, cost, 1e-12)
 }
@@ -930,7 +930,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Base cost: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	// Embedding cost: 500 * 0.00000002 = 0.00001
 	// Total: 0.01251
@@ -951,7 +951,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -961,7 +961,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 
 func TestCalculateCost_NilResponse(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	assert.Equal(t, 0.0, mc.CalculateCost(nil))
+	assert.Equal(t, 0.0, mc.CalculateCost(nil, nil))
 }
 
 func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
@@ -978,7 +978,7 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
 }
 
@@ -988,7 +988,7 @@ func TestCalculateCost_NoUsageData(t *testing.T) {
 	})
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1009,7 +1009,7 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 		TotalTokens:      12000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
@@ -1038,7 +1038,7 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Both cached read and write tokens are input-side deductions from promptTokens.
 	// Input: (5000-3000-500)*0.000003 + 3000*0.0000003 + 500*0.00000375 = 0.0045 + 0.0009 + 0.001875 = 0.007275
 	// Output: 1000*0.000015 = 0.015
@@ -1061,7 +1061,7 @@ func TestCalculateCost_Embedding(t *testing.T) {
 		TotalTokens:  10000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000 * 0.0000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
 }
@@ -1080,7 +1080,7 @@ func TestCalculateCost_Rerank(t *testing.T) {
 		TotalTokens:  500,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1097,7 +1097,7 @@ func TestCalculateCost_ImageGeneration(t *testing.T) {
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 3},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 3 * 0.052 = 0.156
 	assert.InDelta(t, 0.156, cost, 1e-12)
 }
@@ -1119,7 +1119,7 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
@@ -1128,7 +1128,7 @@ func TestCalculateCost_NoPricingData(t *testing.T) {
 	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
 	})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1219,7 +1219,7 @@ func TestResolvePricing_DeploymentFallback(t *testing.T) {
 	})
 
 	// Model not found directly, but deployment matches
-	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "gpt-4o-custom", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
@@ -1231,14 +1231,14 @@ func TestResolvePricing_ModelFoundDirectly(t *testing.T) {
 	})
 
 	// Model found directly — doesn't fall back to deployment
-	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "gpt-4o", "my-deployment", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	require.NotNil(t, p)
 	assert.Equal(t, 0.000005, p.InputCostPerToken)
 }
 
 func TestResolvePricing_NothingFound(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest)
+	p := mc.resolvePricing("openai", "unknown", "", schemas.ChatCompletionRequest, PricingLookupScopes{})
 	assert.Nil(t, p)
 }
 
@@ -1344,7 +1344,7 @@ func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      210000, // Above 200k
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000006, output=0.00003
 	// 190000*0.000006 + 20000*0.00003 = 1.14 + 0.6 = 1.74
 	assert.InDelta(t, 1.74, cost, 1e-9)
@@ -1365,7 +1365,7 @@ func TestCalculateCost_ProviderCostZeroTotalStillCalculates(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
@@ -1407,7 +1407,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_PerImagePricing(t *testing.T) {
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 1 image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
@@ -1427,7 +1427,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_InputAndOutputPerImage(t *testin
 	})
 
 	resp := makeImageResponse("test", "test-image-model", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// NumInputImages is 0 (not populated from request), so only output pricing applies
 	// 1 output image * $0.04 = $0.04
 	assert.InDelta(t, 0.04, cost, 1e-12)
@@ -1450,7 +1450,7 @@ func TestCalculateCost_ImageGeneration_WithInputImages(t *testing.T) {
 	resp := makeImageResponse("openai", "gpt-image-1", &schemas.ImageUsage{
 		NumInputImages: 2,
 	})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 2 input images * $0.01 + 1 output image * $0.04 = $0.06
 	assert.InDelta(t, 0.06, cost, 1e-12)
 }
@@ -1482,7 +1482,7 @@ func TestCalculateCost_ImageGeneration_OutputCountFromData(t *testing.T) {
 			},
 		},
 	}
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 3 output images * $0.04 = $0.12
 	assert.InDelta(t, 0.12, cost, 1e-12)
 }
@@ -1502,7 +1502,7 @@ func TestCalculateCost_ImageGeneration_NilUsage_NoPerImagePricing(t *testing.T) 
 	})
 
 	resp := makeImageResponse("test", "token-only-model", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// No per-image pricing and all tokens are zero → 0
 	assert.InDelta(t, 0.0, cost, 1e-12)
 }
@@ -1521,7 +1521,7 @@ func TestCalculateCost_ImageGeneration_EmptyUsage_PerImagePricing(t *testing.T) 
 	})
 
 	resp := makeImageResponse("openai", "dall-e-3", &schemas.ImageUsage{})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.04, cost, 1e-12)
 }
 

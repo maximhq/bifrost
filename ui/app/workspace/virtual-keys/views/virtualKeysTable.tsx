@@ -1,4 +1,4 @@
-"use client"
+"use client";
 
 import {
 	AlertDialog,
@@ -11,22 +11,22 @@ import {
 	AlertDialogTitle,
 	AlertDialogTrigger,
 } from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
-import { Customer, Team, VirtualKey } from "@/lib/types/governance"
-import { cn } from "@/lib/utils"
-import { formatCurrency } from "@/lib/utils/governance"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
-import { toast } from "sonner"
-import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
-import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
-import VirtualKeySheet from "./virtualKeySheet"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store";
+import { Customer, Team, VirtualKey } from "@/lib/types/governance";
+import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils/governance";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
+import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
+import VirtualKeySheet from "./virtualKeySheet";
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
@@ -61,27 +61,27 @@ export default function VirtualKeysTable({
 	limit,
 	onOffsetChange,
 }: VirtualKeysTableProps) {
-  const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
-  const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
-  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
-  const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null)
-  const [showDetailSheet, setShowDetailSheet] = useState(false)
+	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
+	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
+	const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+	const [selectedVirtualKeyId, setSelectedVirtualKeyId] = useState<string | null>(null);
+	const [showDetailSheet, setShowDetailSheet] = useState(false);
 
-  // Derive objects from props so they stay in sync with RTK cache updates
-  const editingVirtualKey = useMemo(
-    () => (editingVirtualKeyId ? virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null : null),
-    [editingVirtualKeyId, virtualKeys],
-  )
-  const selectedVirtualKey = useMemo(
-    () => (selectedVirtualKeyId ? virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null : null),
-    [selectedVirtualKeyId, virtualKeys],
-  )
+	// Derive objects from props so they stay in sync with RTK cache updates
+	const editingVirtualKey = useMemo(
+		() => (editingVirtualKeyId ? (virtualKeys.find((vk) => vk.id === editingVirtualKeyId) ?? null) : null),
+		[editingVirtualKeyId, virtualKeys],
+	);
+	const selectedVirtualKey = useMemo(
+		() => (selectedVirtualKeyId ? (virtualKeys.find((vk) => vk.id === selectedVirtualKeyId) ?? null) : null),
+		[selectedVirtualKeyId, virtualKeys],
+	);
 
-  const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update)
-  const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete)
+	const hasCreateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
+	const hasDeleteAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.Delete);
 
-  const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation()
+	const [deleteVirtualKey, { isLoading: isDeleting }] = useDeleteVirtualKeyMutation();
 
 	const handleDelete = async (vkId: string) => {
 		try {

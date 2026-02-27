@@ -447,7 +447,11 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCost(result)
+			cost = p.pricingManager.CalculateCost(result, &modelcatalog.PricingLookupScopes{
+				VirtualKeyID:  virtualKeyID,
+				SelectedKeyID: selectedKeyID,
+				Provider:      string(provider),
+			})
 		}
 
 		p.UpstreamRequestsTotal.WithLabelValues(promLabelValues...).Inc()
