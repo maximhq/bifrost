@@ -303,6 +303,26 @@ interface PricingOverrideDrawerProps {
 	onSaved?: () => void;
 }
 
+function isCompleteScopeLock(scopeLock?: PricingOverrideDrawerProps["scopeLock"]): boolean {
+	if (!scopeLock) return false;
+	switch (scopeLock.scopeKind) {
+		case "global":
+			return true;
+		case "provider":
+			return Boolean(scopeLock.providerID);
+		case "provider_key":
+			return Boolean(scopeLock.providerKeyID);
+		case "virtual_key":
+			return Boolean(scopeLock.virtualKeyID);
+		case "virtual_key_provider":
+			return Boolean(scopeLock.virtualKeyID && scopeLock.providerID);
+		case "virtual_key_provider_key":
+			return Boolean(scopeLock.virtualKeyID && scopeLock.providerID && scopeLock.providerKeyID);
+		default:
+			return false;
+	}
+}
+
 export default function PricingOverrideDrawer({ open, onOpenChange, editingOverride, scopeLock, onSaved }: PricingOverrideDrawerProps) {
 	const { data: providersData } = useGetProvidersQuery();
 	const { data: virtualKeysData } = useGetVirtualKeysQuery();
@@ -314,6 +334,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 	const [jsonError, setJSONError] = useState<string>();
 	const jsonEditingRef = useRef(false);
 	const [requestTypePopoverOpen, setRequestTypePopoverOpen] = useState(false);
+	const shouldLockScope = useMemo(() => !editingOverride && isCompleteScopeLock(scopeLock), [editingOverride, scopeLock]);
 
 	const isSaving = isCreating || isPatching;
 	const providers = useMemo<ModelProvider[]>(() => providersData ?? [], [providersData]);
@@ -343,7 +364,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 			setForm(toFormState(editingOverride));
 			return;
 		}
-		if (scopeLock) {
+		if (shouldLockScope && scopeLock) {
 			const scopedForm: FormState = {
 				...defaultFormState,
 				virtualKeyID: scopeLock.virtualKeyID ?? "",
@@ -360,27 +381,27 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 			return;
 		}
 		setForm(defaultFormState);
-	}, [open, editingOverride, scopeLock]);
+	}, [open, editingOverride, scopeLock, shouldLockScope]);
 
 	const resolvedScopeKind = useMemo(() => {
-		if (scopeLock?.scopeKind) return scopeLock.scopeKind;
+		if (shouldLockScope && scopeLock?.scopeKind) return scopeLock.scopeKind;
 		return deriveScopeKind(form);
-	}, [scopeLock, form]);
+	}, [scopeLock, shouldLockScope, form]);
 
 	const resolvedVirtualKeyID = useMemo(() => {
-		if (scopeLock?.scopeKind) return scopeLock.virtualKeyID;
+		if (shouldLockScope) return scopeLock?.virtualKeyID;
 		return form.scopeRoot === "virtual_key" ? form.virtualKeyID || undefined : undefined;
-	}, [scopeLock, form.scopeRoot, form.virtualKeyID]);
+	}, [scopeLock, shouldLockScope, form.scopeRoot, form.virtualKeyID]);
 
 	const resolvedProviderID = useMemo(() => {
-		if (scopeLock?.scopeKind) return scopeLock.providerID;
+		if (shouldLockScope) return scopeLock?.providerID;
 		return form.providerID || undefined;
-	}, [scopeLock, form.providerID]);
+	}, [scopeLock, shouldLockScope, form.providerID]);
 
 	const resolvedProviderKeyID = useMemo(() => {
-		if (scopeLock?.scopeKind) return scopeLock.providerKeyID;
+		if (shouldLockScope) return scopeLock?.providerKeyID;
 		return form.providerKeyID || undefined;
-	}, [scopeLock, form.providerKeyID]);
+	}, [scopeLock, shouldLockScope, form.providerKeyID]);
 
 		const validation = useMemo(() => {
 			const errors: FieldErrors = {};
@@ -453,6 +474,8 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 	}, []);
 
 	const isFormValid = Object.keys(validation.errors).length === 0 && !jsonError;
+	const selectedRequestTypeGroup =
+		form.requestTypes.length > 0 ? getRequestTypeGroup(form.requestTypes[0]) || "Other request types" : undefined;
 
 	const handleCloseDrawer = () => {
 		onOpenChange(false);
@@ -558,7 +581,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 							{validation.errors.name && <p className="text-destructive text-xs">{validation.errors.name}</p>}
 						</div>
 
-							{scopeLock ? (
+							{shouldLockScope && scopeLock ? (
 								<div className="space-y-2">
 									<Label>Scope</Label>
 									<Input data-testid="pricing-override-scope-lock-input" value={scopeLock.label ?? scopeLock.scopeKind} readOnly />
@@ -696,12 +719,12 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 						<Label>Request types</Label>
 						<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
 							<PopoverTrigger asChild>
-								<Button data-testid="pricing-override-request-types-btn" type="button" variant="outline" className="w-full justify-between">
-									<span className="truncate">
-										{form.requestTypes.length > 0
-											? `${getRequestTypeGroup(form.requestTypes[0])} (${form.requestTypes.length})`
-											: "All request types"}
-									</span>
+									<Button data-testid="pricing-override-request-types-btn" type="button" variant="outline" className="w-full justify-between">
+										<span className="truncate">
+											{form.requestTypes.length > 0
+												? `${selectedRequestTypeGroup} (${form.requestTypes.length})`
+												: "All request types"}
+										</span>
 									<ChevronDown className="h-4 w-4" />
 								</Button>
 							</PopoverTrigger>
