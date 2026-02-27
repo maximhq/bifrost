@@ -32,6 +32,7 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SlidersHorizontal,
 	SquareTerminal,
 	Telescope,
 	ToolCase,
@@ -193,10 +194,14 @@ const SidebarItemView = ({
 	highlightedUrl?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
+	const isRouteMatch = (url: string) => {
+		if (url === "/workspace/custom-pricing") return pathname === url;
+		return pathname.startsWith(url);
+	};
 	const isAnySubItemActive =
 		hasSubItems &&
 		item.subItems?.some((subItem) => {
-			return pathname.startsWith(subItem.url);
+			return isRouteMatch(subItem.url);
 		});
 
 	const handleClick = (e: React.MouseEvent) => {
@@ -283,7 +288,7 @@ const SidebarItemView = ({
 				<SidebarMenuSub className="border-sidebar-border mt-1 ml-4 space-y-0.5 border-l pl-2">
 					{item.subItems?.map((subItem: SidebarItem) => {
 						// For query param based subitems, check if tab matches
-						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : pathname.startsWith(subItem.url);
+						const isSubItemActive = subItem.queryParam ? pathname === subItem.url : isRouteMatch(subItem.url);
 						const isSubItemHighlighted = highlightedUrl === subItem.url;
 						const SubItemIcon = subItem.icon;
 						return (
@@ -480,6 +485,13 @@ export default function AppSidebar() {
 						description: "Pricing configuration",
 						hasAccess: hasSettingsAccess,
 					},
+					{
+						title: "Pricing overrides",
+						url: "/workspace/custom-pricing/overrides",
+						icon: SlidersHorizontal,
+						description: "Scoped pricing overrides",
+						hasAccess: hasSettingsAccess,
+					},
 				],
 			},
 			{
@@ -621,8 +633,8 @@ export default function AppSidebar() {
 				description: "Manage adaptive load balancer",
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
-		...(isDbConnected
-			? [
+			...(isDbConnected
+				? [
 					{
 						title: "Prompt Repository",
 						url: "/workspace/prompt-repo",
@@ -648,7 +660,7 @@ export default function AppSidebar() {
 						],
 					},
 				]
-			: []),
+				: []),
 			{
 				title: "Evals",
 				url: "https://www.getmaxim.ai",
@@ -789,8 +801,12 @@ export default function AppSidebar() {
 	// Auto-expand items when their subitems are active
 	useEffect(() => {
 		const newExpandedItems = new Set<string>();
+		const isRouteMatch = (url: string) => {
+			if (url === "/workspace/custom-pricing") return pathname === url;
+			return pathname.startsWith(url);
+		};
 		items.forEach((item) => {
-			if (item.subItems?.some((subItem) => pathname.startsWith(subItem.url))) {
+			if (item.subItems?.some((subItem) => isRouteMatch(subItem.url))) {
 				newExpandedItems.add(item.title);
 			}
 		});
@@ -917,6 +933,8 @@ export default function AppSidebar() {
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;
+		// Avoid double-highlighting with "/workspace/custom-pricing/overrides"
+		if (url === "/workspace/custom-pricing") return pathname === url;
 		if (url !== "/" && pathname.startsWith(url)) {
 			if (url === "/workspace/config" && configExceptions.some((e) => pathname.startsWith(e))) {
 				return false;

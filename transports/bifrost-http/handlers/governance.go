@@ -19,6 +19,8 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -46,10 +48,11 @@ type GovernanceManager interface {
 type GovernanceHandler struct {
 	configStore       configstore.ConfigStore
 	governanceManager GovernanceManager
+	modelCatalog      *modelcatalog.ModelCatalog
 }
 
 // NewGovernanceHandler creates a new governance handler instance
-func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore) (*GovernanceHandler, error) {
+func NewGovernanceHandler(manager GovernanceManager, configStore configstore.ConfigStore, modelCatalog *modelcatalog.ModelCatalog) (*GovernanceHandler, error) {
 	if manager == nil {
 		return nil, fmt.Errorf("governance manager is required")
 	}
@@ -59,6 +62,7 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	return &GovernanceHandler{
 		governanceManager: manager,
 		configStore:       configStore,
+		modelCatalog:      modelCatalog,
 	}, nil
 }
 
@@ -296,6 +300,12 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/api/governance/providers", lib.ChainMiddlewares(h.getProviderGovernance, middlewares...))
 	r.PUT("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.updateProviderGovernance, middlewares...))
 	r.DELETE("/api/governance/providers/{provider_name}", lib.ChainMiddlewares(h.deleteProviderGovernance, middlewares...))
+
+	// Pricing override operations
+	r.GET("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.getPricingOverrides, middlewares...))
+	r.POST("/api/governance/pricing-overrides", lib.ChainMiddlewares(h.createPricingOverride, middlewares...))
+	r.PATCH("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.patchPricingOverride, middlewares...))
+	r.DELETE("/api/governance/pricing-overrides/{id}", lib.ChainMiddlewares(h.deletePricingOverride, middlewares...))
 }
 
 // Virtual Key CRUD Operations
@@ -3242,6 +3252,284 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Pricing Override Operations
+// ---------------------------------------------------------------------------
+
+// CreatePricingOverrideRequest is the request payload for creating a governance
+// pricing override.
+type CreatePricingOverrideRequest struct {
+	Name          string                     `json:"name"`
+	ScopeKind     pricingoverrides.ScopeKind `json:"scope_kind"`
+	VirtualKeyID  *string                    `json:"virtual_key_id,omitempty"`
+	ProviderID    *string                    `json:"provider_id,omitempty"`
+	ProviderKeyID *string                    `json:"provider_key_id,omitempty"`
+	MatchType     pricingoverrides.MatchType `json:"match_type"`
+	Pattern       string                     `json:"pattern"`
+	RequestTypes  []schemas.RequestType      `json:"request_types,omitempty"`
+	Patch         pricingoverrides.Patch     `json:"patch,omitempty"`
+}
+
+// PatchPricingOverrideRequest is the sparse request payload for updating a
+// governance pricing override.
+type PatchPricingOverrideRequest struct {
+	Name          *string                     `json:"name,omitempty"`
+	ScopeKind     *pricingoverrides.ScopeKind `json:"scope_kind,omitempty"`
+	VirtualKeyID  *string                     `json:"virtual_key_id,omitempty"`
+	ProviderID    *string                     `json:"provider_id,omitempty"`
+	ProviderKeyID *string                     `json:"provider_key_id,omitempty"`
+	MatchType     *pricingoverrides.MatchType `json:"match_type,omitempty"`
+	Pattern       *string                     `json:"pattern,omitempty"`
+	RequestTypes  *[]schemas.RequestType      `json:"request_types,omitempty"`
+	Patch         *pricingoverrides.Patch     `json:"patch,omitempty"`
+}
+
+func (h *GovernanceHandler) getPricingOverrides(ctx *fasthttp.RequestCtx) {
+	overrides, err := h.configStore.GetPricingOverrides(ctx, pricingOverrideFilterFromQuery(ctx))
+	if err != nil {
+		logger.Error("failed to retrieve pricing overrides: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve pricing overrides")
+		return
+	}
+
+	SendJSON(ctx, map[string]interface{}{
+		"pricing_overrides": overrides,
+		"count":             len(overrides),
+	})
+}
+
+func (h *GovernanceHandler) createPricingOverride(ctx *fasthttp.RequestCtx) {
+	var req CreatePricingOverrideRequest
+	if !decodePricingOverrideJSON(ctx, &req) {
+		return
+	}
+
+	name, err := normalizeAndValidatePricingOverrideName(req.Name)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := validatePricingOverrideRequest(req.ScopeKind, req.VirtualKeyID, req.ProviderID, req.ProviderKeyID, req.MatchType, req.Pattern, req.RequestTypes, req.Patch); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	now := time.Now()
+	override := configstoreTables.TablePricingOverride{
+		ID:            uuid.NewString(),
+		Name:          name,
+		ScopeKind:     req.ScopeKind,
+		VirtualKeyID:  normalizeOptionalString(req.VirtualKeyID),
+		ProviderID:    normalizeOptionalString(req.ProviderID),
+		ProviderKeyID: normalizeOptionalString(req.ProviderKeyID),
+		MatchType:     req.MatchType,
+		Pattern:       strings.TrimSpace(req.Pattern),
+		RequestTypes:  req.RequestTypes,
+		Patch:         req.Patch,
+		ConfigHash:    "",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := h.configStore.CreatePricingOverride(ctx, &override); err != nil {
+		logger.Error("failed to create pricing override: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create pricing override")
+		return
+	}
+
+	h.refreshPricingOverrides(ctx)
+	SendJSONWithStatus(ctx, map[string]interface{}{
+		"message":          "Pricing override created successfully",
+		"pricing_override": override,
+	}, fasthttp.StatusCreated)
+}
+
+func (h *GovernanceHandler) patchPricingOverride(ctx *fasthttp.RequestCtx) {
+	id := ctx.UserValue("id").(string)
+
+	var req PatchPricingOverrideRequest
+	if !decodePricingOverrideJSON(ctx, &req) {
+		return
+	}
+
+	override, ok := h.getPricingOverrideOrSendError(ctx, id)
+	if !ok {
+		return
+	}
+
+	if req.ScopeKind != nil {
+		override.ScopeKind = *req.ScopeKind
+	}
+	if req.Name != nil {
+		name, err := normalizeAndValidatePricingOverrideName(*req.Name)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		override.Name = name
+	}
+	if req.VirtualKeyID != nil {
+		override.VirtualKeyID = normalizeOptionalString(req.VirtualKeyID)
+	}
+	if req.ProviderID != nil {
+		override.ProviderID = normalizeOptionalString(req.ProviderID)
+	}
+	if req.ProviderKeyID != nil {
+		override.ProviderKeyID = normalizeOptionalString(req.ProviderKeyID)
+	}
+	if req.MatchType != nil {
+		override.MatchType = *req.MatchType
+	}
+	if req.Pattern != nil {
+		override.Pattern = strings.TrimSpace(*req.Pattern)
+	}
+	if req.RequestTypes != nil {
+		override.RequestTypes = *req.RequestTypes
+	}
+	if req.Patch != nil {
+		override.Patch = pricingoverrides.MergePatch(override.Patch, *req.Patch)
+	}
+	override.ConfigHash = ""
+	override.UpdatedAt = time.Now()
+
+	if err := validatePricingOverrideRequest(override.ScopeKind, override.VirtualKeyID, override.ProviderID, override.ProviderKeyID, override.MatchType, override.Pattern, override.RequestTypes, override.Patch); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := h.configStore.UpdatePricingOverride(ctx, override); err != nil {
+		logger.Error("failed to update pricing override: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update pricing override")
+		return
+	}
+
+	h.refreshPricingOverrides(ctx)
+	SendJSON(ctx, map[string]interface{}{
+		"message":          "Pricing override updated successfully",
+		"pricing_override": override,
+	})
+}
+
+func (h *GovernanceHandler) deletePricingOverride(ctx *fasthttp.RequestCtx) {
+	id := ctx.UserValue("id").(string)
+	if err := h.configStore.DeletePricingOverride(ctx, id); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "Pricing override not found")
+			return
+		}
+		logger.Error("failed to delete pricing override: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete pricing override")
+		return
+	}
+
+	h.refreshPricingOverrides(ctx)
+	SendJSON(ctx, map[string]interface{}{
+		"message": "Pricing override deleted successfully",
+	})
+}
+
+func pricingOverrideFilterFromQuery(ctx *fasthttp.RequestCtx) configstore.PricingOverrideFilter {
+	var filter configstore.PricingOverrideFilter
+	if scopeKindRaw := strings.TrimSpace(string(ctx.QueryArgs().Peek("scope_kind"))); scopeKindRaw != "" {
+		scopeKind := pricingoverrides.ScopeKind(scopeKindRaw)
+		filter.ScopeKind = &scopeKind
+	}
+	if virtualKeyID := strings.TrimSpace(string(ctx.QueryArgs().Peek("virtual_key_id"))); virtualKeyID != "" {
+		filter.VirtualKeyID = &virtualKeyID
+	}
+	if providerID := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider_id"))); providerID != "" {
+		filter.ProviderID = &providerID
+	}
+	if providerKeyID := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider_key_id"))); providerKeyID != "" {
+		filter.ProviderKeyID = &providerKeyID
+	}
+	return filter
+}
+
+func decodePricingOverrideJSON(ctx *fasthttp.RequestCtx, dst any) bool {
+	if err := json.Unmarshal(ctx.PostBody(), dst); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
+		return false
+	}
+	return true
+}
+
+func (h *GovernanceHandler) getPricingOverrideOrSendError(ctx *fasthttp.RequestCtx, id string) (*configstoreTables.TablePricingOverride, bool) {
+	override, err := h.configStore.GetPricingOverrideByID(ctx, id)
+	if err == nil {
+		return override, true
+	}
+	if errors.Is(err, configstore.ErrNotFound) {
+		SendError(ctx, fasthttp.StatusNotFound, "Pricing override not found")
+		return nil, false
+	}
+	logger.Error("failed to retrieve pricing override by id %s: %v", id, err)
+	SendError(ctx, fasthttp.StatusInternalServerError, "Failed to retrieve pricing override")
+	return nil, false
+}
+
+func (h *GovernanceHandler) refreshPricingOverrides(ctx context.Context) {
+	if h.modelCatalog == nil {
+		return
+	}
+	rows, err := h.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilter{})
+	if err != nil {
+		logger.Warn("failed to load pricing overrides for model catalog refresh: %v", err)
+		return
+	}
+	if err := h.modelCatalog.SetPricingOverrides(toPricingOverrides(rows)); err != nil {
+		logger.Warn("failed to apply pricing override refresh: %v", err)
+	}
+}
+
+func toPricingOverrides(rows []configstoreTables.TablePricingOverride) []pricingoverrides.Override {
+	overrides := make([]pricingoverrides.Override, 0, len(rows))
+	for i := range rows {
+		overrides = append(overrides, rows[i].ToPricingOverride())
+	}
+	return overrides
+}
+
+func validatePricingOverrideRequest(
+	scopeKind pricingoverrides.ScopeKind,
+	virtualKeyID, providerID, providerKeyID *string,
+	matchType pricingoverrides.MatchType,
+	pattern string,
+	requestTypes []schemas.RequestType,
+	patch pricingoverrides.Patch,
+) error {
+	if err := pricingoverrides.ValidateScopeKind(scopeKind, virtualKeyID, providerID, providerKeyID); err != nil {
+		return err
+	}
+	if _, err := pricingoverrides.ValidatePattern(matchType, pattern); err != nil {
+		return err
+	}
+	if err := pricingoverrides.ValidateRequestTypes(requestTypes); err != nil {
+		return err
+	}
+	return pricingoverrides.ValidatePatchNonNegative(patch)
+}
+
+func normalizeAndValidatePricingOverrideName(name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return "", errors.New("name is required")
+	}
+	return trimmed, nil
+}
+
+func normalizeOptionalString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 // validRoutingScopes contains the allowed scope values for routing rules

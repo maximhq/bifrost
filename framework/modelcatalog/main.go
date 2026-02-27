@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/pricingoverrides"
 )
 
 // Default sync interval and config key
@@ -38,10 +39,10 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	// Provider-level pricing overrides are maintained separately to avoid contention
+	// Scoped pricing overrides are maintained separately to avoid contention
 	// with pricing cache rebuilds.
-	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
-	overridesMu       sync.RWMutex
+	scopedOverrides *compiledScopedOverrides
+	overridesMu     sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -194,7 +195,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		scopedOverrides:        &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]pricingoverrides.Override)},
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -250,6 +251,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	// Populate model pool with normalized providers from pricing data
 	mc.populateModelPoolFromPricingData()
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		logger.Warn("failed to load pricing overrides: %v", err)
+	}
 
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
@@ -320,6 +324,9 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		return fmt.Errorf("failed to load pricing overrides: %w", err)
+	}
 
 	// Also sync model parameters
 	if err := mc.syncModelParameters(ctx); err != nil {
@@ -878,7 +885,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		scopedOverrides:     &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]pricingoverrides.Override)},
 		done:                make(chan struct{}),
 	}
 }

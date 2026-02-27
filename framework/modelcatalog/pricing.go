@@ -23,22 +23,28 @@ type costInput struct {
 
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache debug billing, and tiered pricing.
-func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
+// If scopes is nil, no scoped overrides are applied.
+func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	if result == nil {
 		return 0
+	}
+
+	var s PricingLookupScopes
+	if scopes != nil {
+		s = *scopes
 	}
 
 	// Handle semantic cache billing
 	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
-		return mc.calculateCostWithCache(result, cacheDebug)
+		return mc.calculateCostWithCache(result, cacheDebug, s)
 	}
 
-	return mc.calculateBaseCost(result)
+	return mc.calculateBaseCost(result, s)
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
-func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug.CacheHit {
 		// Direct cache hit — no LLM call, no cost
 		if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
@@ -46,23 +52,26 @@ func (mc *ModelCatalog) calculateCostWithCache(result *schemas.BifrostResponse, 
 		}
 		// Semantic cache hit — only the embedding lookup cost
 		if cacheDebug.ProviderUsed != nil && cacheDebug.ModelUsed != nil && cacheDebug.InputTokens != nil {
-			return mc.computeCacheEmbeddingCost(cacheDebug)
+			return mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 		}
 		return 0
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost
-	baseCost := mc.calculateBaseCost(result)
-	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug)
+	baseCost := mc.calculateBaseCost(result, scopes)
+	embeddingCost := mc.computeCacheEmbeddingCost(cacheDebug, scopes)
 	return baseCost + embeddingCost
 }
 
 // computeCacheEmbeddingCost calculates the embedding cost for a semantic cache lookup.
-func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug) float64 {
+func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug, scopes PricingLookupScopes) float64 {
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
 		return 0
 	}
-	pricing, exists := mc.getPricing(*cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest)
+	if scopes.Provider == "" {
+		scopes.Provider = *cacheDebug.ProviderUsed
+	}
+	pricing, exists := mc.getPricingLocked(*cacheDebug.ModelUsed, *cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest, scopes)
 	if !exists {
 		return 0
 	}
@@ -70,7 +79,7 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 }
 
 // calculateBaseCost extracts usage from the response and routes to the appropriate compute function.
-func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float64 {
+func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse, scopes PricingLookupScopes) float64 {
 	extraFields := result.GetExtraFields()
 	if extraFields == nil {
 		return 0
@@ -98,7 +107,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	requestType = normalizeStreamRequestType(requestType)
 
 	// Resolve pricing entry with deployment fallback
-	pricing := mc.resolvePricing(provider, model, deployment, requestType)
+	pricing := mc.resolvePricing(provider, model, deployment, requestType, scopes)
 	if pricing == nil {
 		return 0
 	}
@@ -743,17 +752,21 @@ func populateOutputImageCount(imageUsage *schemas.ImageUsage, dataLen int) {
 // ---------------------------------------------------------------------------
 
 // resolvePricing resolves the pricing entry for a model, trying deployment as fallback.
-func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType) *configstoreTables.TableModelPricing {
+func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 
-	pricing, exists := mc.getPricing(model, provider, requestType)
+	if scopes.Provider == "" {
+		scopes.Provider = provider
+	}
+
+	pricing, exists := mc.getPricingLocked(model, model, provider, requestType, scopes)
 	if exists {
 		return pricing
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricing(deployment, provider, requestType)
+		pricing, exists = mc.getPricingLocked(deployment, model, provider, requestType, scopes)
 		if exists {
 			return pricing
 		}
@@ -765,14 +778,38 @@ func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, reque
 
 // getPricing returns pricing information for a model (thread-safe)
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
+	return mc.getPricingLocked(model, model, provider, requestType, PricingLookupScopes{Provider: provider})
+}
 
+// getPricingLocked acquires a read lock and resolves pricing for a model with scoped overrides.
+func (mc *ModelCatalog) getPricingLocked(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (*configstoreTables.TableModelPricing, bool) {
+	mc.mu.RLock()
+	pricing, ok := mc.resolvePricingEntryLocked(lookupModel, matchModel, provider, requestType, scopes)
+	mc.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return &pricing, true
+}
+
+// resolvePricingEntryLocked resolves pricing data including scoped overrides.
+// Caller must hold mc.mu read lock.
+func (mc *ModelCatalog) resolvePricingEntryLocked(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (configstoreTables.TableModelPricing, bool) {
+	pricing, ok := mc.resolveBasePricingEntryLocked(lookupModel, provider, requestType)
+	if !ok {
+		return configstoreTables.TableModelPricing{}, false
+	}
+	return mc.applyScopedPricingOverrides(matchModel, requestType, pricing, scopes), true
+}
+
+// resolveBasePricingEntryLocked resolves pricing data from the base catalog including all fallback logic.
+// Caller must hold mc.mu read lock.
+func (mc *ModelCatalog) resolveBasePricingEntryLocked(model, provider string, requestType schemas.RequestType) (configstoreTables.TableModelPricing, bool) {
 	mode := normalizeRequestType(requestType)
 
 	pricing, ok := mc.pricingData[makeKey(model, provider, mode)]
 	if ok {
-		return &pricing, true
+		return pricing, true
 	}
 
 	// Lookup in vertex if gemini not found
@@ -780,7 +817,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying vertex provider for the same model")
 		pricing, ok = mc.pricingData[makeKey(model, "vertex", mode)]
 		if ok {
-			return &pricing, true
+			return pricing, true
 		}
 
 		// Lookup in chat if responses not found
@@ -788,7 +825,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 			pricing, ok = mc.pricingData[makeKey(model, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 			if ok {
-				return &pricing, true
+				return pricing, true
 			}
 		}
 	}
@@ -800,7 +837,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("primary lookup failed, trying vertex provider for the same model with provider/model format %s", modelWithoutProvider)
 			pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", mode)]
 			if ok {
-				return &pricing, true
+				return pricing, true
 			}
 
 			// Lookup in chat if responses not found
@@ -808,7 +845,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 				mc.logger.Debug("secondary lookup failed, trying vertex provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey(modelWithoutProvider, "vertex", normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return pricing, true
 				}
 			}
 		}
@@ -820,7 +857,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 			mc.logger.Debug("primary lookup failed, trying with anthropic. prefix for the same model")
 			pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, mode)]
 			if ok {
-				return &pricing, true
+				return pricing, true
 			}
 
 			// Lookup in chat if responses not found
@@ -828,7 +865,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 				mc.logger.Debug("secondary lookup failed, trying chat provider for the same model in chat completion")
 				pricing, ok = mc.pricingData[makeKey("anthropic."+model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 				if ok {
-					return &pricing, true
+					return pricing, true
 				}
 			}
 		}
@@ -839,7 +876,7 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying chat provider for the same model in chat completion")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ChatCompletionRequest))]
 		if ok {
-			return &pricing, true
+			return pricing, true
 		}
 	}
 
@@ -850,9 +887,9 @@ func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.R
 		mc.logger.Debug("primary lookup failed, trying image generation provider for the same model")
 		pricing, ok = mc.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]
 		if ok {
-			return &pricing, true
+			return pricing, true
 		}
 	}
 
-	return nil, false
+	return configstoreTables.TableModelPricing{}, false
 }

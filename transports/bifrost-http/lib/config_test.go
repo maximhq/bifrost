@@ -855,6 +855,26 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
+func (m *MockConfigStore) GetPricingOverrides(ctx context.Context, filter configstore.PricingOverrideFilter) ([]tables.TablePricingOverride, error) {
+	return []tables.TablePricingOverride{}, nil
+}
+
+func (m *MockConfigStore) GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Model parameters
 func (m *MockConfigStore) GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error) {
 	return nil, nil
@@ -12249,13 +12269,13 @@ func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
 	mock := &MockConfigStore{
 		plugins: []*tables.TablePlugin{
 			{
-				Name:      "plugin-a",
-				Enabled:   true,
-				Placement: &postBuiltin,
-				Order:     &order0,
-				Version:   1,
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				Version:    1,
 				ConfigJSON: `{"setting":"db-value"}`,
-				Config:    map[string]any{"setting": "db-value"},
+				Config:     map[string]any{"setting": "db-value"},
 			},
 		},
 	}

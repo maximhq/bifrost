@@ -226,7 +226,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
+	deferredUsageSem      chan struct{}         // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -778,7 +778,14 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		if cost := p.pricingManager.CalculateCost(result); cost > 0 {
+		pricingScopes := modelcatalog.PricingLookupScopes{
+			SelectedKeyID: entry.SelectedKeyID,
+			Provider:      string(entry.Provider),
+		}
+		if entry.VirtualKeyID != nil {
+			pricingScopes.VirtualKeyID = *entry.VirtualKeyID
+		}
+		if cost := p.pricingManager.CalculateCost(result, &pricingScopes); cost > 0 {
 			entry.Cost = &cost
 		}
 	}

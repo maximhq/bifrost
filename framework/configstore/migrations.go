@@ -274,7 +274,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
+	if err := migrationReconcilePricingOverridesTable(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
@@ -373,7 +373,6 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
-					PricingOverrides:         provider.PricingOverrides,
 				}
 				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
 				if provider.SendBackRawRequest || provider.SendBackRawResponse {
@@ -511,6 +510,11 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
+			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
 			if !migrator.HasTable(&tables.TablePlugin{}) {
 				if err := migrator.CreateTable(&tables.TablePlugin{}); err != nil {
 					return err
@@ -566,6 +570,9 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TablePlugin{}); err != nil {
@@ -4042,33 +4049,45 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
-func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
+func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_pricing_overrides_column",
+		ID: "reconcile_pricing_overrides_table",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
-					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+
+			if !mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to create governance_pricing_overrides table: %w", err)
+				}
+				return nil
+			}
+			if err := tx.AutoMigrate(&tables.TablePricingOverride{}); err != nil {
+				return fmt.Errorf("failed to automigrate governance_pricing_overrides table: %w", err)
+			}
+			for _, indexName := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
+				if mgr.HasIndex(&tables.TablePricingOverride{}, indexName) {
+					continue
+				}
+				if err := mgr.CreateIndex(&tables.TablePricingOverride{}, indexName); err != nil {
+					return fmt.Errorf("failed to create pricing override index %s: %w", indexName, err)
 				}
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
-					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to drop governance_pricing_overrides table: %w", err)
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+		return fmt.Errorf("error while running pricing overrides table reconcile migration: %s", err.Error())
 	}
 	return nil
 }

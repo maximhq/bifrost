@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
@@ -955,6 +956,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	usage := logEntry.TokenUsageParsed
 	cacheDebug := logEntry.CacheDebugParsed
+	scopes := pricingScopesForLog(logEntry)
 
 	// If no cache hit and no usage, we can't calculate cost
 	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) {
@@ -1019,7 +1021,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		resp.SpeechResponse.Usage = logEntry.SpeechOutputParsed.Usage
 	}
 
-	return p.pricingManager.CalculateCost(resp), nil
+	return p.pricingManager.CalculateCost(resp, &scopes), nil
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
@@ -1067,18 +1069,18 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
 				}
 			}
-		if usage.CompletionTokensDetails != nil {
-			respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-				TextTokens:               usage.CompletionTokensDetails.TextTokens,
-				AcceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
-				AudioTokens:              usage.CompletionTokensDetails.AudioTokens,
-				ImageTokens:              usage.CompletionTokensDetails.ImageTokens,
-				ReasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
-				RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
-				CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
-				NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+			if usage.CompletionTokensDetails != nil {
+				respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
+					TextTokens:               usage.CompletionTokensDetails.TextTokens,
+					AcceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
+					AudioTokens:              usage.CompletionTokensDetails.AudioTokens,
+					ImageTokens:              usage.CompletionTokensDetails.ImageTokens,
+					ReasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
+					RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
+					CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
+					NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+				}
 			}
-		}
 		}
 		return &schemas.BifrostResponse{
 			ResponsesResponse: &schemas.BifrostResponsesResponse{
@@ -1149,5 +1151,22 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
+	}
+}
+
+func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScopes {
+	if logEntry == nil {
+		return modelcatalog.PricingLookupScopes{}
+	}
+
+	virtualKeyID := ""
+	if logEntry.VirtualKeyID != nil {
+		virtualKeyID = *logEntry.VirtualKeyID
+	}
+
+	return modelcatalog.PricingLookupScopes{
+		Provider:      logEntry.Provider,
+		SelectedKeyID: logEntry.SelectedKeyID,
+		VirtualKeyID:  virtualKeyID,
 	}
 }
