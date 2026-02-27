@@ -381,8 +381,8 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 		return form.providerKeyID || undefined;
 	}, [scopeLock, form.providerKeyID]);
 
-	const validation = useMemo(() => {
-		const errors: FieldErrors = {};
+		const validation = useMemo(() => {
+			const errors: FieldErrors = {};
 		if (!form.name.trim()) {
 			errors.name = "Name is required";
 		}
@@ -397,12 +397,12 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 		if ((resolvedScopeKind === "provider" || resolvedScopeKind === "virtual_key_provider") && !resolvedProviderID) {
 			errors.scope = "Provider is required";
 		}
-		if (
-			(resolvedScopeKind === "provider_key" || resolvedScopeKind === "virtual_key_provider_key") &&
-			(!resolvedProviderID || !resolvedProviderKeyID)
-		) {
-			errors.scope = "Provider and provider key are required";
-		}
+			if (resolvedScopeKind === "provider_key" && !resolvedProviderKeyID) {
+				errors.scope = "Provider key is required";
+			}
+			if (resolvedScopeKind === "virtual_key_provider_key" && (!resolvedProviderID || !resolvedProviderKeyID)) {
+				errors.scope = "Provider and provider key are required";
+			}
 
 		const pError = patternError(form.matchType, form.pattern);
 		if (pError) errors.pattern = pError;
@@ -467,17 +467,44 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 		}));
 	};
 
-	const handleSave = async () => {
-		if (!isFormValid) return;
-		const requestPayload: CreatePricingOverrideRequest = {
-			name: form.name.trim(),
-			scope_kind: resolvedScopeKind,
-			virtual_key_id: resolvedVirtualKeyID,
-			provider_id: resolvedProviderID,
-			provider_key_id: resolvedProviderKeyID,
-			match_type: form.matchType,
-			pattern: form.pattern.trim(),
-			request_types: form.requestTypes.length > 0 ? form.requestTypes : undefined,
+		const handleSave = async () => {
+			if (!isFormValid) return;
+			let scopedVirtualKeyID: string | undefined;
+			let scopedProviderID: string | undefined;
+			let scopedProviderKeyID: string | undefined;
+
+			switch (resolvedScopeKind) {
+				case "global":
+					break;
+				case "provider":
+					scopedProviderID = resolvedProviderID;
+					break;
+				case "provider_key":
+					scopedProviderKeyID = resolvedProviderKeyID;
+					break;
+				case "virtual_key":
+					scopedVirtualKeyID = resolvedVirtualKeyID;
+					break;
+				case "virtual_key_provider":
+					scopedVirtualKeyID = resolvedVirtualKeyID;
+					scopedProviderID = resolvedProviderID;
+					break;
+				case "virtual_key_provider_key":
+					scopedVirtualKeyID = resolvedVirtualKeyID;
+					scopedProviderID = resolvedProviderID;
+					scopedProviderKeyID = resolvedProviderKeyID;
+					break;
+			}
+
+			const requestPayload: CreatePricingOverrideRequest = {
+				name: form.name.trim(),
+				scope_kind: resolvedScopeKind,
+				virtual_key_id: scopedVirtualKeyID,
+				provider_id: scopedProviderID,
+				provider_key_id: scopedProviderKeyID,
+				match_type: form.matchType,
+				pattern: form.pattern.trim(),
+				request_types: form.requestTypes.length > 0 ? form.requestTypes : undefined,
 			patch: validation.patch,
 		};
 

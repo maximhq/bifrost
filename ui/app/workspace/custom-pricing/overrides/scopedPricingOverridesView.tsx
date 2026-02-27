@@ -10,8 +10,8 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
 	getErrorMessage,
@@ -20,12 +20,11 @@ import {
 	useGetProvidersQuery,
 	useGetVirtualKeysQuery,
 } from "@/lib/store";
-import { RequestTypeLabels } from "@/lib/constants/logs";
 import { PricingOverride, PricingOverrideScopeKind } from "@/lib/types/governance";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import PricingOverrideDrawer, { patchSummary } from "./pricingOverrideDrawer";
+import PricingOverrideDrawer from "./pricingOverrideDrawer";
 
 type ScopeFilter = "all" | PricingOverrideScopeKind;
 
@@ -47,24 +46,31 @@ function scopeDisplay(
 	override: PricingOverride,
 	providerMap: Map<string, string>,
 	keyMap: Map<string, string>,
+	keyProviderMap: Map<string, string>,
 	virtualKeyMap: Map<string, string>,
 ): string {
 	const scopeKind = resolveScopeKind(override);
+	const providerLabel = providerMap.get(override.provider_id || "") || override.provider_id || "-";
+	const keyID = override.provider_key_id || "";
+	const keyLabel = keyMap.get(keyID) || keyID || "-";
+	const keyProviderLabel = providerMap.get(keyProviderMap.get(keyID) || "") || keyProviderMap.get(keyID) || "-";
+	const virtualKeyLabel = virtualKeyMap.get(override.virtual_key_id || "") || override.virtual_key_id || "-";
+
 	switch (scopeKind) {
 		case "global":
-			return "Global";
+			return "global";
 		case "provider":
-			return `Provider: ${providerMap.get(override.provider_id || "") || override.provider_id || "-"}`;
+			return providerLabel;
 		case "provider_key":
-			return `Provider key: ${keyMap.get(override.provider_key_id || "") || override.provider_key_id || "-"}`;
+			return `${keyProviderLabel}/${keyLabel}`;
 		case "virtual_key":
-			return `Virtual key: ${virtualKeyMap.get(override.virtual_key_id || "") || override.virtual_key_id || "-"}`;
+			return virtualKeyLabel;
 		case "virtual_key_provider":
-			return `VK+Provider: ${virtualKeyMap.get(override.virtual_key_id || "") || override.virtual_key_id || "-"} / ${providerMap.get(override.provider_id || "") || override.provider_id || "-"}`;
+			return `${virtualKeyLabel}/${providerLabel}`;
 		case "virtual_key_provider_key":
-			return `VK+Provider+Key: ${virtualKeyMap.get(override.virtual_key_id || "") || override.virtual_key_id || "-"} / ${providerMap.get(override.provider_id || "") || override.provider_id || "-"} / ${keyMap.get(override.provider_key_id || "") || override.provider_key_id || "-"}`;
+			return `${virtualKeyLabel}/${providerLabel}/${keyLabel}`;
 		default:
-			return "Global";
+			return "global";
 	}
 }
 
@@ -146,6 +152,10 @@ export default function ScopedPricingOverridesView() {
 		[providers],
 	);
 	const providerKeyMap = useMemo(() => new Map<string, string>(providerKeyOptions.map((key) => [key.id, key.label])), [providerKeyOptions]);
+	const providerKeyProviderMap = useMemo(
+		() => new Map<string, string>(providerKeyOptions.map((key) => [key.id, key.providerName])),
+		[providerKeyOptions],
+	);
 	const virtualKeyMap = useMemo(() => new Map<string, string>(virtualKeys.map((vk) => [vk.id, vk.name])), [virtualKeys]);
 
 	const createScopeLock = useMemo(() => {
@@ -204,8 +214,6 @@ export default function ScopedPricingOverridesView() {
 								<TableHead>Scope</TableHead>
 								<TableHead>Match Type</TableHead>
 								<TableHead>Pattern</TableHead>
-								<TableHead>Request Types</TableHead>
-								<TableHead>Overrides</TableHead>
 								<TableHead className="w-[140px]">Actions</TableHead>
 							</TableRow>
 						</TableHeader>
@@ -213,17 +221,11 @@ export default function ScopedPricingOverridesView() {
 							{rows.map((row) => (
 								<TableRow key={row.id}>
 									<TableCell>{row.name || "-"}</TableCell>
-									<TableCell>{scopeDisplay(row, providerMap, providerKeyMap, virtualKeyMap)}</TableCell>
+									<TableCell>{scopeDisplay(row, providerMap, providerKeyMap, providerKeyProviderMap, virtualKeyMap)}</TableCell>
 									<TableCell>
 										<Badge variant="outline">{row.match_type}</Badge>
 									</TableCell>
 									<TableCell>{row.pattern}</TableCell>
-									<TableCell>
-										{row.request_types && row.request_types.length > 0
-											? row.request_types.map((rt) => RequestTypeLabels[rt as keyof typeof RequestTypeLabels] ?? rt).join(", ")
-											: "All"}
-									</TableCell>
-									<TableCell>{patchSummary(row)}</TableCell>
 									<TableCell>
 										<div className="flex gap-2">
 											<Button size="sm" variant="outline" onClick={() => openEditDrawer(row)}>
