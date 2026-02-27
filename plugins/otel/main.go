@@ -189,15 +189,15 @@ func ValidateConfig(config *Config) (*Config, error) {
 			return nil, fmt.Errorf("prometheus registry is not provided")
 		}
 		if config.MetricsEndpoint == "" {
-			return nil, fmt.Errorf("OTEL metrics collector endpoint is required")
+			return nil, fmt.Errorf("otel metrics collector endpoint is required")
 		}
 		// Some defaults
-		if config.MetricsPushInterval == 0 {
+		if config.MetricsPushInterval <= 0 {
 			config.MetricsPushInterval = 15 // default 15 seconds
 		} else if config.MetricsPushInterval > 300 {
 			return nil, fmt.Errorf("metrics_push_interval must be between 1 and 300 seconds, got %d", config.MetricsPushInterval)
 		}
-		if config.MetricsExporterTimeout == 0 {
+		if config.MetricsExporterTimeout <= 0 {
 			config.MetricsExporterTimeout = 10 // default 10 seconds
 		} else if config.MetricsExporterTimeout > 60 {
 			return nil, fmt.Errorf("metrics_exporter_timeout must be between 1 and 60 seconds, got %d", config.MetricsExporterTimeout)

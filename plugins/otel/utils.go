@@ -19,7 +19,7 @@ func createTLSConfig(caCertPath string, insecure bool) (*tls.Config, error) {
 	if caCertPath != "" {
 		// Validate the CA cert path to prevent path traversal attacks
 		if err := validateCACertPath(caCertPath); err != nil {
-			return nil, errors.Wrap(err, "CA cert path validation fails")
+			return nil, errors.Wrap(err, "ca cert path validation fails")
 		}
 		caCert, err := os.ReadFile(caCertPath)
 		if err != nil {
@@ -90,9 +90,9 @@ func validateCACertPath(certPath string) error {
 func resolveEnvHeaders(headers map[string]string) error {
 	for key, value := range headers {
 		if envVar, ok := strings.CutPrefix(value, "env."); ok {
-			resolved, exists := os.LookupEnv(envVar)
-			if !exists {
-				return fmt.Errorf("environment variable %s not found", envVar)
+			resolved := os.Getenv(envVar)
+			if strings.TrimSpace(resolved) == "" {
+				return fmt.Errorf("environment variable %s is empty or not set", envVar)
 			}
 			headers[key] = resolved
 		}
