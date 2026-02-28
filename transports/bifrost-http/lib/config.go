@@ -1766,27 +1766,86 @@ func buildMCPPricingDataFromFile(ctx context.Context, configData *ConfigData) mc
 	return mcpPricingData
 }
 
+// ResolveFrameworkPricingConfig resolves framework pricing configuration with precedence:
+// database > file > defaults. It also returns whether DB backfill is needed.
+func ResolveFrameworkPricingConfig(
+	dbConfig *configstoreTables.TableFrameworkConfig,
+	fileConfig *framework.FrameworkConfig,
+) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
+	defaultPricingURL := modelcatalog.DefaultPricingURL
+	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+
+	filePricingURL := (*string)(nil)
+	fileSyncSeconds := (*int64)(nil)
+	if fileConfig != nil && fileConfig.Pricing != nil {
+		if fileConfig.Pricing.PricingURL != nil {
+			filePricingURL = fileConfig.Pricing.PricingURL
+		}
+		if fileConfig.Pricing.PricingSyncInterval != nil && *fileConfig.Pricing.PricingSyncInterval > 0 {
+			secs := int64((*fileConfig.Pricing.PricingSyncInterval).Seconds())
+			fileSyncSeconds = &secs
+		}
+	}
+
+	resolvedPricingURL := &defaultPricingURL
+	resolvedSyncSeconds := &defaultSyncSeconds
+
+	if filePricingURL != nil {
+		resolvedPricingURL = filePricingURL
+	}
+	if fileSyncSeconds != nil {
+		resolvedSyncSeconds = fileSyncSeconds
+	}
+
+	needsDBUpdate := false
+	configID := uint(0)
+	if dbConfig != nil {
+		configID = dbConfig.ID
+		if dbConfig.PricingURL != nil {
+			resolvedPricingURL = dbConfig.PricingURL
+		} else {
+			needsDBUpdate = true
+		}
+		if dbConfig.PricingSyncInterval != nil && *dbConfig.PricingSyncInterval > 0 {
+			resolvedSyncSeconds = dbConfig.PricingSyncInterval
+		} else {
+			needsDBUpdate = true
+		}
+	}
+
+	syncDuration := time.Duration(*resolvedSyncSeconds) * time.Second
+
+	return &configstoreTables.TableFrameworkConfig{
+		ID:                  configID,
+		PricingURL:          resolvedPricingURL,
+		PricingSyncInterval: resolvedSyncSeconds,
+	}, &modelcatalog.Config{
+		PricingURL:          resolvedPricingURL,
+		PricingSyncInterval: &syncDuration,
+	}, needsDBUpdate
+}
+
 // initFrameworkConfigFromFile initializes framework config and pricing manager from file
 func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
-	pricingConfig := &modelcatalog.Config{}
 	mcpPricingConfig := &mcpcatalog.Config{}
+	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
 		frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get framework config from store: %v", err)
 		}
-		if frameworkConfig != nil && frameworkConfig.PricingURL != nil {
-			pricingConfig.PricingURL = frameworkConfig.PricingURL
-		}
-		if frameworkConfig != nil && frameworkConfig.PricingSyncInterval != nil {
-			syncDuration := time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
-			pricingConfig.PricingSyncInterval = &syncDuration
-		}
+		frameworkConfigFromDB = frameworkConfig
 		mcpPricingConfig.PricingData = buildMCPPricingDataFromStore(ctx, config.ConfigStore)
-	} else if configData.FrameworkConfig != nil && configData.FrameworkConfig.Pricing != nil {
-		pricingConfig.PricingURL = configData.FrameworkConfig.Pricing.PricingURL
-		syncDuration := time.Duration(*configData.FrameworkConfig.Pricing.PricingSyncInterval) * time.Second
-		pricingConfig.PricingSyncInterval = &syncDuration
+	}
+	var fileFrameworkConfig *framework.FrameworkConfig
+	if configData != nil {
+		fileFrameworkConfig = configData.FrameworkConfig
+	}
+	normalizedFrameworkConfig, pricingConfig, needsFrameworkBackfill := ResolveFrameworkPricingConfig(frameworkConfigFromDB, fileFrameworkConfig)
+	if config.ConfigStore != nil && (frameworkConfigFromDB == nil || needsFrameworkBackfill) {
+		if err := config.ConfigStore.UpdateFrameworkConfig(ctx, normalizedFrameworkConfig); err != nil {
+			logger.Warn("failed to normalize framework config in store: %v", err)
+		}
 	}
 
 	// Initialize OAuth provider
