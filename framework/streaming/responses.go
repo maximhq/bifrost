@@ -515,9 +515,20 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			if resp.Item != nil {
 				messages = append(messages, deepCopyResponsesMessage(*resp.Item))
 			}
-			// Append arguments to the most recent message
+			// Route arguments delta to the correct function call message by ItemID,
+			// falling back to last message if no ItemID is present.
+			// This prevents parallel tool call argument deltas from merging into a single call.
 			if resp.Delta != nil && len(messages) > 0 {
-				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta)
+				targetIdx := len(messages) - 1
+				if resp.ItemID != nil {
+					for i := len(messages) - 1; i >= 0; i-- {
+						if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
+							targetIdx = i
+							break
+						}
+					}
+				}
+				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[targetIdx], *resp.Delta)
 			}
 
 		case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:

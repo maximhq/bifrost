@@ -1,3 +1,4 @@
+- fix: route parallel tool call argument deltas by id/index to prevent argument merging during streaming
 - feat: add count tokens support for bedrock
 - feat: add async rerank support
 - fix: count tokens route fixed to match openai schema
