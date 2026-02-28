@@ -612,7 +612,6 @@ export class ProvidersPage extends BasePage {
     const tab = this.page.getByRole('tab', { name: 'Governance' })
     return await tab.isVisible().catch(() => false)
   }
-}
 
   // ============================================
   // Pricing Configuration (Pricing Overrides)
