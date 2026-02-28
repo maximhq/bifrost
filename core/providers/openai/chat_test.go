@@ -323,6 +323,7 @@ func TestApplyReasoningMessageCompatibility(t *testing.T) {
 		request            *OpenAIChatRequest
 		expectReasoning    *string
 		expectReasoningRaw *string
+		expectDetailsLen   int
 	}{
 		{
 			name:  "fireworks model remaps reasoning to reasoning_content",
@@ -333,12 +334,20 @@ func TestApplyReasoningMessageCompatibility(t *testing.T) {
 						Role: schemas.ChatMessageRoleAssistant,
 						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
 							Reasoning: schemas.Ptr("internal trace"),
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{
+									Index: 0,
+									Type:  schemas.BifrostReasoningDetailsTypeText,
+									Text:  schemas.Ptr("internal trace"),
+								},
+							},
 						},
 					},
 				},
 			},
 			expectReasoning:    nil,
 			expectReasoningRaw: schemas.Ptr("internal trace"),
+			expectDetailsLen:   0,
 		},
 		{
 			name:  "fireworks model preserves explicit reasoning_content",
@@ -350,12 +359,20 @@ func TestApplyReasoningMessageCompatibility(t *testing.T) {
 						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
 							Reasoning:        schemas.Ptr("normalized"),
 							ReasoningContent: schemas.Ptr("raw provider content"),
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{
+									Index: 0,
+									Type:  schemas.BifrostReasoningDetailsTypeText,
+									Text:  schemas.Ptr("normalized"),
+								},
+							},
 						},
 					},
 				},
 			},
 			expectReasoning:    nil,
 			expectReasoningRaw: schemas.Ptr("raw provider content"),
+			expectDetailsLen:   0,
 		},
 		{
 			name:  "non-fireworks model keeps reasoning field",
@@ -366,12 +383,20 @@ func TestApplyReasoningMessageCompatibility(t *testing.T) {
 						Role: schemas.ChatMessageRoleAssistant,
 						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
 							Reasoning: schemas.Ptr("internal trace"),
+							ReasoningDetails: []schemas.ChatReasoningDetails{
+								{
+									Index: 0,
+									Type:  schemas.BifrostReasoningDetailsTypeText,
+									Text:  schemas.Ptr("internal trace"),
+								},
+							},
 						},
 					},
 				},
 			},
 			expectReasoning:    schemas.Ptr("internal trace"),
 			expectReasoningRaw: nil,
+			expectDetailsLen:   1,
 		},
 	}
 
@@ -397,6 +422,10 @@ func TestApplyReasoningMessageCompatibility(t *testing.T) {
 				}
 			} else if assistant.ReasoningContent == nil || *assistant.ReasoningContent != *tt.expectReasoningRaw {
 				t.Fatalf("Expected reasoning_content %q, got %+v", *tt.expectReasoningRaw, assistant.ReasoningContent)
+			}
+
+			if len(assistant.ReasoningDetails) != tt.expectDetailsLen {
+				t.Fatalf("Expected reasoning_details length %d, got %d", tt.expectDetailsLen, len(assistant.ReasoningDetails))
 			}
 		})
 	}

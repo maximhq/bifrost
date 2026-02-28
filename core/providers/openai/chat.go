@@ -96,6 +96,10 @@ func (req *OpenAIChatRequest) applyReasoningMessageCompatibility(model string) {
 		if assistant.ReasoningContent != nil {
 			assistant.Reasoning = nil
 		}
+		// Fireworks/Kimi currently rejects reasoning_details in assistant history payloads.
+		if len(assistant.ReasoningDetails) > 0 {
+			assistant.ReasoningDetails = nil
+		}
 	}
 }
 
