@@ -315,3 +315,89 @@ func TestApplyXAICompatibility(t *testing.T) {
 		})
 	}
 }
+
+func TestApplyReasoningMessageCompatibility(t *testing.T) {
+	tests := []struct {
+		name               string
+		model              string
+		request            *OpenAIChatRequest
+		expectReasoning    *string
+		expectReasoningRaw *string
+	}{
+		{
+			name:  "fireworks model remaps reasoning to reasoning_content",
+			model: "accounts/fireworks/models/kimi-k2p5",
+			request: &OpenAIChatRequest{
+				Messages: []OpenAIMessage{
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
+							Reasoning: schemas.Ptr("internal trace"),
+						},
+					},
+				},
+			},
+			expectReasoning:    nil,
+			expectReasoningRaw: schemas.Ptr("internal trace"),
+		},
+		{
+			name:  "fireworks model preserves explicit reasoning_content",
+			model: "accounts/fireworks/models/kimi-k2p5",
+			request: &OpenAIChatRequest{
+				Messages: []OpenAIMessage{
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
+							Reasoning:        schemas.Ptr("normalized"),
+							ReasoningContent: schemas.Ptr("raw provider content"),
+						},
+					},
+				},
+			},
+			expectReasoning:    nil,
+			expectReasoningRaw: schemas.Ptr("raw provider content"),
+		},
+		{
+			name:  "non-fireworks model keeps reasoning field",
+			model: "gpt-4o",
+			request: &OpenAIChatRequest{
+				Messages: []OpenAIMessage{
+					{
+						Role: schemas.ChatMessageRoleAssistant,
+						OpenAIChatAssistantMessage: &OpenAIChatAssistantMessage{
+							Reasoning: schemas.Ptr("internal trace"),
+						},
+					},
+				},
+			},
+			expectReasoning:    schemas.Ptr("internal trace"),
+			expectReasoningRaw: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.request.applyReasoningMessageCompatibility(tt.model)
+			assistant := tt.request.Messages[0].OpenAIChatAssistantMessage
+			if assistant == nil {
+				t.Fatal("Expected assistant message")
+			}
+
+			if tt.expectReasoning == nil {
+				if assistant.Reasoning != nil {
+					t.Fatalf("Expected reasoning to be nil, got %q", *assistant.Reasoning)
+				}
+			} else if assistant.Reasoning == nil || *assistant.Reasoning != *tt.expectReasoning {
+				t.Fatalf("Expected reasoning %q, got %+v", *tt.expectReasoning, assistant.Reasoning)
+			}
+
+			if tt.expectReasoningRaw == nil {
+				if assistant.ReasoningContent != nil {
+					t.Fatalf("Expected reasoning_content to be nil, got %q", *assistant.ReasoningContent)
+				}
+			} else if assistant.ReasoningContent == nil || *assistant.ReasoningContent != *tt.expectReasoningRaw {
+				t.Fatalf("Expected reasoning_content %q, got %+v", *tt.expectReasoningRaw, assistant.ReasoningContent)
+			}
+		})
+	}
+}

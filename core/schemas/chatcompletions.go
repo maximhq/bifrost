@@ -627,7 +627,7 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	// Only set if any field is populated
-	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil ||
+	if assistantMsg.Refusal != nil || assistantMsg.Reasoning != nil || assistantMsg.ReasoningContent != nil ||
 		len(assistantMsg.ReasoningDetails) > 0 || len(assistantMsg.Annotations) > 0 ||
 		len(assistantMsg.ToolCalls) > 0 || assistantMsg.Audio != nil {
 		cm.ChatAssistantMessage = &assistantMsg
@@ -770,6 +770,7 @@ type ChatAssistantMessage struct {
 	Refusal          *string                          `json:"refusal,omitempty"`
 	Audio            *ChatAudioMessageAudio           `json:"audio,omitempty"`
 	Reasoning        *string                          `json:"reasoning,omitempty"`
+	ReasoningContent *string                          `json:"reasoning_content,omitempty"` // OpenAI-compatible alias used by providers like xAI/Fireworks
 	ReasoningDetails []ChatReasoningDetails           `json:"reasoning_details,omitempty"`
 	Annotations      []ChatAssistantMessageAnnotation `json:"annotations,omitempty"`
 	ToolCalls        []ChatAssistantMessageToolCall   `json:"tool_calls,omitempty"`
@@ -786,23 +787,18 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	// Alias to avoid infinite recursion
 	type Alias ChatAssistantMessage
 
-	// Auxiliary struct to capture xAI's reasoning_content field
-	var aux struct {
-		Alias
-		ReasoningContent *string `json:"reasoning_content,omitempty"` // xAI uses this field name
-	}
-
+	var aux Alias
 	if err := Unmarshal(data, &aux); err != nil {
 		return err
 	}
 
 	// Copy decoded data back into the original type
-	*cm = ChatAssistantMessage(aux.Alias)
+	*cm = ChatAssistantMessage(aux)
 
-	// Map xAI's reasoning_content to Bifrost's Reasoning field
-	// This allows both OpenAI's "reasoning" and xAI's "reasoning_content" to work
-	if aux.ReasoningContent != nil && cm.Reasoning == nil {
-		cm.Reasoning = aux.ReasoningContent
+	// Normalize reasoning_content into Reasoning for internal compatibility.
+	// Keep ReasoningContent as-is so request forwarding can preserve the original field name.
+	if cm.Reasoning == nil && cm.ReasoningContent != nil {
+		cm.Reasoning = cm.ReasoningContent
 	}
 
 	// If Reasoning is present and there are no reasoning_details,
