@@ -516,16 +516,26 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 				messages = append(messages, deepCopyResponsesMessage(*resp.Item))
 			}
 			// Route arguments delta to the correct function call message by ItemID,
-			// falling back to last message if no ItemID is present.
-			// This prevents parallel tool call argument deltas from merging into a single call.
+			// falling back to last message only when no ItemID is present.
+			// If ItemID is present but unmatched, create a new stub message to avoid
+			// merging parallel tool call argument deltas into the wrong call.
 			if resp.Delta != nil && len(messages) > 0 {
 				targetIdx := len(messages) - 1
 				if resp.ItemID != nil {
+					targetIdx = -1
 					for i := len(messages) - 1; i >= 0; i-- {
 						if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
 							targetIdx = i
 							break
 						}
+					}
+					if targetIdx == -1 {
+						// ItemID present but no matching message — create a stub to hold the delta
+						id := *resp.ItemID
+						messages = append(messages, schemas.ResponsesMessage{
+							ID: &id,
+						})
+						targetIdx = len(messages) - 1
 					}
 				}
 				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[targetIdx], *resp.Delta)
