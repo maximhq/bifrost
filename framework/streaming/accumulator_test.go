@@ -263,6 +263,85 @@ func TestGetLastChunkMethodsSafe(t *testing.T) {
 	}
 }
 
+func TestAccumulateToolCallsInterleavedParallel(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	message := &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+	}
+
+	makeDelta := func(index uint16, id *string, name *string, args string) schemas.ChatAssistantMessageToolCall {
+		return schemas.ChatAssistantMessageToolCall{
+			Index: index,
+			ID:    id,
+			Type:  schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      name,
+				Arguments: args,
+			},
+		}
+	}
+
+	toolCallID0 := "call_0"
+	toolCallID1 := "call_1"
+	toolNameAdd := "add"
+	toolNameMultiply := "multiply"
+
+	// Interleaved deltas for parallel tool calls
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, &toolCallID0, &toolNameAdd, ""),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, &toolCallID1, &toolNameMultiply, ""),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, nil, nil, "{\"a\": 1"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, nil, nil, "{\"a\": 2"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, nil, nil, ", \"b\": 3}"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, nil, nil, ", \"b\": 4}"),
+	})
+
+	if message.ChatAssistantMessage == nil {
+		t.Fatal("expected ChatAssistantMessage to be initialized")
+	}
+
+	toolCalls := message.ChatAssistantMessage.ToolCalls
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(toolCalls))
+	}
+
+	var addCall *schemas.ChatAssistantMessageToolCall
+	var multiplyCall *schemas.ChatAssistantMessageToolCall
+	for i := range toolCalls {
+		if toolCalls[i].Function.Name != nil {
+			switch *toolCalls[i].Function.Name {
+			case "add":
+				addCall = &toolCalls[i]
+			case "multiply":
+				multiplyCall = &toolCalls[i]
+			}
+		}
+	}
+
+	if addCall == nil || multiplyCall == nil {
+		t.Fatalf("expected both add and multiply tool calls, got add=%v multiply=%v", addCall != nil, multiplyCall != nil)
+	}
+
+	if addCall.Function.Arguments != "{\"a\": 1, \"b\": 3}" {
+		t.Fatalf("unexpected add arguments: %s", addCall.Function.Arguments)
+	}
+	if multiplyCall.Function.Arguments != "{\"a\": 2, \"b\": 4}" {
+		t.Fatalf("unexpected multiply arguments: %s", multiplyCall.Function.Arguments)
+	}
+}
+
 // TestAudioStreamingFinalChunkNoDeadlock tests that audio streaming doesn't deadlock on final chunk
 func TestAudioStreamingFinalChunkNoDeadlock(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
