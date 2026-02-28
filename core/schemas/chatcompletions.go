@@ -866,7 +866,7 @@ type ChatAudioMessageAudio struct {
 type BifrostResponseChoice struct {
 	Index        int              `json:"index"`
 	FinishReason *string          `json:"finish_reason,omitempty"`
-	LogProbs     *BifrostLogProbs `json:"log_probs,omitempty"`
+	LogProbs     *BifrostLogProbs `json:"logprobs,omitempty"`
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice
