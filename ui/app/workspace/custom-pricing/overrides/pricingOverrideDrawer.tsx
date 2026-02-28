@@ -259,6 +259,7 @@ export function renderFields(
 	form: FormState,
 	setForm: Dispatch<SetStateAction<FormState>>,
 	errors: FieldErrors,
+	onFieldChange?: () => void,
 ) {
 	return (
 		<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -271,12 +272,13 @@ export function renderFields(
 							inputMode="decimal"
 							className={cn(form.pricingValues[field.key]?.trim() && "ring-primary/40 ring-1")}
 						value={form.pricingValues[field.key] ?? ""}
-						onChange={(e) =>
+						onChange={(e) => {
+							onFieldChange?.();
 							setForm((prev) => ({
 								...prev,
 								pricingValues: { ...prev.pricingValues, [field.key]: e.target.value },
-							}))
-						}
+							}));
+						}}
 					/>
 					{errors[field.key] && <p className="text-destructive text-xs">{errors[field.key]}</p>}
 				</div>
@@ -330,7 +332,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 	const [patchOverride, { isLoading: isPatching }] = usePatchPricingOverrideMutation();
 
 	const [form, setForm] = useState<FormState>(defaultFormState);
-	const [jsonPatch, setJSONPatch] = useState("{}");
+	const [jsonPatch, setJSONPatch] = useState("");
 	const [jsonError, setJSONError] = useState<string>();
 	const jsonEditingRef = useRef(false);
 	const [requestTypePopoverOpen, setRequestTypePopoverOpen] = useState(false);
@@ -438,7 +440,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 
 	useEffect(() => {
 		if (!jsonEditingRef.current) {
-			const json = Object.keys(validation.patch).length > 0 ? JSON.stringify(validation.patch, null, 2) : "{}";
+			const json = Object.keys(validation.patch).length > 0 ? JSON.stringify(validation.patch, null, 2) : "";
 			setJSONPatch(json);
 			setJSONError(undefined);
 		}
@@ -447,8 +449,14 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 	const handleJSONChange = useCallback((value: string) => {
 		jsonEditingRef.current = true;
 		setJSONPatch(value);
+		const trimmed = value.trim();
+		if (!trimmed) {
+			setJSONError(undefined);
+			setForm((prev) => ({ ...prev, pricingValues: {} }));
+			return;
+		}
 		try {
-			const parsed = JSON.parse(value || "{}");
+			const parsed = JSON.parse(trimmed);
 			if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) {
 				setJSONError("Patch must be a JSON object");
 				return;
@@ -467,10 +475,13 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 			}
 			setJSONError(undefined);
 			setForm((prev) => ({ ...prev, pricingValues }));
-			jsonEditingRef.current = false;
 		} catch {
 			setJSONError("Invalid JSON");
 		}
+	}, []);
+
+	const handleFieldChange = useCallback(() => {
+		jsonEditingRef.current = false;
 	}, []);
 
 	const isFormValid = Object.keys(validation.errors).length === 0 && !jsonError;
@@ -796,7 +807,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 										)}
 									</span>
 								</AccordionTrigger>
-								<AccordionContent>{renderFields(tokenFields, form, setForm, validation.errors)}</AccordionContent>
+								<AccordionContent>{renderFields(tokenFields, form, setForm, validation.errors, handleFieldChange)}</AccordionContent>
 							</AccordionItem>
 							<AccordionItem value="cache">
 								<AccordionTrigger>
@@ -809,7 +820,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 										)}
 									</span>
 								</AccordionTrigger>
-								<AccordionContent>{renderFields(advancedSections.cache, form, setForm, validation.errors)}</AccordionContent>
+								<AccordionContent>{renderFields(advancedSections.cache, form, setForm, validation.errors, handleFieldChange)}</AccordionContent>
 							</AccordionItem>
 							<AccordionItem value="image">
 								<AccordionTrigger>
@@ -822,7 +833,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 										)}
 									</span>
 								</AccordionTrigger>
-								<AccordionContent>{renderFields(advancedSections.image, form, setForm, validation.errors)}</AccordionContent>
+								<AccordionContent>{renderFields(advancedSections.image, form, setForm, validation.errors, handleFieldChange)}</AccordionContent>
 							</AccordionItem>
 							<AccordionItem value="audio-video">
 								<AccordionTrigger>
@@ -835,7 +846,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 										)}
 									</span>
 								</AccordionTrigger>
-								<AccordionContent>{renderFields(advancedSections.av, form, setForm, validation.errors)}</AccordionContent>
+								<AccordionContent>{renderFields(advancedSections.av, form, setForm, validation.errors, handleFieldChange)}</AccordionContent>
 							</AccordionItem>
 							<AccordionItem value="other">
 								<AccordionTrigger>
@@ -848,7 +859,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 										)}
 									</span>
 								</AccordionTrigger>
-								<AccordionContent>{renderFields(advancedSections.other, form, setForm, validation.errors)}</AccordionContent>
+								<AccordionContent>{renderFields(advancedSections.other, form, setForm, validation.errors, handleFieldChange)}</AccordionContent>
 							</AccordionItem>
 						</Accordion>
 						{validation.errors.patch && <p className="text-destructive text-xs">{validation.errors.patch}</p>}
