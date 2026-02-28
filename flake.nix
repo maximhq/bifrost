@@ -34,6 +34,10 @@
         );
     in
     {
+      nixosModules = {
+        bifrost = import ./nix/modules/bifrost.nix;
+      };
+
       packages = forEachSupportedSystem (
         {
           pkgs,
