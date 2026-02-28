@@ -1,2 +1,3 @@
+- fix: preserve assistant reasoning_content passthrough for openai-compatible chat history
 - fix: filter openrouter list models response based on allowed models on key
 - feat: add count tokens support for bedrock
