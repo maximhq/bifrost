@@ -624,27 +624,6 @@ test.describe('Pricing Overrides', () => {
     await providersPage.selectProvider('openai')
   })
 
-  // Helper: Get pricing JSON input
-  function getPricingJsonInput(providersPage: typeof ProvidersPage.prototype) {
-    return providersPage.page.getByTestId('provider-pricing-overrides-json-input')
-  }
-
-  // Helper: Set pricing overrides JSON
-  async function setPricingOverridesJson(providersPage: typeof ProvidersPage.prototype, json: string): Promise<void> {
-    const input = getPricingJsonInput(providersPage)
-    await input.click()
-    await input.fill('')
-    await input.fill(json)
-    await input.blur()
-  }
-
-  // Helper: Save pricing configuration
-  async function savePricingConfig(providersPage: typeof ProvidersPage.prototype): Promise<void> {
-    const saveBtn = providersPage.getConfigSaveBtn('pricing')
-    await saveBtn.click()
-    await providersPage.waitForSuccessToast()
-  }
-
   test('should display pricing tab', async ({ providersPage }) => {
     await providersPage.openConfigSheet()
     const tab = providersPage.page.getByRole('tab', { name: 'Pricing' })
@@ -655,12 +634,12 @@ test.describe('Pricing Overrides', () => {
     await providersPage.selectConfigTab('pricing')
 
     // Verify JSON textarea is visible
-    const jsonInput = getPricingJsonInput(providersPage)
+    const jsonInput = providersPage.getPricingJsonInput()
     await expect(jsonInput).toBeVisible()
 
     // Verify save and reset buttons are visible
-    const saveBtn = providersPage.page.getByTestId('provider-pricing-overrides-save-button')
-    const resetBtn = providersPage.page.getByTestId('provider-pricing-overrides-reset-button')
+    const saveBtn = providersPage.getPricingSaveBtn()
+    const resetBtn = providersPage.getPricingResetBtn()
     await expect(saveBtn).toBeVisible()
     await expect(resetBtn).toBeVisible()
   })
@@ -679,28 +658,28 @@ test.describe('Pricing Overrides', () => {
       },
     ], null, 2)
 
-    await setPricingOverridesJson(providersPage, validPricingJson)
+    await providersPage.setPricingOverridesJson(validPricingJson)
 
     // Save and verify success toast
-    await savePricingConfig(providersPage)
+    await providersPage.savePricingConfig()
 
     // Cleanup: Reset to empty array
-    await setPricingOverridesJson(providersPage, '[]')
-    await savePricingConfig(providersPage)
+    await providersPage.setPricingOverridesJson('[]')
+    await providersPage.savePricingConfig()
   })
 
   test('should validate invalid JSON format', async ({ providersPage }) => {
     await providersPage.selectConfigTab('pricing')
 
     // Fill textarea with invalid JSON
-    await setPricingOverridesJson(providersPage, '{invalid json syntax}')
+    await providersPage.setPricingOverridesJson('{invalid json syntax}')
 
     // Verify validation error appears (FormMessage shows error)
     const errorMessage = providersPage.page.getByText('Invalid JSON format or pricing overrides structure')
     await expect(errorMessage).toBeVisible()
 
     // Verify save button is disabled when invalid
-    const saveBtn = providersPage.page.getByTestId('provider-pricing-overrides-save-button')
+    const saveBtn = providersPage.getPricingSaveBtn()
     await expect(saveBtn).toBeDisabled()
   })
 
@@ -715,14 +694,14 @@ test.describe('Pricing Overrides', () => {
       },
     ], null, 2)
 
-    await setPricingOverridesJson(providersPage, invalidStructureJson)
+    await providersPage.setPricingOverridesJson(invalidStructureJson)
 
     // Verify validation error about invalid structure appears
     const errorMessage = providersPage.page.getByText('Invalid JSON format or pricing overrides structure')
     await expect(errorMessage).toBeVisible()
 
     // Verify save button is disabled when invalid
-    const saveBtn = providersPage.page.getByTestId('provider-pricing-overrides-save-button')
+    const saveBtn = providersPage.getPricingSaveBtn()
     await expect(saveBtn).toBeDisabled()
   })
 
@@ -740,21 +719,21 @@ test.describe('Pricing Overrides', () => {
 
     // First, save the pricing override
     await providersPage.selectConfigTab('pricing')
-    await setPricingOverridesJson(providersPage, pricingJson)
-    await savePricingConfig(providersPage)
+    await providersPage.setPricingOverridesJson(pricingJson)
+    await providersPage.savePricingConfig()
 
     // Reopen config sheet and select pricing tab
     await providersPage.selectConfigTab('pricing')
 
     // Verify the previously saved JSON is still present
-    const jsonInput = getPricingJsonInput(providersPage)
+    const jsonInput = providersPage.getPricingJsonInput()
     const savedValue = await jsonInput.inputValue()
     const savedJson = JSON.parse(savedValue)
     expect(savedJson).toEqual(pricingOverride)
 
     // Cleanup: Reset to empty array
-    await setPricingOverridesJson(providersPage, '[]')
-    await savePricingConfig(providersPage)
+    await providersPage.setPricingOverridesJson('[]')
+    await providersPage.savePricingConfig()
   })
 })
 
