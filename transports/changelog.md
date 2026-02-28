@@ -5,3 +5,4 @@
     **Breaking change.** The count tokens route has moved from `/v1/count_tokens` to `/v1/responses/input_tokens`, and the request body field has been renamed from incorrect `messages` to `input`. Please update your clients accordingly.
   </Warning>
 - fix: added missing routing logic for bedrock integration
+- fix: nil properties in tool function parameters handled
