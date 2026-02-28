@@ -67,6 +67,7 @@ export function PricingOverridesFormFragment({ provider }: PricingOverridesFormF
 		try {
 			await updateProvider({
 				...provider,
+				pricing_overrides: validated.data,
 			}).unwrap();
 			toast.success("Pricing overrides updated successfully");
 			setOverridesJSON(toPrettyJSON(validated.data));
