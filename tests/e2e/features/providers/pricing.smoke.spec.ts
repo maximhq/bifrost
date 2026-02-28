@@ -94,6 +94,10 @@ test.describe('Pricing Overrides Smoke Tests', () => {
     await providersPage.setPricingOverridesJson(pricingOverride)
     await providersPage.savePricingConfig()
 
+    // Close the config sheet by pressing Escape
+    await providersPage.page.keyboard.press('Escape')
+    await providersPage.page.waitForTimeout(300)
+
     // Navigate away to another provider
     await providersPage.selectProvider('anthropic')
     await providersPage.page.waitForTimeout(500)
