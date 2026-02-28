@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/url"
 	"slices"
 	"sort"
 	"strings"
@@ -200,12 +201,12 @@ func Init(
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:           ctx,
-		cancelFunc:    cancelFunc,
-		store:         governanceStore,
-		resolver:      resolver,
-		tracker:       tracker,
-		engine:        engine,
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
+		store:           governanceStore,
+		resolver:        resolver,
+		tracker:         tracker,
+		engine:          engine,
 		configStore:     configStore,
 		modelCatalog:    modelCatalog,
 		mcpCatalog:      mcpCatalog,
@@ -423,10 +424,24 @@ func (p *GovernancePlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostCont
 func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, error) {
 	// Check if the request has a model field
 	modelValue, hasModel := body["model"]
+	isGeminiPath := strings.Contains(req.Path, "/genai")
+	isBedrockPath := strings.Contains(req.Path, "/bedrock")
 	if !hasModel {
 		// For genai integration, model is present in URL path instead of the request body
-		if strings.Contains(req.Path, "/genai") {
+		if isGeminiPath {
 			modelValue = req.CaseInsensitivePathParamLookup("model")
+		} else if isBedrockPath {
+			// For bedrock integration, model is present in URL path as modelId
+			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+			if rawModelID == "" {
+				return body, nil
+			}
+			// URL-decode the modelId (Bedrock model IDs may be URL-encoded, e.g. anthropic%2Fclaude-3-5-sonnet)
+			decoded, err := url.PathUnescape(rawModelID)
+			if err != nil {
+				decoded = rawModelID
+			}
+			modelValue = decoded
 		} else {
 			return body, nil
 		}
@@ -437,7 +452,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	}
 	var genaiRequestSuffix string
 	// Remove Google GenAI API endpoint suffixes if present
-	if strings.Contains(req.Path, "/genai") {
+	if isGeminiPath {
 		for _, sfx := range gemini.GeminiRequestSuffixPaths {
 			if before, ok := strings.CutSuffix(modelStr, sfx); ok {
 				modelStr = before
@@ -550,9 +565,12 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 	ctx.AppendRoutingEngineLog(schemas.RoutingEngineGovernance, fmt.Sprintf("Selected provider %s for model %s (from %d eligible: %v)", selectedProvider, modelStr, len(allowedProviderConfigs), allowedProviders))
 
 	// For genai integration, model is present in URL path instead of the request body
-	if strings.Contains(req.Path, "/genai") {
+	if isGeminiPath {
 		newModelWithRequestSuffix := string(selectedProvider) + "/" + modelStr + genaiRequestSuffix
 		ctx.SetValue("model", newModelWithRequestSuffix)
+	} else if isBedrockPath {
+		// For bedrock integration, model is present in URL path as modelId
+		ctx.SetValue("modelId", string(selectedProvider)+"/"+modelStr)
 	} else {
 		var err error
 		refinedModel := modelStr
@@ -618,10 +636,24 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, body map[string]any, virtualKey *configstoreTables.TableVirtualKey) (map[string]any, *RoutingDecision, error) {
 	// Check if the request has a model field
 	modelValue, hasModel := body["model"]
+	isGeminiPath := strings.Contains(req.Path, "/genai")
+	isBedrockPath := strings.Contains(req.Path, "/bedrock")
 	if !hasModel {
 		// For genai integration, model is present in URL path
-		if strings.Contains(req.Path, "/genai") {
+		if isGeminiPath {
 			modelValue = req.CaseInsensitivePathParamLookup("model")
+		} else if isBedrockPath {
+			// For bedrock integration, model is present in URL path as modelId
+			rawModelID := req.CaseInsensitivePathParamLookup("modelId")
+			if rawModelID == "" {
+				return body, nil, nil
+			}
+			// URL-decode the modelId (Bedrock model IDs may be URL-encoded)
+			decoded, err := url.PathUnescape(rawModelID)
+			if err != nil {
+				decoded = rawModelID
+			}
+			modelValue = decoded
 		} else {
 			return body, nil, nil
 		}
@@ -692,6 +724,14 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 				newModel = decision.Provider + "/" + newModel
 			}
 			ctx.SetValue("model", newModel)
+		} else if isBedrockPath {
+			// For bedrock, model is in URL path as modelId
+			// Set new modelId in context so bedrockPreCallback picks it up via ctx.UserValue("modelId")
+			newModel := decision.Model
+			if decision.Provider != "" {
+				newModel = decision.Provider + "/" + newModel
+			}
+			ctx.SetValue("modelId", newModel)
 		} else {
 			// For regular requests, update in body
 			newModel := decision.Model

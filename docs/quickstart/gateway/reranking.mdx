@@ -53,7 +53,7 @@ curl --location 'http://localhost:8080/v1/rerank' \
   "documents": [
     {"id": "a", "text": "Bifrost supports observability plugins like OTEL and Maxim."},
     {"id": "b", "text": "Bifrost can run in Kubernetes and ECS."},
-    {"id": "c", "text": "Token counting is available at /v1/count_tokens."}
+    {"id": "c", "text": "Token counting is available at /v1/responses/input_tokens."}
   ]
 }'
 ```
@@ -80,7 +80,7 @@ When using a `vllm/...` model, Bifrost sends rerank requests to `/v1/rerank` fir
       "relevance_score": 0.63,
       "document": {
         "id": "c",
-        "text": "Token counting is available at /v1/count_tokens."
+        "text": "Token counting is available at /v1/responses/input_tokens."
       }
     }
   ],

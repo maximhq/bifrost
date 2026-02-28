@@ -445,47 +445,6 @@ type VideoRemixRequest struct {
 	ExtraParams map[string]any `json:"extra_params,omitempty"`
 }
 
-type CountTokensRequest struct {
-	Messages []schemas.ResponsesMessage `json:"messages"`
-	Tools    []schemas.ResponsesTool    `json:"tools,omitempty"`
-	BifrostParams
-	*schemas.ResponsesParameters
-}
-
-// UnmarshalJSON implements custom JSON unmarshalling for CountTokensRequest.
-// This is needed because ResponsesParameters has a custom UnmarshalJSON method,
-// which interferes with sonic's handling of the embedded BifrostParams struct.
-func (cr *CountTokensRequest) UnmarshalJSON(data []byte) error {
-	// First, unmarshal BifrostParams fields directly
-	type bifrostAlias BifrostParams
-	var bp bifrostAlias
-	if err := sonic.Unmarshal(data, &bp); err != nil {
-		return err
-	}
-	cr.BifrostParams = BifrostParams(bp)
-
-	// Unmarshal messages and tools
-	var msgStruct struct {
-		Messages []schemas.ResponsesMessage `json:"messages"`
-		Tools    []schemas.ResponsesTool    `json:"tools,omitempty"`
-	}
-	if err := sonic.Unmarshal(data, &msgStruct); err != nil {
-		return err
-	}
-	cr.Messages = msgStruct.Messages
-	cr.Tools = msgStruct.Tools
-
-	// Unmarshal ResponsesParameters (which has its own custom unmarshaller)
-	if cr.ResponsesParameters == nil {
-		cr.ResponsesParameters = &schemas.ResponsesParameters{}
-	}
-	if err := sonic.Unmarshal(data, cr.ResponsesParameters); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // BatchCreateRequest is a bifrost batch create request
 type BatchCreateRequest struct {
 	Model            string                     `json:"model"`                       // Model in "provider/model" format
@@ -581,18 +540,18 @@ const (
 // PathToTypeMapping maps exact paths to request types (only for non-parameterized paths)
 // Parameterized paths are set per-route in RegisterRoutes
 var PathToTypeMapping = map[string]schemas.RequestType{
-	"/v1/completions":          schemas.TextCompletionRequest,
-	"/v1/chat/completions":     schemas.ChatCompletionRequest,
-	"/v1/responses":            schemas.ResponsesRequest,
-	"/v1/embeddings":           schemas.EmbeddingRequest,
-	"/v1/rerank":               schemas.RerankRequest,
-	"/v1/audio/speech":         schemas.SpeechRequest,
-	"/v1/audio/transcriptions": schemas.TranscriptionRequest,
-	"/v1/images/generations":   schemas.ImageGenerationRequest,
-	"/v1/count_tokens":         schemas.CountTokensRequest,
-	"/v1/images/edits":         schemas.ImageEditRequest,
-	"/v1/images/variations":    schemas.ImageVariationRequest,
-	"/v1/models":               schemas.ListModelsRequest,
+	"/v1/completions":            schemas.TextCompletionRequest,
+	"/v1/chat/completions":       schemas.ChatCompletionRequest,
+	"/v1/responses":              schemas.ResponsesRequest,
+	"/v1/embeddings":             schemas.EmbeddingRequest,
+	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/audio/speech":           schemas.SpeechRequest,
+	"/v1/audio/transcriptions":   schemas.TranscriptionRequest,
+	"/v1/images/generations":     schemas.ImageGenerationRequest,
+	"/v1/responses/input_tokens": schemas.CountTokensRequest,
+	"/v1/images/edits":           schemas.ImageEditRequest,
+	"/v1/images/variations":      schemas.ImageVariationRequest,
+	"/v1/models":                 schemas.ListModelsRequest,
 }
 
 // createRequestTypeMiddleware creates a middleware that sets the request type for a specific route
@@ -633,7 +592,7 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.POST("/v1/audio/speech", lib.ChainMiddlewares(h.speech, baseMiddlewares...))
 	r.POST("/v1/audio/transcriptions", lib.ChainMiddlewares(h.transcription, baseMiddlewares...))
 	r.POST("/v1/images/generations", lib.ChainMiddlewares(h.imageGeneration, baseMiddlewares...))
-	r.POST("/v1/count_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
+	r.POST("/v1/responses/input_tokens", lib.ChainMiddlewares(h.countTokens, baseMiddlewares...))
 	r.POST("/v1/images/edits", lib.ChainMiddlewares(h.imageEdit, baseMiddlewares...))
 	r.POST("/v1/images/variations", lib.ChainMiddlewares(h.imageVariation, baseMiddlewares...))
 	r.POST("/v1/videos", lib.ChainMiddlewares(h.videoGeneration, baseMiddlewares...))
@@ -1102,41 +1061,35 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// rerank handles POST /v1/rerank - Process rerank requests
-func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
+// prepareRerankRequest prepares a BifrostRerankRequest from the HTTP request body
+func prepareRerankRequest(ctx *fasthttp.RequestCtx) (*RerankRequest, *schemas.BifrostRerankRequest, error) {
 	var req RerankRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid request format: %v", err))
-		return
+		return nil, nil, fmt.Errorf("invalid request format: %v", err)
 	}
 
 	// Parse model
 	provider, modelName := schemas.ParseModelString(req.Model, "")
 	if provider == "" || modelName == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "model should be in provider/model format")
-		return
+		return nil, nil, fmt.Errorf("model should be in provider/model format")
 	}
 
 	// Parse fallbacks
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, nil, fmt.Errorf("failed to parse fallbacks: %v", err)
 	}
 
 	if strings.TrimSpace(req.Query) == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "query is required for rerank")
-		return
+		return nil, nil, fmt.Errorf("query is required for rerank")
 	}
 
 	if len(req.Documents) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "documents are required for rerank")
-		return
+		return nil, nil, fmt.Errorf("documents are required for rerank")
 	}
 	for i, doc := range req.Documents {
 		if strings.TrimSpace(doc.Text) == "" {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("document text is required for rerank at index %d", i))
-			return
+			return nil, nil, fmt.Errorf("document text is required for rerank at index %d", i)
 		}
 	}
 
@@ -1145,8 +1098,7 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 		req.RerankParameters = &schemas.RerankParameters{}
 	}
 	if req.RerankParameters.TopN != nil && *req.RerankParameters.TopN < 1 {
-		SendError(ctx, fasthttp.StatusBadRequest, "top_n must be at least 1")
-		return
+		return nil, nil, fmt.Errorf("top_n must be at least 1")
 	}
 
 	extraParams, err := extractExtraParams(ctx.PostBody(), rerankParamsKnownFields)
@@ -1164,6 +1116,17 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 		Documents: req.Documents,
 		Params:    req.RerankParameters,
 		Fallbacks: fallbacks,
+	}
+
+	return &req, bifrostRerankReq, nil
+}
+
+// rerank handles POST /v1/rerank - Process rerank requests
+func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
+	_, bifrostRerankReq, err := prepareRerankRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 
 	// Convert context
@@ -1186,7 +1149,6 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 
 // prepareSpeechRequest prepares a BifrostSpeechRequest from the HTTP request body
 func prepareSpeechRequest(ctx *fasthttp.RequestCtx) (*SpeechRequest, *schemas.BifrostSpeechRequest, error) {
-
 	var req SpeechRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
 		return nil, nil, fmt.Errorf("invalid request format: %v", err)
@@ -1368,50 +1330,9 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
-// prepareCountTokensRequest prepares a BifrostResponsesRequest from a CountTokensRequest
-func prepareCountTokensRequest(ctx *fasthttp.RequestCtx) (*CountTokensRequest, *schemas.BifrostResponsesRequest, error) {
-	req := CountTokensRequest{
-		ResponsesParameters: &schemas.ResponsesParameters{},
-	}
-	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		return nil, nil, fmt.Errorf("invalid request body: %v", err)
-	}
-	provider, modelName := schemas.ParseModelString(req.Model, "")
-	if provider == "" || modelName == "" {
-		return nil, nil, fmt.Errorf("model should be in provider/model format")
-	}
-	fallbacks, err := parseFallbacks(req.Fallbacks)
-	if err != nil {
-		return nil, nil, err
-	}
-	if req.ResponsesParameters == nil {
-		req.ResponsesParameters = &schemas.ResponsesParameters{}
-	}
-	extraParams, err := extractExtraParams(ctx.PostBody(), countTokensParamsKnownFields)
-	if err != nil {
-		logger.Warn("Failed to extract extra params: %v", err)
-	} else {
-		req.ResponsesParameters.ExtraParams = extraParams
-	}
-	if len(req.Tools) > 0 {
-		req.ResponsesParameters.Tools = req.Tools
-	}
-	if len(req.Messages) == 0 {
-		return nil, nil, fmt.Errorf("messages is required for count tokens")
-	}
-	bifrostReq := &schemas.BifrostResponsesRequest{
-		Provider:  schemas.ModelProvider(provider),
-		Model:     modelName,
-		Input:     req.Messages,
-		Params:    req.ResponsesParameters,
-		Fallbacks: fallbacks,
-	}
-	return &req, bifrostReq, nil
-}
-
-// countTokens handles POST /v1/count_tokens - Process count tokens requests
+// countTokens handles POST /v1/responses/input_tokens - Process count tokens requests
 func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
-	_, bifrostReq, err := prepareCountTokensRequest(ctx)
+	_, bifrostResponsesReq, err := prepareResponsesRequest(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -1424,7 +1345,7 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 	}
 	defer cancel()
 
-	response, bifrostErr := h.client.CountTokensRequest(bifrostCtx, bifrostReq)
+	response, bifrostErr := h.client.CountTokensRequest(bifrostCtx, bifrostResponsesReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return

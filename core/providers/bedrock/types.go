@@ -486,6 +486,20 @@ type BedrockGuardrailTraceDetail struct {
 	Trace *string `json:"trace,omitempty"` // Detailed trace information
 }
 
+// ==================== COUNT TOKENS TYPES ====================
+
+// BedrockCountTokensRequest represents a Bedrock CountTokens API request
+type BedrockCountTokensRequest struct {
+	Input struct {
+		Converse *BedrockConverseRequest `json:"converse,omitempty"`
+	} `json:"input"`
+}
+
+// BedrockCountTokensResponse represents a Bedrock CountTokens API response
+type BedrockCountTokensResponse struct {
+	InputTokens int `json:"inputTokens"`
+}
+
 // ==================== ERROR TYPES ====================
 
 // BedrockError represents a Bedrock API error response

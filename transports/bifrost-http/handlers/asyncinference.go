@@ -34,6 +34,7 @@ var AsyncPathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/async/images/generations":   schemas.ImageGenerationRequest,
 	"/v1/async/images/edits":         schemas.ImageEditRequest,
 	"/v1/async/images/variations":    schemas.ImageVariationRequest,
+	"/v1/async/rerank":               schemas.RerankRequest,
 }
 
 // RegisterAsyncRequestTypeMiddleware handles exact path matching for non-parameterized routes
@@ -77,6 +78,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.POST("/v1/async/images/generations", lib.ChainMiddlewares(h.asyncImageGeneration, baseMiddlewares...))
 	r.POST("/v1/async/images/edits", lib.ChainMiddlewares(h.asyncImageEdit, baseMiddlewares...))
 	r.POST("/v1/async/images/variations", lib.ChainMiddlewares(h.asyncImageVariation, baseMiddlewares...))
+	r.POST("/v1/async/rerank", lib.ChainMiddlewares(h.asyncRerank, baseMiddlewares...))
 
 	// Async job retrieval endpoints
 	r.GET("/v1/async/completions/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.TextCompletionRequest), middlewares...))
@@ -88,6 +90,7 @@ func (h *AsyncHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.B
 	r.GET("/v1/async/images/generations/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageGenerationRequest), middlewares...))
 	r.GET("/v1/async/images/edits/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageEditRequest), middlewares...))
 	r.GET("/v1/async/images/variations/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.ImageVariationRequest), middlewares...))
+	r.GET("/v1/async/rerank/{job_id}", lib.ChainMiddlewares(h.getJob(schemas.RerankRequest), middlewares...))
 }
 
 // --- Async submission handlers ---
@@ -417,6 +420,39 @@ func (h *AsyncHandler) asyncImageVariation(ctx *fasthttp.RequestCtx) {
 			return h.client.ImageVariationRequest(bgCtx, bifrostReq)
 		},
 		schemas.ImageVariationRequest,
+	)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
+		return
+	}
+	SendJSONWithStatus(ctx, job.ToResponse(), fasthttp.StatusAccepted)
+}
+
+// asyncRerank handles POST /v1/async/rerank
+func (h *AsyncHandler) asyncRerank(ctx *fasthttp.RequestCtx) {
+	_, bifrostReq, err := prepareRerankRequest(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		return
+	}
+	defer cancel()
+
+	virtualKeyValue := getVirtualKeyFromContext(bifrostCtx)
+	resultTTL := getResultTTLFromHeaderWithDefault(ctx, h.config.ClientConfig.AsyncJobResultTTL)
+
+	job, err := h.executor.SubmitJob(
+		virtualKeyValue,
+		resultTTL,
+		func(bgCtx *schemas.BifrostContext) (interface{}, *schemas.BifrostError) {
+			return h.client.RerankRequest(bgCtx, bifrostReq)
+		},
+		schemas.RerankRequest,
 	)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())

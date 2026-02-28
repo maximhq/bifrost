@@ -227,6 +227,44 @@ func createBedrockRerankRouteConfig(pathPrefix string, handlerStore lib.HandlerS
 	}
 }
 
+// createBedrockCountTokensRouteConfig creates a route configuration for the Bedrock CountTokens API endpoint
+// Handles POST /bedrock/model/{modelId}/count-tokens
+func createBedrockCountTokensRouteConfig(pathPrefix string, handlerStore lib.HandlerStore) RouteConfig {
+	return RouteConfig{
+		Type:   RouteConfigTypeBedrock,
+		Path:   pathPrefix + "/model/{modelId}/count-tokens",
+		Method: "POST",
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &bedrock.BedrockCountTokensRequest{}
+		},
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.CountTokensRequest
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if countTokensReq, ok := req.(*bedrock.BedrockCountTokensRequest); ok {
+				if countTokensReq.Input.Converse == nil {
+					return nil, errors.New("input.converse is required for count-tokens")
+				}
+				bifrostReq, err := countTokensReq.Input.Converse.ToBifrostResponsesRequest(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert bedrock count tokens request: %w", err)
+				}
+				return &schemas.BifrostRequest{
+					CountTokensRequest: bifrostReq,
+				}, nil
+			}
+			return nil, errors.New("invalid request type for Bedrock count tokens")
+		},
+		CountTokensResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostCountTokensResponse) (interface{}, error) {
+			return bedrock.ToBedrockCountTokensResponse(resp), nil
+		},
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return bedrock.ToBedrockError(err)
+		},
+		PreCallback: bedrockPreCallback(handlerStore),
+	}
+}
+
 // CreateBedrockRouteConfigs creates route configurations for Bedrock endpoints
 func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	return []RouteConfig{
@@ -235,6 +273,7 @@ func CreateBedrockRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore)
 		createBedrockInvokeWithResponseStreamRouteConfig(pathPrefix, handlerStore),
 		createBedrockInvokeRouteConfig(pathPrefix, handlerStore),
 		createBedrockRerankRouteConfig(pathPrefix, handlerStore),
+		createBedrockCountTokensRouteConfig(pathPrefix, handlerStore),
 	}
 }
 
@@ -1131,6 +1170,10 @@ func bedrockPreCallback(handlerStore lib.HandlerStore) func(ctx *fasthttp.Reques
 			r.ModelID = fullModelID
 		case *bedrock.BedrockTextCompletionRequest:
 			r.ModelID = fullModelID
+		case *bedrock.BedrockCountTokensRequest:
+			if r.Input.Converse != nil {
+				r.Input.Converse.ModelID = fullModelID
+			}
 		default:
 			return errors.New("invalid request type for bedrock model extraction")
 		}

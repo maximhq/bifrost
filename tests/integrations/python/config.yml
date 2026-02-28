@@ -181,6 +181,7 @@ providers:
     file_list: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     file_delete: "anthropic.claude-3-5-sonnet-20240620-v1:0"
     file_content: "anthropic.claude-3-5-sonnet-20240620-v1:0"
+    count_tokens: "us.anthropic.claude-3-7-sonnet-20250219-v1:0"
     alternatives:
       - "anthropic.claude-3-opus-20240229-v1:0"
     
@@ -512,6 +513,7 @@ provider_scenarios:
     file_delete: true  # Bedrock deletes S3 objects
     file_content: true  # Bedrock downloads S3 object content
     image_edit: true  # Bedrock supports image editing via Nova Canvas
+    count_tokens: true  # Bedrock supports token counting via CountTokens API
     
   cohere:
     simple_chat: true
@@ -599,6 +601,7 @@ scenario_capabilities:
   citations: "chat"
   list_models: "chat"
   langchain_structured_output: "chat"  # LangChain structured output uses chat capability
+  count_tokens: "count_tokens"  # Token counting capability
   pydantic_structured_output: "chat"  # Structured output uses chat capability
   pydanticai_streaming: "streaming"  # PydanticAI streaming uses streaming capability
   batch_file_upload: "batch_file_upload"  # Uses batch_file_upload model directly

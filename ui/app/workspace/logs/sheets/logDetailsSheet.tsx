@@ -74,7 +74,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) {}
+		} catch (ignored) { }
 	}
 
 	// Extract audio format from request params
@@ -109,11 +109,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<Badge variant="outline" className={`${StatusColors[log.status as Status]} uppercase`}>
 								{log.status}
 							</Badge>
-								{log.metadata?.isAsyncRequest ? (
-									<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
-										Async
-									</Badge>
-								) : null}
+							{log.metadata?.isAsyncRequest ? (
+								<Badge variant="outline" className="bg-teal-100 text-teal-800 uppercase dark:bg-teal-900 dark:text-teal-200">
+									Async
+								</Badge>
+							) : null}
 						</SheetTitle>
 					</div>
 					<AlertDialog>
@@ -194,9 +194,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${
-											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-										} rounded-sm px-3 py-1`}
+										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+											} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -590,12 +589,12 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								/>
 							</>
 						)}
-							{log.rerank_output && !log.error_details?.error.message && (
-								<>
-									<CollapsibleBox
-										title={`Rerank Output (${log.rerank_output.length})`}
-										onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
-									>
+						{log.rerank_output && !log.error_details?.error.message && (
+							<>
+								<CollapsibleBox
+									title={`Rerank Output (${log.rerank_output.length})`}
+									onCopy={() => JSON.stringify(log.rerank_output, null, 2)}
+								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}

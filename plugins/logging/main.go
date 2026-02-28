@@ -692,6 +692,17 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					} else {
 						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 					}
+				case result.CountTokensResponse != nil:
+					usage = &schemas.BifrostLLMUsage{}
+					usage.PromptTokens = result.CountTokensResponse.InputTokens
+					if result.CountTokensResponse.OutputTokens != nil {
+						usage.CompletionTokens = *result.CountTokensResponse.OutputTokens
+					}
+					if result.CountTokensResponse.TotalTokens != nil {
+						usage.TotalTokens = *result.CountTokensResponse.TotalTokens
+					} else {
+						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+					}
 				}
 				updateData.TokenUsage = usage
 				// Extract raw response

@@ -167,7 +167,7 @@ func TestBedrock(t *testing.T) {
 			FileDelete:            true,
 			FileContent:           true,
 			FileBatchInput:        true,
-			CountTokens:           false, // Not supported
+			CountTokens:           true,
 			ImageEdit:             true,
 			ImageVariation:        true,
 			StructuredOutputs:     true,
