@@ -44,6 +44,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "audio_transcription"
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		baseType = "image_generation"
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest, schemas.ImageVariationRequest:
+		baseType = "image_generation"
 	case schemas.VideoGenerationRequest:
 		baseType = "video_generation"
 	}
@@ -67,6 +69,8 @@ func normalizeStreamRequestType(rt schemas.RequestType) schemas.RequestType {
 		return schemas.TranscriptionRequest
 	case schemas.ImageGenerationStreamRequest:
 		return schemas.ImageGenerationRequest
+	case schemas.ImageEditStreamRequest:
+		return schemas.ImageEditRequest
 	default:
 		return rt
 	}
@@ -101,6 +105,19 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		InputCostPerTokenAbove200kTokens:  entry.InputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokens: entry.OutputCostPerTokenAbove200kTokens,
 
+		// Costs - Character
+		InputCostPerCharacter:  entry.InputCostPerCharacter,
+		OutputCostPerCharacter: entry.OutputCostPerCharacter,
+
+		// Costs - Above 128k tokens
+		InputCostPerTokenAbove128kTokens:          entry.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:      entry.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:          entry.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens: entry.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens: entry.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:         entry.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:     entry.OutputCostPerCharacterAbove128kTokens,
+
 		// Costs - Cache
 		CacheCreationInputTokenCost:                        entry.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                            entry.CacheReadInputTokenCost,
@@ -110,6 +127,7 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: entry.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   entry.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    entry.CacheReadInputTokenCostPriority,
+		CacheReadInputImageTokenCost:                       entry.CacheReadInputImageTokenCost,
 
 		// Costs - Image
 		InputCostPerImage:                             entry.InputCostPerImage,
@@ -121,6 +139,8 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		OutputCostPerImageAbove512x512PixelsPremium:   entry.OutputCostPerImageAbove512x512PixelsPremium,
 		OutputCostPerImageAbove1024x1024Pixels:        entry.OutputCostPerImageAbove1024x1024Pixels,
 		OutputCostPerImageAbove1024x1024PixelsPremium: entry.OutputCostPerImageAbove1024x1024PixelsPremium,
+		InputCostPerImageToken:                        entry.InputCostPerImageToken,
+		OutputCostPerImageToken:                       entry.OutputCostPerImageToken,
 
 		// Costs - Audio/Video
 		InputCostPerAudioToken:      entry.InputCostPerAudioToken,
@@ -154,6 +174,19 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		InputCostPerTokenAbove200kTokens:  pricing.InputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokens: pricing.OutputCostPerTokenAbove200kTokens,
 
+		// Costs - Character
+		InputCostPerCharacter:  pricing.InputCostPerCharacter,
+		OutputCostPerCharacter: pricing.OutputCostPerCharacter,
+
+		// Costs - Above 128k tokens
+		InputCostPerTokenAbove128kTokens:          pricing.InputCostPerTokenAbove128kTokens,
+		InputCostPerCharacterAbove128kTokens:      pricing.InputCostPerCharacterAbove128kTokens,
+		InputCostPerImageAbove128kTokens:          pricing.InputCostPerImageAbove128kTokens,
+		InputCostPerVideoPerSecondAbove128kTokens: pricing.InputCostPerVideoPerSecondAbove128kTokens,
+		InputCostPerAudioPerSecondAbove128kTokens: pricing.InputCostPerAudioPerSecondAbove128kTokens,
+		OutputCostPerTokenAbove128kTokens:         pricing.OutputCostPerTokenAbove128kTokens,
+		OutputCostPerCharacterAbove128kTokens:     pricing.OutputCostPerCharacterAbove128kTokens,
+
 		// Costs - Cache
 		CacheCreationInputTokenCost:                        pricing.CacheCreationInputTokenCost,
 		CacheReadInputTokenCost:                            pricing.CacheReadInputTokenCost,
@@ -163,6 +196,7 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CacheCreationInputTokenCostAbove1hrAbove200kTokens: pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens,
 		CacheCreationInputAudioTokenCost:                   pricing.CacheCreationInputAudioTokenCost,
 		CacheReadInputTokenCostPriority:                    pricing.CacheReadInputTokenCostPriority,
+		CacheReadInputImageTokenCost:                       pricing.CacheReadInputImageTokenCost,
 
 		// Costs - Image
 		InputCostPerImage:                             pricing.InputCostPerImage,
@@ -174,6 +208,8 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		OutputCostPerImageAbove512x512PixelsPremium:   pricing.OutputCostPerImageAbove512x512PixelsPremium,
 		OutputCostPerImageAbove1024x1024Pixels:        pricing.OutputCostPerImageAbove1024x1024Pixels,
 		OutputCostPerImageAbove1024x1024PixelsPremium: pricing.OutputCostPerImageAbove1024x1024PixelsPremium,
+		InputCostPerImageToken:                        pricing.InputCostPerImageToken,
+		OutputCostPerImageToken:                       pricing.OutputCostPerImageToken,
 
 		// Costs - Audio/Video
 		InputCostPerAudioToken:      pricing.InputCostPerAudioToken,

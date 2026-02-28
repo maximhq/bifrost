@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
@@ -655,6 +656,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	usage := logEntry.TokenUsageParsed
 	cacheDebug := logEntry.CacheDebugParsed
+	scopes := pricingScopesForLog(logEntry)
 
 	// If no cache hit and no usage, we can't calculate cost
 	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) {
@@ -678,7 +680,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)
 
-	return p.pricingManager.CalculateCost(resp), nil
+	return p.pricingManager.CalculateCostWithScopes(resp, scopes), nil
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
@@ -777,5 +779,22 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
+	}
+}
+
+func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScopes {
+	if logEntry == nil {
+		return modelcatalog.PricingLookupScopes{}
+	}
+
+	virtualKeyID := ""
+	if logEntry.VirtualKeyID != nil {
+		virtualKeyID = *logEntry.VirtualKeyID
+	}
+
+	return modelcatalog.PricingLookupScopes{
+		ProviderID:    logEntry.Provider,
+		ProviderKeyID: logEntry.SelectedKeyID,
+		VirtualKeyID:  virtualKeyID,
 	}
 }

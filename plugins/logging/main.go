@@ -496,7 +496,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	routingRuleName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName)
 	numberOfRetries := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyNumberOfRetries)
 
-	requestType, _, _ := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, _ := bifrost.GetResponseFields(result, bifrostErr)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 
@@ -781,7 +781,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				logMsg.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			}
 			if logMsg.UpdateData != nil && p.pricingManager != nil {
-				cost := p.pricingManager.CalculateCost(result)
+				cost := p.pricingManager.CalculateCostWithScopes(result, modelcatalog.PricingLookupScopes{
+					VirtualKeyID:  logMsg.VirtualKeyID,
+					ProviderKeyID: logMsg.SelectedKeyID,
+					ProviderID:    string(provider),
+				})
 				logMsg.UpdateData.Cost = &cost
 			}
 			// Here we pass plugin level context for background processing to avoid context cancellation

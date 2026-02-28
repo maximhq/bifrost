@@ -36,10 +36,10 @@ type ModelCatalog struct {
 	pricingData map[string]configstoreTables.TableModelPricing
 	mu          sync.RWMutex
 
-	// Provider-level pricing overrides are maintained separately to avoid contention
+	// Scoped pricing overrides are maintained separately to avoid contention
 	// with pricing cache rebuilds.
-	compiledOverrides map[schemas.ModelProvider][]compiledProviderPricingOverride
-	overridesMu       sync.RWMutex
+	scopedOverrides *compiledScopedOverrides
+	overridesMu     sync.RWMutex
 
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
@@ -100,6 +100,24 @@ type PricingEntry struct {
 	OutputCostPerVideoPerSecond *float64 `json:"output_cost_per_video_per_second,omitempty"`
 	OutputCostPerSecond         *float64 `json:"output_cost_per_second,omitempty"`
 
+	// Costs - Character
+	InputCostPerCharacter  *float64 `json:"input_cost_per_character,omitempty"`
+	OutputCostPerCharacter *float64 `json:"output_cost_per_character,omitempty"`
+
+	// Costs - 128k Tier
+	InputCostPerTokenAbove128kTokens          *float64 `json:"input_cost_per_token_above_128k_tokens,omitempty"`
+	InputCostPerCharacterAbove128kTokens      *float64 `json:"input_cost_per_character_above_128k_tokens,omitempty"`
+	InputCostPerImageAbove128kTokens          *float64 `json:"input_cost_per_image_above_128k_tokens,omitempty"`
+	InputCostPerVideoPerSecondAbove128kTokens *float64 `json:"input_cost_per_video_per_second_above_128k_tokens,omitempty"`
+	InputCostPerAudioPerSecondAbove128kTokens *float64 `json:"input_cost_per_audio_per_second_above_128k_tokens,omitempty"`
+	OutputCostPerTokenAbove128kTokens         *float64 `json:"output_cost_per_token_above_128k_tokens,omitempty"`
+	OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
+
+	// Costs - Image Token
+	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
+	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`
+	CacheReadInputImageTokenCost *float64 `json:"cache_read_input_image_token_cost,omitempty"`
+
 	// Costs - Other
 	SearchContextCostPerQuery     *float64 `json:"search_context_cost_per_query,omitempty"`
 	CodeInterpreterCostPerSession *float64 `json:"code_interpreter_cost_per_session,omitempty"`
@@ -129,7 +147,7 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		configStore:            configStore,
 		logger:                 logger,
 		pricingData:            make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:      make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		scopedOverrides:        &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]schemas.PricingOverride)},
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
@@ -173,6 +191,9 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 
 	// Populate model pool with normalized providers from pricing data
 	mc.populateModelPoolFromPricingData()
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		logger.Warn("failed to load pricing overrides: %v", err)
+	}
 
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
@@ -241,6 +262,9 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 
 	// Rebuild model pool from updated pricing data
 	mc.populateModelPoolFromPricingData()
+	if err := mc.loadPricingOverridesFromStore(ctx); err != nil {
+		return fmt.Errorf("failed to load pricing overrides: %w", err)
+	}
 	return nil
 }
 
@@ -781,7 +805,7 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
+		scopedOverrides:     &compiledScopedOverrides{buckets: make(map[string]*pricingOverrideScopeBucket), byID: make(map[string]schemas.PricingOverride)},
 		done:                make(chan struct{}),
 	}
 }

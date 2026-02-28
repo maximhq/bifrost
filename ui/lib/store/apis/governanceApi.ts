@@ -2,6 +2,7 @@ import {
 	Budget,
 	CreateCustomerRequest,
 	CreateModelConfigRequest,
+	CreatePricingOverrideRequest,
 	CreateTeamRequest,
 	CreateVirtualKeyRequest,
 	Customer,
@@ -9,6 +10,7 @@ import {
 	GetBudgetsResponse,
 	GetCustomersResponse,
 	GetModelConfigsResponse,
+	GetPricingOverridesResponse,
 	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
 	GetTeamsResponse,
@@ -17,6 +19,8 @@ import {
 	HealthCheckResponse,
 	ModelConfig,
 	ProviderGovernance,
+	PatchPricingOverrideRequest,
+	PricingOverride,
 	RateLimit,
 	ResetUsageRequest,
 	Team,
@@ -30,6 +34,8 @@ import {
 	VirtualKey,
 } from "@/lib/types/governance";
 import { baseApi } from "./baseApi";
+
+type PricingOverrideQueryArgs = { scopeKind?: string; virtualKeyID?: string; providerID?: string; providerKeyID?: string };
 
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -543,6 +549,48 @@ export const governanceApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		getPricingOverrides: builder.query<GetPricingOverridesResponse, PricingOverrideQueryArgs | void>({
+			query: (params) => ({
+				url: "/governance/pricing-overrides",
+				params: {
+					scope_kind: params?.scopeKind,
+					virtual_key_id: params?.virtualKeyID,
+					provider_id: params?.providerID,
+					provider_key_id: params?.providerKeyID,
+				},
+			}),
+			providesTags: ["PricingOverrides"],
+		}),
+
+		createPricingOverride: builder.mutation<{ message: string; pricing_override: PricingOverride }, CreatePricingOverrideRequest>({
+			query: (data) => ({
+				url: "/governance/pricing-overrides",
+				method: "POST",
+				body: data,
+			}),
+			invalidatesTags: ["PricingOverrides"],
+		}),
+
+		patchPricingOverride: builder.mutation<
+			{ message: string; pricing_override: PricingOverride },
+			{ id: string; data: PatchPricingOverrideRequest }
+		>({
+			query: ({ id, data }) => ({
+				url: `/governance/pricing-overrides/${id}`,
+				method: "PATCH",
+				body: data,
+			}),
+			invalidatesTags: ["PricingOverrides"],
+		}),
+
+		deletePricingOverride: builder.mutation<{ message: string }, string>({
+			query: (id) => ({
+				url: `/governance/pricing-overrides/${id}`,
+				method: "DELETE",
+			}),
+			invalidatesTags: ["PricingOverrides"],
+		}),
+
 		// Provider Governance
 		getProviderGovernance: builder.query<GetProviderGovernanceResponse, { fromMemory?: boolean } | void>({
 			query: (params) => ({
@@ -660,6 +708,10 @@ export const {
 	useCreateModelConfigMutation,
 	useUpdateModelConfigMutation,
 	useDeleteModelConfigMutation,
+	useGetPricingOverridesQuery,
+	useCreatePricingOverrideMutation,
+	usePatchPricingOverrideMutation,
+	useDeletePricingOverrideMutation,
 
 	// Provider Governance
 	useGetProviderGovernanceQuery,
