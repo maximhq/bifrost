@@ -282,6 +282,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
 	}
 	if request.TextCompletionRequest != nil {
+		if request.TextCompletionRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		var text string
 		if request.TextCompletionRequest.Input.PromptStr != nil {
 			text = *request.TextCompletionRequest.Input.PromptStr
@@ -302,6 +305,11 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.EmbeddingRequest != nil {
+		// Large payload passthrough can intentionally leave Input nil to avoid
+		// materializing giant request bodies. Logging should degrade gracefully.
+		if request.EmbeddingRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		texts := request.EmbeddingRequest.Input.Texts
 
 		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {

@@ -515,6 +515,16 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		return res, bifrostErr, nil
 	}
 
+	// Skip caching for large payloads — body is too large to materialize for cache storage
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic cache for large payload request")
+		return res, nil, nil
+	}
+	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
+		plugin.logger.Debug(PluginLoggerPrefix + " Skipping semantic cache for large payload response")
+		return res, nil, nil
+	}
+
 	isCacheHit := ctx.Value(isCacheHitKey)
 	if isCacheHit != nil {
 		isCacheHitValue, ok := isCacheHit.(bool)

@@ -54,8 +54,27 @@ type UpdateLogData struct {
 	VideoDownloadOutput   *schemas.BifrostVideoDownloadResponse   // For non-streaming video download responses
 	VideoListOutput       *schemas.BifrostVideoListResponse       // For non-streaming video list responses
 	VideoDeleteOutput     *schemas.BifrostVideoDeleteResponse     // For non-streaming video delete responses
-	RawRequest            interface{}
-	RawResponse           interface{}
+	RawRequest             interface{}
+	RawResponse            interface{}
+	IsLargePayloadRequest  bool // When true, RawRequest is a truncated preview string (skip sonic.Marshal)
+	IsLargePayloadResponse bool // When true, RawResponse is a truncated preview string (skip sonic.Marshal)
+}
+
+// applyLargePayloadPreviews reads large payload/response preview strings from context
+// and overrides RawRequest/RawResponse on updateData for truncated logging.
+func applyLargePayloadPreviews(ctx *schemas.BifrostContext, updateData *UpdateLogData) {
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		if preview, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestPreview).(string); ok && preview != "" {
+			updateData.RawRequest = preview
+			updateData.IsLargePayloadRequest = true
+		}
+	}
+	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
+		if preview, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string); ok && preview != "" {
+			updateData.RawResponse = preview
+			updateData.IsLargePayloadResponse = true
+		}
+	}
 }
 
 // RecalculateCostResult represents summary stats from a cost backfill operation
@@ -351,7 +370,19 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input
+			input := req.TranscriptionRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 && int64(len(input.File)) > reqThreshold {
+					// Strip binary file content when it exceeds the large payload threshold
+					// to avoid serializing multi-MB audio into the log database.
+					logInput := *input
+					logInput.File = nil
+					initialData.TranscriptionInput = &logInput
+				} else {
+					initialData.TranscriptionInput = input
+				}
+			}
 		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 			initialData.Params = req.ImageGenerationRequest.Params
 			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
@@ -553,6 +584,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 
+			// Large payload mode: override raw request/response with truncated previews.
+			applyLargePayloadPreviews(ctx, updateData)
+
 			logMsg.UpdateData = updateData
 			processingErr := retryOnNotFound(p.ctx, func() error {
 				return p.updateLogEntry(
@@ -608,6 +642,17 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				// Prepare final log data
 				logMsg.Operation = LogOperationStreamUpdate
 				logMsg.StreamResponse = streamResponse
+
+				// Read large payload flags from context for streaming path
+				streamIsLargePayloadReq := false
+				if isLP, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLP {
+					streamIsLargePayloadReq = true
+				}
+				streamIsLargePayloadResp := false
+				if isLR, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLR {
+					streamIsLargePayloadResp = true
+				}
+
 				processingErr := retryOnNotFound(p.ctx, func() error {
 					return p.updateStreamingLogEntry(
 						p.ctx,
@@ -623,6 +668,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 						logMsg.RoutingEngineLogs,
 						logMsg.StreamResponse,
 						true,
+						streamIsLargePayloadReq,
+						streamIsLargePayloadResp,
 					)
 				})
 				if processingErr != nil {
@@ -779,6 +826,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 						updateData.VideoDeleteOutput = result.VideoDeleteResponse
 					}
 				}
+
+				// Large payload mode: override raw request/response with truncated previews.
+				applyLargePayloadPreviews(ctx, updateData)
 			}
 			logMsg.UpdateData = updateData
 
@@ -840,6 +890,30 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 							}
 						}
 						callback(p.ctx, updatedEntry)
+					}
+				}
+			}
+
+			// Deferred usage: when large response mode is active and Phase A didn't find
+			// usage (it's beyond the 64KB prefetch), enterprise's LargeResponseHook sets
+			// a deferred usage channel on context. Wait on it and issue an async DB UPDATE.
+			if logMsg.UpdateData != nil && logMsg.UpdateData.TokenUsage == nil {
+				if deferredChan, ok := ctx.Value(schemas.BifrostContextKeyDeferredUsage).(<-chan *schemas.BifrostLLMUsage); ok && deferredChan != nil {
+					// Safe to block: enterprise LargeResponseHook guarantees deferredChan is closed
+					// after phaseBResponseReader.Close() completes the scan goroutine.
+					deferredUsage, chanOk := <-deferredChan
+					if chanOk && deferredUsage != nil {
+						usageUpdates := make(map[string]interface{})
+						usageUpdates["prompt_tokens"] = deferredUsage.PromptTokens
+						usageUpdates["completion_tokens"] = deferredUsage.CompletionTokens
+						usageUpdates["total_tokens"] = deferredUsage.TotalTokens
+						tempEntry := &logstore.Log{TokenUsageParsed: deferredUsage}
+						if serErr := tempEntry.SerializeFields(); serErr == nil {
+							usageUpdates["token_usage"] = tempEntry.TokenUsage
+						}
+						if updErr := p.store.Update(p.ctx, logMsg.RequestID, usageUpdates); updErr != nil {
+							p.logger.Warn("failed to update deferred usage for request %s: %v", logMsg.RequestID, updErr)
+						}
 					}
 				}
 			}

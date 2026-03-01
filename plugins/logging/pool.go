@@ -52,5 +52,7 @@ func (p *LoggerPlugin) putUpdateLogData(data *UpdateLogData) {
 	data.VideoDeleteOutput = nil
 	data.RawRequest = nil
 	data.RawResponse = nil
+	data.IsLargePayloadRequest = false
+	data.IsLargePayloadResponse = false
 	p.updateDataPool.Put(data)
 }
