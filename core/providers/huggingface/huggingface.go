@@ -244,7 +244,9 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.HuggingFace) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
@@ -1114,7 +1116,9 @@ func HandleHuggingFaceImageGenerationStreaming(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.HuggingFace) {
+		req.SetBody(jsonBody)
+	}
 
 	// Capture start time before making the HTTP request for latency calculation
 	startTime := time.Now()
@@ -1172,6 +1176,7 @@ func HandleHuggingFaceImageGenerationStreaming(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
+		providerUtils.DecompressStreamBody(resp)
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
@@ -1514,7 +1519,9 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.HuggingFace) {
+		req.SetBody(jsonBody)
+	}
 
 	// Capture start time before making the HTTP request for latency calculation
 	startTime := time.Now()
@@ -1572,6 +1579,7 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
+		providerUtils.DecompressStreamBody(resp)
 		scanner := bufio.NewScanner(resp.BodyStream())
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)

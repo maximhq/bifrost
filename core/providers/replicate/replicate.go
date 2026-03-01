@@ -122,7 +122,9 @@ func createPrediction(
 	}
 	providerUtils.SetExtraHeaders(ctx, req, headersToUse, nil)
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Replicate) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
@@ -1383,6 +1385,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			return
 		}
 
+		providerUtils.DecompressStreamBody(resp)
 		scanner := bufio.NewScanner(resp.BodyStream())
 		startTime := time.Now()
 		sequenceNumber := 0

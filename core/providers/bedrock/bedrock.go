@@ -375,11 +375,11 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 		return nil, deployment, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, respErr, providerName)
 	}
 
-	// Check for HTTP errors
+	// Check for HTTP errors — use parseBedrockHTTPError to preserve upstream error details
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, deployment, providerUtils.NewProviderAPIError(fmt.Sprintf("HTTP error from %s: %d", providerName, resp.StatusCode), fmt.Errorf("%s", string(body)), resp.StatusCode, providerName, nil, nil)
+		return nil, deployment, parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
 	}
 
 	return resp, deployment, nil
