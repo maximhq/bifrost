@@ -1,5 +1,5 @@
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.22 AS ui-builder
+FROM node:25-alpine3.22 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies

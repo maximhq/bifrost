@@ -2,7 +2,7 @@
 # For pre-release CI builds where module versions aren't published yet
 
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.22 AS ui-builder
+FROM node:25-alpine3.22 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
