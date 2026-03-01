@@ -18,7 +18,7 @@ require (
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
-	github.com/valyala/fasthttp v1.68.0
+	github.com/valyala/fasthttp v1.69.0
 	go.starlark.net v0.0.0-20260102030733-3fee463870c9
 	golang.org/x/oauth2 v0.35.0
 	golang.org/x/text v0.33.0
