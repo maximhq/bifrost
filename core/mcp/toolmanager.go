@@ -240,39 +240,44 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 		}
 	}
 
-	// Add integration-specific patterns from existing tools
+	// Add integration-specific patterns from existing tools.
+	// When a supported CLI sends a request it already includes its MCP tools
+	// prefixed with the server name (e.g. "mcp__filesystem__read_file" or
+	// "bifrost__read_file"). Without this mapping Bifrost would add the
+	// un-prefixed version too, so the model would see duplicate tools.
+	//
+	// All supported integrations use a double-underscore separator:
+	//   claude-cli : mcp__{server}__{tool}  e.g. mcp__bifrost__read_file
+	//   gemini-cli : mcp__{server}__{tool}
+	//   qwen-cli   : mcp__{server}__{tool}
+	//   cursor     : mcp__{server}__{tool}
+	//   codex      : mcp__{server}__{tool}
+	//   n8n        : mcp__{server}__{tool}
 	switch integrationUserAgent {
-	case "claude-cli":
-		// Claude CLI uses pattern: mcp__{foreign_name}__{tool_name}
-		// The middle part is a foreign name we cannot check for, so we extract the last part
-		// Examples:
-		//   mcp__bifrost__executeToolCode -> executeToolCode
-		//   mcp__bifrost__listToolFiles -> listToolFiles
-		//   mcp__bifrost__readToolFile -> readToolFile
-		//   mcp__calculator__calculator_add -> calculator_add
+	case "claude-cli", "gemini-cli", "qwen-cli", "cursor", "codex", "n8n":
 		for _, tool := range existingTools {
 			if tool.Function != nil && tool.Function.Name != "" {
 				existingToolName := tool.Function.Name
-				// Check if existing tool matches Claude CLI pattern: mcp__*__{tool_name}
-				if strings.HasPrefix(existingToolName, "mcp__") {
-					// Split on __ and take the last entry (the tool_name)
+				toolName := existingToolName
+
+				// If the tool name contains "__", extract the last segment as
+				// the canonical (un-prefixed) tool name.
+				// e.g. "mcp__myserver__read_file" → "read_file"
+				if strings.Contains(existingToolName, "__") {
 					parts := strings.Split(existingToolName, "__")
-					if len(parts) >= 3 {
-						toolName := parts[len(parts)-1] // Last part is the tool name
-						// Map Claude CLI pattern back to our tool name format
-						// This handles both regular MCP tools and code mode tools
-						if toolName != "" {
-							duplicateCheckMap[toolName] = true
-							// Also keep the original pattern for direct matching
-							duplicateCheckMap[existingToolName] = true
-						}
+					if len(parts) > 1 {
+						toolName = parts[len(parts)-1]
 					}
+				}
+
+				if toolName != "" {
+					// Mark the clean name so Bifrost won't add it again.
+					duplicateCheckMap[toolName] = true
+					// Also mark the prefixed name for direct matching.
+					duplicateCheckMap[existingToolName] = true
 				}
 			}
 		}
-		// Add more integration-specific patterns here as needed
-		// case "another-integration":
-		//     // Add patterns for other integrations
 	}
 
 	return duplicateCheckMap
