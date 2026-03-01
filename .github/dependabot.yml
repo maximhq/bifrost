@@ -9,6 +9,7 @@ updates:
       - "/examples/**"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "npm"
     directories:
@@ -17,13 +18,16 @@ updates:
       - "/examples/**"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "docker"
     directory: "/transports"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 0

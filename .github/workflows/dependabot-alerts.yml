@@ -1,0 +1,54 @@
+name: Dependabot Alerts to Issues
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Weekly on Monday at 9am UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create issues from Dependabot alerts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          alerts=$(gh api repos/${{ github.repository }}/dependabot/alerts \
+            --jq '[.[] | select(.state == "open")]')
+
+          echo "$alerts" | jq -c '.[]' | while read -r alert; do
+            pkg=$(echo "$alert" | jq -r '.dependency.package.name')
+            number=$(echo "$alert" | jq -r '.number')
+            severity=$(echo "$alert" | jq -r '.security_advisory.severity')
+            summary=$(echo "$alert" | jq -r '.security_advisory.summary')
+            url=$(echo "$alert" | jq -r '.html_url')
+            ecosystem=$(echo "$alert" | jq -r '.dependency.package.ecosystem')
+
+            # Skip if issue already exists for this alert
+            existing=$(gh issue list \
+              --repo "${{ github.repository }}" \
+              --search "Dependabot Alert #${number}" \
+              --json number --jq 'length')
+
+            if [ "$existing" = "0" ]; then
+              gh issue create \
+                --repo "${{ github.repository }}" \
+                --title "dep: update ${pkg} (${severity})" \
+                --label "dependencies" \
+                --body "$(cat <<EOF
+          ## Dependabot Alert #${number}
+
+          **Package:** \`${pkg}\`
+          **Ecosystem:** ${ecosystem}
+          **Severity:** ${severity}
+
+          ${summary}
+
+          [View Alert](${url})
+          EOF
+              )"
+            fi
+          done
