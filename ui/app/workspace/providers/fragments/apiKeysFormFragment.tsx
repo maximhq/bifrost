@@ -12,10 +12,19 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+	useInitiateAnthropicOAuthMutation,
+	useExchangeAnthropicOAuthCodeMutation,
+	useRefreshAnthropicOAuthTokenMutation,
+	useLogoutAnthropicOAuthMutation,
+	getErrorMessage,
+} from "@/lib/store";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CheckCircle2, ExternalLink, Info, Loader2, Plus, RefreshCw, Trash2, Unplug } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
+import { toast } from "sonner";
+import { Badge } from "@/components/ui/badge";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
@@ -55,6 +64,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isAnthropic = providerName === "anthropic";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key' or 'entra_id'
@@ -62,6 +72,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 
 	// Auth type state for Bedrock: 'iam_role' or 'explicit'
 	const [bedrockAuthType, setBedrockAuthType] = useState<'iam_role' | 'explicit'>('iam_role')
+
+	// Auth type state for Anthropic: 'api_key' or 'oauth'
+	const [anthropicAuthType, setAnthropicAuthType] = useState<'api_key' | 'oauth'>('api_key')
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -75,6 +88,16 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			}
 		}
 	}, [isAzure, form])
+
+	useEffect(() => {
+		if (form.formState.isDirty) return
+		if (isAnthropic) {
+			const oauthConfigId = form.getValues('key.anthropic_oauth_key_config.oauth_config_id')
+			if (oauthConfigId) {
+				setAnthropicAuthType('oauth')
+			}
+		}
+	}, [isAnthropic, form])
 
 	useEffect(() => {
 		if (form.formState.isDirty) return
@@ -164,8 +187,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
-			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && (
+			{/* Hide API Key field for Azure when using Entra ID, Bedrock when using IAM Role, and Anthropic when using OAuth */}
+			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && !(isAnthropic && anthropicAuthType === 'oauth') && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -707,8 +730,208 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
+			{isAnthropic && (
+				<div className="space-y-4">
+					<Separator className="my-6" />
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs value={anthropicAuthType} onValueChange={(v) => {
+							setAnthropicAuthType(v as 'api_key' | 'oauth')
+							if (v === 'oauth') {
+								// Clear API key when switching to OAuth
+								form.setValue('key.value', undefined)
+							} else {
+								// Clear OAuth config when switching to API Key
+								form.setValue('key.anthropic_oauth_key_config', undefined)
+							}
+						}}>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger value="api_key">API Key</TabsTrigger>
+								<TabsTrigger value="oauth">OAuth (Claude Pro/Max)</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+
+					{anthropicAuthType === 'oauth' && (
+						<AnthropicOAuthSection form={form} />
+					)}
+				</div>
+			)}
 		</div>
 	);
+}
+
+// Anthropic OAuth section component
+type OAuthFlowState = 'idle' | 'initiated' | 'connected' | 'error';
+
+function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
+	const [flowState, setFlowState] = useState<OAuthFlowState>('idle')
+	const [oauthConfigId, setOauthConfigId] = useState<string>('')
+	const [authCode, setAuthCode] = useState('')
+	const [errorMessage, setErrorMessage] = useState('')
+
+	const [initiateOAuth, { isLoading: isInitiating }] = useInitiateAnthropicOAuthMutation()
+	const [exchangeCode, { isLoading: isExchanging }] = useExchangeAnthropicOAuthCodeMutation()
+	const [refreshToken, { isLoading: isRefreshing }] = useRefreshAnthropicOAuthTokenMutation()
+	const [logoutOAuth, { isLoading: isLoggingOut }] = useLogoutAnthropicOAuthMutation()
+
+	// Detect existing OAuth config on mount
+	useEffect(() => {
+		const existingConfigId = form.getValues('key.anthropic_oauth_key_config.oauth_config_id')
+		if (existingConfigId) {
+			setOauthConfigId(existingConfigId)
+			setFlowState('connected')
+		}
+	}, [form])
+
+	const handleInitiate = useCallback(async () => {
+		try {
+			const result = await initiateOAuth().unwrap()
+			setOauthConfigId(result.oauth_config_id)
+			window.open(result.authorize_url, '_blank')
+			setFlowState('initiated')
+		} catch (err) {
+			setErrorMessage(getErrorMessage(err))
+			setFlowState('error')
+		}
+	}, [initiateOAuth])
+
+	const handleExchange = useCallback(async () => {
+		if (!authCode.trim()) return
+		try {
+			await exchangeCode({ code: authCode.trim(), oauth_config_id: oauthConfigId }).unwrap()
+			form.setValue('key.anthropic_oauth_key_config', { oauth_config_id: oauthConfigId }, { shouldDirty: true, shouldValidate: true })
+			setFlowState('connected')
+			setAuthCode('')
+			toast.success('Successfully connected with Anthropic OAuth')
+		} catch (err) {
+			setErrorMessage(getErrorMessage(err))
+			setFlowState('error')
+		}
+	}, [authCode, oauthConfigId, exchangeCode, form])
+
+	const handleRefresh = useCallback(async () => {
+		try {
+			await refreshToken({ oauth_config_id: oauthConfigId }).unwrap()
+			toast.success('Token refreshed successfully')
+		} catch (err) {
+			toast.error('Failed to refresh token', { description: getErrorMessage(err) })
+		}
+	}, [oauthConfigId, refreshToken])
+
+	const handleDisconnect = useCallback(async () => {
+		try {
+			await logoutOAuth({ oauth_config_id: oauthConfigId }).unwrap()
+			form.setValue('key.anthropic_oauth_key_config', undefined, { shouldDirty: true })
+			setOauthConfigId('')
+			setFlowState('idle')
+			toast.success('Disconnected from Anthropic OAuth')
+		} catch (err) {
+			toast.error('Failed to disconnect', { description: getErrorMessage(err) })
+		}
+	}, [oauthConfigId, logoutOAuth, form])
+
+	const handleCancel = useCallback(() => {
+		setFlowState('idle')
+		setAuthCode('')
+		setOauthConfigId('')
+	}, [])
+
+	if (flowState === 'connected') {
+		return (
+			<div className="rounded-sm border border-green-200 bg-green-50 p-4 dark:border-green-800 dark:bg-green-950">
+				<div className="flex items-center justify-between">
+					<div className="flex items-center gap-3">
+						<CheckCircle2 className="h-5 w-5 text-green-600 dark:text-green-400" />
+						<div>
+							<div className="flex items-center gap-2">
+								<span className="text-sm font-medium">Anthropic OAuth</span>
+								<Badge variant="secondary" className="text-xs bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300">Connected</Badge>
+							</div>
+							<p className="text-xs text-muted-foreground font-mono mt-0.5">{oauthConfigId}</p>
+						</div>
+					</div>
+					<div className="flex items-center gap-2">
+						<Button type="button" variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
+							{isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+							Refresh
+						</Button>
+						<Button type="button" variant="outline" size="sm" onClick={handleDisconnect} disabled={isLoggingOut}>
+							{isLoggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unplug className="h-4 w-4" />}
+							Disconnect
+						</Button>
+					</div>
+				</div>
+			</div>
+		)
+	}
+
+	if (flowState === 'error') {
+		return (
+			<div className="rounded-sm border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950">
+				<div className="space-y-3">
+					<p className="text-sm text-red-700 dark:text-red-300">{errorMessage || 'An error occurred during the OAuth flow.'}</p>
+					<Button type="button" variant="outline" size="sm" onClick={() => { setFlowState('idle'); setErrorMessage(''); }}>
+						Try Again
+					</Button>
+				</div>
+			</div>
+		)
+	}
+
+	if (flowState === 'initiated') {
+		return (
+			<div className="space-y-4">
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>Complete Authorization</AlertTitle>
+					<AlertDescription>
+						<ol className="list-decimal list-inside space-y-1 mt-2 text-sm">
+							<li>A new tab has been opened to Anthropic&apos;s authorization page</li>
+							<li>Sign in with your Claude Pro/Max account</li>
+							<li>Copy the authorization code from the callback page</li>
+							<li>Paste the code below and click &quot;Exchange Code&quot;</li>
+						</ol>
+					</AlertDescription>
+				</Alert>
+				<div className="space-y-2">
+					<FormLabel>Authorization Code</FormLabel>
+					<div className="flex gap-2">
+						<Input
+							placeholder="Paste the authorization code here"
+							value={authCode}
+							onChange={(e) => setAuthCode(e.target.value)}
+							className="font-mono text-sm"
+						/>
+						<Button type="button" onClick={handleExchange} disabled={isExchanging || !authCode.trim()}>
+							{isExchanging && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+							Exchange Code
+						</Button>
+					</div>
+					<button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={handleCancel}>
+						Cancel
+					</button>
+				</div>
+			</div>
+		)
+	}
+
+	// Idle state
+	return (
+		<div className="space-y-4">
+			<Alert variant="default" className="-z-10">
+				<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+				<AlertTitle>Claude Pro/Max OAuth</AlertTitle>
+				<AlertDescription>
+					Connect your Claude Pro or Max subscription to use as a provider key via OAuth. You&apos;ll be redirected to Anthropic&apos;s authorization page to grant access.
+				</AlertDescription>
+			</Alert>
+			<Button type="button" variant="outline" onClick={handleInitiate} disabled={isInitiating}>
+				{isInitiating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+				Connect with Claude
+			</Button>
+		</div>
+	)
 }
 
 // Bedrock S3 configuration section for batch operations

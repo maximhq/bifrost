@@ -2,6 +2,7 @@
 export { baseApi, clearAuthStorage, getErrorMessage, setAuthToken } from "./baseApi";
 
 // API slices and hooks
+export * from "./anthropicOAuthApi";
 export * from "./configApi";
 export * from "./devApi";
 export * from "./governanceApi";
