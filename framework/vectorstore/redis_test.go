@@ -231,6 +231,271 @@ func TestRedisConfig_Validation(t *testing.T) {
 	}
 }
 
+func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {
+	store := &RedisStore{}
+	resp := map[interface{}]interface{}{
+		"results": []interface{}{
+			map[interface{}]interface{}{
+				"id": "TestRedis:doc-1",
+				"extra_attributes": map[interface{}]interface{}{
+					"score":        "0.123",
+					"request_hash": "abc123",
+					"cache_key":    "session-1",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, []string{"request_hash"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-1", results[0].ID)
+	assert.Equal(t, "abc123", results[0].Properties["request_hash"])
+	assert.Equal(t, "0.123", results[0].Properties["score"])
+	assert.NotContains(t, results[0].Properties, "cache_key")
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.123, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_RESP2Array(t *testing.T) {
+	store := &RedisStore{}
+	resp := []interface{}{
+		int64(1),
+		"TestRedis:doc-2",
+		[]interface{}{
+			"score", []byte("0.25"),
+			"request_hash", "def456",
+			"cache_key", "session-2",
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-2", results[0].ID)
+	assert.Equal(t, "def456", results[0].Properties["request_hash"])
+	assert.Equal(t, "session-2", results[0].Properties["cache_key"])
+	assert.Equal(t, []byte("0.25"), results[0].Properties["score"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.25, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_RESP3StringKeyMap(t *testing.T) {
+	store := &RedisStore{}
+	resp := map[string]interface{}{
+		"results": []interface{}{
+			map[string]interface{}{
+				"id": "TestRedis:doc-3",
+				"extra_attributes": map[string]interface{}{
+					"score":        "0.456",
+					"request_hash": "ghi789",
+					"cache_key":    "session-3",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, []string{"request_hash"})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-3", results[0].ID)
+	assert.Equal(t, "ghi789", results[0].Properties["request_hash"])
+	assert.Equal(t, "0.456", results[0].Properties["score"])
+	assert.NotContains(t, results[0].Properties, "cache_key")
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.456, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_EmptyRESP2(t *testing.T) {
+	store := &RedisStore{}
+	// RESP2 array with total count 0 and no documents
+	resp := []interface{}{
+		int64(0),
+	}
+
+	results, err := store.parseSearchResults(resp, nil)
+	require.NoError(t, err)
+	assert.Empty(t, results)
+}
+
+func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
+	store := &RedisStore{}
+	// Simulates Valkey RESP2 returning score as []byte
+	resp := []interface{}{
+		int64(1),
+		"TestRedis:doc-4",
+		[]interface{}{
+			"score", []byte("0.75"),
+			"request_hash", "jkl012",
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-4", results[0].ID)
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.75, *results[0].Score, 0.000001)
+}
+
+func TestMatchesQueriesForScan(t *testing.T) {
+	tests := []struct {
+		name       string
+		properties map[string]interface{}
+		queries    []Query
+		expected   bool
+	}{
+		// GreaterThan
+		{
+			name:       "GreaterThan true",
+			properties: map[string]interface{}{"size": "1024"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThan false",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "GreaterThan equal value is false",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		// LessThan
+		{
+			name:       "LessThan true",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThan false",
+			properties: map[string]interface{}{"size": "1024"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "LessThan equal value is false",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		// GreaterThanOrEqual
+		{
+			name:       "GreaterThanOrEqual boundary true",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThanOrEqual above true",
+			properties: map[string]interface{}{"size": "1001"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "GreaterThanOrEqual below false",
+			properties: map[string]interface{}{"size": "999"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// LessThanOrEqual
+		{
+			name:       "LessThanOrEqual boundary true",
+			properties: map[string]interface{}{"size": "1000"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThanOrEqual below true",
+			properties: map[string]interface{}{"size": "999"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   true,
+		},
+		{
+			name:       "LessThanOrEqual above false",
+			properties: map[string]interface{}{"size": "1001"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// Non-numeric value
+		{
+			name:       "Non-numeric string returns false for GreaterThan",
+			properties: map[string]interface{}{"size": "not-a-number"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "Non-numeric string returns false for LessThan",
+			properties: map[string]interface{}{"size": "abc"},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThan, Value: 1000}},
+			expected:   false,
+		},
+		// Missing field
+		{
+			name:       "Missing field returns false for GreaterThan",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorGreaterThan, Value: 1000}},
+			expected:   false,
+		},
+		{
+			name:       "Missing field returns false for LessThanOrEqual",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "size", Operator: QueryOperatorLessThanOrEqual, Value: 1000}},
+			expected:   false,
+		},
+		// Float values
+		{
+			name:       "Float GreaterThan",
+			properties: map[string]interface{}{"score": "0.95"},
+			queries:    []Query{{Field: "score", Operator: QueryOperatorGreaterThan, Value: 0.5}},
+			expected:   true,
+		},
+		{
+			name:       "Float LessThan",
+			properties: map[string]interface{}{"score": "0.3"},
+			queries:    []Query{{Field: "score", Operator: QueryOperatorLessThan, Value: 0.5}},
+			expected:   true,
+		},
+		// Multiple queries combined
+		{
+			name:       "Multiple numeric queries all match",
+			properties: map[string]interface{}{"size": "500", "count": "10"},
+			queries: []Query{
+				{Field: "size", Operator: QueryOperatorGreaterThan, Value: 100},
+				{Field: "count", Operator: QueryOperatorLessThanOrEqual, Value: 10},
+			},
+			expected: true,
+		},
+		{
+			name:       "Multiple numeric queries one fails",
+			properties: map[string]interface{}{"size": "500", "count": "20"},
+			queries: []Query{
+				{Field: "size", Operator: QueryOperatorGreaterThan, Value: 100},
+				{Field: "count", Operator: QueryOperatorLessThanOrEqual, Value: 10},
+			},
+			expected: false,
+		},
+		// Empty queries
+		{
+			name:       "No queries matches everything",
+			properties: map[string]interface{}{"size": "500"},
+			queries:    []Query{},
+			expected:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := matchesQueriesForScan(tt.properties, tt.queries)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // ============================================================================
 // INTEGRATION TESTS (require real Redis instance with RediSearch)
 // ============================================================================

@@ -1737,27 +1737,27 @@
                 },
                 "host": {
                   "type": "string",
-                  "description": "Redis server host"
+                  "description": "Redis/Valkey server host"
                 },
                 "port": {
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 65535,
-                  "description": "Redis server port"
+                  "description": "Redis/Valkey server port"
                 },
                 "username": {
                   "type": "string",
-                  "description": "Username for Redis AUTH"
+                  "description": "Username for Redis/Valkey AUTH"
                 },
                 "password": {
                   "type": "string",
-                  "description": "Password for Redis AUTH"
+                  "description": "Password for Redis/Valkey AUTH"
                 },
                 "database": {
                   "type": "integer",
                   "minimum": 0,
                   "default": 0,
-                  "description": "Redis database number"
+                  "description": "Redis/Valkey database number"
                 },
                 "poolSize": {
                   "type": "integer",
@@ -1803,7 +1803,7 @@
                 "contextTimeout": {
                   "type": "string",
                   "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
-                  "description": "Timeout for Redis operations (e.g., '10s')"
+                  "description": "Timeout for Redis/Valkey operations (e.g., '10s')"
                 },
                 "existingSecret": {
                   "type": "string"
