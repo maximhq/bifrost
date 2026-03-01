@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -492,6 +493,19 @@ var embeddingPaths = []string{
 	":batchEmbedContents",
 }
 
+func getLargeRequestTypeDetectionThreshold(ctx *fasthttp.RequestCtx) int64 {
+	// Reuse enterprise-configured threshold when available so request-type detection
+	// and large-payload activation make the same decision.
+	// Example failure prevented: transport thinks "small" (parses body) while enterprise
+	// hook already treated it as "large" (stream), causing unnecessary body reads.
+	if sharedCtx, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && sharedCtx != nil {
+		if threshold, ok := sharedCtx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
+			return threshold
+		}
+	}
+	return schemas.DefaultLargePayloadRequestThresholdBytes
+}
+
 // extractAndSetModelAndRequestType extracts model and request type from URL and request object and sets it in the request
 func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	model := ctx.UserValue("model")
@@ -545,15 +559,33 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		r.IsEmbedding = isEmbedding
 		r.IsCountTokens = isCountTokens
 
-		// Detect if this is a speech or transcription request by examining the request body
-		// Speech detection takes priority over transcription
-		r.IsSpeech = isSpeechRequest(r)
-		r.IsTranscription = isTranscriptionRequest(r)
+		// Check for large payload streaming mode (enterprise-only feature)
+		if isLargePayload, ok := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+			// Large payload path: use pre-extracted metadata from context
+			// Metadata was extracted by the enterprise large payload hook and stored in context
+			metadata, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
+			if metadata != nil {
+				r.IsSpeech = slices.Contains(metadata.ResponseModalities, "AUDIO") || metadata.SpeechConfig
+				r.IsImageGeneration = isImagenPredict || slices.Contains(metadata.ResponseModalities, "IMAGE")
+			} else {
+				r.IsImageGeneration = isImagenPredict
+			}
+			// Always false for large payloads — detecting these requires parsing the contents array
+			// which is exactly where the large payload data lives
+			r.IsTranscription = false
+			r.IsImageEdit = false
+		} else {
+			// Normal path: small payloads use existing body inspection
+			// Detect if this is a speech or transcription request by examining the request body
+			// Speech detection takes priority over transcription
+			r.IsSpeech = isSpeechRequest(r)
+			r.IsTranscription = isTranscriptionRequest(r)
 
-		// Detect if this is an image generation request
-		// isImagenPredict takes precedence for :predict endpoints
-		r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
-		r.IsImageEdit = isImageEditRequest(r)
+			// Detect if this is an image generation request
+			// isImagenPredict takes precedence for :predict endpoints
+			r.IsImageGeneration = (isImagenPredict && !isImageEditRequest(r)) || isImageGenerationRequest(r)
+			r.IsImageEdit = isImageEditRequest(r)
+		}
 
 		return nil
 	case *gemini.GeminiEmbeddingRequest:
@@ -628,6 +660,45 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 
 	if isEmbedding {
 		return modelStr, schemas.EmbeddingRequest
+	}
+
+	// Avoid forcing body materialization in request-type middleware.
+	// The actual request conversion/parsing happens later in the handler.
+	// For streamed request bodies, default to Responses/ImageGeneration by route hint.
+	if ctx.RequestBodyStream() != nil {
+		if isImagenPredict {
+			return modelStr, schemas.ImageGenerationRequest
+		}
+		return modelStr, schemas.ResponsesRequest
+	}
+
+	// Large payload mode: request type is resolved from pre-extracted metadata only.
+	if sharedCtx, ok := ctx.UserValue(lib.FastHTTPUserValueBifrostContext).(*schemas.BifrostContext); ok && sharedCtx != nil {
+		if isLargePayload, ok := sharedCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+			// In large payload mode never fall back to full-body unmarshal for type detection.
+			// This keeps request classification O(prefetch) instead of O(full payload).
+			if metadata, ok := sharedCtx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); ok && metadata != nil {
+				if slices.Contains(metadata.ResponseModalities, "AUDIO") || metadata.SpeechConfig {
+					return modelStr, schemas.SpeechRequest
+				}
+				if isImagenPredict || slices.Contains(metadata.ResponseModalities, "IMAGE") {
+					return modelStr, schemas.ImageGenerationRequest
+				}
+			}
+			if isImagenPredict {
+				return modelStr, schemas.ImageGenerationRequest
+			}
+			return modelStr, schemas.ResponsesRequest
+		}
+	}
+	if int64(ctx.Request.Header.ContentLength()) > getLargeRequestTypeDetectionThreshold(ctx) {
+		// Heuristic guard: skip full-body unmarshal for large requests when metadata is absent.
+		// Example failure prevented: calling ctx.Request.Body() below would force
+		// full materialization and reintroduce memory spikes.
+		if isImagenPredict {
+			return modelStr, schemas.ImageGenerationRequest
+		}
+		return modelStr, schemas.ResponsesRequest
 	}
 
 	// Create a proper GeminiGenerationRequest to detect request type

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -57,8 +58,97 @@ func isAzureSDKRequest(ctx *fasthttp.RequestCtx) bool {
 	return strings.Contains(string(ctx.UserAgent()), "AzureOpenAI")
 }
 
+func hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx *schemas.BifrostContext, req interface{}) {
+	if bifrostCtx == nil {
+		return
+	}
+	isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !isLargePayload {
+		return
+	}
+	metadata, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata)
+	if metadata == nil {
+		return
+	}
+
+	streamRequested := false
+	hasStream := metadata.StreamRequested != nil
+	if hasStream {
+		streamRequested = *metadata.StreamRequested
+	}
+
+	switch r := req.(type) {
+	case *openai.OpenAITextCompletionRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIChatRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIResponsesRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIEmbeddingRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+	case *openai.OpenAISpeechRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && streamRequested && r.StreamFormat == nil {
+			r.StreamFormat = schemas.Ptr("sse")
+		}
+	case *openai.OpenAITranscriptionRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIImageGenerationRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIImageEditRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+		if hasStream && r.Stream == nil {
+			r.Stream = schemas.Ptr(streamRequested)
+		}
+	case *openai.OpenAIImageVariationRequest:
+		if r.Model == "" {
+			r.Model = metadata.Model
+		}
+	}
+}
+
+// openAILargePayloadPreHook populates model + stream from LargePayloadMetadata
+// when body parsing is skipped under large payload mode.
+func openAILargePayloadPreHook(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+	return nil
+}
+
 func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+		hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
+
 
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
@@ -280,6 +370,27 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return &openai.OpenAIChatRequest{}
 		},
+		// Dynamic RequestParser: dispatch to the correct multipart parser for
+		// transcription/image-edit/image-variation, fall through to default JSON
+		// parsing (nil return) for everything else.
+		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
+			switch req.(type) {
+			case *openai.OpenAITranscriptionRequest:
+				return parseTranscriptionMultipartRequest(ctx, req)
+			case *openai.OpenAIImageEditRequest:
+				return parseOpenAIImageEditMultipartRequest(ctx, req)
+			case *openai.OpenAIImageVariationRequest:
+				return parseOpenAIImageVariationMultipartRequest(ctx, req)
+			default:
+				// JSON-based request — parse manually here since returning nil
+				// would mean "no error, parsing done" but body wasn't parsed.
+				rawBody := ctx.Request.Body()
+				if len(rawBody) > 0 {
+					return sonic.Unmarshal(rawBody, req)
+				}
+				return nil
+			}
+		},
 		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 			if openaiReq, ok := req.(*openai.OpenAIChatRequest); ok {
 				return &schemas.BifrostRequest{
@@ -421,9 +532,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/chat/completions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
@@ -471,9 +583,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/completions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.TextCompletionRequest
 			},
@@ -587,6 +700,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				},
 			},
 			PreCallback: func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+				hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
 				if isAzureSDKRequest(ctx) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyIsAzureUserAgent, true)
 				}
@@ -602,9 +716,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/openai/responses/input_tokens",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.CountTokensRequest
 			},
@@ -639,9 +754,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/embeddings",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.EmbeddingRequest
 			},
@@ -676,9 +792,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/audio/speech",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.SpeechRequest
 			},
@@ -718,9 +835,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/audio/transcriptions",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.TranscriptionRequest
 			},
@@ -769,9 +887,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/images/generations",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageGenerationRequest
 			},
@@ -818,9 +937,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/images/edits",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageEditRequest
 			},
@@ -867,9 +987,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		"/images/variations",
 	} {
 		routes = append(routes, RouteConfig{
-			Type:   RouteConfigTypeOpenAI,
-			Path:   pathPrefix + path,
-			Method: "POST",
+			Type:        RouteConfigTypeOpenAI,
+			Path:        pathPrefix + path,
+			Method:      "POST",
+			PreCallback: openAILargePayloadPreHook,
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ImageVariationRequest
 			},

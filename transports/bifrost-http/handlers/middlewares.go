@@ -193,7 +193,17 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		req.PathParams[keyStr] = valueStr
 	})
 
-	// Copy body
+	// Skip body copy for large payloads.
+	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
+	// because the large-payload-mode flag is only set later inside the handler hook.
+	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
+		if int64(ctx.Request.Header.ContentLength()) > threshold {
+			return
+		}
+	}
+	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return
+	}
 	body := ctx.Request.Body()
 	if len(body) > 0 {
 		req.Body = make([]byte, len(body))
@@ -239,6 +249,20 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 	resp.StatusCode = ctx.Response.StatusCode()
 	for key, value := range ctx.Response.Header.All() {
 		resp.Headers[string(key)] = string(value)
+	}
+	// Skip response body copy when large payload/response mode is active — the response is
+	// streamed directly to the client and materializing it here would spike memory.
+	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return
+	}
+	if isLargeResponse, ok := ctx.UserValue(lib.FastHTTPUserValueLargeResponseMode).(bool); ok && isLargeResponse {
+		return
+	}
+	// Also skip if response Content-Length exceeds the configured response threshold.
+	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargeResponseThreshold).(int64); ok && threshold > 0 {
+		if int64(ctx.Response.Header.ContentLength()) > threshold {
+			return
+		}
 	}
 	body := ctx.Response.Body()
 	if len(body) > 0 {

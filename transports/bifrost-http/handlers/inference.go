@@ -715,6 +715,10 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+
 	// Add pricing data to the response
 	if len(resp.Data) > 0 && h.config.ModelCatalog != nil {
 		for i, modelEntry := range resp.Data {
@@ -808,7 +812,9 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -907,7 +913,9 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -996,7 +1004,9 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1057,7 +1067,9 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1143,7 +1155,9 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1210,6 +1224,10 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.SpeechRequest(bifrostCtx, bifrostSpeechReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
 
@@ -1326,7 +1344,9 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1351,7 +1371,9 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Send successful response
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, response)
 }
 
@@ -1420,19 +1442,19 @@ func (h *CompletionHandler) handleStreamingTranscriptionRequest(ctx *fasthttp.Re
 // Bifrost handles cleanup internally for normal completion and errors, so we only cancel
 // upstream streams when write errors indicate the client has disconnected.
 func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, getStream func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError), cancel context.CancelFunc) {
-	// Set SSE headers
-	ctx.SetContentType("text/event-stream")
-	ctx.Response.Header.Set("Cache-Control", "no-cache")
-	ctx.Response.Header.Set("Connection", "keep-alive")
-
-	// Get the streaming channel
+	// Get the streaming channel — called BEFORE setting SSE headers so that
+	// provider errors return proper HTTP status codes + JSON content type.
 	stream, bifrostErr := getStream()
 	if bifrostErr != nil {
-		// Cancel stream context since we're not proceeding
 		cancel()
 		SendBifrostError(ctx, bifrostErr)
 		return
 	}
+
+	// SSE headers set only after successful stream setup
+	ctx.SetContentType("text/event-stream")
+	ctx.Response.Header.Set("Cache-Control", "no-cache")
+	ctx.Response.Header.Set("Connection", "keep-alive")
 
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -1708,6 +1730,9 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -1913,6 +1938,9 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2043,6 +2071,9 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2105,6 +2136,9 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2151,6 +2185,9 @@ func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2199,6 +2236,10 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.VideoDownloadRequest(bifrostCtx, bifrostVideoReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
 
@@ -2256,6 +2297,9 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2300,6 +2344,9 @@ func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2370,6 +2417,9 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2431,6 +2481,9 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2484,6 +2537,9 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2523,6 +2579,9 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2562,6 +2621,9 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2601,6 +2663,9 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2683,6 +2748,9 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2742,6 +2810,9 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2781,6 +2852,9 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2820,6 +2894,9 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2856,6 +2933,10 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.FileContentRequest(bifrostCtx, bifrostFileReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
 
@@ -2916,6 +2997,9 @@ func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -2968,6 +3052,9 @@ func (h *CompletionHandler) containerList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3008,6 +3095,9 @@ func (h *CompletionHandler) containerRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3048,6 +3138,9 @@ func (h *CompletionHandler) containerDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3138,6 +3231,9 @@ func (h *CompletionHandler) containerFileCreate(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3191,6 +3287,9 @@ func (h *CompletionHandler) containerFileList(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3239,6 +3338,9 @@ func (h *CompletionHandler) containerFileRetrieve(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }
 
@@ -3284,6 +3386,10 @@ func (h *CompletionHandler) containerFileContent(ctx *fasthttp.RequestCtx) {
 	resp, bifrostErr := h.client.ContainerFileContentRequest(bifrostCtx, bifrostContainerFileReq)
 	if bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
 		return
 	}
 
@@ -3337,5 +3443,8 @@ func (h *CompletionHandler) containerFileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
 	SendJSON(ctx, resp)
 }

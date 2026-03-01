@@ -267,8 +267,13 @@ func TestAccumulateToolCallsInterleavedParallel(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
 	accumulator := NewAccumulator(nil, logger)
 
-	message := &schemas.ChatMessage{
-		Role: schemas.ChatMessageRoleAssistant,
+	makeChunk := func(index int, toolCalls []schemas.ChatAssistantMessageToolCall) *ChatStreamChunk {
+		return &ChatStreamChunk{
+			ChunkIndex: index,
+			Delta: &schemas.ChatStreamResponseChoiceDelta{
+				ToolCalls: toolCalls,
+			},
+		}
 	}
 
 	makeDelta := func(index uint16, id *string, name *string, args string) schemas.ChatAssistantMessageToolCall {
@@ -289,24 +294,16 @@ func TestAccumulateToolCallsInterleavedParallel(t *testing.T) {
 	toolNameMultiply := "multiply"
 
 	// Interleaved deltas for parallel tool calls
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(0, &toolCallID0, &toolNameAdd, ""),
-	})
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(1, &toolCallID1, &toolNameMultiply, ""),
-	})
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(0, nil, nil, "{\"a\": 1"),
-	})
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(1, nil, nil, "{\"a\": 2"),
-	})
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(0, nil, nil, ", \"b\": 3}"),
-	})
-	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
-		makeDelta(1, nil, nil, ", \"b\": 4}"),
-	})
+	chunks := []*ChatStreamChunk{
+		makeChunk(0, []schemas.ChatAssistantMessageToolCall{makeDelta(0, &toolCallID0, &toolNameAdd, "")}),
+		makeChunk(1, []schemas.ChatAssistantMessageToolCall{makeDelta(1, &toolCallID1, &toolNameMultiply, "")}),
+		makeChunk(2, []schemas.ChatAssistantMessageToolCall{makeDelta(0, nil, nil, "{\"a\": 1")}),
+		makeChunk(3, []schemas.ChatAssistantMessageToolCall{makeDelta(1, nil, nil, "{\"a\": 2")}),
+		makeChunk(4, []schemas.ChatAssistantMessageToolCall{makeDelta(0, nil, nil, ", \"b\": 3}")}),
+		makeChunk(5, []schemas.ChatAssistantMessageToolCall{makeDelta(1, nil, nil, ", \"b\": 4}")}),
+	}
+
+	message := accumulator.buildCompleteMessageFromChatStreamChunks(chunks)
 
 	if message.ChatAssistantMessage == nil {
 		t.Fatal("expected ChatAssistantMessage to be initialized")
