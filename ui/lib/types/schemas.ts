@@ -642,7 +642,7 @@ export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
 export const otelConfigSchema = z
 	.object({
 		service_name: z.string().optional(),
-		collector_url: z.string().min(1, "Collector address is required"),
+		collector_url: z.string().default(""),
 		trace_type: z
 			.enum(["otel", "genai_extension", "vercel", "arize_otel"], {
 				message: "Please select a trace type",
@@ -712,17 +712,11 @@ export const otelConfigSchema = z
 			return true;
 		};
 
-		// Validate collector_url
+		// Validate collector_url format (emptiness check is at form level, gated by enabled)
 		const collectorUrl = (data.collector_url || "").trim();
-		if (!collectorUrl) {
-			ctx.addIssue({
-				code: "custom",
-				path: ["collector_url"],
-				message: "Collector address is required",
-			});
-		} else if (protocol === "http") {
+		if (collectorUrl && protocol === "http") {
 			validateHttpUrl(collectorUrl, ["collector_url"]);
-		} else if (protocol === "grpc") {
+		} else if (collectorUrl && protocol === "grpc") {
 			validateHostPort(collectorUrl, ["collector_url"], "otel-collector:4317");
 		}
 
@@ -744,27 +738,54 @@ export const otelConfigSchema = z
 	});
 
 // OTEL form schema for the OtelFormFragment
-export const otelFormSchema = z.object({
-	enabled: z.boolean().default(false),
-	otel_config: otelConfigSchema,
-});
+export const otelFormSchema = z
+	.object({
+		enabled: z.boolean().default(true),
+		otel_config: otelConfigSchema,
+	})
+	.superRefine((data, ctx) => {
+		if (data.enabled) {
+			const collectorUrl = (data.otel_config.collector_url || "").trim();
+			if (!collectorUrl) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["otel_config", "collector_url"],
+					message: "Collector address is required",
+				});
+			}
+		}
+	});
 
 // Maxim Configuration Schema
 export const maximConfigSchema = z.object({
-	api_key: z
-		.string()
-		.min(1, "API key is required")
-		.refine((key) => key.startsWith("sk_mx_"), {
-			message: "API key must start with 'sk_mx_'",
-		}),
+	api_key: z.string().default(""),
 	log_repo_id: z.string().optional(),
 });
 
 // Maxim form schema for the MaximFormFragment
-export const maximFormSchema = z.object({
-	enabled: z.boolean().default(false),
-	maxim_config: maximConfigSchema,
-});
+export const maximFormSchema = z
+	.object({
+		enabled: z.boolean().default(true),
+		maxim_config: maximConfigSchema,
+	})
+	.superRefine((data, ctx) => {
+		if (data.enabled) {
+			const apiKey = (data.maxim_config.api_key || "").trim();
+			if (!apiKey) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["maxim_config", "api_key"],
+					message: "API key is required",
+				});
+			} else if (!apiKey.startsWith("sk_mx_")) {
+				ctx.addIssue({
+					code: "custom",
+					path: ["maxim_config", "api_key"],
+					message: "API key must start with 'sk_mx_'",
+				});
+			}
+		}
+	});
 
 // Prometheus Push Gateway Configuration Schema
 export const prometheusConfigSchema = z
@@ -820,7 +841,7 @@ export const prometheusConfigSchema = z
 // Prometheus form schema for the PrometheusFormFragment
 export const prometheusFormSchema = z
 	.object({
-		enabled: z.boolean().default(false),
+		enabled: z.boolean().default(true),
 		prometheus_config: prometheusConfigSchema,
 	})
 	.superRefine((data, ctx) => {

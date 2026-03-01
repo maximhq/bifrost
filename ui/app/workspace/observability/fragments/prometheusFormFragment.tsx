@@ -31,7 +31,6 @@ interface PrometheusFormFragmentProps {
 	isDeleting?: boolean;
 	isLoading?: boolean;
 	metricsEndpoint?: string;
-	enableToggle?: { enabled: boolean; onToggle: () => void; disabled?: boolean };
 }
 
 export function PrometheusFormFragment({
@@ -41,7 +40,6 @@ export function PrometheusFormFragment({
 	isDeleting = false,
 	isLoading = false,
 	metricsEndpoint,
-	enableToggle,
 }: PrometheusFormFragmentProps) {
 	const hasPrometheusAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showPassword, setShowPassword] = useState(false);
@@ -54,7 +52,7 @@ export function PrometheusFormFragment({
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			prometheus_config: {
 				push_gateway_url: initialConfig?.push_gateway_url ?? "",
 				job_name: initialConfig?.job_name ?? "bifrost",
@@ -73,7 +71,7 @@ export function PrometheusFormFragment({
 
 	useEffect(() => {
 		form.reset({
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			prometheus_config: {
 				push_gateway_url: initialConfig?.push_gateway_url ?? "",
 				job_name: initialConfig?.job_name ?? "bifrost",
@@ -314,19 +312,23 @@ export function PrometheusFormFragment({
 
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center">
-					{enableToggle && (
-						<div className="flex items-center gap-2 py-2">
-							<span className="text-muted-foreground text-sm font-medium">Enabled</span>
-							<Switch
-								checked={enableToggle.enabled}
-								onCheckedChange={enableToggle.onToggle}
-								disabled={enableToggle.disabled || !hasPrometheusAccess}
-								data-testid="prometheus-connector-enable-toggle"
-								title={enableToggle.enabled ? "Enabled" : "Disabled"}
-								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
-							/>
-						</div>
-					)}
+					<FormField
+						control={form.control}
+						name="enabled"
+						render={({ field }) => (
+							<FormItem className="flex items-center gap-2 py-2">
+								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormControl>
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasPrometheusAccess}
+										data-testid="prometheus-connector-enable-toggle"
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					<div className="ml-auto flex justify-end space-x-2 py-2">
 						{onDelete && (
 							<Button
@@ -346,7 +348,7 @@ export function PrometheusFormFragment({
 							variant="outline"
 							onClick={() => {
 								form.reset({
-									enabled: initialConfig?.enabled ?? false,
+									enabled: initialConfig?.enabled ?? true,
 									prometheus_config: {
 										push_gateway_url: initialConfig?.push_gateway_url ?? "",
 										job_name: initialConfig?.job_name ?? "bifrost",

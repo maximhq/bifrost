@@ -53,7 +53,7 @@ test-reports
 settings.local.json
 .codex/
 .cursor/
-.claude/
+.claude/*
 !.claude/skills/
 
 # Python specific

@@ -22,10 +22,9 @@ interface MaximFormFragmentProps {
 	onDelete?: () => void;
 	isDeleting?: boolean;
 	isLoading?: boolean;
-	enableToggle?: { enabled: boolean; onToggle: () => void; disabled?: boolean };
 }
 
-export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting = false, isLoading = false, enableToggle }: MaximFormFragmentProps) {
+export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting = false, isLoading = false }: MaximFormFragmentProps) {
 	const hasMaximAccess = useRbac(RbacResource.Observability, RbacOperation.Update);
 	const [showApiKey, setShowApiKey] = useState(false);
 	const [isSaving, setIsSaving] = useState(false);
@@ -35,7 +34,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 		mode: "onChange",
 		reValidateMode: "onChange",
 		defaultValues: {
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			maxim_config: {
 				api_key: initialConfig?.api_key ?? "",
 				log_repo_id: initialConfig?.log_repo_id ?? "",
@@ -51,7 +50,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 	useEffect(() => {
 		// Reset form with new initial config when it changes
 		form.reset({
-			enabled: initialConfig?.enabled ?? false,
+			enabled: initialConfig?.enabled ?? true,
 			maxim_config: {
 				api_key: initialConfig?.api_key ?? "",
 				log_repo_id: initialConfig?.log_repo_id ?? "",
@@ -108,18 +107,23 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 
 				{/* Form Actions */}
 				<div className="flex w-full flex-row items-center">
-					{enableToggle && (
-						<div className="flex items-center gap-2 py-2">
-							<span className="text-muted-foreground text-sm font-medium">Enabled</span>
-							<Switch
-								checked={enableToggle.enabled}
-								onCheckedChange={enableToggle.onToggle}
-								disabled={enableToggle.disabled}
-								title={enableToggle.enabled ? "Enabled" : "Disabled"}
-								aria-label={enableToggle.enabled ? "Enabled" : "Disabled"}
-							/>
-						</div>
-					)}
+					<FormField
+						control={form.control}
+						name="enabled"
+						render={({ field }) => (
+							<FormItem className="flex items-center gap-2 py-2">
+								<FormLabel className="text-muted-foreground text-sm font-medium">Enabled</FormLabel>
+								<FormControl>
+									<Switch
+										checked={field.value}
+										onCheckedChange={field.onChange}
+										disabled={!hasMaximAccess}
+										data-testid="maxim-connector-enable-toggle"
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					<div className="ml-auto flex justify-end space-x-2 py-2">
 						{onDelete && (
 							<Button
@@ -138,7 +142,7 @@ export function MaximFormFragment({ initialConfig, onSave, onDelete, isDeleting 
 							variant="outline"
 							onClick={() => {
 								form.reset({
-									enabled: initialConfig?.enabled ?? false,
+									enabled: initialConfig?.enabled ?? true,
 									maxim_config: {
 										api_key: initialConfig?.api_key ?? "",
 										log_repo_id: initialConfig?.log_repo_id ?? "",
