@@ -486,6 +486,55 @@ func TestMatchesQueriesForScan(t *testing.T) {
 			queries:    []Query{},
 			expected:   true,
 		},
+		// ContainsAny / ContainsAll
+		{
+			name:       "ContainsAny true with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"green", "blue"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAny false with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"green", "yellow"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAll true with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\",\"green\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAll false with JSON array property",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAny true with scalar string property",
+			properties: map[string]interface{}{"tags": "red"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: []interface{}{"red", "green"}}},
+			expected:   true,
+		},
+		{
+			name:       "ContainsAll false with scalar string property",
+			properties: map[string]interface{}{"tags": "red"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red", "green"}}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAny malformed query value returns false",
+			properties: map[string]interface{}{"tags": "[\"red\",\"blue\"]"},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAny, Value: "red"}},
+			expected:   false,
+		},
+		{
+			name:       "ContainsAll missing field returns false",
+			properties: map[string]interface{}{},
+			queries:    []Query{{Field: "tags", Operator: QueryOperatorContainsAll, Value: []interface{}{"red"}}},
+			expected:   false,
+		},
 	}
 
 	for _, tt := range tests {

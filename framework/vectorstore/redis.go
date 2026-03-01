@@ -503,6 +503,36 @@ func matchesQueriesForScan(properties map[string]interface{}, queries []Query) b
 			if errR != nil || errQ != nil || rawF > queryF {
 				return false
 			}
+		case QueryOperatorContainsAny:
+			if !exists {
+				return false
+			}
+			propertyValues, ok := parseStringValuesForContains(raw)
+			if !ok {
+				return false
+			}
+			queryValues, ok := parseQueryContainsValues(q.Value)
+			if !ok {
+				return false
+			}
+			if !containsAnyString(propertyValues, queryValues) {
+				return false
+			}
+		case QueryOperatorContainsAll:
+			if !exists {
+				return false
+			}
+			propertyValues, ok := parseStringValuesForContains(raw)
+			if !ok {
+				return false
+			}
+			queryValues, ok := parseQueryContainsValues(q.Value)
+			if !ok {
+				return false
+			}
+			if !containsAllStrings(propertyValues, queryValues) {
+				return false
+			}
 		default:
 			// Conservative fallback: require exact match semantics for unsupported operators.
 			if !exists || rawStr != queryStr {
@@ -1172,6 +1202,85 @@ func isQuerySyntaxError(errMsg string) bool {
 		strings.Contains(errMsg, "invalid filter") ||
 		strings.Contains(errMsg, "invalid query") ||
 		strings.Contains(errMsg, "vector query clause is missing")
+}
+
+func parseStringValuesForContains(value interface{}) ([]string, bool) {
+	switch v := value.(type) {
+	case []string:
+		return v, true
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprintf("%v", item))
+		}
+		return out, true
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return []string{}, true
+		}
+		// Redis scan fallback values may be JSON-encoded arrays.
+		if strings.HasPrefix(trimmed, "[") {
+			var arr []interface{}
+			if err := json.Unmarshal([]byte(trimmed), &arr); err == nil {
+				out := make([]string, 0, len(arr))
+				for _, item := range arr {
+					out = append(out, fmt.Sprintf("%v", item))
+				}
+				return out, true
+			}
+		}
+		return []string{v}, true
+	default:
+		return []string{fmt.Sprintf("%v", v)}, true
+	}
+}
+
+func parseQueryContainsValues(value interface{}) ([]string, bool) {
+	switch v := value.(type) {
+	case []interface{}:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			out = append(out, fmt.Sprintf("%v", item))
+		}
+		return out, true
+	case []string:
+		return v, true
+	default:
+		return nil, false
+	}
+}
+
+func containsAnyString(haystack []string, needles []string) bool {
+	if len(needles) == 0 {
+		return false
+	}
+	index := make(map[string]struct{}, len(haystack))
+	for _, item := range haystack {
+		index[item] = struct{}{}
+	}
+	for _, needle := range needles {
+		if _, ok := index[needle]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAllStrings(haystack []string, needles []string) bool {
+	if len(needles) == 0 {
+		return false
+	}
+	index := make(map[string]struct{}, len(haystack))
+	for _, item := range haystack {
+		index[item] = struct{}{}
+	}
+	for _, needle := range needles {
+		if _, ok := index[needle]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // buildKey creates a Redis key by combining namespace and id.
