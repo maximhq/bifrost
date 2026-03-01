@@ -35,7 +35,12 @@
     in
     {
       nixosModules = {
-        bifrost = import ./nix/modules/bifrost.nix;
+        bifrost =
+          { pkgs, lib, ... }:
+          {
+            imports = [ ./nix/modules/bifrost.nix ];
+            services.bifrost.package = lib.mkDefault self.packages.${pkgs.system}.bifrost-http;
+          };
       };
 
       packages = forEachSupportedSystem (
