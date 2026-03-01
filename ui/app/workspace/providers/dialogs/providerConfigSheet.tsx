@@ -4,7 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ModelProvider } from "@/lib/types/config";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useEffect, useMemo, useState } from "react";
-import { ApiStructureFormFragment, GovernanceFormFragment, ProxyFormFragment } from "../fragments";
+import { ApiStructureFormFragment, GovernanceFormFragment, PricingOverridesFormFragment, ProxyFormFragment } from "../fragments";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";
 import { PerformanceFormFragment } from "../fragments/performanceFormFragment";
@@ -44,6 +44,10 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 	tabs.push({
 		id: "debugging",
 		label: "Debugging",
+	});
+	tabs.push({
+		id: "pricing",
+		label: "Pricing",
 	});
 	return tabs;
 };
@@ -107,6 +111,9 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 						</TabsContent>
 						<TabsContent value="debugging">
 							<DebuggingFormFragment provider={provider} />
+						</TabsContent>
+						<TabsContent value="pricing">
+							<PricingOverridesFormFragment provider={provider} />
 						</TabsContent>
 					</Tabs>
 				</div>
