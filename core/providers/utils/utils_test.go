@@ -2,12 +2,55 @@ package utils
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
+
+func TestRewriteJSONModelValue(t *testing.T) {
+	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
+	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")
+	if !changed {
+		t.Fatal("expected model rewrite to occur")
+	}
+	if strings.Contains(string(out), `"model":"openai/gpt-5"`) {
+		t.Fatalf("expected prefixed model to be removed, got: %s", string(out))
+	}
+	if !strings.Contains(string(out), `"model":"gpt-5"`) {
+		t.Fatalf("expected rewritten model, got: %s", string(out))
+	}
+}
+
+func TestApplyLargePayloadRequestBodyWithModelNormalization(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	payload := `{"model":"openai/gpt-5","messages":[{"role":"user","content":"hello"}]}`
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(
+		schemas.BifrostContextKeyLargePayloadReader,
+		strings.NewReader(payload),
+	)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{
+		Model: "openai/gpt-5",
+	})
+
+	req := &fasthttp.Request{}
+	if !ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.OpenAI) {
+		t.Fatal("expected large payload body to be applied")
+	}
+
+	body := string(req.Body())
+	if strings.Contains(body, "openai/gpt-5") {
+		t.Fatalf("expected rewritten model in body, got: %s", body)
+	}
+	if !strings.Contains(body, `"model":"gpt-5"`) {
+		t.Fatalf("expected normalized model in body, got: %s", body)
+	}
+}
 
 // TestHandleProviderAPIError_RawResponseIncluded verifies that HandleProviderAPIError
 // always includes the raw response body in BifrostError.ExtraFields.RawResponse
