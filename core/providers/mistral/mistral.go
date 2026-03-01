@@ -453,11 +453,16 @@ func (provider *MistralProvider) TranscriptionStream(ctx *schemas.BifrostContext
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		// Setup cancellation handler to close body stream on ctx cancellation
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(resp.BodyStream())
+		scanner := bufio.NewScanner(reader)
 		// Increase buffer size to handle large chunks
 		buf := make([]byte, 0, 64*1024) // 64KB initial buffer
 		scanner.Buffer(buf, 1024*1024)  // Allow up to 1MB tokens

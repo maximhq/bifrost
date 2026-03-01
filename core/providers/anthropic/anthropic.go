@@ -537,11 +537,16 @@ func HandleAnthropicChatCompletionStreaming(
 			return
 		}
 
-		// Setup cancellation handler to close body stream on ctx cancellation
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(resp.BodyStream())
+		scanner := bufio.NewScanner(reader)
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
@@ -969,9 +974,6 @@ func HandleAnthropicResponsesStream(
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		// Setup cancellation handler to close body stream on ctx cancellation
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
-		defer stopCancellation()
 		// If body stream is nil, return an error
 		if resp.BodyStream() == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
@@ -984,7 +986,18 @@ func HandleAnthropicResponsesStream(
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.BodyStream())
+		// Decompress gzip-encoded streams on-the-fly. Returns a reader that is either
+		// the gzip reader (if gzip-encoded) or the original body stream. Does NOT modify
+		// resp, so ReleaseStreamingResponse can properly drain the underlying connection.
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
+		defer stopCancellation()
+
+		scanner := bufio.NewScanner(reader)
 		chunkIndex := 0
 
 		startTime := time.Now()
@@ -996,7 +1009,7 @@ func HandleAnthropicResponsesStream(
 		// Create stream state for stateful conversions
 		streamState := acquireAnthropicResponsesStreamState()
 		defer releaseAnthropicResponsesStreamState(streamState)
-
+		
 		// Set structured output tool name if present
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			streamState.StructuredOutputToolName = toolName

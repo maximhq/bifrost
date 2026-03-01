@@ -542,7 +542,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	bodyStream, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -562,8 +562,13 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		startTime := time.Now()
@@ -571,7 +576,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		chunkIndex := 0
 
 		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
+		scanner := bufio.NewScanner(reader)
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
@@ -917,7 +922,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	bodyStream, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -937,8 +942,13 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		startTime := time.Now()
@@ -946,7 +956,7 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		chunkIndex := 0
 
 		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
+		scanner := bufio.NewScanner(reader)
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
@@ -1368,11 +1378,16 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		if resp.BodyStream() == nil {
+		if reader == nil {
 			bifrostErr := providerUtils.NewBifrostOperationError(
 				"Provider returned an empty response",
 				fmt.Errorf("provider returned an empty response"),
@@ -1383,7 +1398,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			return
 		}
 
-		scanner := bufio.NewScanner(resp.BodyStream())
+		scanner := bufio.NewScanner(reader)
 		startTime := time.Now()
 		sequenceNumber := 0
 		messageID := prediction.ID
@@ -1957,7 +1972,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	bodyStream, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -1977,8 +1992,13 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		startTime := time.Now()
@@ -1986,7 +2006,7 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		chunkIndex := 0
 
 		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
+		scanner := bufio.NewScanner(reader)
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
@@ -2390,7 +2410,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	streamURL := *prediction.URLs.Stream
 
 	// Connect to stream URL
-	bodyStream, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
+	_, resp, bifrostErr := listenToReplicateStreamURL(provider.client, streamURL, key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -2410,8 +2430,13 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
 
-		// Setup cancellation handler
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		startTime := time.Now()
@@ -2419,7 +2444,7 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		chunkIndex := 0
 
 		// Setup scanner to read SSE stream
-		scanner := bufio.NewScanner(bodyStream)
+		scanner := bufio.NewScanner(reader)
 		buf := make([]byte, 0, 1024*1024)
 		scanner.Buffer(buf, 10*1024*1024)
 
