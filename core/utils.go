@@ -81,13 +81,31 @@ func Ptr[T any](v T) *T {
 }
 
 // providerRequiresKey returns true if the given provider requires an API key for authentication.
-// Some providers like Ollama, SGL, and vLLM are keyless and don't require API keys.
-func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig) bool {
+// Some providers like SGL, and vLLM are keyless and don't require API keys.
+// Ollama is keyless when targeting a local instance, but requires a key for remote instances.
+func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schemas.CustomProviderConfig, baseURL string) bool {
 	// Keyless custom providers are not allowed for Bedrock.
 	if customConfig != nil && customConfig.IsKeyLess && customConfig.BaseProviderType != schemas.Bedrock {
 		return false
 	}
+
+	if providerKey == schemas.Ollama {
+		return !isLocalBaseURL(baseURL)
+	}
 	return !IsKeylessProvider(providerKey)
+}
+
+// isLocalBaseURL returns true if the given base URL points to a local/loopback address.
+func isLocalBaseURL(baseURL string) bool {
+	if baseURL == "" {
+		return true
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+
+	return isLocalhost(parsed.Hostname())
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
@@ -232,7 +250,7 @@ func IsStandardProvider(providerKey schemas.ModelProvider) bool {
 
 // IsKeylessProvider reports whether providerKey is a keyless provider.
 func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Ollama || providerKey == schemas.SGL
+	return providerKey == schemas.SGL
 }
 
 // IsStreamRequestType returns true if the given request type is a stream request.
