@@ -379,12 +379,24 @@
               "type": "object",
               "properties": {
                 "toolExecutionTimeout": {
-                  "type": "integer",
-                  "minimum": 1
+                  "oneOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    {
+                      "type": "string",
+                      "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$"
+                    }
+                  ]
                 },
                 "maxAgentDepth": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "codeModeBindingLevel": {
+                  "type": "string",
+                  "enum": ["server", "tool"]
                 }
               }
             }
@@ -2377,6 +2389,9 @@
           "required": [
             "url"
           ]
+        },
+        "isCodeModeClient": {
+          "type": "boolean"
         }
       },
       "required": [
