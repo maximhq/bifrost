@@ -213,6 +213,7 @@ const (
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
 	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
+	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers" // map[string]string (set by provider streaming handlers - DO NOT SET THIS MANUALLY)
 )
 
 // RoutingEngine constants
@@ -715,17 +716,18 @@ type BifrostMCPResponse struct {
 
 // BifrostResponseExtraFields contains additional fields in a response.
 type BifrostResponseExtraFields struct {
-	RequestType     RequestType        `json:"request_type"`
-	Provider        ModelProvider      `json:"provider,omitempty"`
-	ModelRequested  string             `json:"model_requested,omitempty"`
-	ModelDeployment string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
-	Latency         int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
-	ChunkIndex      int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
-	RawRequest      interface{}        `json:"raw_request,omitempty"`
-	RawResponse     interface{}        `json:"raw_response,omitempty"`
-	CacheDebug      *BifrostCacheDebug `json:"cache_debug,omitempty"`
-	ParseErrors     []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
-	LiteLLMCompat   bool               `json:"litellm_compat,omitempty"`
+	RequestType             RequestType        `json:"request_type"`
+	Provider                ModelProvider      `json:"provider,omitempty"`
+	ModelRequested          string             `json:"model_requested,omitempty"`
+	ModelDeployment         string             `json:"model_deployment,omitempty"` // only present for providers which use model deployments (e.g. Azure, Bedrock)
+	Latency                 int64              `json:"latency"`                    // in milliseconds (for streaming responses this will be each chunk latency, and the last chunk latency will be the total latency)
+	ChunkIndex              int                `json:"chunk_index"`                // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
+	RawRequest              interface{}        `json:"raw_request,omitempty"`
+	RawResponse             interface{}        `json:"raw_response,omitempty"`
+	CacheDebug              *BifrostCacheDebug `json:"cache_debug,omitempty"`
+	ParseErrors             []BatchError       `json:"parse_errors,omitempty"` // errors encountered while parsing JSONL batch results
+	LiteLLMCompat           bool               `json:"litellm_compat,omitempty"`
+	ProviderResponseHeaders map[string]string  `json:"provider_response_headers,omitempty"` // HTTP response headers from the provider (filtered to exclude transport-level headers)
 }
 
 type BifrostMCPResponseExtraFields struct {
