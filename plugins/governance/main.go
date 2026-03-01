@@ -316,7 +316,7 @@ func (p *GovernancePlugin) GetName() string {
 func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference bool) {
 	p.cfgMutex.Lock()
 	defer p.cfgMutex.Unlock()
-	p.isVkMandatory = &enforceAuthOnInference
+	p.isVkMandatory = bifrost.Ptr(enforceAuthOnInference)
 }
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
@@ -849,8 +849,16 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
 	// Check if authentication is mandatory (either VK or user auth)
+	// Checking if the virtual key is valid or not
+	isVirtualKeyValid := false
+	if evaluationRequest.VirtualKey != "" {
+		_, exists := p.store.GetVirtualKey(evaluationRequest.VirtualKey)
+		if exists {
+			isVirtualKeyValid = true
+		}
+	}
 	p.cfgMutex.RLock()
-	if evaluationRequest.VirtualKey == "" && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
@@ -863,8 +871,11 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 				Message: message,
 			},
 		}
+	} else if !isVirtualKeyValid && (p.isVkMandatory == nil || !*p.isVkMandatory) {
+		return nil, nil
 	}
 	p.cfgMutex.RUnlock()
+
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
 	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)
 
