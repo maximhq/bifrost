@@ -195,6 +195,7 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	if key != "" && !IsClaudeCodeMaxMode(ctx) {
 		if isOAuth {
 			req.Header.Set("Authorization", "Bearer "+key)
+			appendBetaHeader(req, AnthropicOAuthBetaHeader)
 		} else {
 			req.Header.Set("x-api-key", key)
 		}
@@ -509,6 +510,14 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 	if keyValue != "" && !IsClaudeCodeMaxMode(ctx) {
 		setAnthropicAuthHeaderMap(headers, keyValue, key)
+	}
+
+	if isOAuthKey(key) && !IsClaudeCodeMaxMode(ctx) {
+		if existing := headers["anthropic-beta"]; existing != "" {
+			headers["anthropic-beta"] = existing + "," + AnthropicOAuthBetaHeader
+		} else {
+			headers["anthropic-beta"] = AnthropicOAuthBetaHeader
+		}
 	}
 
 	// Use shared Anthropic streaming logic
@@ -964,6 +973,14 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	if keyValue != "" && !IsClaudeCodeMaxMode(ctx) {
 		setAnthropicAuthHeaderMap(headers, keyValue, key)
+	}
+
+	if isOAuthKey(key) && !IsClaudeCodeMaxMode(ctx) {
+		if existing := headers["anthropic-beta"]; existing != "" {
+			headers["anthropic-beta"] = existing + "," + AnthropicOAuthBetaHeader
+		} else {
+			headers["anthropic-beta"] = AnthropicOAuthBetaHeader
+		}
 	}
 
 	return HandleAnthropicResponsesStream(
