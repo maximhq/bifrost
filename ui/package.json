@@ -58,7 +58,7 @@
 		"react-select": "5.10.2",
 		"recharts": "3.1.2",
 		"sonner": "2.0.7",
-		"tailwind-merge": "3.3.1",
+		"tailwind-merge": "3.5.0",
 		"uuid": "12.0.0",
 		"zod": "4.2.1",
 		"zustand": "5.0.8"
