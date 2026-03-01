@@ -178,7 +178,7 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 		Fallbacks: schemas.ParseFallbacks(request.Fallbacks),
 	}
 
-	// sdk request contains multiple embedding requests with same parameters but different text fields
+	// SDK batch embedding request contains multiple embedding requests with same parameters but different text fields.
 	if len(request.Requests) > 0 {
 		var texts []string
 		for _, req := range request.Requests {
@@ -188,14 +188,14 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 						texts = append(texts, part.Text)
 					}
 				}
-				if len(texts) > 0 {
-					bifrostReq.Input = &schemas.EmbeddingInput{}
-					if len(texts) == 1 {
-						bifrostReq.Input.Text = &texts[0]
-					} else {
-						bifrostReq.Input.Texts = texts
-					}
-				}
+			}
+		}
+		if len(texts) > 0 {
+			bifrostReq.Input = &schemas.EmbeddingInput{}
+			if len(texts) == 1 {
+				bifrostReq.Input.Text = &texts[0]
+			} else {
+				bifrostReq.Input.Texts = texts
 			}
 		}
 
@@ -218,6 +218,27 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 				if embeddingRequest.Title != nil {
 					bifrostReq.Params.ExtraParams["title"] = embeddingRequest.Title
 				}
+			}
+		}
+	}
+
+	// Generation-style requests (e.g., non-Imagen :predict) carry text in contents[].parts[].
+	// If no SDK requests[] were provided, derive embedding input from contents.
+	if bifrostReq.Input == nil {
+		var texts []string
+		for _, content := range request.Contents {
+			for _, part := range content.Parts {
+				if part != nil && part.Text != "" {
+					texts = append(texts, part.Text)
+				}
+			}
+		}
+		if len(texts) > 0 {
+			bifrostReq.Input = &schemas.EmbeddingInput{}
+			if len(texts) == 1 {
+				bifrostReq.Input.Text = &texts[0]
+			} else {
+				bifrostReq.Input.Texts = texts
 			}
 		}
 	}
