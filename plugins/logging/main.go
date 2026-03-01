@@ -792,7 +792,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				logMsg.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			}
 			if logMsg.UpdateData != nil && p.pricingManager != nil {
-				cost := p.pricingManager.CalculateCostWithCacheDebug(result)
+				cost := p.pricingManager.CalculateCost(result)
 				logMsg.UpdateData.Cost = &cost
 			}
 			// Here we pass plugin level context for background processing to avoid context cancellation
