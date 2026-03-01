@@ -76,7 +76,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -161,7 +161,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -231,7 +231,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -296,7 +296,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -341,7 +341,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -383,7 +383,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -435,7 +435,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -467,7 +467,7 @@ jobs:
           fetch-tags: true
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -514,7 +514,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -599,7 +599,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -697,7 +697,7 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
@@ -797,7 +797,7 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26"
 
