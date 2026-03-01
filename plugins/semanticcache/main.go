@@ -36,11 +36,12 @@ type Config struct {
 	Dimension            int           `json:"dimension"`                        // Dimension for vector store
 
 	// Advanced caching behavior
-	DefaultCacheKey              string `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
-	ConversationHistoryThreshold int    `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
-	CacheByModel                 *bool  `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
-	CacheByProvider              *bool  `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
-	ExcludeSystemPrompt          *bool  `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
+	DefaultCacheKey              string     `json:"default_cache_key,omitempty"`              // Default cache key used when no per-request key is provided (optional, caching is disabled when empty and no per-request key is set)
+	DefaultCacheType             *CacheType `json:"default_cache_type,omitempty"`              // Default cache type for lookups and storage: "direct", "semantic", or unset for both (default: unset — tries direct first, then semantic)
+	ConversationHistoryThreshold int        `json:"conversation_history_threshold,omitempty"` // Skip caching for requests with more than this number of messages in the conversation history (default: 3)
+	CacheByModel                 *bool      `json:"cache_by_model,omitempty"`                // Include model in cache key (default: true)
+	CacheByProvider              *bool      `json:"cache_by_provider,omitempty"`             // Include provider in cache key (default: true)
+	ExcludeSystemPrompt          *bool      `json:"exclude_system_prompt,omitempty"`         // Exclude system prompt in cache key (default: false)
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for semantic cache Config.
@@ -60,6 +61,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		CacheByModel                 *bool         `json:"cache_by_model,omitempty"`
 		CacheByProvider              *bool         `json:"cache_by_provider,omitempty"`
 		ExcludeSystemPrompt          *bool         `json:"exclude_system_prompt,omitempty"`
+		DefaultCacheType             *CacheType    `json:"default_cache_type,omitempty"`
 	}
 
 	var temp TempConfig
@@ -79,6 +81,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.ConversationHistoryThreshold = temp.ConversationHistoryThreshold
 	c.Threshold = temp.Threshold
 	c.ExcludeSystemPrompt = temp.ExcludeSystemPrompt
+	c.DefaultCacheType = temp.DefaultCacheType
 	// Handle TTL field with custom parsing for VectorStore-backed cache behavior
 	if temp.TTL != nil {
 		switch v := temp.TTL.(type) {
@@ -263,6 +266,29 @@ const (
 	CacheTypeSemantic CacheType = "semantic"
 )
 
+func (ct CacheType) IsValid() bool {
+	return ct == CacheTypeDirect || ct == CacheTypeSemantic
+}
+
+// resolveEffectiveCacheType determines the cache type to use for a request.
+// Per-request context value takes precedence over the config default.
+// Invalid per-request values are logged and ignored, falling back to config default.
+func (plugin *Plugin) resolveEffectiveCacheType(ctx *schemas.BifrostContext) *CacheType {
+	if ctx.Value(CacheTypeKey) != nil {
+		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
+		if !ok {
+			plugin.logger.Warn(PluginLoggerPrefix + " Cache type context value is not a CacheType, using default cache type")
+			return plugin.config.DefaultCacheType
+		}
+		if !cacheTypeVal.IsValid() {
+			plugin.logger.Warn(PluginLoggerPrefix + " Invalid cache type '" + string(cacheTypeVal) + "', using default cache type")
+			return plugin.config.DefaultCacheType
+		}
+		return &cacheTypeVal
+	}
+	return plugin.config.DefaultCacheType
+}
+
 // Init creates a new semantic cache plugin instance with the provided configuration.
 // It uses the VectorStore abstraction for cache operations and returns a configured plugin.
 //
@@ -308,6 +334,9 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, store vect
 	}
 	if config.CacheByProvider == nil {
 		config.CacheByProvider = bifrost.Ptr(true)
+	}
+	if config.DefaultCacheType != nil && *config.DefaultCacheType != CacheTypeDirect && *config.DefaultCacheType != CacheTypeSemantic {
+		return nil, fmt.Errorf("invalid default_cache_type '%s': must be 'direct', 'semantic', or omitted for both", *config.DefaultCacheType)
 	}
 
 	plugin := &Plugin{
@@ -414,16 +443,9 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	ctx.SetValue(requestModelKey, model)
 	ctx.SetValue(requestProviderKey, provider)
 
-	performDirectSearch, performSemanticSearch := true, true
-	if ctx.Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
-		if !ok {
-			plugin.logger.Warn(PluginLoggerPrefix + " Cache type is not a CacheType, using all available cache types")
-		} else {
-			performDirectSearch = cacheTypeVal == CacheTypeDirect
-			performSemanticSearch = cacheTypeVal == CacheTypeSemantic
-		}
-	}
+	effectiveCacheType := plugin.resolveEffectiveCacheType(ctx)
+	performDirectSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
+	performSemanticSearch := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
 
 	if performDirectSearch {
 		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
@@ -548,31 +570,16 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if !ok {
 		return res, nil, nil
 	}
-	// Check cache type to optimize embedding handling
 	var embedding []float32
 	var hash string
-	var shouldStoreEmbeddings = true
-	var shouldStoreHash = true
+	effectiveCacheType := plugin.resolveEffectiveCacheType(ctx)
 
-	if ctx.Value(CacheTypeKey) != nil {
-		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
-		if ok {
-			if cacheTypeVal == CacheTypeDirect {
-				// For direct-only caching, skip embedding operations entirely
-				// unless the vector store requires vectors for all entries
-				if plugin.store.RequiresVectors() {
-					// Vector stores like Qdrant and Pinecone require vectors for all entries
-					// Keep embeddings enabled for storage, but lookups will still use direct hash matching
-					plugin.logger.Debug(PluginLoggerPrefix + " Vector store requires vectors, keeping embedding generation enabled for storage")
-				} else {
-					shouldStoreEmbeddings = false
-					plugin.logger.Debug(PluginLoggerPrefix + " Skipping embedding operations for direct-only cache type")
-				}
-			} else if cacheTypeVal == CacheTypeSemantic {
-				shouldStoreHash = false
-				plugin.logger.Debug(PluginLoggerPrefix + " Skipping hash operations for semantic cache type")
-			}
-		}
+	shouldStoreHash := effectiveCacheType == nil || *effectiveCacheType == CacheTypeDirect
+	shouldStoreEmbeddings := effectiveCacheType == nil || *effectiveCacheType == CacheTypeSemantic
+
+	if !shouldStoreEmbeddings && plugin.store.RequiresVectors() {
+		shouldStoreEmbeddings = true
+		plugin.logger.Debug(PluginLoggerPrefix + " Vector store requires vectors, keeping embedding generation enabled for storage")
 	}
 
 	if shouldStoreHash {

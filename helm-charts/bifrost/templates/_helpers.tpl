@@ -731,6 +731,9 @@ false
 {{- if $inputConfig.default_cache_key }}
 {{- $_ := set $scConfig "default_cache_key" $inputConfig.default_cache_key }}
 {{- end }}
+{{- if $inputConfig.default_cache_type }}
+{{- $_ := set $scConfig "default_cache_type" $inputConfig.default_cache_type }}
+{{- end }}
 {{- if hasKey $inputConfig "conversation_history_threshold" }}
 {{- $_ := set $scConfig "conversation_history_threshold" $inputConfig.conversation_history_threshold }}
 {{- end }}
