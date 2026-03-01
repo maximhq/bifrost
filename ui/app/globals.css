@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+@source "../app/**/*.tsx";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -212,4 +214,8 @@ body {
 	padding: 1rem;
 	padding-inline: 0.5rem;
 
+}
+
+[data-radix-scroll-area-viewport].no-table > div {
+	display: block !important;
 }

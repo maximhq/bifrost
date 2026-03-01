@@ -23,6 +23,7 @@ import {
 	Network,
 	PanelLeftClose,
 	Puzzle,
+	Router,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -31,6 +32,7 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -38,7 +40,7 @@ import {
 	UserRoundCheck,
 	Users,
 	Wallet,
-	WalletCards
+	WalletCards,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -175,7 +177,7 @@ const SidebarItemView = ({
 	pathname,
 	router,
 	isSidebarCollapsed,
-	expandSidebar,	
+	expandSidebar,
 	highlightedUrl,
 }: {
 	item: SidebarItem;
@@ -187,7 +189,7 @@ const SidebarItemView = ({
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
-	expandSidebar: () => void;	
+	expandSidebar: () => void;
 	highlightedUrl?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
@@ -616,8 +618,23 @@ export default function AppSidebar() {
 				url: "/workspace/prompt-repo",
 				icon: FolderGit,
 				description: "Prompt repository",
-				// Public access intentional — feature is "coming soon" with no sensitive data; RBAC will be added at GA
 				hasAccess: true,
+				subItems: [
+					{
+						title: "Prompts",
+						url: "/workspace/prompt-repo/prompts",
+						icon: SquareTerminal,
+						description: "Manage prompts",
+						hasAccess: true,
+					},
+					{
+						title: "Deployments",
+						url: "/workspace/prompt-repo/deployments",
+						icon: Router,
+						description: "Manage deployment",
+						hasAccess: true,
+					},
+				],
 			},
 			{
 				title: "Evals",
