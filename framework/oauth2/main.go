@@ -1,6 +1,7 @@
 package oauth2
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -111,12 +112,22 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 	}
 
 	// Call OAuth provider's token endpoint with refresh_token
-	newTokenResponse, err := p.exchangeRefreshToken(
-		oauthConfig.TokenURL,
-		oauthConfig.ClientID,
-		oauthConfig.ClientSecret,
-		token.RefreshToken,
-	)
+	// Use JSON body for Anthropic OAuth (no client_secret, anthropic token URL)
+	var newTokenResponse *schemas.OAuth2TokenExchangeResponse
+	if isAnthropicOAuthConfig(oauthConfig) {
+		newTokenResponse, err = p.refreshAnthropicToken(
+			oauthConfig.TokenURL,
+			oauthConfig.ClientID,
+			token.RefreshToken,
+		)
+	} else {
+		newTokenResponse, err = p.exchangeRefreshToken(
+			oauthConfig.TokenURL,
+			oauthConfig.ClientID,
+			oauthConfig.ClientSecret,
+			token.RefreshToken,
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("token refresh failed: %w", err)
 	}
@@ -674,9 +685,213 @@ func (p *OAuth2Provider) callTokenEndpoint(tokenURL string, data url.Values) (*s
 
 // generateSecureRandomString generates a cryptographically secure random string
 func generateSecureRandomString(length int) (string, error) {
-	bytes := make([]byte, length)
-	if _, err := rand.Read(bytes); err != nil {
+	b := make([]byte, length)
+	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return base64.URLEncoding.EncodeToString(bytes)[:length], nil
+	return base64.URLEncoding.EncodeToString(b)[:length], nil
+}
+
+// Anthropic OAuth constants
+const (
+	AnthropicOAuthClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	AnthropicOAuthRedirectURI = "https://console.anthropic.com/oauth/code/callback"
+	AnthropicOAuthScopes      = "org:create_api_key user:profile user:inference"
+	AnthropicOAuthAuthorizeURL = "https://claude.ai/oauth/authorize"
+	AnthropicOAuthTokenURL    = "https://console.anthropic.com/v1/oauth/token"
+)
+
+// isAnthropicOAuthConfig detects Anthropic OAuth configs by checking
+// if client_secret is empty and token URL contains "anthropic".
+func isAnthropicOAuthConfig(config *tables.TableOauthConfig) bool {
+	return config.ClientSecret == "" && strings.Contains(config.TokenURL, "anthropic")
+}
+
+// callTokenEndpointJSON makes a POST request to the OAuth token endpoint using JSON body
+// instead of form-encoded. Required for Anthropic's OAuth endpoints.
+func (p *OAuth2Provider) callTokenEndpointJSON(tokenURL string, data map[string]string) (*schemas.OAuth2TokenExchangeResponse, error) {
+	jsonBody, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal token request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", tokenURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResponse schemas.OAuth2TokenExchangeResponse
+	if err := json.Unmarshal(body, &tokenResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if tokenResponse.AccessToken == "" {
+		return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
+	}
+
+	return &tokenResponse, nil
+}
+
+// InitiateAnthropicOAuthFlow creates an Anthropic OAuth config and returns the authorization URL.
+// Uses hardcoded Anthropic OAuth constants, PKCE with state=code_verifier, and adds code=true param.
+func (p *OAuth2Provider) InitiateAnthropicOAuthFlow(ctx context.Context) (*schemas.OAuth2FlowInitiation, error) {
+	// Generate PKCE challenge
+	codeVerifier, codeChallenge, err := GeneratePKCEChallenge()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate PKCE challenge: %w", err)
+	}
+
+	// For Anthropic, state = code_verifier
+	state := codeVerifier
+
+	oauthConfigID := uuid.New().String()
+	scopes := strings.Split(AnthropicOAuthScopes, " ")
+	scopesJSON, err := json.Marshal(scopes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize scopes: %w", err)
+	}
+
+	expiresAt := time.Now().Add(15 * time.Minute)
+	oauthConfigRecord := &tables.TableOauthConfig{
+		ID:            oauthConfigID,
+		ClientID:      AnthropicOAuthClientID,
+		ClientSecret:  "", // No client secret for Anthropic OAuth
+		AuthorizeURL:  AnthropicOAuthAuthorizeURL,
+		TokenURL:      AnthropicOAuthTokenURL,
+		RedirectURI:   AnthropicOAuthRedirectURI,
+		Scopes:        string(scopesJSON),
+		State:         state,
+		CodeVerifier:  codeVerifier,
+		CodeChallenge: codeChallenge,
+		Status:        "pending",
+		ExpiresAt:     expiresAt,
+	}
+
+	if err := p.configStore.CreateOauthConfig(ctx, oauthConfigRecord); err != nil {
+		return nil, fmt.Errorf("failed to create oauth config: %w", err)
+	}
+
+	// Build authorize URL with PKCE and Anthropic-specific params
+	params := url.Values{}
+	params.Set("response_type", "code")
+	params.Set("client_id", AnthropicOAuthClientID)
+	params.Set("redirect_uri", AnthropicOAuthRedirectURI)
+	params.Set("state", state)
+	params.Set("code_challenge", codeChallenge)
+	params.Set("code_challenge_method", "S256")
+	params.Set("scope", AnthropicOAuthScopes)
+	params.Set("code", "true") // Anthropic-specific: display code to user
+
+	authURL := AnthropicOAuthAuthorizeURL + "?" + params.Encode()
+
+	logger.Debug("Anthropic OAuth flow initiated: oauth_config_id: %s", oauthConfigID)
+
+	return &schemas.OAuth2FlowInitiation{
+		OauthConfigID: oauthConfigID,
+		AuthorizeURL:  authURL,
+		State:         state,
+		ExpiresAt:     expiresAt,
+	}, nil
+}
+
+// CompleteAnthropicOAuthFlow exchanges an Anthropic authorization code for tokens.
+// Handles the code#state format (splits on #), uses JSON POST to Anthropic token endpoint.
+func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode string, oauthConfigID string) error {
+	// Load oauth_config by ID
+	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
+	if err != nil {
+		return fmt.Errorf("failed to lookup oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		return fmt.Errorf("oauth config not found: %s", oauthConfigID)
+	}
+
+	// Check expiry
+	if time.Now().After(oauthConfig.ExpiresAt) {
+		oauthConfig.Status = "expired"
+		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+		return fmt.Errorf("oauth flow expired")
+	}
+
+	// Parse code#state format
+	code := rawCode
+	if parts := strings.SplitN(rawCode, "#", 2); len(parts) == 2 {
+		code = parts[0]
+	}
+
+	// Exchange code for tokens via JSON POST
+	tokenResponse, err := p.callTokenEndpointJSON(oauthConfig.TokenURL, map[string]string{
+		"grant_type":    "authorization_code",
+		"code":          code,
+		"state":         oauthConfig.State,
+		"client_id":     oauthConfig.ClientID,
+		"redirect_uri":  oauthConfig.RedirectURI,
+		"code_verifier": oauthConfig.CodeVerifier,
+	})
+	if err != nil {
+		oauthConfig.Status = "failed"
+		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+		return fmt.Errorf("token exchange failed: %w", err)
+	}
+
+	// Parse scopes
+	var scopes []string
+	if tokenResponse.Scope != "" {
+		scopes = strings.Split(tokenResponse.Scope, " ")
+	}
+	scopesJSON, _ := json.Marshal(scopes)
+
+	// Create oauth_token record
+	tokenID := uuid.New().String()
+	tokenRecord := &tables.TableOauthToken{
+		ID:           tokenID,
+		AccessToken:  strings.TrimSpace(tokenResponse.AccessToken),
+		RefreshToken: strings.TrimSpace(tokenResponse.RefreshToken),
+		TokenType:    tokenResponse.TokenType,
+		ExpiresAt:    time.Now().Add(time.Duration(tokenResponse.ExpiresIn) * time.Second),
+		Scopes:       string(scopesJSON),
+	}
+
+	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
+		return fmt.Errorf("failed to create oauth token: %w", err)
+	}
+
+	// Update oauth_config: link token and set status="authorized"
+	oauthConfig.TokenID = &tokenID
+	oauthConfig.Status = "authorized"
+	if err := p.configStore.UpdateOauthConfig(ctx, oauthConfig); err != nil {
+		return fmt.Errorf("failed to update oauth config: %w", err)
+	}
+
+	logger.Debug("Anthropic OAuth flow completed: oauth_config_id: %s", oauthConfigID)
+	return nil
+}
+
+// refreshAnthropicToken refreshes an Anthropic OAuth token using JSON body.
+// Only sends grant_type, refresh_token, client_id (no client_secret).
+func (p *OAuth2Provider) refreshAnthropicToken(tokenURL, clientID, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
+	return p.callTokenEndpointJSON(tokenURL, map[string]string{
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
+		"client_id":     clientID,
+	})
 }

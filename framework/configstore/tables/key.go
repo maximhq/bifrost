@@ -60,6 +60,9 @@ type TableKey struct {
 	VLLMUrl       *schemas.EnvVar `gorm:"type:text" json:"vllm_url,omitempty"`
 	VLLMModelName *string         `gorm:"type:varchar(255)" json:"vllm_model_name,omitempty"`
 
+	// Anthropic OAuth config fields
+	AnthropicOAuthConfigID *string `gorm:"type:varchar(255)" json:"anthropic_oauth_config_id,omitempty"`
+
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
 
@@ -73,8 +76,9 @@ type TableKey struct {
 	AzureKeyConfig     *schemas.AzureKeyConfig     `gorm:"-" json:"azure_key_config,omitempty"`
 	VertexKeyConfig    *schemas.VertexKeyConfig    `gorm:"-" json:"vertex_key_config,omitempty"`
 	BedrockKeyConfig   *schemas.BedrockKeyConfig   `gorm:"-" json:"bedrock_key_config,omitempty"`
-	ReplicateKeyConfig *schemas.ReplicateKeyConfig `gorm:"-" json:"replicate_key_config,omitempty"`
-	VLLMKeyConfig      *schemas.VLLMKeyConfig      `gorm:"-" json:"vllm_key_config,omitempty"`
+	ReplicateKeyConfig      *schemas.ReplicateKeyConfig      `gorm:"-" json:"replicate_key_config,omitempty"`
+	VLLMKeyConfig           *schemas.VLLMKeyConfig           `gorm:"-" json:"vllm_key_config,omitempty"`
+	AnthropicOAuthKeyConfig *schemas.AnthropicOAuthKeyConfig `gorm:"-" json:"anthropic_oauth_key_config,omitempty"`
 }
 
 // TableName sets the table name for each model
@@ -305,6 +309,17 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	} else {
 		k.VLLMUrl = nil
 		k.VLLMModelName = nil
+	}
+
+	if k.AnthropicOAuthKeyConfig != nil {
+		if k.AnthropicOAuthKeyConfig.OAuthConfigID != "" {
+			id := k.AnthropicOAuthKeyConfig.OAuthConfigID
+			k.AnthropicOAuthConfigID = &id
+		} else {
+			k.AnthropicOAuthConfigID = nil
+		}
+	} else {
+		k.AnthropicOAuthConfigID = nil
 	}
 
 	// Encrypt sensitive fields after serialization
@@ -574,6 +589,12 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VLLMKeyConfig = vllmConfig
 	} else {
 		k.VLLMKeyConfig = nil
+	}
+	// Reconstruct Anthropic OAuth config if field is present
+	if k.AnthropicOAuthConfigID != nil && *k.AnthropicOAuthConfigID != "" {
+		k.AnthropicOAuthKeyConfig = &schemas.AnthropicOAuthKeyConfig{
+			OAuthConfigID: *k.AnthropicOAuthConfigID,
+		}
 	}
 	return nil
 }

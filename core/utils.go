@@ -110,6 +110,15 @@ func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.
 		key.AzureKeyConfig.TenantID.GetValue() != ""
 }
 
+// hasAnthropicOAuthCredentials checks if an Anthropic key has OAuth credentials configured.
+// This allows Anthropic keys to have an empty API key value when using OAuth authentication.
+func hasAnthropicOAuthCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
+	if providerType != schemas.Anthropic {
+		return false
+	}
+	return key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != ""
+}
+
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
 	return providerKey != schemas.Azure && providerKey != schemas.Bedrock && providerKey != schemas.Vertex
 }

@@ -23,8 +23,9 @@ type Key struct {
 	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
-	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
-	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
+	VLLMKeyConfig              *VLLMKeyConfig              `json:"vllm_key_config,omitempty"`              // vLLM-specific key configuration
+	AnthropicOAuthKeyConfig    *AnthropicOAuthKeyConfig    `json:"anthropic_oauth_key_config,omitempty"`   // Anthropic OAuth key configuration (for Claude Pro/Max)
+	Enabled                    *bool                       `json:"enabled,omitempty"`                      // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
 	Status               KeyStatusType         `json:"status,omitempty"`                 // Status of key
@@ -90,6 +91,13 @@ type HuggingFaceKeyConfig struct {
 
 type ReplicateKeyConfig struct {
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+// AnthropicOAuthKeyConfig represents the Anthropic OAuth key configuration.
+// It allows using Claude Pro/Max subscriptions via server-managed OAuth PKCE flow
+// instead of static API keys. The OAuthConfigID references an oauth_configs DB record.
+type AnthropicOAuthKeyConfig struct {
+	OAuthConfigID string `json:"oauth_config_id"` // References oauth_configs table
 }
 
 // VLLMKeyConfig represents the vLLM-specific key configuration.

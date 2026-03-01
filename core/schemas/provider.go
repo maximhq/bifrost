@@ -414,6 +414,7 @@ type ProviderConfig struct {
 	SendBackRawResponse  bool                      `json:"send_back_raw_response"` // Send raw response back in the bifrost response (default: false)
 	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	OAuth2Provider       OAuth2Provider            `json:"-"` // For providers needing OAuth token resolution
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

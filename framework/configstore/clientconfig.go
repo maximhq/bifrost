@@ -375,6 +375,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		// Pass through Anthropic OAuth config (contains only oauth_config_id, not sensitive)
+		if key.AnthropicOAuthKeyConfig != nil {
+			redactedConfig.Keys[i].AnthropicOAuthKeyConfig = key.AnthropicOAuthKeyConfig
+		}
 	}
 	return &redactedConfig
 }
