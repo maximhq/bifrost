@@ -57,6 +57,8 @@
           };
         in
         {
+          bifrost-ui = bifrost-ui;
+
           bifrost-http = pkgs.callPackage ./nix/packages/bifrost-http.nix {
             inherit inputs;
             src = self;
