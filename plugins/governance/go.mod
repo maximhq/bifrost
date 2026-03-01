@@ -11,7 +11,7 @@ require (
 	github.com/maximhq/bifrost/core v1.4.4
 	github.com/maximhq/bifrost/framework v1.2.23
 	github.com/stretchr/testify v1.11.1
-	github.com/valyala/fasthttp v1.68.0
+	github.com/valyala/fasthttp v1.69.0
 )
 
 require (
