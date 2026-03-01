@@ -46,7 +46,7 @@
 
           # The Nix packages provided in the environment
           packages = with pkgs; [
-            go
+            go_1_26
             gopls
             gofumpt
             air
@@ -61,24 +61,27 @@
 
           # Add any shell logic you want executed when the environment is activated
           shellHook = ''
+            CACHE_ROOT="''${XDG_CACHE_HOME:-$HOME/.cache}/bifrost"
+            mkdir -p "$CACHE_ROOT"
+
             ##
-            ## Go: project-local GOPATH/GOBIN
+            ## Go cache/tooling paths (outside the repo to avoid flake source bloat)
             ##
-            export GOPATH="$PWD/.nix-store/go"
+            export GOPATH="$CACHE_ROOT/go"
             export GOBIN="$GOPATH/bin"
             export GOMODCACHE="$GOPATH/pkg/mod"
-            export GOCACHE="$PWD/.nix-store/gocache"
+            export GOCACHE="$CACHE_ROOT/gocache"
 
             mkdir -p "$GOBIN" "$GOMODCACHE" "$GOCACHE"
 
             export PATH="$PATH:$GOBIN"
 
             ##
-            ## Node: project-local "global" npm prefix
+            ## Node "global" npm prefix (outside the repo)
             ##
             # npm reads npm_config_prefix (or NPM_CONFIG_PREFIX) as the "prefix" config,
             # which is where `npm i -g` installs to.
-            export npm_config_prefix="$PWD/.nix-store/npm-global"
+            export npm_config_prefix="$CACHE_ROOT/npm-global"
 
             mkdir -p "$npm_config_prefix/bin"
 

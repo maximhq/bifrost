@@ -17,6 +17,7 @@ import {
 	Globe,
 	KeyRound,
 	Landmark,
+	Layers,
 	LayoutGrid,
 	LogOut,
 	Logs,
@@ -680,6 +681,17 @@ export default function AppSidebar() {
 						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
 					},
+					...(IS_ENTERPRISE
+						? [
+								{
+									title: "Large Payload",
+									url: "/workspace/config/large-payload",
+									icon: Layers,
+									description: "Large payload streaming optimization",
+									hasAccess: hasSettingsAccess,
+								},
+							]
+						: []),
 				],
 			},
 		],

@@ -26,7 +26,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 
@@ -40,6 +40,14 @@ import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+
+const formatJsonSafe = (str: string | undefined): string => {
+	try {
+		return JSON.stringify(JSON.parse(str || ""), null, 2);
+	} catch {
+		return str || "";
+	}
+};
 
 interface LogDetailSheetProps {
 	log: LogEntry | null;
@@ -74,14 +82,13 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) { }
+		} catch (ignored) {}
 	}
 
 	// Extract audio format from request params
 	// Format can be in params.audio?.format or params.extra_params?.audio?.format
 	const audioFormat = (log.params as any)?.audio?.format || (log.params as any)?.extra_params?.audio?.format || undefined;
-	const videoOutput =
-		log.video_generation_output || log.video_retrieve_output || log.video_download_output;
+	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output;
 	const videoListOutput = log.video_list_output;
 
 	return (
@@ -114,6 +121,14 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									Async
 								</Badge>
 							) : null}
+							{(log.is_large_payload_request || log.is_large_payload_response) && (
+								<Badge
+									variant="outline"
+									className="border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-600 dark:bg-amber-950 dark:text-amber-400"
+								>
+									Large Payload
+								</Badge>
+							)}
 						</SheetTitle>
 					</div>
 					<AlertDialog>
@@ -194,8 +209,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-											} rounded-sm px-3 py-1`}
+										className={`${
+											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+										} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -558,6 +574,20 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					</>
 				)}
 
+				{log.is_large_payload_request && !log.input_history?.length && !log.responses_input_history?.length && (
+					<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						Large payload request — input content was streamed directly to the provider and is not available for display.
+						{log.raw_request && " A truncated preview is available in the Raw Request section below."}
+					</div>
+				)}
+
+				{log.is_large_payload_response && !log.output_message && !log.responses_output?.length && log.status !== "processing" && (
+					<div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+						Large payload response — response content was streamed directly to the client and is not available for display.
+						{log.raw_response && " A truncated preview is available in the Raw Response section below."}
+					</div>
+				)}
+
 				{log.status !== "processing" && (
 					<>
 						{log.output_message && !log.error_details?.error.message && (
@@ -612,29 +642,20 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Request sent to <span className="font-medium capitalize">{log.provider}</span>
+									{log.is_large_payload_request && (
+										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+									)}
 								</div>
 								<CollapsibleBox
-									title="Raw Request"
-									onCopy={() => {
-										try {
-											return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
-										} catch {
-											return log.raw_request || "";
-										}
-									}}
+									title={log.is_large_payload_request ? "Raw Request (Truncated)" : "Raw Request"}
+									onCopy={() => formatJsonSafe(log.raw_request)}
 								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
 										maxHeight={450}
 										wrap={true}
-										code={(() => {
-											try {
-												return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
-											} catch {
-												return log.raw_request || "";
-											}
-										})()}
+										code={formatJsonSafe(log.raw_request)}
 										lang="json"
 										readonly={true}
 										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
@@ -646,29 +667,20 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Response from <span className="font-medium capitalize">{log.provider}</span>
+									{log.is_large_payload_response && (
+										<span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">(truncated preview)</span>
+									)}
 								</div>
 								<CollapsibleBox
-									title="Raw Response"
-									onCopy={() => {
-										try {
-											return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
-										} catch {
-											return log.raw_response || "";
-										}
-									}}
+									title={log.is_large_payload_response ? "Raw Response (Truncated)" : "Raw Response"}
+									onCopy={() => formatJsonSafe(log.raw_response)}
 								>
 									<CodeEditor
 										className="z-0 w-full"
 										shouldAdjustInitialHeight={true}
 										maxHeight={450}
 										wrap={true}
-										code={(() => {
-											try {
-												return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
-											} catch {
-												return log.raw_response || "";
-											}
-										})()}
+										code={formatJsonSafe(log.raw_response)}
 										lang="json"
 										readonly={true}
 										options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
