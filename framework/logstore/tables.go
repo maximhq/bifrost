@@ -1078,3 +1078,19 @@ type ModelHistogramResult struct {
 	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
 	Models            []string               `json:"models"`
 }
+
+// LatencyHistogramBucket represents a single time bucket for latency data
+type LatencyHistogramBucket struct {
+	Timestamp     time.Time `json:"timestamp"`
+	AvgLatency    float64   `json:"avg_latency"`
+	P90Latency    float64   `json:"p90_latency"`
+	P95Latency    float64   `json:"p95_latency"`
+	P99Latency    float64   `json:"p99_latency"`
+	TotalRequests int64     `json:"total_requests"`
+}
+
+// LatencyHistogramResult represents the latency histogram query result
+type LatencyHistogramResult struct {
+	Buckets           []LatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
+}

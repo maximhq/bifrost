@@ -1,6 +1,7 @@
 import { RedactedDBKey, VirtualKey } from "@/lib/types/governance";
 import {
 	CostHistogramResponse,
+	LatencyHistogramResponse,
 	LogEntry,
 	LogFilters,
 	LogsHistogramResponse,
@@ -43,10 +44,10 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.start_time) params.start_time = filters.start_time;
 	if (filters.end_time) params.end_time = filters.end_time;
-	if (filters.min_latency) params.min_latency = filters.min_latency;
-	if (filters.max_latency) params.max_latency = filters.max_latency;
-	if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-	if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+	if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+	if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+	if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+	if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 	if (filters.missing_cost_only) params.missing_cost_only = "true";
 	if (filters.content_search) params.content_search = filters.content_search;
 
@@ -103,10 +104,10 @@ export const logsApi = baseApi.injectEndpoints({
 				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
 
@@ -155,10 +156,10 @@ export const logsApi = baseApi.injectEndpoints({
 				}
 				if (filters.start_time) params.start_time = filters.start_time;
 				if (filters.end_time) params.end_time = filters.end_time;
-				if (filters.min_latency) params.min_latency = filters.min_latency;
-				if (filters.max_latency) params.max_latency = filters.max_latency;
-				if (filters.min_tokens) params.min_tokens = filters.min_tokens;
-				if (filters.max_tokens) params.max_tokens = filters.max_tokens;
+				if (filters.min_latency !== undefined) params.min_latency = filters.min_latency;
+				if (filters.max_latency !== undefined) params.max_latency = filters.max_latency;
+				if (filters.min_tokens !== undefined) params.min_tokens = filters.min_tokens;
+				if (filters.max_tokens !== undefined) params.max_tokens = filters.max_tokens;
 				if (filters.missing_cost_only) params.missing_cost_only = "true";
 				if (filters.content_search) params.content_search = filters.content_search;
 
@@ -226,6 +227,20 @@ export const logsApi = baseApi.injectEndpoints({
 			providesTags: ["Logs"],
 		}),
 
+		// Get latency histogram with percentiles
+		getLogsLatencyHistogram: builder.query<
+			LatencyHistogramResponse,
+			{
+				filters: LogFilters;
+			}
+		>({
+			query: ({ filters }) => ({
+				url: "/logs/histogram/latency",
+				params: buildFilterParams(filters),
+			}),
+			providesTags: ["Logs"],
+		}),
+
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
 			query: () => "/logs/dropped",
@@ -275,6 +290,7 @@ export const {
 	useGetLogsTokenHistogramQuery,
 	useGetLogsCostHistogramQuery,
 	useGetLogsModelHistogramQuery,
+	useGetLogsLatencyHistogramQuery,
 	useGetDroppedRequestsQuery,
 	useGetAvailableFilterDataQuery,
 	useLazyGetLogsQuery,
@@ -283,6 +299,7 @@ export const {
 	useLazyGetLogsTokenHistogramQuery,
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsModelHistogramQuery,
+	useLazyGetLogsLatencyHistogramQuery,
 	useLazyGetDroppedRequestsQuery,
 	useLazyGetAvailableFilterDataQuery,
 	useDeleteLogsMutation,

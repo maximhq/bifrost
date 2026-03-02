@@ -563,6 +563,21 @@ export interface ModelHistogramResponse {
 	models: string[];
 }
 
+// Latency histogram types
+export interface LatencyHistogramBucket {
+	timestamp: string;
+	avg_latency: number;
+	p90_latency: number;
+	p95_latency: number;
+	p99_latency: number;
+	total_requests: number;
+}
+
+export interface LatencyHistogramResponse {
+	buckets: LatencyHistogramBucket[];
+	bucket_size_seconds: number;
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;

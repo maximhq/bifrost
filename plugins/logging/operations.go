@@ -484,6 +484,11 @@ func (p *LoggerPlugin) GetModelHistogram(ctx context.Context, filters logstore.S
 	return p.store.GetModelHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetLatencyHistogram returns time-bucketed latency percentiles for the given filters
+func (p *LoggerPlugin) GetLatencyHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	return p.store.GetLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetAvailableModels returns all unique models from logs
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {
 	models, err := p.store.GetDistinctModels(ctx)

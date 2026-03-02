@@ -1,17 +1,18 @@
 "use client";
 
 import { FilterPopover } from "@/components/filters/filterPopover";
-import { Badge } from "@/components/ui/badge";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
 	useLazyGetLogsCostHistogramQuery,
 	useLazyGetLogsHistogramQuery,
+	useLazyGetLogsLatencyHistogramQuery,
 	useLazyGetLogsModelHistogramQuery,
 	useLazyGetLogsTokenHistogramQuery,
 } from "@/lib/store";
 import type {
 	CostHistogramResponse,
+	LatencyHistogramResponse,
 	LogFilters,
 	LogsHistogramResponse,
 	ModelHistogramResponse,
@@ -23,11 +24,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChartCard } from "./components/chartCard";
 import { type ChartType, ChartTypeToggle } from "./components/chartTypeToggle";
 import { CostChart } from "./components/costChart";
+import { LatencyChart } from "./components/latencyChart";
 import { LogVolumeChart } from "./components/logVolumeChart";
 import { ModelFilterSelect } from "./components/modelFilterSelect";
 import { ModelUsageChart } from "./components/modelUsageChart";
 import { TokenUsageChart } from "./components/tokenUsageChart";
-import { CHART_COLORS, getModelColor } from "./utils/chartUtils";
+import { CHART_COLORS, getModelColor, LATENCY_COLORS } from "./utils/chartUtils";
 
 // Type-safe parser for chart type URL state
 const toChartType = (value: string): ChartType => (value === "line" ? "line" : "bar");
@@ -73,18 +75,21 @@ export default function DashboardPage() {
 	const [tokenData, setTokenData] = useState<TokenHistogramResponse | null>(null);
 	const [costData, setCostData] = useState<CostHistogramResponse | null>(null);
 	const [modelData, setModelData] = useState<ModelHistogramResponse | null>(null);
+	const [latencyData, setLatencyData] = useState<LatencyHistogramResponse | null>(null);
 
 	// Loading states
 	const [loadingHistogram, setLoadingHistogram] = useState(true);
 	const [loadingTokens, setLoadingTokens] = useState(true);
 	const [loadingCost, setLoadingCost] = useState(true);
 	const [loadingModels, setLoadingModels] = useState(true);
+	const [loadingLatency, setLoadingLatency] = useState(true);
 
 	// RTK Query lazy hooks
 	const [triggerHistogram] = useLazyGetLogsHistogramQuery({});
 	const [triggerTokens] = useLazyGetLogsTokenHistogramQuery();
 	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
 	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
+	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
 
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
@@ -105,6 +110,7 @@ export default function DashboardPage() {
 			token_chart: parseAsString.withDefault("bar"),
 			cost_chart: parseAsString.withDefault("bar"),
 			model_chart: parseAsString.withDefault("bar"),
+			latency_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
 		},
@@ -167,7 +173,11 @@ export default function DashboardPage() {
 		[urlState.start_time, urlState.end_time],
 	);
 
-	// Available models for dropdowns
+	// Model lists for each chart's legend (must match what the chart component actually renders)
+	const costModels = useMemo(() => costData?.models ?? [], [costData?.models]);
+	const usageModels = useMemo(() => modelData?.models ?? [], [modelData?.models]);
+
+	// Available models for filter dropdowns (union of both sources)
 	const availableModels = useMemo(() => {
 		if (costData?.models?.length) return costData.models;
 		return modelData?.models ?? [];
@@ -179,37 +189,54 @@ export default function DashboardPage() {
 		setLoadingTokens(true);
 		setLoadingCost(true);
 		setLoadingModels(true);
+		setLoadingLatency(true);
 
 		const fetchFilters = { filters };
 
 		// Fetch all in parallel, forcing fresh data (preferCacheValue: false bypasses RTK Query cache)
-		const [histogramResult, tokenResult, costResult, modelResult] = await Promise.all([
+		const [histogramResult, tokenResult, costResult, modelResult, latencyResult] = await Promise.all([
 			triggerHistogram(fetchFilters, false),
 			triggerTokens(fetchFilters, false),
 			triggerCost(fetchFilters, false),
 			triggerModels(fetchFilters, false),
+			triggerLatency(fetchFilters, false),
 		]);
 
 		if (histogramResult.data) {
 			setHistogramData(histogramResult.data);
+		} else {
+			setHistogramData(null);
 		}
 		setLoadingHistogram(false);
 
 		if (tokenResult.data) {
 			setTokenData(tokenResult.data);
+		} else {
+			setTokenData(null);
 		}
 		setLoadingTokens(false);
 
 		if (costResult.data) {
 			setCostData(costResult.data);
+		} else {
+			setCostData(null);
 		}
 		setLoadingCost(false);
 
 		if (modelResult.data) {
 			setModelData(modelResult.data);
+		} else {
+			setModelData(null);
 		}
 		setLoadingModels(false);
-	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels]);
+
+		if (latencyResult.data) {
+			setLatencyData(latencyResult.data);
+		} else {
+			setLatencyData(null);
+		}
+		setLoadingLatency(false);
+	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency]);
 
 	// Fetch data on mount and when filters change
 	useEffect(() => {
@@ -248,6 +275,7 @@ export default function DashboardPage() {
 	const handleTokenChartToggle = useCallback((type: ChartType) => setUrlState({ token_chart: type }), [setUrlState]);
 	const handleCostChartToggle = useCallback((type: ChartType) => setUrlState({ cost_chart: type }), [setUrlState]);
 	const handleModelChartToggle = useCallback((type: ChartType) => setUrlState({ model_chart: type }), [setUrlState]);
+	const handleLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ latency_chart: type }), [setUrlState]);
 
 	// Filter change handler for FilterPopover
 	const handleFilterChange = useCallback(
@@ -283,10 +311,7 @@ export default function DashboardPage() {
 			{/* Header with time filter */}
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2">
-					<h1 className="text-lg font-semibold">Dashboard </h1>
-					<Badge variant="secondary" className="text-xs">
-						BETA
-					</Badge>
+					<h1 className="text-lg font-semibold">Dashboard </h1>					
 				</div>
 				<div className="flex items-center gap-2">
 					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
@@ -303,7 +328,7 @@ export default function DashboardPage() {
 			</div>
 
 			{/* Charts Grid */}
-			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
 				{/* Log Volume Chart */}
 				<ChartCard
 					title="Request Volume"
@@ -379,25 +404,25 @@ export default function DashboardPage() {
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
 								{urlState.cost_model === "all" ? (
-									availableModels.length > 0 && (
+									costModels.length > 0 && (
 										<>
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<span className="flex items-center gap-1">
 														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{availableModels[0]}</span>
+														<span className="text-muted-foreground max-w-[100px] truncate">{costModels[0]}</span>
 													</span>
 												</TooltipTrigger>
-												<TooltipContent>{availableModels[0]}</TooltipContent>
+												<TooltipContent>{costModels[0]}</TooltipContent>
 											</Tooltip>
-											{availableModels.length > 1 && (
+											{costModels.length > 1 && (
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{availableModels.length - 1} more</span>
+														<span className="text-muted-foreground cursor-default">+{costModels.length - 1} more</span>
 													</TooltipTrigger>
 													<TooltipContent>
 														<div className="flex flex-col gap-1">
-															{availableModels.slice(1).map((model, idx) => (
+															{costModels.slice(1).map((model, idx) => (
 																<span key={model} className="flex items-center gap-1">
 																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
 																	{model}
@@ -415,7 +440,7 @@ export default function DashboardPage() {
 											<span className="flex items-center gap-1">
 												<span
 													className="h-2 w-2 shrink-0 rounded-full"
-													style={{ backgroundColor: getModelColor(Math.max(0, availableModels.indexOf(urlState.cost_model))) }}
+													style={{ backgroundColor: getModelColor(0) }}
 												/>
 												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.cost_model}</span>
 											</span>
@@ -456,25 +481,25 @@ export default function DashboardPage() {
 						<div className="flex items-center gap-3">
 							<div className="flex items-center gap-2 text-xs">
 								{urlState.usage_model === "all" ? (
-									availableModels.length > 0 && (
+									usageModels.length > 0 && (
 										<>
 											<Tooltip>
 												<TooltipTrigger asChild>
 													<span className="flex items-center gap-1">
 														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
-														<span className="text-muted-foreground max-w-[100px] truncate">{availableModels[0]}</span>
+														<span className="text-muted-foreground max-w-[100px] truncate">{usageModels[0]}</span>
 													</span>
 												</TooltipTrigger>
-												<TooltipContent>{availableModels[0]}</TooltipContent>
+												<TooltipContent>{usageModels[0]}</TooltipContent>
 											</Tooltip>
-											{availableModels.length > 1 && (
+											{usageModels.length > 1 && (
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<span className="text-muted-foreground cursor-default">+{availableModels.length - 1} more</span>
+														<span className="text-muted-foreground cursor-default">+{usageModels.length - 1} more</span>
 													</TooltipTrigger>
 													<TooltipContent>
 														<div className="flex flex-col gap-1">
-															{availableModels.slice(1).map((model, idx) => (
+															{usageModels.slice(1).map((model, idx) => (
 																<span key={model} className="flex items-center gap-1">
 																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
 																	{model}
@@ -519,6 +544,47 @@ export default function DashboardPage() {
 						startTime={urlState.start_time}
 						endTime={urlState.end_time}
 						selectedModel={urlState.usage_model}
+					/>
+				</ChartCard>
+
+				{/* Latency Chart */}
+				<ChartCard
+					title="Latency"
+					loading={loadingLatency}
+					testId="chart-latency"
+					headerActions={
+						<div className="flex items-center gap-3">
+							<div className="flex items-center gap-2 text-xs">
+								<span className="flex items-center gap-1">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
+									<span className="text-muted-foreground">Avg</span>
+								</span>
+								<span className="flex items-center gap-1">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
+									<span className="text-muted-foreground">P90</span>
+								</span>
+								<span className="flex items-center gap-1">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
+									<span className="text-muted-foreground">P95</span>
+								</span>
+								<span className="flex items-center gap-1">
+									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
+									<span className="text-muted-foreground">P99</span>
+								</span>
+							</div>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.latency_chart)}
+								onToggle={handleLatencyChartToggle}
+								data-testid="dashboard-latency-chart-toggle"
+							/>
+						</div>
+					}
+				>
+					<LatencyChart
+						data={latencyData}
+						chartType={toChartType(urlState.latency_chart)}
+						startTime={urlState.start_time}
+						endTime={urlState.end_time}
 					/>
 				</ChartCard>
 			</div>

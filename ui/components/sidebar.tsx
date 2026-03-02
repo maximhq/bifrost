@@ -38,7 +38,7 @@ import {
 	UserRoundCheck,
 	Users,
 	Wallet,
-	WalletCards
+	WalletCards,
 } from "lucide-react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -175,7 +175,7 @@ const SidebarItemView = ({
 	pathname,
 	router,
 	isSidebarCollapsed,
-	expandSidebar,	
+	expandSidebar,
 	highlightedUrl,
 }: {
 	item: SidebarItem;
@@ -187,7 +187,7 @@ const SidebarItemView = ({
 	pathname: string;
 	router: ReturnType<typeof useRouter>;
 	isSidebarCollapsed: boolean;
-	expandSidebar: () => void;	
+	expandSidebar: () => void;
 	highlightedUrl?: string;
 }) => {
 	const hasSubItems = "subItems" in item && item.subItems && item.subItems.length > 0;
@@ -512,7 +512,6 @@ export default function AppSidebar() {
 				title: "Plugins",
 				url: "/workspace/plugins",
 				icon: Puzzle,
-				tag: "BETA",
 				description: "Manage custom plugins",
 				hasAccess: hasPluginsAccess,
 			},

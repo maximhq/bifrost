@@ -39,6 +39,9 @@ type LogManager interface {
 	// GetModelHistogram returns time-bucketed model usage with success/error breakdown for the given filters
 	GetModelHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ModelHistogramResult, error)
 
+	// GetLatencyHistogram returns time-bucketed latency percentiles for the given filters
+	GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
@@ -131,6 +134,13 @@ func (p *PluginLogManager) GetModelHistogram(ctx context.Context, filters *logst
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.GetModelHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {

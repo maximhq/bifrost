@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -816,6 +817,135 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 		Buckets:           buckets,
 		BucketSizeSeconds: bucketSizeSeconds,
 		Models:            models,
+	}, nil
+}
+
+// computePercentile computes the p-th percentile (0–1) from a pre-sorted float64 slice using linear interpolation.
+func computePercentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	rank := p * float64(len(sorted)-1)
+	lower := int(math.Floor(rank))
+	upper := int(math.Ceil(rank))
+	if lower == upper {
+		return sorted[lower]
+	}
+	frac := rank - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
+}
+
+// GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
+func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("latency IS NOT NULL")
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Latency        float64 `gorm:"column:latency"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(
+			`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	case "mysql":
+		selectClause = fmt.Sprintf(
+			`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	default:
+		selectClause = fmt.Sprintf(
+			`CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Order("bucket_timestamp ASC, latency ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	// Group latency values by bucket (already sorted by latency due to ORDER BY)
+	type bucketData struct {
+		latencies []float64
+	}
+	bucketMap := make(map[int64]*bucketData)
+	var orderedKeys []int64
+
+	for _, r := range results {
+		bd, exists := bucketMap[r.BucketTimestamp]
+		if !exists {
+			bd = &bucketData{}
+			bucketMap[r.BucketTimestamp] = bd
+			orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		}
+		bd.latencies = append(bd.latencies, r.Latency)
+	}
+
+	// Compute stats per bucket
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
+	for ts, bd := range bucketMap {
+		var sum float64
+		for _, v := range bd.latencies {
+			sum += v
+		}
+		computedBuckets[ts] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(ts, 0).UTC(),
+			AvgLatency:    sum / float64(len(bd.latencies)),
+			P90Latency:    computePercentile(bd.latencies, 0.90),
+			P95Latency:    computePercentile(bd.latencies, 0.95),
+			P99Latency:    computePercentile(bd.latencies, 0.99),
+			TotalRequests: int64(len(bd.latencies)),
+		}
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		// No time range: return what we have sorted by timestamp
+		buckets := make([]LatencyHistogramBucket, 0, len(computedBuckets))
+		for _, ts := range orderedKeys {
+			buckets = append(buckets, computedBuckets[ts])
+		}
+		return &LatencyHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+		}, nil
+	}
+
+	// Fill in all buckets, using zeros for missing timestamps
+	buckets := make([]LatencyHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := computedBuckets[ts]; exists {
+			buckets[i] = bucket
+		} else {
+			buckets[i] = LatencyHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+			}
+		}
+	}
+
+	return &LatencyHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
 	}, nil
 }
 
