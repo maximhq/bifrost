@@ -1046,12 +1046,15 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 		}()
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
 		// Setup cancellation handler to close body stream on ctx cancellation
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		// Check if response is compressed
-		bodyStream := resp.BodyStream()
+		
 		chunkIndex := -1
 		startTime := time.Now()
 		lastChunkTime := startTime
@@ -1069,7 +1072,7 @@ func (provider *AzureProvider) SpeechStream(ctx *schemas.BifrostContext, postHoo
 				return
 			}
 			// Read from stream
-			n, readErr := bodyStream.Read(readBuffer)
+			n, readErr := reader.Read(readBuffer)
 			if n > 0 {
 				accumulated = append(accumulated, readBuffer[:n]...)
 
