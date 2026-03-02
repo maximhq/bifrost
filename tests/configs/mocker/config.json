@@ -1,0 +1,233 @@
+{
+    "$schema": "https://www.getbifrost.ai/schema",
+    "client": {
+        "enable_logging": true,
+        "initial_pool_size": 1000
+    },
+    "config_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../tests/configs/mocker/config.db"
+        }
+    },
+    "logs_store": {
+        "enabled": true,
+        "type": "sqlite",
+        "config": {
+            "path": "../../tests/configs/mocker/logs.db"
+        }
+    },
+    "providers": {
+        "openai": {
+            "keys": [
+                {
+                    "name": "mock-openai",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "anthropic": {
+            "keys": [
+                {
+                    "name": "mock-anthropic",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "cohere": {
+            "keys": [
+                {
+                    "name": "mock-cohere",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "mistral": {
+            "keys": [
+                {
+                    "name": "mock-mistral",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "ollama": {
+            "keys": [
+                {
+                    "name": "mock-ollama",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "groq": {
+            "keys": [
+                {
+                    "name": "mock-groq",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "gemini": {
+            "keys": [
+                {
+                    "name": "mock-gemini",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "openrouter": {
+            "keys": [
+                {
+                    "name": "mock-openrouter",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "sgl": {
+            "keys": [
+                {
+                    "name": "mock-sgl",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "parasail": {
+            "keys": [
+                {
+                    "name": "mock-parasail",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "perplexity": {
+            "keys": [
+                {
+                    "name": "mock-perplexity",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "cerebras": {
+            "keys": [
+                {
+                    "name": "mock-cerebras",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "elevenlabs": {
+            "keys": [
+                {
+                    "name": "mock-elevenlabs",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "huggingface": {
+            "keys": [
+                {
+                    "name": "mock-huggingface",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        },
+        "replicate": {
+            "keys": [
+                {
+                    "name": "mock-replicate",
+                    "value": "mock-key",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "base_url": "http://localhost:8000",
+                "default_request_timeout_in_seconds": 120,
+                "max_retries": 0
+            }
+        }
+    }
+}

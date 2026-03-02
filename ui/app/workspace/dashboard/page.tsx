@@ -307,11 +307,11 @@ export default function DashboardPage() {
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
 
 	return (
-		<div className="mx-auto flex h-full w-full flex-col gap-4">
+		<div className="mx-auto flex h-full min-h-screen w-full flex-col gap-4">
 			{/* Header with time filter */}
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2">
-					<h1 className="text-lg font-semibold">Dashboard </h1>					
+					<h1 className="text-lg font-semibold">Dashboard </h1>
 				</div>
 				<div className="flex items-center gap-2">
 					<FilterPopover filters={filters} onFilterChange={handleFilterChange} />
@@ -438,10 +438,7 @@ export default function DashboardPage() {
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<span className="flex items-center gap-1">
-												<span
-													className="h-2 w-2 shrink-0 rounded-full"
-													style={{ backgroundColor: getModelColor(0) }}
-												/>
+												<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
 												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.cost_model}</span>
 											</span>
 										</TooltipTrigger>
