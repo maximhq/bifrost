@@ -715,7 +715,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 	}
 
 	// Reconstruct SAP AI Core config if fields are present
-	if k.SAPAICoreClientID != nil || k.SAPAICoreClientSecret != nil || k.SAPAICoreAuthURL != nil || k.SAPAICoreBaseURL != nil || k.SAPAICoreResourceGroup != nil {
+	if k.SAPAICoreClientID != nil || k.SAPAICoreClientSecret != nil || k.SAPAICoreAuthURL != nil || k.SAPAICoreBaseURL != nil || k.SAPAICoreResourceGroup != nil || (k.SAPAICoreDeploymentsJSON != nil && *k.SAPAICoreDeploymentsJSON != "") {
 		sapConfig := &schemas.SAPAICoreKeyConfig{}
 		if k.SAPAICoreClientID != nil {
 			sapConfig.ClientID = *k.SAPAICoreClientID
