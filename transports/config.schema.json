@@ -2374,6 +2374,13 @@
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/provider_pricing_override"
+          },
+          "description": "Provider-level pricing overrides matched by model pattern"
         }
       },
       "required": [

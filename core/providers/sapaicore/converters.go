@@ -3000,7 +3000,7 @@ func parseBedrockConverseResponse(body []byte, model string) (*schemas.BifrostCh
 		// Handle cached tokens if present
 		if converseResp.Usage.CacheReadInputTokens > 0 {
 			response.Usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-				CachedTokens: converseResp.Usage.CacheReadInputTokens,
+				CachedReadTokens: converseResp.Usage.CacheReadInputTokens,
 			}
 		}
 	}
@@ -3390,7 +3390,7 @@ func processBedrockConverseEventStream(
 					// Handle cached tokens if present
 					if event.Usage.CacheReadInputTokens > 0 {
 						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-							CachedTokens: event.Usage.CacheReadInputTokens,
+							CachedReadTokens: event.Usage.CacheReadInputTokens,
 						}
 					}
 				}
