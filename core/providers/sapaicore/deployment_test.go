@@ -140,8 +140,8 @@ func TestDeploymentCache_ClearCache(t *testing.T) {
 	// Manually add a deployment to the cache
 	key := deploymentCacheKey("https://api.ai.sap.com", "default")
 	cache.deployments[key] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: BackendOpenAI},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
 		},
 		fetchedAt: time.Now(),
 	}
@@ -183,14 +183,14 @@ func TestDeploymentCache_ClearCache_All(t *testing.T) {
 	key2 := deploymentCacheKey("https://api2.ai.sap.com", "group2")
 
 	cache.deployments[key1] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: BackendOpenAI},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
 		},
 		fetchedAt: time.Now(),
 	}
 	cache.deployments[key2] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"claude-3": {DeploymentID: "d456", ModelName: "claude-3", Backend: BackendBedrock},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"claude-3": {DeploymentID: "d456", ModelName: "claude-3", Backend: SAPAICoreBackendBedrock},
 		},
 		fetchedAt: time.Now(),
 	}
@@ -225,19 +225,19 @@ func TestDeploymentCache_GetDeploymentID_StaticDeployments(t *testing.T) {
 		name               string
 		modelName          string
 		expectedDeployment string
-		expectedBackend    BackendType
+		expectedBackend    SAPAICoreBackendType
 	}{
 		{
 			name:               "OpenAI model from static",
 			modelName:          "gpt-4",
 			expectedDeployment: "deployment-gpt4",
-			expectedBackend:    BackendOpenAI,
+			expectedBackend:    SAPAICoreBackendOpenAI,
 		},
 		{
 			name:               "Bedrock model from static",
 			modelName:          "anthropic--claude-3",
 			expectedDeployment: "deployment-claude",
-			expectedBackend:    BackendBedrock,
+			expectedBackend:    SAPAICoreBackendBedrock,
 		},
 	}
 
@@ -272,8 +272,8 @@ func TestDeploymentCache_ConcurrentAccess(t *testing.T) {
 	// Pre-populate cache
 	key := deploymentCacheKey("https://api.ai.sap.com", "default")
 	cache.deployments[key] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: BackendOpenAI},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
 		},
 		fetchedAt: time.Now(),
 	}
@@ -310,42 +310,42 @@ func TestDetermineBackend(t *testing.T) {
 	tests := []struct {
 		name     string
 		model    string
-		expected BackendType
+		expected SAPAICoreBackendType
 	}{
 		{
 			name:     "Anthropic model",
 			model:    "anthropic--claude-3-sonnet",
-			expected: BackendBedrock,
+			expected: SAPAICoreBackendBedrock,
 		},
 		{
 			name:     "Amazon model",
 			model:    "amazon--titan-embed",
-			expected: BackendBedrock,
+			expected: SAPAICoreBackendBedrock,
 		},
 		{
 			name:     "Gemini model",
 			model:    "gemini-1.5-pro",
-			expected: BackendVertex,
+			expected: SAPAICoreBackendVertex,
 		},
 		{
 			name:     "OpenAI model",
 			model:    "gpt-4",
-			expected: BackendOpenAI,
+			expected: SAPAICoreBackendOpenAI,
 		},
 		{
 			name:     "GPT-4 Turbo",
 			model:    "gpt-4-turbo",
-			expected: BackendOpenAI,
+			expected: SAPAICoreBackendOpenAI,
 		},
 		{
 			name:     "Unknown model defaults to OpenAI",
 			model:    "some-unknown-model",
-			expected: BackendOpenAI,
+			expected: SAPAICoreBackendOpenAI,
 		},
 		{
 			name:     "Empty model defaults to OpenAI",
 			model:    "",
-			expected: BackendOpenAI,
+			expected: SAPAICoreBackendOpenAI,
 		},
 	}
 
@@ -410,8 +410,8 @@ func TestDeploymentCache_TTLExpiration(t *testing.T) {
 
 	// Test fresh cache entry (should be valid)
 	cache.deployments[key] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: BackendOpenAI},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
 		},
 		fetchedAt: time.Now(),
 	}
@@ -423,8 +423,8 @@ func TestDeploymentCache_TTLExpiration(t *testing.T) {
 
 	// Test expired cache entry
 	cache.deployments[key] = &cachedDeployments{
-		modelToDeployment: map[string]CachedDeployment{
-			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: BackendOpenAI},
+		modelToDeployment: map[string]SAPAICoreCachedDeployment{
+			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
 		},
 		fetchedAt: time.Now().Add(-2 * time.Hour), // Expired
 	}
@@ -435,13 +435,13 @@ func TestDeploymentCache_TTLExpiration(t *testing.T) {
 	}
 }
 
-func TestCachedDeployment_Fields(t *testing.T) {
+func TestSAPAICoreCachedDeployment_Fields(t *testing.T) {
 	t.Parallel()
 
-	deployment := CachedDeployment{
+	deployment := SAPAICoreCachedDeployment{
 		DeploymentID: "d12345",
 		ModelName:    "gpt-4-turbo",
-		Backend:      BackendOpenAI,
+		Backend:      SAPAICoreBackendOpenAI,
 	}
 
 	if deployment.DeploymentID != "d12345" {
@@ -450,7 +450,7 @@ func TestCachedDeployment_Fields(t *testing.T) {
 	if deployment.ModelName != "gpt-4-turbo" {
 		t.Errorf("expected ModelName 'gpt-4-turbo', got %q", deployment.ModelName)
 	}
-	if deployment.Backend != BackendOpenAI {
-		t.Errorf("expected Backend BackendOpenAI, got %q", deployment.Backend)
+	if deployment.Backend != SAPAICoreBackendOpenAI {
+		t.Errorf("expected Backend SAPAICoreBackendOpenAI, got %q", deployment.Backend)
 	}
 }

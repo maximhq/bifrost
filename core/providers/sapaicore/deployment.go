@@ -30,7 +30,7 @@ type DeploymentCache struct {
 
 // cachedDeployments holds cached deployment data for a resource group
 type cachedDeployments struct {
-	modelToDeployment map[string]CachedDeployment // model name -> deployment info
+	modelToDeployment map[string]SAPAICoreCachedDeployment // model name -> deployment info
 	fetchedAt         time.Time
 }
 
@@ -67,7 +67,7 @@ func (dc *DeploymentCache) GetDeploymentID(
 	modelName string,
 	staticDeployments map[string]string,
 	clientID, clientSecret, authURL, baseURL, resourceGroup string,
-) (string, BackendType, *schemas.BifrostError) {
+) (string, SAPAICoreBackendType, *schemas.BifrostError) {
 	// Check static deployments first
 	if staticDeployments != nil {
 		if deploymentID, ok := staticDeployments[modelName]; ok {
@@ -83,7 +83,7 @@ func (dc *DeploymentCache) GetDeploymentID(
 // resolveDeployment fetches and caches deployments, then returns the deployment ID for the model
 func (dc *DeploymentCache) resolveDeployment(
 	modelName, clientID, clientSecret, authURL, baseURL, resourceGroup string,
-) (string, BackendType, *schemas.BifrostError) {
+) (string, SAPAICoreBackendType, *schemas.BifrostError) {
 	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
 
 	// Try cache first (read lock)
@@ -162,7 +162,7 @@ func (dc *DeploymentCache) resolveDeployment(
 // fetchDeployments retrieves all running deployments from SAP AI Core
 func (dc *DeploymentCache) fetchDeployments(
 	clientID, clientSecret, authURL, baseURL, resourceGroup string,
-) (map[string]CachedDeployment, *schemas.BifrostError) {
+) (map[string]SAPAICoreCachedDeployment, *schemas.BifrostError) {
 	// Get auth token
 	token, tokenErr := dc.tokenCache.GetToken(clientID, clientSecret, authURL)
 	if tokenErr != nil {
@@ -201,7 +201,7 @@ func (dc *DeploymentCache) fetchDeployments(
 		)
 	}
 
-	var deploymentsResp DeploymentsResponse
+	var deploymentsResp SAPAICoreDeploymentsResponse
 	if err := sonic.Unmarshal(resp.Body(), &deploymentsResp); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(
 			"failed to parse deployments response",
@@ -211,16 +211,16 @@ func (dc *DeploymentCache) fetchDeployments(
 	}
 
 	// Build model -> deployment mapping
-	result := make(map[string]CachedDeployment)
+	result := make(map[string]SAPAICoreCachedDeployment)
 	for _, res := range deploymentsResp.Resources {
-		if res.Status != DeploymentStatusRunning {
+		if res.Status != SAPAICoreDeploymentStatusRunning {
 			continue
 		}
-		modelName := res.Details.Resources.BackendDetails.Model.Name
+		modelName := res.Details.Resources.SAPAICoreBackendDetails.Model.Name
 		if modelName == "" {
 			continue
 		}
-		result[modelName] = CachedDeployment{
+		result[modelName] = SAPAICoreCachedDeployment{
 			DeploymentID: res.ID,
 			ModelName:    modelName,
 			Backend:      DetermineBackend(modelName),
@@ -272,7 +272,7 @@ func (dc *DeploymentCache) ListModels(
 		)
 	}
 
-	var deploymentsResp DeploymentsResponse
+	var deploymentsResp SAPAICoreDeploymentsResponse
 	if err := sonic.Unmarshal(resp.Body(), &deploymentsResp); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(
 			"failed to parse deployments response for model listing",
@@ -284,15 +284,15 @@ func (dc *DeploymentCache) ListModels(
 	// Build unique models list
 	modelSet := make(map[string]SAPAICoreModel)
 	for _, res := range deploymentsResp.Resources {
-		if res.Status != DeploymentStatusRunning {
+		if res.Status != SAPAICoreDeploymentStatusRunning {
 			continue
 		}
-		modelName := res.Details.Resources.BackendDetails.Model.Name
+		modelName := res.Details.Resources.SAPAICoreBackendDetails.Model.Name
 		if modelName == "" {
 			continue
 		}
 		if _, exists := modelSet[modelName]; !exists {
-			config := GetModelConfig(modelName)
+			config := GetSAPAICoreModelConfig(modelName)
 			modelSet[modelName] = SAPAICoreModel{
 				ID:              modelName,
 				Name:            modelName,
@@ -329,14 +329,14 @@ func (dc *DeploymentCache) ClearCache(baseURL, resourceGroup string) {
 }
 
 // DetermineBackend determines the backend type based on model name prefix
-func DetermineBackend(modelName string) BackendType {
+func DetermineBackend(modelName string) SAPAICoreBackendType {
 	if strings.HasPrefix(modelName, "anthropic--") || strings.HasPrefix(modelName, "amazon--") {
-		return BackendBedrock
+		return SAPAICoreBackendBedrock
 	}
 	if strings.HasPrefix(modelName, "gemini-") {
-		return BackendVertex
+		return SAPAICoreBackendVertex
 	}
-	return BackendOpenAI
+	return SAPAICoreBackendOpenAI
 }
 
 // normalizeBaseURL ensures the base URL has the /v2 suffix

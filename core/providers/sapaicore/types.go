@@ -3,75 +3,75 @@ package sapaicore
 // SAPAICoreAPIVersion is the default API version for SAP AI Core OpenAI-compatible endpoints
 const SAPAICoreAPIVersion = "2024-12-01-preview"
 
-// BackendType represents the backend type for SAP AI Core deployments
-type BackendType string
+// SAPAICoreBackendType represents the backend type for SAP AI Core deployments
+type SAPAICoreBackendType string
 
 const (
-	BackendOpenAI  BackendType = "openai"
-	BackendBedrock BackendType = "bedrock"
-	BackendVertex  BackendType = "vertex"
+	SAPAICoreBackendOpenAI  SAPAICoreBackendType = "openai"
+	SAPAICoreBackendBedrock SAPAICoreBackendType = "bedrock"
+	SAPAICoreBackendVertex  SAPAICoreBackendType = "vertex"
 )
 
-// DeploymentStatus represents the status of a SAP AI Core deployment
-type DeploymentStatus string
+// SAPAICoreDeploymentStatus represents the status of a SAP AI Core deployment
+type SAPAICoreDeploymentStatus string
 
 const (
-	DeploymentStatusRunning DeploymentStatus = "RUNNING"
-	DeploymentStatusStopped DeploymentStatus = "STOPPED"
-	DeploymentStatusPending DeploymentStatus = "PENDING"
-	DeploymentStatusDead    DeploymentStatus = "DEAD"
+	SAPAICoreDeploymentStatusRunning SAPAICoreDeploymentStatus = "RUNNING"
+	SAPAICoreDeploymentStatusStopped SAPAICoreDeploymentStatus = "STOPPED"
+	SAPAICoreDeploymentStatusPending SAPAICoreDeploymentStatus = "PENDING"
+	SAPAICoreDeploymentStatusDead    SAPAICoreDeploymentStatus = "DEAD"
 )
 
-// DeploymentResource represents a SAP AI Core deployment from the deployments API
-type DeploymentResource struct {
-	ID      string            `json:"id"`
-	Status  DeploymentStatus  `json:"status"`
-	Details DeploymentDetails `json:"details"`
+// SAPAICoreDeploymentResource represents a SAP AI Core deployment from the deployments API
+type SAPAICoreDeploymentResource struct {
+	ID      string                     `json:"id"`
+	Status  SAPAICoreDeploymentStatus  `json:"status"`
+	Details SAPAICoreDeploymentDetails `json:"details"`
 }
 
-// DeploymentDetails contains details about a deployment
-type DeploymentDetails struct {
-	Resources DeploymentResourceDetails `json:"resources"`
+// SAPAICoreDeploymentDetails contains details about a deployment
+type SAPAICoreDeploymentDetails struct {
+	Resources SAPAICoreDeploymentResourceDetails `json:"resources"`
 }
 
-// DeploymentResourceDetails contains resource details
-type DeploymentResourceDetails struct {
-	BackendDetails BackendDetails `json:"backendDetails"`
+// SAPAICoreDeploymentResourceDetails contains resource details
+type SAPAICoreDeploymentResourceDetails struct {
+	SAPAICoreBackendDetails SAPAICoreBackendDetails `json:"backendDetails"`
 }
 
-// BackendDetails contains backend model information
-type BackendDetails struct {
-	Model BackendModel `json:"model"`
+// SAPAICoreBackendDetails contains backend model information
+type SAPAICoreBackendDetails struct {
+	Model SAPAICoreBackendModel `json:"model"`
 }
 
-// BackendModel contains model name and version
-type BackendModel struct {
+// SAPAICoreBackendModel contains model name and version
+type SAPAICoreBackendModel struct {
 	Name    string `json:"name"`
 	Version string `json:"version,omitempty"`
 }
 
-// DeploymentsResponse represents the response from the deployments API
-type DeploymentsResponse struct {
-	Count     int                  `json:"count"`
-	Resources []DeploymentResource `json:"resources"`
+// SAPAICoreDeploymentsResponse represents the response from the deployments API
+type SAPAICoreDeploymentsResponse struct {
+	Count     int                           `json:"count"`
+	Resources []SAPAICoreDeploymentResource `json:"resources"`
 }
 
-// TokenResponse represents the OAuth2 token response
-type TokenResponse struct {
+// SAPAICoreTokenResponse represents the OAuth2 token response
+type SAPAICoreTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
 	ExpiresIn   int    `json:"expires_in"`
 	Scope       string `json:"scope,omitempty"`
 }
 
-// ModelConfig contains configuration for a specific model
-type ModelConfig struct {
+// SAPAICoreModelConfig contains configuration for a specific model
+type SAPAICoreModelConfig struct {
 	MaxTokens     int
 	ContextWindow int
 }
 
-// ModelConfigs contains configuration for known SAP AI Core models
-var ModelConfigs = map[string]ModelConfig{
+// SAPAICoreModelConfigs contains configuration for known SAP AI Core models
+var SAPAICoreModelConfigs = map[string]SAPAICoreModelConfig{
 	// Anthropic models via Bedrock
 	"anthropic--claude-4.5-sonnet": {MaxTokens: 64000, ContextWindow: 200000},
 	"anthropic--claude-4-sonnet":   {MaxTokens: 64000, ContextWindow: 200000},
@@ -112,20 +112,20 @@ var ModelConfigs = map[string]ModelConfig{
 	"o4-mini": {MaxTokens: 100000, ContextWindow: 200000},
 }
 
-// GetModelConfig returns the configuration for a model, with fallback defaults
-func GetModelConfig(modelName string) ModelConfig {
-	if config, ok := ModelConfigs[modelName]; ok {
+// GetSAPAICoreModelConfig returns the configuration for a model, with fallback defaults
+func GetSAPAICoreModelConfig(modelName string) SAPAICoreModelConfig {
+	if config, ok := SAPAICoreModelConfigs[modelName]; ok {
 		return config
 	}
 	// Default fallback
-	return ModelConfig{MaxTokens: 8192, ContextWindow: 200000}
+	return SAPAICoreModelConfig{MaxTokens: 8192, ContextWindow: 200000}
 }
 
-// CachedDeployment represents a cached deployment with its resolved ID
-type CachedDeployment struct {
+// SAPAICoreCachedDeployment represents a cached deployment with its resolved ID
+type SAPAICoreCachedDeployment struct {
 	DeploymentID string
 	ModelName    string
-	Backend      BackendType
+	Backend      SAPAICoreBackendType
 }
 
 // SAPAICoreModel represents a model available in SAP AI Core

@@ -133,7 +133,7 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 		)
 	}
 
-	var tokenResp TokenResponse
+	var tokenResp SAPAICoreTokenResponse
 	if err := sonic.Unmarshal(resp.Body(), &tokenResp); err != nil {
 		return "", 0, providerUtils.NewBifrostOperationError(
 			"failed to parse OAuth2 token response",
