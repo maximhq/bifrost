@@ -336,7 +336,7 @@ func convertToBedrock(request *schemas.BifrostChatRequest) *BedrockRequest {
 	}
 
 	// Get model config for max tokens
-	config := GetModelConfig(request.Model)
+	config := GetSAPAICoreModelConfig(request.Model)
 	bedrockReq.MaxTokens = config.MaxTokens
 
 	// Convert messages from Input field
@@ -910,7 +910,7 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 	}
 
 	// Set generation config
-	config := GetModelConfig(request.Model)
+	config := GetSAPAICoreModelConfig(request.Model)
 	vertexReq.GenerationConfig = &VertexGenerationConfig{
 		MaxOutputTokens: &config.MaxTokens,
 	}
@@ -1137,7 +1137,7 @@ func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *Bedroc
 	}
 
 	// Get model config for max tokens
-	config := GetModelConfig(request.Model)
+	config := GetSAPAICoreModelConfig(request.Model)
 	bedrockReq.MaxTokens = config.MaxTokens
 
 	// Convert messages from Input field
@@ -1229,7 +1229,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 	converseReq := &BedrockConverseRequest{}
 
 	// Get model config for max tokens
-	config := GetModelConfig(request.Model)
+	config := GetSAPAICoreModelConfig(request.Model)
 	maxTokens := config.MaxTokens
 
 	// Convert messages from Input field
@@ -2691,7 +2691,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 	converseReq := &BedrockConverseRequest{}
 
 	// Get model config for max tokens
-	config := GetModelConfig(request.Model)
+	config := GetSAPAICoreModelConfig(request.Model)
 	maxTokens := config.MaxTokens
 
 	// Convert messages from Input field

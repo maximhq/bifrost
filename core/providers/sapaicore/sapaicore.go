@@ -189,7 +189,7 @@ func (provider *SAPAICoreProvider) getAuthToken(ctx *schemas.BifrostContext, con
 func (provider *SAPAICoreProvider) resolveDeployment(
 	modelName string,
 	config *schemas.SAPAICoreKeyConfig,
-) (string, BackendType, *schemas.BifrostError) {
+) (string, SAPAICoreBackendType, *schemas.BifrostError) {
 	return provider.deploymentCache.GetDeploymentID(
 		modelName,
 		config.Deployments,
@@ -283,9 +283,9 @@ func (provider *SAPAICoreProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 
 	// Route based on backend
 	switch backend {
-	case BackendBedrock:
+	case SAPAICoreBackendBedrock:
 		return provider.handleBedrockChatCompletion(ctx, token, config, deploymentID, request)
-	case BackendVertex:
+	case SAPAICoreBackendVertex:
 		return provider.handleVertexChatCompletion(ctx, token, config, deploymentID, request)
 	default:
 		return provider.handleOpenAIChatCompletion(ctx, token, config, deploymentID, request)
@@ -505,9 +505,9 @@ func (provider *SAPAICoreProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 
 	// Route based on backend
 	switch backend {
-	case BackendBedrock:
+	case SAPAICoreBackendBedrock:
 		return provider.handleBedrockChatCompletionStream(ctx, postHookRunner, token, config, deploymentID, request)
-	case BackendVertex:
+	case SAPAICoreBackendVertex:
 		return provider.handleVertexChatCompletionStream(ctx, postHookRunner, token, config, deploymentID, request)
 	default:
 		return provider.handleOpenAIChatCompletionStream(ctx, postHookRunner, token, config, deploymentID, request)
@@ -839,7 +839,7 @@ func (provider *SAPAICoreProvider) Responses(ctx *schemas.BifrostContext, key sc
 
 	// Route based on backend - currently only Bedrock supports Responses API
 	switch backend {
-	case BackendBedrock:
+	case SAPAICoreBackendBedrock:
 		return provider.handleBedrockResponses(ctx, token, config, deploymentID, request)
 	default:
 		return nil, providerUtils.NewBifrostOperationError(
@@ -940,7 +940,7 @@ func (provider *SAPAICoreProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 
 	// Route based on backend - currently only Bedrock supports Responses streaming
 	switch backend {
-	case BackendBedrock:
+	case SAPAICoreBackendBedrock:
 		return provider.handleBedrockResponsesStream(ctx, postHookRunner, token, config, deploymentID, request)
 	default:
 		return nil, providerUtils.NewBifrostOperationError(

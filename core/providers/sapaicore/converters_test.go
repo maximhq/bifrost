@@ -531,7 +531,7 @@ func TestParseVertexResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestGetModelConfig(t *testing.T) {
+func TestGetSAPAICoreModelConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -568,7 +568,7 @@ func TestGetModelConfig(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := GetModelConfig(tt.modelName)
+			config := GetSAPAICoreModelConfig(tt.modelName)
 			if config.MaxTokens != tt.expectedMaxTokens {
 				t.Errorf("expected MaxTokens %d, got %d", tt.expectedMaxTokens, config.MaxTokens)
 			}
