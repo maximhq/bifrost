@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -274,6 +275,34 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 	}
 }
 
+// stripModelPrefixFromBody replaces a provider-prefixed model name
+// (e.g. "anthropic/claude-sonnet-4-6") with the bare model name in the raw
+// HTTP request body. Uses sonic's lazy AST so only the "model" field is
+// parsed and re-serialized; the rest of the body is copied as raw bytes.
+func stripModelPrefixFromBody(ctx *fasthttp.RequestCtx, prefixedModel, bareModel string) {
+	body := ctx.Request.Body()
+	if len(body) == 0 {
+		return
+	}
+	root := ast.NewRaw(string(body))
+	modelNode := root.Get("model")
+	if modelNode == nil || modelNode.TypeSafe() != ast.V_STRING {
+		return
+	}
+	currentModel, err := modelNode.StrictString()
+	if err != nil || currentModel != prefixedModel {
+		return
+	}
+	if _, err := root.Set("model", ast.NewString(bareModel)); err != nil {
+		return
+	}
+	newBody, err := root.MarshalJSON()
+	if err != nil {
+		return
+	}
+	ctx.Request.SetBody(newBody)
+}
+
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
@@ -284,15 +313,15 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			stripModelPrefixFromBody(ctx, r.Model, model)
 			r.Model = model
 		}
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			stripModelPrefixFromBody(ctx, r.Model, model)
 			r.Model = model
 		}
 	}
