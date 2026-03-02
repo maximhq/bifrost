@@ -496,7 +496,7 @@
             "qdrant",
             "pinecone"
           ],
-          "description": "Vector store type"
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
         },
         "config": {
           "anyOf": [
@@ -2310,11 +2310,11 @@
     },
     "redis_config": {
       "type": "object",
-      "description": "Redis configuration for vector store",
+      "description": "Redis configuration for vector store (also used for Valkey-compatible endpoints)",
       "properties": {
         "addr": {
           "type": "string",
-          "description": "Redis server address (host:port) - REQUIRED (can use env. prefix)"
+          "description": "Redis/Valkey server address (host:port) - REQUIRED (can use env. prefix)"
         },
         "username": {
           "type": "string",

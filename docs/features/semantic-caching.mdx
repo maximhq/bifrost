@@ -30,7 +30,7 @@ Semantic caching uses vector similarity search to intelligently cache AI respons
 Semantic caching requires a configured vector store. Bifrost supports the following vector databases:
 
 - **[Weaviate](/architecture/framework/vector-store#weaviate)**: Production-ready vector database with gRPC support
-- **[Redis](/architecture/framework/vector-store#redis)**: High-performance in-memory vector store using RediSearch
+- **[Redis](/architecture/framework/vector-store#redis)**: High-performance in-memory vector store using RediSearch-compatible APIs (including Valkey bundles with `FT.*` support)
 - **[Qdrant](/architecture/framework/vector-store#qdrant)**: Rust-based vector search engine with advanced filtering
 - **[Pinecone](/architecture/framework/vector-store#pinecone)**: Managed vector database service with serverless options
 
@@ -287,7 +287,7 @@ When initialized this way, all requests automatically use direct hash matching r
 
 ### Recommended Vector Store
 
-**Redis** is recommended for direct hash mode. It does not require vectors for metadata-only entries, and all cache fields are indexed as RediSearch TAG fields for fast exact-match lookups.
+**Redis/Valkey-compatible stores** are recommended for direct hash mode. They do not require vectors for metadata-only entries, and all cache fields are indexed as TAG fields for fast exact-match lookups.
 
 <Warning>
 Qdrant and Pinecone are not compatible with direct hash mode when no embedding provider is configured. These stores require a vector for every entry; the plugin's zero-vector placeholder codepath requires an initialised embedding client, so storage will fail if no provider is set. Weaviate requires a vector per entry as well and is therefore also not recommended for direct-only mode.
@@ -304,7 +304,7 @@ vectorStore:
   redis:
     external:
       enabled: true
-      host: "redis-stack.example.com"
+      host: "redis-or-valkey.example.com"
       port: 6379
       password: "your-redis-password"
 ```
@@ -324,6 +324,10 @@ vectorStore:
   }
 }
 ```
+
+<Info>
+For Valkey deployments, keep `vector_store.type` as `"redis"` and point `config.addr` to your Valkey endpoint.
+</Info>
 
 </Tab>
 
@@ -649,5 +653,5 @@ The semantic cache namespace and all its cache entries are deleted when Bifrost 
 ---
 
 <Info>
-**Vector Store Requirement**: Semantic caching requires a configured vector store. Bifrost supports Weaviate, Redis, Qdrant, and Pinecone. See the [Vector Store documentation](/architecture/framework/vector-store) for setup details.
+**Vector Store Requirement**: Semantic caching requires a configured vector store. Bifrost supports Weaviate, Redis/Valkey-compatible endpoints, Qdrant, and Pinecone. See the [Vector Store documentation](/architecture/framework/vector-store) for setup details.
 </Info>

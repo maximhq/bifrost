@@ -464,7 +464,7 @@ helm install bifrost bifrost/bifrost -f secrets-config.yaml
 | `storage.persistence.size` | PVC size for SQLite | `10Gi` |
 | `postgresql.enabled` | Deploy PostgreSQL | `false` |
 | `vectorStore.enabled` | Enable vector store | `false` |
-| `vectorStore.type` | Vector store type (weaviate/redis/qdrant) | `none` |
+| `vectorStore.type` | Vector store type (weaviate/redis/qdrant). Use `redis` for Redis or Valkey-compatible services | `none` |
 | `bifrost.encryptionKey` | Encryption key | `""` |
 | `ingress.enabled` | Enable ingress | `false` |
 | `autoscaling.enabled` | Enable HPA | `false` |
