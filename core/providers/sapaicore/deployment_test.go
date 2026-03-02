@@ -21,25 +21,25 @@ func TestDeploymentCacheKey(t *testing.T) {
 			name:          "basic key generation",
 			baseURL:       "https://api.ai.sap.com",
 			resourceGroup: "default",
-			expected:      "https://api.ai.sap.com:default",
+			expected:      "22:https://api.ai.sap.com:default",
 		},
 		{
 			name:          "with v2 suffix",
 			baseURL:       "https://api.ai.sap.com/v2",
 			resourceGroup: "my-group",
-			expected:      "https://api.ai.sap.com/v2:my-group",
+			expected:      "25:https://api.ai.sap.com/v2:my-group",
 		},
 		{
 			name:          "empty baseURL",
 			baseURL:       "",
 			resourceGroup: "default",
-			expected:      ":default",
+			expected:      "0::default",
 		},
 		{
 			name:          "empty resourceGroup",
 			baseURL:       "https://api.ai.sap.com",
 			resourceGroup: "",
-			expected:      "https://api.ai.sap.com:",
+			expected:      "22:https://api.ai.sap.com:",
 		},
 	}
 

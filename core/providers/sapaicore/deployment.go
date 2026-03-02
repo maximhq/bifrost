@@ -2,6 +2,7 @@ package sapaicore
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -54,9 +55,10 @@ func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, 
 	}
 }
 
-// deploymentCacheKey generates a unique key for deployment cache
+// deploymentCacheKey generates a unique key for deployment cache.
+// Uses length-prefixed format to avoid collisions when values contain ":"
 func deploymentCacheKey(baseURL, resourceGroup string) string {
-	return baseURL + ":" + resourceGroup
+	return fmt.Sprintf("%d:%s:%s", len(baseURL), baseURL, resourceGroup)
 }
 
 // GetDeploymentID resolves a model name to a deployment ID
@@ -171,7 +173,7 @@ func (dc *DeploymentCache) fetchDeployments(
 	normalizedURL := normalizeBaseURL(baseURL)
 
 	// Build request URL
-	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, resourceGroup)
+	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, url.QueryEscape(resourceGroup))
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -242,7 +244,7 @@ func (dc *DeploymentCache) ListModels(
 	normalizedURL := normalizeBaseURL(baseURL)
 
 	// Build request URL
-	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, resourceGroup)
+	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, url.QueryEscape(resourceGroup))
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
