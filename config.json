@@ -1,0 +1,329 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enable_logging": true,
+    "disable_content_logging": true,
+    "drop_excess_requests": false,
+    "enable_governance": true,
+    "enforce_governance_header": false,
+    "allow_direct_keys": false,
+    "initial_pool_size": 300,
+    "prometheus_labels": [],
+    "allowed_origins": []
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "openai-testing-key",
+          "value": "env.OPENAI_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "anthropic-test",
+          "value": "env.ANTHROPIC_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-key",
+          "bedrock_key_config": {
+            "access_key": "env.AWS_ACCESS_KEY_ID",
+            "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+            "region": "us-east-1",
+            "arn": "arn:aws:bedrock:us-east-1:791152688819:inference-profile",
+            "deployments": {
+              "amazon.nova-canvas-v1:0": "amazon.nova-canvas-v1:0",
+              "claude-4.5-haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+              "claude-sonnet-4-5-20250929": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+              "claude-3.7-sonnet": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+              "claude-4-sonnet": "global.anthropic.claude-sonnet-4-20250514-v1:0",
+              "claude-4.5-sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            }
+          },
+          "models": [],
+          "weight": 1.0,
+          "use_for_batch_api": true
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 6321,
+        "buffer_size": 10000
+      }
+    },
+    "azure": {
+      "keys": [
+        {
+          "name": "azure-key",
+          "value": "env.AZURE_OPENAI_API_KEY",
+          "azure_key_config": {
+            "endpoint": "https://maxim-o1.openai.azure.com",
+            "api_version": "2025-04-01-preview",
+            "deployments": {
+              "claude-opus-4-5": "claude-opus-4-5",
+              "gpt-4o": "gpt-4o",
+              "gpt-4o-backup": "gpt-4o-3",
+              "gpt-image-1": "gpt-image-1",
+              "o1": "o1",
+              "text-embedding-ada-002": "text-embedding-ada-002"
+            }
+          },
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "vertex": {
+      "keys": [
+        {
+          "name": "vertex-test",
+          "vertex_key_config": {
+            "project_id": "maxim-development-433105",
+            "region": "us-central1",
+            "auth_credentials": "env.GOOGLE_APPLICATION_CREDENTIALS"
+          },
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "bifrost-test",
+          "value": "env.GEMINI_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "nebius": {
+      "keys": [
+        {
+          "name": "nebius-test",
+          "value": "env.NEBIUS_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "xai": {
+      "keys": [
+        {
+          "name": "xai-test",
+          "value": "env.XAI_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "huggingface": {
+      "keys": [
+        {
+          "name": "hf-test",
+          "value": "env.HUGGING_FACE_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "elevenlabs": {
+      "keys": [
+        {
+          "name": "test-elabs",
+          "value": "env.ELEVENLABS_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 6321,
+        "buffer_size": 7123
+      }
+    },
+    "cohere": {
+      "keys": [
+        {
+          "name": "test-cohere",
+          "value": "env.COHERE_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "mistral": {
+      "keys": [
+        {
+          "name": "test-mistral",
+          "value": "env.MISTRAL_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "groq": {
+      "keys": [
+        {
+          "name": "test-groq",
+          "value": "env.GROQ_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "openrouter": {
+      "keys": [
+        {
+          "name": "test-or",
+          "value": "env.OPENROUTER_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "cerebras": {
+      "keys": [
+        {
+          "name": "test-cerebras",
+          "value": "env.CEREBRAS_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "perplexity": {
+      "keys": [
+        {
+          "name": "test-pplx",
+          "value": "env.PERPLEXITY_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    },
+    "parasail": {
+      "keys": [
+        {
+          "name": "test-psk",
+          "value": "env.PARASAIL_API_KEY",
+          "models": [],
+          "weight": 1.0
+        }
+      ],
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      }
+    }
+  },
+  "governance": {
+    "virtual_keys": [],
+    "routing_rules": []
+  },
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "filesystem",
+        "connection_type": "stdio",
+        "stdio_config": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "@anthropic/mcp-filesystem@1.0.0"
+          ]
+        }
+      }
+    ],
+    "tool_manager_config": {
+      "max_agent_depth": 10,
+      "tool_execution_timeout": 30
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "./logs.db"
+    }
+  },
+  "vector_store": {
+    "enabled": false,
+    "type": "weaviate",
+    "config": {
+      "host": "localhost:8080",
+      "scheme": "http"
+    }
+  }
+}

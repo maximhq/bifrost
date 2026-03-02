@@ -1,5 +1,21 @@
 {
     "$schema": "https://www.getbifrost.ai/schema",
+    "mcp": {
+        "client_configs": [
+            {
+                "name": "sse_mcp",
+                "connection_type": "sse",
+                "connection_string": "env.MCP_SSE_URL",
+                "auth_type": "headers",
+                "headers": {
+                    "Authorization": "env.MCP_SSE_AUTHORIZATION",
+                    "ENV_EXA_API_KEY": "env.MCP_SSE_API_KEY"
+                },
+                "tools_to_execute": ["*"],
+                "tools_to_auto_execute": ["*"]
+            }
+        ]
+    },
     "providers": {
         "openai": {
             "keys": [
@@ -8,6 +24,45 @@
                     "value": "env.OPENAI_API_KEY",
                     "weight": 1,
                     "use_for_batch_api": true
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "elevenlabs": {
+            "keys": [
+                {
+                    "name": "ElevenLabs API Key",
+                    "value": "env.ELEVENLABS_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": false
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "xai": {
+            "keys": [
+                {
+                    "name": "Xai API Key",
+                    "value": "env.XAI_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": false
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "huggingface": {
+            "keys": [
+                {
+                    "name": "Hugging Face API Key",
+                    "value": "env.HUGGING_FACE_API_KEY",
+                    "weight": 1,
+                    "use_for_batch_api": false
                 }
             ],
             "network_config": {
@@ -30,6 +85,7 @@
         "gemini": {
             "keys": [
                 {
+                    "name": "Gemini API Key",
                     "value": "env.GEMINI_API_KEY",
                     "weight": 1,
                     "use_for_batch_api": true
@@ -72,6 +128,18 @@
                 {
                     "name": "Cohere API Key",
                     "value": "env.COHERE_API_KEY",
+                    "weight": 1
+                }
+            ],
+            "network_config": {
+                "default_request_timeout_in_seconds": 300
+            }
+        },
+        "parasail": {
+            "keys": [
+                {
+                    "name": "Parasail API Key",
+                    "value": "env.PARASAIL_API_KEY",
                     "weight": 1
                 }
             ],

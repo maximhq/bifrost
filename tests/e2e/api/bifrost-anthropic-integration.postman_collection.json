@@ -1,0 +1,662 @@
+{
+  "info": {
+    "name": "Bifrost Anthropic Integration API",
+    "description": "E2E tests for Anthropic integration endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var requestName = pm.info.requestName;",
+          "var retryKey = 'retry_' + requestName;",
+          "var ciVal = pm.environment.get('CI');",
+          "var maxRetries = (String(ciVal).toLowerCase() === 'true' || ciVal === '1' || ciVal === 1) ? 10 : 0;",
+          "if (!pm.collectionVariables.has(retryKey)) {",
+          "  pm.collectionVariables.set(retryKey, 0);",
+          "}",
+          "pm.collectionVariables.set('current_request_name', requestName);",
+          "pm.collectionVariables.set('max_retries', maxRetries);"
+        ]
+      }
+    },
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var provider = (((pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || '') + '').toLowerCase();",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : '';",
+          "var capsStr = pm.collectionVariables.get('provider_capabilities') || '{}';",
+          "var execOrderStr = pm.collectionVariables.get('execution_order') || '[]';",
+          "var requestToOpStr = pm.collectionVariables.get('request_to_operation') || '{}';",
+          "try {",
+          "  var caps = JSON.parse(capsStr);",
+          "  var execOrder = JSON.parse(execOrderStr);",
+          "  var requestToOp = JSON.parse(requestToOpStr);",
+          "  var providerCaps = caps.providers && caps.providers[provider];",
+          "  var op = requestToOp[requestName];",
+          "  if (provider && op && providerCaps && providerCaps[op] === false) {",
+          "    if (pm.execution && typeof pm.execution.skipRequest === 'function') {",
+          "      pm.execution.skipRequest();",
+          "    }",
+          "    var idx = execOrder.indexOf(requestName);",
+          "    var nextName = (idx >= 0 && idx < execOrder.length - 1) ? execOrder[idx + 1] : null;",
+          "    if (nextName) {",
+          "      if (pm.execution && typeof pm.execution.setNextRequest === 'function') {",
+          "        pm.execution.setNextRequest(nextName);",
+          "      } else if (typeof postman !== 'undefined' && postman.setNextRequest) {",
+          "        postman.setNextRequest(nextName);",
+          "      }",
+          "    }",
+          "  }",
+          "} catch (e) {}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var code = pm.response.code;",
+          "var requestNameRetry = pm.collectionVariables.get('current_request_name');",
+          "var retryKey = 'retry_' + requestNameRetry;",
+          "var currentRetry = parseInt(pm.collectionVariables.get(retryKey) || '0', 10);",
+          "var maxRetries = parseInt(pm.collectionVariables.get('max_retries') || '0', 10);",
+          "var hasFailures = code < 200 || code > 299;",
+          "if (hasFailures && maxRetries > 0 && currentRetry < maxRetries) {",
+          "  pm.collectionVariables.set(retryKey, String(currentRetry + 1));",
+          "  var delayMs = Math.min(1000 * Math.pow(2, currentRetry), 30000);",
+          "  var end = Date.now() + delayMs; while (Date.now() < end) {}",
+          "  console.log('[RETRY] Request \"' + requestNameRetry + '\" failed (attempt ' + (currentRetry + 1) + '/' + maxRetries + '). Retrying after ' + delayMs + 'ms...');",
+          "  if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(requestNameRetry); }",
+          "} else {",
+          "  pm.collectionVariables.set(retryKey, '0');",
+          "  if (hasFailures && currentRetry >= maxRetries && maxRetries > 0) {",
+          "    console.log('[RETRY] Request \"' + requestNameRetry + '\" failed after ' + maxRetries + ' retries. Moving on.');",
+          "  }",
+          "  ",
+          "// Helper function to pretty print JSON",
+          "function prettyPrintJSON(jsonString) {",
+          "  try {",
+          "    var parsed = typeof jsonString === 'string' ? JSON.parse(jsonString) : jsonString;",
+          "    return JSON.stringify(parsed, null, 2);",
+          "  } catch (e) {",
+          "    return jsonString;",
+          "  }",
+          "}",
+          "function redact(obj) {",
+          "  if (!obj || typeof obj !== 'object') return obj;",
+          "  if (Array.isArray(obj)) return obj.map(redact);",
+          "  var out = {};",
+          "  Object.keys(obj).forEach(function (k) {",
+          "    if (/password|secret|token|api[_-]?key|authorization/i.test(k)) out[k] = '***REDACTED***';",
+          "    else out[k] = redact(obj[k]);",
+          "  });",
+          "  return out;",
+          "}",
+          "",
+          "// Log request details",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  try {",
+          "    var parsedReq = typeof pm.request.body.raw === 'string' ? JSON.parse(pm.request.body.raw) : pm.request.body.raw;",
+          "    requestBody = JSON.stringify(redact(parsedReq), null, 2);",
+          "  } catch (e) {",
+          "    requestBody = pm.request.body.raw;",
+          "  }",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "var responseText = '';",
+          "try {",
+          "  responseText = pm.response.text();",
+          "  if (responseText) {",
+          "    try {",
+          "      var parsedRes = JSON.parse(responseText);",
+          "      responseBody = JSON.stringify(redact(parsedRes), null, 2);",
+          "    } catch (e) {",
+          "      responseBody = responseText;",
+          "    }",
+          "  }",
+          "} catch (e) {",
+          "  responseBody = pm.response.text() || '';",
+          "}",
+          "",
+          "// Output formatted request/response logs (body content only when verbose_logs=1)",
+          "var verbose = (pm.collectionVariables.get('verbose_logs') || '0') === '1';",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (verbose && requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (verbose && responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : '';",
+          "    if (errCode === 'unsupported_operation' || errCode === 'feature_not_enabled') {",
+          "      pass = true;",
+          "    } else {",
+          "      var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "      if (typeof msg === 'string' && /\\b(not supported|unsupported|not enabled|not configured|does not support|doesn't support|cannot be used for|is not supported on this|incompatible)\\b/i.test(msg)) {",
+          "        pass = true;",
+          "      }",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
+          "// Do not swallow not-found for batch_id/file_id dependent requests",
+          "var dependentBatchRequests = ['Retrieve Batch', 'Cancel Batch'];",
+          "var dependentFileRequests = ['Get File Content', 'Delete File'];",
+          "var isDependentOnBatchOrFile = dependentBatchRequests.indexOf(requestName) !== -1 || dependentFileRequests.indexOf(requestName) !== -1;",
+          "var errMsg = ''; try { var errBody = pm.response.json(); errMsg = (errBody && errBody.error && errBody.error.message) ? errBody.error.message : (errBody && errBody.message) ? errBody.message : ''; } catch (e) {}",
+          "var isNotFound = code === 404 || (typeof errMsg === 'string' && /not found|not_found|resource.*not found/i.test(errMsg));",
+          "if (isDependentOnBatchOrFile && isNotFound) { pass = false; }",
+          "",
+          "// Allow 404 for Get Batch Results (batch may have no results yet)",
+          "if (requestName === 'Get Batch Results' && code === 404) {",
+          "  pass = true;",
+          "}",
+          "",
+          "pm.test('Status is 2xx or unsupported operation', function() { pm.expect(pass).to.be.true; });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "anthropic",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "claude-sonnet-4-5-20250929",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "file_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "execution_order",
+      "value": "[\"List Models\",\"Create Message\",\"Create Completion\",\"Count Tokens\",\"Create Batch\",\"List Batches\",\"Retrieve Batch\",\"Cancel Batch\",\"Get Batch Results\",\"Upload File\",\"List Files\",\"Get File Content\",\"Delete File\"]",
+      "type": "string"
+    },
+    {
+      "key": "provider_capabilities",
+      "value": "{\"description\":\"Provider capability matrix for integration tests. Each provider has explicit booleans per operation (derived from core/providers/* provider.go NewUnsupportedOperationError). Used to skip requests when running with all provider envs.\",\"providers\":{\"openai\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":true},\"anthropic\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":true,\"file\":true,\"container\":false},\"azure\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"bedrock\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"cerebras\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"cohere\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"elevenlabs\":{\"chat_completions\":true,\"embedding\":false,\"speech\":true,\"transcription\":true,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"gemini\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":true,\"file\":true,\"container\":false},\"groq\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"huggingface\":{\"chat_completions\":true,\"embedding\":true,\"speech\":true,\"transcription\":true,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"mistral\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"nebius\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"openrouter\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"parasail\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"perplexity\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false},\"replicate\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":true,\"container\":false},\"vertex\":{\"chat_completions\":true,\"embedding\":true,\"speech\":false,\"transcription\":false,\"image\":true,\"batch\":false,\"file\":false,\"container\":false},\"xai\":{\"chat_completions\":true,\"embedding\":false,\"speech\":false,\"transcription\":false,\"image\":false,\"batch\":false,\"file\":false,\"container\":false}}}",
+      "type": "string"
+    },
+    {
+      "key": "request_to_operation",
+      "value": "{\"Create Batch\":\"batch\",\"List Batches\":\"batch\",\"Retrieve Batch\":\"batch\",\"Cancel Batch\":\"batch\",\"Get Batch Results\":\"batch\",\"Upload File\":\"file\",\"List Files\":\"file\",\"Get File Content\":\"file\",\"Delete File\":\"file\"}",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/models",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "models"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Messages",
+      "item": [
+        {
+          "name": "Create Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"max_tokens\": 1024,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Complete",
+      "item": [
+        {
+          "name": "Create Completion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"prompt\": \"\\n\\nHuman: Hello, Claude!\\n\\nAssistant:\",\n  \"max_tokens_to_sample\": 256,\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/complete",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "complete"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Count Tokens",
+      "item": [
+        {
+          "name": "Count Tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"How many tokens is this message?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/count_tokens",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batches",
+      "item": [
+        {
+          "name": "Create Batch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Create Batch: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "pm.test('Create Batch: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(j).to.have.property('id'); pm.expect(j.id).to.be.a('string'); pm.expect(j.id.length).to.be.above(0); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && j && j.id) { pm.collectionVariables.set('batch_id', j.id); if (pm.environment) { pm.environment.set('batch_id', j.id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"custom_id\": \"test-request-1\",\n      \"params\": {\n        \"model\": \"{{provider}}/{{model}}\",\n        \"max_tokens\": 1024,\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Say hello\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Batches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/batches",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (!batch_id || batch_id.trim() === '') {",
+                  "  pm.test('batch_id must be set by Create Batch request before Retrieve Batch', function () { pm.expect.fail('batch_id is missing; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/batches/{{batch_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches",
+                "{{batch_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cancel Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (!batch_id || batch_id.trim() === '') {",
+                  "  pm.test('batch_id must be set by Create Batch request before Cancel Batch', function () { pm.expect.fail('batch_id is missing; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/batches/{{batch_id}}/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches",
+                "{{batch_id}}",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Batch Results",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var batch_id = pm.collectionVariables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (!batch_id || batch_id.trim() === '') {",
+                  "  pm.test('batch_id must be set by Create Batch request before Get Batch Results', function () { pm.expect.fail('batch_id is missing; run Create Batch first.'); });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/messages/batches/{{batch_id}}/results",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages",
+                "batches",
+                "{{batch_id}}",
+                "results"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload File",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Upload File: status is 2xx', function () { pm.expect(pm.response.code).to.be.at.least(200); pm.expect(pm.response.code).to.be.below(300); });",
+                  "var j = null; try { j = pm.response.json(); } catch (e) {}",
+                  "var id = (j && (j.id || j.file_id)) || (j && j.data && (j.data.id || j.data.file_id));",
+                  "pm.test('Upload File: response has id', function () { pm.expect(j).to.be.an('object'); pm.expect(id).to.be.a('string'); pm.expect(id.length).to.be.above(0); });",
+                  "if (pm.response.code >= 200 && pm.response.code < 300 && id) { pm.collectionVariables.set('file_id', id); if (pm.environment) { pm.environment.set('file_id', id); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.jsonl"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get File Content",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "if (!file_id || file_id.trim() === '') {",
+                  "  pm.test('file_id must be set by Upload File request before Get File Content', function () { pm.expect.fail('file_id is missing; run Upload File first.'); });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/files/{{file_id}}/content",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{file_id}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var file_id = pm.collectionVariables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "if (!file_id || file_id.trim() === '') {",
+                  "  pm.test('file_id must be set by Upload File request before Delete File', function () { pm.expect.fail('file_id is missing; run Upload File first.'); });",
+                  "  if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(null); }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/anthropic/v1/files/{{file_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "files",
+                "{{file_id}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
