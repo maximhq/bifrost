@@ -649,7 +649,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
 		})
-	}
+	}	
 	return nil
 }
 
