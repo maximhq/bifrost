@@ -607,7 +607,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 											setForm((prev) => ({ ...prev, scopeRoot: value, virtualKeyID: "", providerID: "", providerKeyID: "" }))
 										}
 									>
-										<SelectTrigger data-testid="pricing-override-scope-root-select">
+										<SelectTrigger data-testid="pricing-override-scope-root-select" className="w-full">
 											<SelectValue />
 										</SelectTrigger>
 										<SelectContent>
@@ -626,7 +626,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 												setForm((prev) => ({ ...prev, virtualKeyID: value === "__none__" ? "" : value, providerID: "", providerKeyID: "" }))
 											}
 										>
-											<SelectTrigger data-testid="pricing-override-virtual-key-select">
+											<SelectTrigger data-testid="pricing-override-virtual-key-select" className="w-full">
 												<SelectValue placeholder="Select virtual key" />
 											</SelectTrigger>
 											<SelectContent>
@@ -641,53 +641,54 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 									</div>
 								)}
 
-								<div className="space-y-2">
-									<Label>Provider (optional)</Label>
-									<Select
-										value={form.providerID || "__none__"}
-										onValueChange={(value) =>
-											setForm((prev) => ({ ...prev, providerID: value === "__none__" ? "" : value, providerKeyID: "" }))
-										}
-									>
-										<SelectTrigger data-testid="pricing-override-provider-select">
-											<SelectValue placeholder="All providers" />
-										</SelectTrigger>
-										<SelectContent>
-											<SelectItem value="__none__">All providers</SelectItem>
-											{providers.map((provider) => (
-												<SelectItem key={provider.name} value={provider.name}>
-													{provider.name}
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-								</div>
+									<div className="grid grid-cols-2 gap-2">
+										<div className="space-y-2">
+											<Label>Provider (optional)</Label>
+											<Select
+												value={form.providerID || "__none__"}
+												onValueChange={(value) =>
+													setForm((prev) => ({ ...prev, providerID: value === "__none__" ? "" : value, providerKeyID: "" }))
+												}
+											>
+												<SelectTrigger data-testid="pricing-override-provider-select" className="w-full">
+													<SelectValue placeholder="All providers" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="__none__">All providers</SelectItem>
+													{providers.map((provider) => (
+														<SelectItem key={provider.name} value={provider.name}>
+															{provider.name}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+										</div>
 
-								{form.providerID && (
-									<div className="space-y-2">
-										<Label>Provider key (optional)</Label>
-										<Select
-											value={form.providerKeyID || "__none__"}
-											onValueChange={(value) => setForm((prev) => ({ ...prev, providerKeyID: value === "__none__" ? "" : value }))}
-										>
-											<SelectTrigger data-testid="pricing-override-provider-key-select">
-												<SelectValue placeholder="All provider keys" />
-											</SelectTrigger>
-											<SelectContent>
-												<SelectItem value="__none__">All provider keys</SelectItem>
-												{providerScopedKeyOptions.map((option) => (
-													<SelectItem key={option.id} value={option.id}>
-														{option.label}
-													</SelectItem>
-												))}
-											</SelectContent>
-										</Select>
+										{form.providerID ? (
+											<div className="space-y-2">
+												<Label>Provider key (optional)</Label>
+												<Select
+													value={form.providerKeyID || "__none__"}
+													onValueChange={(value) => setForm((prev) => ({ ...prev, providerKeyID: value === "__none__" ? "" : value }))}
+												>
+													<SelectTrigger data-testid="pricing-override-provider-key-select" className="w-full">
+														<SelectValue placeholder="All provider keys" />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="__none__">All provider keys</SelectItem>
+														{providerScopedKeyOptions.map((option) => (
+															<SelectItem key={option.id} value={option.id}>
+																{option.label}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+											</div>
+										) : (
+											<div />
+										)}
 									</div>
-								)}
 
-								<Badge variant="outline" className="text-muted-foreground text-xs">
-									{resolvedScopeKind.replaceAll("_", " ")}
-								</Badge>
 							</>
 						)}
 						{validation.errors.scope && <p className="text-destructive text-xs">{validation.errors.scope}</p>}
@@ -696,14 +697,14 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 					<DottedSeparator />
 
 					<div className="space-y-2">
-						<div className="grid grid-cols-[160px_1fr] gap-3">
+							<div className="grid grid-cols-[1fr_2fr] gap-2">
 							<div className="space-y-2">
 								<Label>Match type</Label>
 								<Select
 									value={form.matchType}
 									onValueChange={(value: PricingOverrideMatchType) => setForm((prev) => ({ ...prev, matchType: value }))}
 								>
-									<SelectTrigger data-testid="pricing-override-match-type-select">
+									<SelectTrigger data-testid="pricing-override-match-type-select" className="w-full">
 										<SelectValue placeholder="Select match type" />
 									</SelectTrigger>
 									<SelectContent>
@@ -730,7 +731,7 @@ export default function PricingOverrideDrawer({ open, onOpenChange, editingOverr
 						<Label>Request types</Label>
 						<Popover open={requestTypePopoverOpen} onOpenChange={setRequestTypePopoverOpen} modal={false}>
 							<PopoverTrigger asChild>
-									<Button data-testid="pricing-override-request-types-btn" type="button" variant="outline" className="w-full justify-between">
+									<Button data-testid="pricing-override-request-types-btn" type="button" variant="outline" className="h-10 w-full justify-between">
 										<span className="truncate">
 											{form.requestTypes.length > 0
 												? `${selectedRequestTypeGroup} (${form.requestTypes.length})`
