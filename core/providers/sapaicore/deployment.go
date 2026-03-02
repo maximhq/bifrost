@@ -200,7 +200,7 @@ func (dc *DeploymentCache) fetchDeployments(
 		}
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("deployments request failed with status %d: %s", resp.StatusCode(), body),
-			fmt.Errorf("HTTP %d", resp.StatusCode()),
+			fmt.Errorf("http %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
 	}
@@ -275,7 +275,7 @@ func (dc *DeploymentCache) ListModels(
 		}
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("model listing request failed with status %d: %s", resp.StatusCode(), body),
-			fmt.Errorf("HTTP %d", resp.StatusCode()),
+			fmt.Errorf("http %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
 	}
