@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -44,6 +46,9 @@ type RedisStore struct {
 	client *redis.Client
 	config RedisConfig
 	logger schemas.Logger
+
+	namespaceFieldTypesMu sync.RWMutex
+	namespaceFieldTypes   map[string]map[string]VectorStorePropertyType
 }
 
 // Ping checks if the Redis server is reachable.
@@ -59,6 +64,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 	// Check if index already exists
 	infoResult := s.client.Do(ctx, "FT.INFO", namespace)
 	if infoResult.Err() == nil {
+		s.cacheNamespaceFieldTypes(namespace, properties)
 		return nil // Index already exists
 	}
 	if err := infoResult.Err(); err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
@@ -108,6 +114,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		return fmt.Errorf("failed to create semantic vector index %s: %w", namespace, err)
 	}
 
+	s.cacheNamespaceFieldTypes(namespace, properties)
 	return nil
 }
 
@@ -223,7 +230,7 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 	}
 
 	// Build Redis query from the provided queries
-	redisQuery := buildRedisQuery(queries)
+	redisQuery := buildRedisQuery(queries, s.getNamespaceFieldTypes(namespace))
 
 	// Build FT.SEARCH command
 	args := []interface{}{
@@ -317,17 +324,10 @@ func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries
 		all        []SearchResult
 	)
 
-	// Parse offset early so we can compute an early-exit target.
+	// Parse offset for deterministic in-memory pagination after full scan.
 	offset, err := parseOffsetCursor(cursor)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	// Pre-calculate target count for early exit on bounded queries.
-	// Collect one extra result beyond offset+limit to know if there are more.
-	target := 0
-	if limit > 0 {
-		target = offset + int(limit) + 1
 	}
 
 	for {
@@ -387,20 +387,19 @@ func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries
 				}
 
 				all = append(all, searchResult)
-				if target > 0 && len(all) >= target {
-					break
-				}
 			}
 		}
 
-		if target > 0 && len(all) >= target {
-			break
-		}
 		scanCursor = nextCursor
 		if scanCursor == 0 {
 			break
 		}
 	}
+
+	// Ensure stable pagination boundaries for offset cursors across calls.
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].ID < all[j].ID
+	})
 
 	if offset > len(all) {
 		offset = len(all)
@@ -431,6 +430,13 @@ func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries
 func matchesQueriesForScan(properties map[string]interface{}, queries []Query) bool {
 	for _, q := range queries {
 		raw, exists := properties[q.Field]
+
+		// NOTE: missing fields are treated as non-matching for most operators
+		// (Equal, Like, GreaterThan, etc.) but pass NotEqual — i.e. a document
+		// without the field is considered "not equal" to any value. This differs
+		// from SQL NULL semantics where NULL != value evaluates to NULL/unknown.
+		// Change this if scan results need to match FT.SEARCH behavior exactly.
+
 		rawStr := fmt.Sprintf("%v", raw)
 		queryStr := fmt.Sprintf("%v", q.Value)
 
@@ -734,15 +740,53 @@ func containsField(fields []string, candidate string) bool {
 	return false
 }
 
+func (s *RedisStore) cacheNamespaceFieldTypes(namespace string, properties map[string]VectorStoreProperties) {
+	if strings.TrimSpace(namespace) == "" || len(properties) == 0 {
+		return
+	}
+
+	fieldTypes := make(map[string]VectorStorePropertyType, len(properties))
+	for field, prop := range properties {
+		fieldTypes[field] = prop.DataType
+	}
+
+	s.namespaceFieldTypesMu.Lock()
+	defer s.namespaceFieldTypesMu.Unlock()
+	if s.namespaceFieldTypes == nil {
+		s.namespaceFieldTypes = make(map[string]map[string]VectorStorePropertyType)
+	}
+	s.namespaceFieldTypes[namespace] = fieldTypes
+}
+
+func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorStorePropertyType {
+	if strings.TrimSpace(namespace) == "" {
+		return nil
+	}
+
+	s.namespaceFieldTypesMu.RLock()
+	defer s.namespaceFieldTypesMu.RUnlock()
+
+	fieldTypes, ok := s.namespaceFieldTypes[namespace]
+	if !ok {
+		return nil
+	}
+
+	copied := make(map[string]VectorStorePropertyType, len(fieldTypes))
+	for field, dataType := range fieldTypes {
+		copied[field] = dataType
+	}
+	return copied
+}
+
 // buildRedisQuery converts []Query to Redis query syntax
-func buildRedisQuery(queries []Query) string {
+func buildRedisQuery(queries []Query, fieldTypes map[string]VectorStorePropertyType) string {
 	if len(queries) == 0 {
 		return "*"
 	}
 
 	var conditions []string
 	for _, query := range queries {
-		condition := buildRedisQueryCondition(query)
+		condition := buildRedisQueryCondition(query, fieldTypes)
 		if condition != "" {
 			conditions = append(conditions, condition)
 		}
@@ -756,8 +800,60 @@ func buildRedisQuery(queries []Query) string {
 	return strings.Join(conditions, " ")
 }
 
+func shouldUseNumericEquality(field string, value interface{}, fieldTypes map[string]VectorStorePropertyType) (string, bool) {
+	if fieldTypes != nil {
+		if dataType, ok := fieldTypes[field]; ok {
+			if dataType == VectorStorePropertyTypeInteger {
+				return normalizeNumericQueryValue(value)
+			}
+			return "", false
+		}
+	}
+	return normalizeNumericQueryValue(value)
+}
+
+func normalizeNumericQueryValue(value interface{}) (string, bool) {
+	switch v := value.(type) {
+	case int:
+		return strconv.FormatInt(int64(v), 10), true
+	case int8:
+		return strconv.FormatInt(int64(v), 10), true
+	case int16:
+		return strconv.FormatInt(int64(v), 10), true
+	case int32:
+		return strconv.FormatInt(int64(v), 10), true
+	case int64:
+		return strconv.FormatInt(v, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), true
+	case uint64:
+		return strconv.FormatUint(v, 10), true
+	case float32:
+		return strconv.FormatFloat(float64(v), 'f', -1, 32), true
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64), true
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return "", false
+		}
+		if _, err := strconv.ParseFloat(trimmed, 64); err != nil {
+			return "", false
+		}
+		return trimmed, true
+	default:
+		return "", false
+	}
+}
+
 // buildRedisQueryCondition builds a single Redis query condition
-func buildRedisQueryCondition(query Query) string {
+func buildRedisQueryCondition(query Query, fieldTypes map[string]VectorStorePropertyType) string {
 	field := query.Field
 	operator := query.Operator
 	value := query.Value
@@ -779,9 +875,15 @@ func buildRedisQueryCondition(query Query) string {
 
 	switch operator {
 	case QueryOperatorEqual:
+		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldTypes); useNumeric {
+			return fmt.Sprintf("@%s:[%s %s]", field, numericValue, numericValue)
+		}
 		// TAG exact match
 		return fmt.Sprintf("@%s:{%s}", field, escapedValue)
 	case QueryOperatorNotEqual:
+		if numericValue, useNumeric := shouldUseNumericEquality(field, value, fieldTypes); useNumeric {
+			return fmt.Sprintf("-@%s:[%s %s]", field, numericValue, numericValue)
+		}
 		// TAG negation
 		return fmt.Sprintf("-@%s:{%s}", field, escapedValue)
 	case QueryOperatorLike:
@@ -832,7 +934,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 	defer cancel()
 
 	// Build Redis query from the provided queries
-	redisQuery := buildRedisQuery(queries)
+	redisQuery := buildRedisQuery(queries, s.getNamespaceFieldTypes(namespace))
 
 	// Convert query embedding to binary format
 	queryBytes := float32SliceToBytes(vector)
@@ -1021,14 +1123,13 @@ func (s *RedisStore) DeleteAll(ctx context.Context, namespace string, queries []
 	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
 	defer cancel()
 
-	// Use cursor-based deletion to handle large datasets efficiently
-	return s.deleteAllWithCursor(ctx, namespace, queries, nil)
+	return s.deleteAllBySnapshot(ctx, namespace, queries)
 }
 
-// deleteAllWithCursor performs cursor-based deletion for large datasets
-func (s *RedisStore) deleteAllWithCursor(ctx context.Context, namespace string, queries []Query, cursor *string) ([]DeleteResult, error) {
-	// Get a batch of documents to delete (using pagination)
-	results, nextCursor, err := s.GetAll(ctx, namespace, queries, []string{}, cursor, BatchLimit)
+// deleteAllBySnapshot snapshots matching ids before deleting to avoid
+// offset/cursor drift while mutating the dataset.
+func (s *RedisStore) deleteAllBySnapshot(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error) {
+	results, _, err := s.GetAll(ctx, namespace, queries, []string{}, nil, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find documents to delete: %w", err)
 	}
@@ -1101,16 +1202,6 @@ func (s *RedisStore) deleteAllWithCursor(ctx context.Context, namespace string, 
 				})
 			}
 		}
-	}
-
-	// If there are more results, continue with next cursor
-	if nextCursor != nil {
-		nextResults, err := s.deleteAllWithCursor(ctx, namespace, queries, nextCursor)
-		if err != nil {
-			return nil, fmt.Errorf("failed to delete remaining documents: %w", err)
-		}
-		// Combine results from this batch and subsequent batches
-		deleteResults = append(deleteResults, nextResults...)
 	}
 
 	return deleteResults, nil
@@ -1340,6 +1431,7 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 		client: client,
 		config: config,
 		logger: logger,
+		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
 	}
 	return store, nil
 }

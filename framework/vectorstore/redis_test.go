@@ -411,6 +411,72 @@ func TestParseOffsetCursor(t *testing.T) {
 	}
 }
 
+func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
+	fieldTypes := map[string]VectorStorePropertyType{
+		"size": VectorStorePropertyTypeInteger,
+		"type": VectorStorePropertyTypeString,
+	}
+
+	tests := []struct {
+		name     string
+		query    Query
+		expected string
+	}{
+		{
+			name: "numeric equal uses range syntax for integer field",
+			query: Query{
+				Field:    "size",
+				Operator: QueryOperatorEqual,
+				Value:    1024,
+			},
+			expected: "@size:[1024 1024]",
+		},
+		{
+			name: "numeric not equal uses negative range syntax for integer field",
+			query: Query{
+				Field:    "size",
+				Operator: QueryOperatorNotEqual,
+				Value:    1024,
+			},
+			expected: "-@size:[1024 1024]",
+		},
+		{
+			name: "string field equal remains tag syntax",
+			query: Query{
+				Field:    "type",
+				Operator: QueryOperatorEqual,
+				Value:    "pdf",
+			},
+			expected: "@type:{pdf}",
+		},
+		{
+			name: "unknown field with numeric literal falls back to numeric range",
+			query: Query{
+				Field:    "unknown_field",
+				Operator: QueryOperatorEqual,
+				Value:    7,
+			},
+			expected: "@unknown_field:[7 7]",
+		},
+		{
+			name: "known non-numeric field with numeric literal remains tag",
+			query: Query{
+				Field:    "type",
+				Operator: QueryOperatorEqual,
+				Value:    7,
+			},
+			expected: "@type:{7}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildRedisQueryCondition(tt.query, fieldTypes)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
 func ptr(v string) *string {
 	return &v
 }
@@ -782,6 +848,27 @@ func TestRedisStore_FilteringScenarios(t *testing.T) {
 		assert.Len(t, results, 2) // doc1 (1024) and doc2 (2048)
 	})
 
+	t.Run("Filter by numeric equality", func(t *testing.T) {
+		queries := []Query{
+			{Field: "size", Operator: QueryOperatorEqual, Value: 1024},
+		}
+
+		results, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, queries, filterFields, nil, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "1024", results[0].Properties["size"])
+	})
+
+	t.Run("Filter by numeric inequality", func(t *testing.T) {
+		queries := []Query{
+			{Field: "size", Operator: QueryOperatorNotEqual, Value: 1024},
+		}
+
+		results, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, queries, filterFields, nil, 10)
+		require.NoError(t, err)
+		assert.Len(t, results, 3)
+	})
+
 	t.Run("Filter by boolean", func(t *testing.T) {
 		queries := []Query{
 			{Field: "public", Operator: QueryOperatorEqual, Value: true},
@@ -827,6 +914,29 @@ func TestRedisStore_FilteringScenarios(t *testing.T) {
 			require.NoError(t, err)
 			assert.LessOrEqual(t, len(nextResults), 2)
 			t.Logf("First page: %d results, Next page: %d results", len(results), len(nextResults))
+		}
+	})
+
+	t.Run("Scan fallback pagination is deterministic", func(t *testing.T) {
+		firstPage, cursor, err := setup.Store.getAllByScan(setup.ctx, TestNamespace, nil, filterFields, nil, 2)
+		require.NoError(t, err)
+		require.Len(t, firstPage, 2)
+		require.NotNil(t, cursor)
+
+		secondPage, _, err := setup.Store.getAllByScan(setup.ctx, TestNamespace, nil, filterFields, cursor, 2)
+		require.NoError(t, err)
+		require.Len(t, secondPage, 2)
+
+		combined := append(firstPage, secondPage...)
+		for i := 1; i < len(combined); i++ {
+			assert.LessOrEqual(t, combined[i-1].ID, combined[i].ID)
+		}
+
+		seen := make(map[string]struct{}, len(combined))
+		for _, result := range combined {
+			_, exists := seen[result.ID]
+			assert.False(t, exists, "duplicate id across pages: %s", result.ID)
+			seen[result.ID] = struct{}{}
 		}
 	})
 }
@@ -1128,6 +1238,51 @@ func TestRedisStore_DeleteOperations(t *testing.T) {
 		require.NoError(t, err)
 		assert.Len(t, allResults, 1) // Only the "keep_me" item should remain
 		assert.Equal(t, "keep_me", allResults[0].Properties["type"])
+	})
+
+	t.Run("DeleteAll with more than BatchLimit matches", func(t *testing.T) {
+		const deleteCount = BatchLimit + 23
+		for i := 0; i < deleteCount; i++ {
+			err := setup.Store.Add(
+				setup.ctx,
+				TestNamespace,
+				generateUUID(),
+				generateTestEmbedding(RedisTestDimension),
+				map[string]interface{}{"type": "delete_me_large", "category": "test"},
+			)
+			require.NoError(t, err)
+		}
+
+		keepID := generateUUID()
+		err := setup.Store.Add(
+			setup.ctx,
+			TestNamespace,
+			keepID,
+			generateTestEmbedding(RedisTestDimension),
+			map[string]interface{}{"type": "keep_large", "category": "test"},
+		)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		deleteQuery := []Query{
+			{Field: "type", Operator: QueryOperatorEqual, Value: "delete_me_large"},
+		}
+		beforeDelete, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, deleteQuery, []string{"type"}, nil, 0)
+		require.NoError(t, err)
+		require.Len(t, beforeDelete, deleteCount)
+
+		deleteResults, err := setup.Store.DeleteAll(setup.ctx, TestNamespace, deleteQuery)
+		require.NoError(t, err)
+		assert.Len(t, deleteResults, deleteCount)
+
+		afterDelete, _, err := setup.Store.GetAll(setup.ctx, TestNamespace, deleteQuery, []string{"type"}, nil, 0)
+		require.NoError(t, err)
+		assert.Len(t, afterDelete, 0)
+
+		keepDoc, err := setup.Store.GetChunk(setup.ctx, TestNamespace, keepID)
+		require.NoError(t, err)
+		assert.Equal(t, "keep_large", keepDoc.Properties["type"])
 	})
 }
 
