@@ -142,6 +142,15 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 
 // sendStreamError sends an error in streaming format using the stream error converter if available
 func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
+	// Forward provider response headers from context so streaming error responses include them
+	if bifrostCtx != nil {
+		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+			for key, value := range headers {
+				ctx.Response.Header.Set(key, value)
+			}
+		}
+	}
+
 	var errorResponse interface{}
 
 	// Use stream error converter if available, otherwise fallback to regular error converter
@@ -168,6 +177,15 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 // sendError sends an error response with the appropriate status code and JSON body.
 // It handles different error types (string, error interface, or arbitrary objects).
 func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, errorConverter ErrorConverter, bifrostErr *schemas.BifrostError) {
+	// Forward provider response headers from context so error responses include them
+	if bifrostCtx != nil {
+		if headers, ok := bifrostCtx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string); ok {
+			for key, value := range headers {
+				ctx.Response.Header.Set(key, value)
+			}
+		}
+	}
+
 	if bifrostErr.StatusCode != nil {
 		ctx.SetStatusCode(*bifrostErr.StatusCode)
 	} else {

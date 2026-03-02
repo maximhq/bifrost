@@ -148,8 +148,8 @@ function AllocationTable({
 	const SortIcon = sortDirection === "asc" ? ArrowUp : ArrowDown;
 
 	const SortHeader = ({ field, children }: { field: AllocationSortField; children: React.ReactNode }) => (
-		<th scope="col" className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
-			<button type="button" onClick={() => onSort(field)} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
+		<th scope="col" aria-sort={sortField === field ? (sortDirection === "asc" ? "ascending" : "descending") : "none"} className="px-4 py-3 text-left text-sm font-medium text-zinc-400">
+			<button type="button" onClick={() => onSort(field)} data-testid={`pprof-sort-${field}`} className="flex cursor-pointer items-center gap-1 hover:text-zinc-200">
 				{children}
 				{sortField === field && <SortIcon className="h-3 w-3" />}
 			</button>
@@ -218,11 +218,14 @@ function GoroutineGroupRow({
 				tabIndex={0}
 				onClick={onToggle}
 				onKeyDown={(e) => {
+					if (e.target !== e.currentTarget) return;
 					if (e.key === "Enter" || e.key === " ") {
 						e.preventDefault();
 						onToggle();
 					}
 				}}
+				aria-expanded={isExpanded}
+				data-testid="pprof-goroutine-toggle"
 				className="group flex w-full cursor-pointer items-start gap-3 px-4 py-3 hover:bg-zinc-800/30"
 			>
 				<div className="mt-1 shrink-0">
@@ -246,12 +249,14 @@ function GoroutineGroupRow({
 				</div>
 				<button
 					type="button"
+					onKeyDown={(e) => e.stopPropagation()}
 					onClick={(e) => {
 						e.stopPropagation();
 						const filePath = getStackFilePath(group.stack);
 						if (filePath) onSkip(filePath);
 					}}
-					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-zinc-700 hover:text-zinc-300"
+					data-testid="pprof-goroutine-skip"
+					className="shrink-0 rounded p-1.5 text-zinc-600 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-zinc-500 hover:bg-zinc-700 hover:text-zinc-300"
 					title="Hide goroutines from this file"
 					aria-label="Hide goroutines from this file"
 				>
@@ -426,7 +431,7 @@ export default function PprofPage() {
 	}
 
 	// Error state
-	if (error) {
+	if (error && !data) {
 		return (
 			<div className="flex min-h-screen items-center justify-center">
 				<div className="rounded-lg border border-red-800 bg-red-900/20 px-6 py-4 text-red-400">
@@ -451,6 +456,7 @@ export default function PprofPage() {
 					</span>
 					<button
 						onClick={() => refetch()}
+						data-testid="pprof-data-refresh"
 						className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
 					>
 						<RefreshCw className="h-4 w-4" />
@@ -675,6 +681,7 @@ export default function PprofPage() {
 							{skippedGoroutines.size > 0 && (
 								<button
 									onClick={handleClearSkipped}
+									data-testid="pprof-goroutine-clearskipped"
 									className="flex items-center gap-1 rounded px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
 								>
 									<RotateCcw className="h-3 w-3" />

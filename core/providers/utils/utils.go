@@ -3,6 +3,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -44,6 +45,19 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
+const (
+	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
+)
+
+// NewSSEScanner creates a bufio.Scanner configured for SSE stream parsing.
+// Uses a small initial buffer (8KB) that auto-grows up to 10MB for rare large tokens.
+func NewSSEScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, sseInitialBufSize), sseMaxBufSize)
+	return scanner
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -357,6 +371,11 @@ var providerResponseFilterHeaders = map[string]bool{
 	"proxy-connection":                  true,
 	"proxy-authenticate":                true,
 	"proxy-authorization":               true,
+	"authorization":                     true,
+	"cookie":                            true,
+	"set-cookie":                        true,
+	"set-cookie2":                       true,
+	"www-authenticate":                  true,
 	"te":                                true,
 	"trailer":                           true,
 	"upgrade":                           true,
@@ -377,10 +396,20 @@ var providerResponseFilterHeaders = map[string]bool{
 // ExtractProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level headers are excluded.
 func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
-		if !providerResponseFilterHeaders[strings.ToLower(string(key))] {
-			headers[string(key)] = string(value)
+		k := string(key)
+		if providerResponseFilterHeaders[strings.ToLower(k)] {
+			return
+		}
+		v := string(value)
+		if existing, ok := headers[k]; ok && existing != "" {
+			headers[k] = existing + ", " + v
+		} else {
+			headers[k] = v
 		}
 	})
 	if len(headers) == 0 {
@@ -393,10 +422,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 // from a standard net/http response. Transport-level headers are excluded.
 // Used by providers like Bedrock that use net/http instead of fasthttp.
 func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
 	headers := make(map[string]string)
 	for k, values := range resp.Header {
 		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
-			headers[k] = values[0]
+			headers[k] = strings.Join(values, ", ")
 		}
 	}
 	if len(headers) == 0 {
@@ -1318,8 +1350,10 @@ func ProcessAndSendBifrostError(
 // Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
 func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
+	closed := make(chan struct{})
 
 	go func() {
+		defer close(closed)
 		select {
 		case <-ctx.Done():
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
@@ -1329,11 +1363,22 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 				}
 			}
 		case <-done:
-			// Normal completion - do nothing
+			// If context was also cancelled (race between done and ctx.Done),
+			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			if ctx.Err() != nil {
+				if closer, ok := bodyStream.(io.Closer); ok {
+					if err := closer.Close(); err != nil {
+						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					}
+				}
+			}
 		}
 	}()
 
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+	}
 }
 
 // HandleStreamCancellation should be called when a streaming goroutine exits
@@ -1974,19 +2019,19 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
 	// This builds a complete BifrostResponse from all the streaming chunks
 	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
+
+	// Set TTFT and chunk count attributes regardless of accumulated response availability
+	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
+	if ttftMs > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+	}
+	if chunkCount > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
+	}
+
 	if accumulatedResp != nil {
 		// Use accumulated response for attributes (includes full content, tool calls, etc.)
 		tracer.PopulateLLMResponseAttributes(handle, accumulatedResp, err)
-
-		// Set Time to First Token (TTFT) attribute
-		if ttftMs > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
-		}
-
-		// Set total chunks attribute
-		if chunkCount > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
-		}
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(handle, result, err)

@@ -1004,7 +1004,7 @@ func (l *Log) BuildContentSummary() string {
 	}
 
 	// Add error details
-	if l.ErrorDetailsParsed != nil && l.ErrorDetailsParsed.Error.Message != "" {
+	if l.ErrorDetailsParsed != nil && l.ErrorDetailsParsed.Error != nil && l.ErrorDetailsParsed.Error.Message != "" {
 		parts = append(parts, l.ErrorDetailsParsed.Error.Message)
 	}
 

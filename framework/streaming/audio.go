@@ -94,15 +94,17 @@ func (a *Accumulator) processAccumulatedAudioStreamingChunks(requestID string, b
 			return accumulator.AudioStreamChunks[i].ChunkIndex < accumulator.AudioStreamChunks[j].ChunkIndex
 		})
 		var rawBuilder strings.Builder
+		hasRawChunk := false
 		for _, chunk := range accumulator.AudioStreamChunks {
 			if chunk.RawResponse != nil {
-				if rawBuilder.Len() > 0 {
+				if hasRawChunk {
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				hasRawChunk = true
 			}
 		}
-		if rawBuilder.Len() > 0 {
+		if hasRawChunk {
 			s := rawBuilder.String()
 			data.RawResponse = &s
 		}

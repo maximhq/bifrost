@@ -236,6 +236,10 @@ type ProcessedStreamResponse struct {
 
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
 func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
+	if p.Data == nil {
+		return nil
+	}
+
 	resp := &schemas.BifrostResponse{}
 
 	switch p.StreamType {
