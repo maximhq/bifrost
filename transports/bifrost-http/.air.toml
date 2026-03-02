@@ -5,7 +5,7 @@ tmp_dir = "transports/bifrost-http/tmp"
 [build]
 args_bin = []
 bin = "tmp/main"
-cmd = "go build -o ./tmp/main ."
+cmd = "go build -tags dev -o ./tmp/main ."
 delay = 1000
 exclude_dir = [
     "assets",

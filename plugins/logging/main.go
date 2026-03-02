@@ -91,6 +91,7 @@ type LogMessage struct {
 
 // InitialLogData contains data for initial log entry creation
 type InitialLogData struct {
+	Status                string
 	Provider              string
 	Model                 string
 	Object                string
@@ -102,6 +103,7 @@ type InitialLogData struct {
 	ImageGenerationInput  *schemas.ImageGenerationInput
 	VideoGenerationInput  *schemas.VideoGenerationInput
 	Tools                 []schemas.ChatTool
+	RoutingEngineUsed     []string
 	Metadata              map[string]interface{}
 }
 
@@ -132,9 +134,12 @@ type LoggerPlugin struct {
 	logCallback           LogCallback
 	mcpToolLogCallback    MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests       atomic.Int64
-	cleanupTicker         *time.Ticker // Ticker for cleaning up old processing logs
-	logMsgPool            sync.Pool    // Pool for reusing LogMessage structs
-	updateDataPool        sync.Pool    // Pool for reusing UpdateLogData structs
+	cleanupTicker         *time.Ticker          // Ticker for cleaning up old processing logs
+	logMsgPool            sync.Pool             // Pool for reusing LogMessage structs
+	updateDataPool        sync.Pool             // Pool for reusing UpdateLogData structs
+	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
+	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
 }
 
 // Init creates new logger plugin with given log store
@@ -161,6 +166,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		loggingHeaders:        config.LoggingHeaders,
 		done:                  make(chan struct{}),
 		logger:                logger,
+		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
 		logMsgPool: sync.Pool{
 			New: func() interface{} {
 				return &LogMessage{}
@@ -184,6 +190,10 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 	plugin.wg.Add(1)
 	go plugin.cleanupWorker()
 
+	// Start the batch writer goroutine (single writer for all DB writes)
+	plugin.wg.Add(1)
+	go plugin.batchWriter()
+
 	return plugin, nil
 }
 
@@ -201,10 +211,10 @@ func (p *LoggerPlugin) cleanupWorker() {
 }
 
 // cleanupOldProcessingLogs removes processing logs older than 30 minutes
+// and stale pending log entries from the in-memory map
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
 	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
-	p.logger.Debug("cleaning up old processing logs before %s", thirtyMinutesAgo)
 
 	// Delete LLM processing logs older than 30 minutes
 	if err := p.store.Flush(p.ctx, thirtyMinutesAgo); err != nil {
@@ -215,6 +225,9 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	if err := p.store.FlushMCPToolLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing MCP tool logs: %v", err)
 	}
+
+	// Clean up stale pending log entries (requests where PostLLMHook never fired)
+	p.cleanupStalePendingLogs()
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -394,12 +407,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	logMsg.Operation = LogOperationCreate
 
 	// If fallback request ID is present, use it instead of the primary request ID
+	// Determine effective request ID (fallback override)
+	effectiveRequestID := requestID
+	var parentRequestID string
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
-		logMsg.RequestID = fallbackRequestID
-		logMsg.ParentRequestID = requestID
-	} else {
-		logMsg.RequestID = requestID
+		effectiveRequestID = fallbackRequestID
+		parentRequestID = requestID
 	}
 
 	fallbackIndex := bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex)
@@ -409,56 +423,30 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		routingEngines = engines
 	}
 
-	logMsg.Timestamp = createdTimestamp
-	logMsg.InitialData = initialData
-	logMsg.FallbackIndex = fallbackIndex
-	logMsg.RoutingEnginesUsed = routingEngines
+	initialData.RoutingEngineUsed = routingEngines
+	initialData.Status = "processing"
 
-	go func(msg *LogMessage) {
-		defer p.putLogMessage(msg) // Return to pool when done
-		if err := p.insertInitialLogEntry(
-			p.ctx,
-			msg.RequestID,
-			msg.ParentRequestID,
-			msg.Timestamp,
-			msg.FallbackIndex,
-			msg.RoutingEnginesUsed,
-			msg.InitialData,
-		); err != nil {
-			p.logger.Warn("failed to insert initial log entry for request %s: %v", msg.RequestID, err)
-		} else {
-			// Call callback for initial log creation (WebSocket "create" message)
-			// Construct LogEntry directly from data we have to avoid database query
-			p.mu.Lock()
-			callback := p.logCallback
-			p.mu.Unlock()
-
-			if callback != nil {
-				initialEntry := &logstore.Log{
-					ID:                          msg.RequestID,
-					Timestamp:                   msg.Timestamp,
-					Object:                      msg.InitialData.Object,
-					Provider:                    msg.InitialData.Provider,
-					Model:                       msg.InitialData.Model,
-					FallbackIndex:               msg.FallbackIndex,
-					InputHistoryParsed:          msg.InitialData.InputHistory,
-					ResponsesInputHistoryParsed: msg.InitialData.ResponsesInputHistory,
-					ParamsParsed:                msg.InitialData.Params,
-					ToolsParsed:                 msg.InitialData.Tools,
-					MetadataParsed:              msg.InitialData.Metadata,
-					VideoGenerationInputParsed:  msg.InitialData.VideoGenerationInput,
-					Status:                      "processing",
-					Stream:                      false, // Initially false, will be updated if streaming
-					CreatedAt:                   msg.Timestamp,
-				}
-				if len(msg.RoutingEnginesUsed) > 0 {
-					initialEntry.RoutingEnginesUsed = msg.RoutingEnginesUsed
-				}
-				callback(p.ctx, initialEntry)
-			}
-		}
-	}(logMsg)
-
+	// Store input data in pendingLogs for later combination with PostLLMHook output.
+	// No DB write here - the write is deferred to PostLLMHook to halve total writes.
+	pending := &PendingLogData{
+		RequestID:          effectiveRequestID,
+		ParentRequestID:    parentRequestID,
+		Timestamp:          createdTimestamp,
+		FallbackIndex:      fallbackIndex,
+		RoutingEnginesUsed: routingEngines,
+		InitialData:        initialData,
+		CreatedAt:          time.Now(),
+		Status:             "processing",
+	}
+	p.pendingLogs.Store(effectiveRequestID, pending)
+	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
+	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
+	p.mu.Lock()
+	callback := p.logCallback
+	p.mu.Unlock()
+	if callback != nil {
+		callback(p.ctx, buildInitialLogEntry(pending))
+	}
 	return req, nil, nil
 }
 
@@ -511,340 +499,142 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 
+	// For non-final streaming chunks, process the accumulator synchronously
+	// and skip the write queue entirely. The accumulator work (ProcessStreamingChunk)
+	// is fast (mutex + append). Only final chunks, errors, and non-streaming
+	// responses need a DB write.
+	if bifrost.IsStreamRequestType(requestType) && !isFinalChunk && result != nil && bifrostErr == nil {
+		if tracer != nil && traceID != "" {
+			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
+		}
+		return result, bifrostErr, nil
+	}
 	// Extract routing engine logs from context before entering goroutine
 	routingEngineLogs := formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 
-	go func() {
-		// Queue the log update message (non-blocking) - use same pattern for both streaming and regular
-		logMsg := p.getLogMessage()
-		logMsg.RequestID = requestID
-		logMsg.SelectedKeyID = selectedKeyID
-		logMsg.VirtualKeyID = virtualKeyID
-		logMsg.RoutingRuleID = routingRuleID
-		logMsg.SelectedKeyName = selectedKeyName
-		logMsg.VirtualKeyName = virtualKeyName
-		logMsg.RoutingRuleName = routingRuleName
-		logMsg.NumberOfRetries = numberOfRetries
-		logMsg.RoutingEngineLogs = routingEngineLogs
-		defer p.putLogMessage(logMsg) // Return to pool when done
+	// Retrieve pending input data from PreLLMHook
+	pendingVal, hasPending := p.pendingLogs.LoadAndDelete(requestID)
+	if !hasPending {
+		p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
+		return result, bifrostErr, nil
+	}
 
-		if result != nil {
-			logMsg.Latency = result.GetExtraFields().Latency
-		} else {
-			logMsg.Latency = 0
-		}
+	pending := pendingVal.(*PendingLogData)
 
-		// If response is nil, and there is an error, we update log with error
-		if result == nil && bifrostErr != nil {
-			// Note: Stream accumulator cleanup is handled by the tracing middleware
-			logMsg.Operation = LogOperationUpdate
-			updateData := &UpdateLogData{
-				Status:       "error",
-				ErrorDetails: bifrostErr,
-			}
+	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
+	entry := buildCompleteLogEntryFromPending(pending)
 
-			// Extract raw request from error's ExtraFields
-			if p.disableContentLogging == nil || !*p.disableContentLogging {
-				if bifrostErr.ExtraFields.RawRequest != nil {
-					updateData.RawRequest = bifrostErr.ExtraFields.RawRequest
-				}
-				if bifrostErr.ExtraFields.RawResponse != nil {
-					updateData.RawResponse = bifrostErr.ExtraFields.RawResponse
-				}
-			}
+	// Apply common output fields
+	var latency int64
+	if result != nil {
+		latency = result.GetExtraFields().Latency
+	}
+	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, numberOfRetries, latency)
+	entry.RoutingEngineLogs = routingEngineLogs
 
-			logMsg.UpdateData = updateData
-			processingErr := retryOnNotFound(p.ctx, func() error {
-				return p.updateLogEntry(
-					p.ctx,
-					logMsg.RequestID,
-					logMsg.SelectedKeyID,
-					logMsg.SelectedKeyName,
-					logMsg.Latency,
-					logMsg.VirtualKeyID,
-					logMsg.VirtualKeyName,
-					logMsg.RoutingRuleID,
-					logMsg.RoutingRuleName,
-					logMsg.NumberOfRetries,
-					logMsg.SemanticCacheDebug,
-					logMsg.RoutingEngineLogs,
-					logMsg.UpdateData,
-				)
-			})
-			if processingErr != nil {
-				p.logger.Warn("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
-			} else {
-				// Call callback immediately for both streaming and regular updates
-				// UI will handle debouncing if needed
-				p.mu.Lock()
-				callback := p.logCallback
-				p.mu.Unlock()
-				if callback != nil {
-					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-						callback(p.ctx, updatedEntry)
-					}
-				}
-			}
+	// Branch based on response type to populate output-specific fields
 
-			return
-		}
+	// Path A: Error with nil result
+	if result == nil && bifrostErr != nil {
+		entry.Status = "error"
 		if bifrost.IsStreamRequestType(requestType) {
-			p.logger.Debug("[logging] processing streaming response")
+			entry.Stream = true
+		}
+		// Serialize error details immediately since bifrostErr may be released
+		// back to the pool before the async batch writer processes this entry.
+		if data, err := sonic.Marshal(bifrostErr); err == nil {
+			entry.ErrorDetails = string(data)
+		}
+		if p.disableContentLogging == nil || !*p.disableContentLogging {
+			if bifrostErr.ExtraFields.RawRequest != nil {
+				rawReqBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawRequest)
+				if err == nil {
+					entry.RawRequest = string(rawReqBytes)
+				}
+			}
 
-			// Process streaming response via tracer's central accumulator
-			var streamResponse *streaming.ProcessedStreamResponse
-			if tracer != nil && traceID != "" {
-				accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
-				if accResult != nil {
-					streamResponse = convertToProcessedStreamResponse(accResult, requestType)
-				}
-			} else {
-				p.logger.Debug("tracer or traceID not available in streaming path for request %s, skipping stream processing", logMsg.RequestID)
-			}
-
-			if streamResponse == nil {
-				p.logger.Debug("failed to process streaming response: tracer or traceID not available")
-			} else if isFinalChunk {
-				// Prepare final log data
-				logMsg.Operation = LogOperationStreamUpdate
-				logMsg.StreamResponse = streamResponse
-				processingErr := retryOnNotFound(p.ctx, func() error {
-					return p.updateStreamingLogEntry(
-						p.ctx,
-						logMsg.RequestID,
-						logMsg.SelectedKeyID,
-						logMsg.SelectedKeyName,
-						logMsg.VirtualKeyID,
-						logMsg.VirtualKeyName,
-						logMsg.RoutingRuleID,
-						logMsg.RoutingRuleName,
-						logMsg.NumberOfRetries,
-						logMsg.SemanticCacheDebug,
-						logMsg.RoutingEngineLogs,
-						logMsg.StreamResponse,
-						true,
-					)
-				})
-				if processingErr != nil {
-					p.logger.Warn("failed to process stream update for request %s: %v", logMsg.RequestID, processingErr)
-				} else {
-					// Call callback immediately for both streaming and regular updates
-					// UI will handle debouncing if needed
-					p.mu.Lock()
-					callback := p.logCallback
-					p.mu.Unlock()
-					if callback != nil {
-						if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-							callback(p.ctx, updatedEntry)
-						}
-					}
-				}
-				// Note: Stream accumulator cleanup is handled by the tracer
-				if tracer != nil && traceID != "" {
-					p.logger.Debug("cleaning up stream accumulator for trace ID: %s in logging plugin posthook", traceID)
-					tracer.CleanupStreamAccumulator(traceID)
-				}
-			}
-		} else {
-			// Handle regular response
-			logMsg.Operation = LogOperationUpdate
-			// Prepare update data (latency will be calculated in background worker)
-			updateData := p.getUpdateLogData()
-			if bifrostErr != nil {
-				// Error case
-				updateData.Status = "error"
-				updateData.ErrorDetails = bifrostErr
-			} else if result != nil {
-				// Success case
-				updateData.Status = "success"
-				// Token usage
-				var usage *schemas.BifrostLLMUsage
-				switch {
-				case result.TextCompletionResponse != nil && result.TextCompletionResponse.Usage != nil:
-					usage = result.TextCompletionResponse.Usage
-				case result.ChatResponse != nil && result.ChatResponse.Usage != nil:
-					usage = result.ChatResponse.Usage
-				case result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil:
-					usage = result.ResponsesResponse.Usage.ToBifrostLLMUsage()
-				case result.EmbeddingResponse != nil && result.EmbeddingResponse.Usage != nil:
-					usage = result.EmbeddingResponse.Usage
-				case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
-					usage = result.RerankResponse.Usage
-				case result.TranscriptionResponse != nil && result.TranscriptionResponse.Usage != nil:
-					usage = &schemas.BifrostLLMUsage{}
-					if result.TranscriptionResponse.Usage.InputTokens != nil {
-						usage.PromptTokens = *result.TranscriptionResponse.Usage.InputTokens
-					}
-					if result.TranscriptionResponse.Usage.OutputTokens != nil {
-						usage.CompletionTokens = *result.TranscriptionResponse.Usage.OutputTokens
-					}
-					if result.TranscriptionResponse.Usage.TotalTokens != nil {
-						usage.TotalTokens = *result.TranscriptionResponse.Usage.TotalTokens
-					} else {
-						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-					}
-				case result.ImageGenerationResponse != nil && result.ImageGenerationResponse.Usage != nil:
-					usage = &schemas.BifrostLLMUsage{}
-					usage.PromptTokens = result.ImageGenerationResponse.Usage.InputTokens
-					usage.CompletionTokens = result.ImageGenerationResponse.Usage.OutputTokens
-					if result.ImageGenerationResponse.Usage.TotalTokens > 0 {
-						usage.TotalTokens = result.ImageGenerationResponse.Usage.TotalTokens
-					} else {
-						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-					}
-				case result.CountTokensResponse != nil:
-					usage = &schemas.BifrostLLMUsage{}
-					usage.PromptTokens = result.CountTokensResponse.InputTokens
-					if result.CountTokensResponse.OutputTokens != nil {
-						usage.CompletionTokens = *result.CountTokensResponse.OutputTokens
-					}
-					if result.CountTokensResponse.TotalTokens != nil {
-						usage.TotalTokens = *result.CountTokensResponse.TotalTokens
-					} else {
-						usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-					}
-				}
-				updateData.TokenUsage = usage
-				// Extract raw response
-				extraFields := result.GetExtraFields()
-				if p.disableContentLogging == nil || !*p.disableContentLogging {
-					if extraFields.RawRequest != nil {
-						updateData.RawRequest = extraFields.RawRequest
-					}
-					if extraFields.RawResponse != nil {
-						updateData.RawResponse = extraFields.RawResponse
-					}
-					if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
-						updateData.ListModelsOutput = result.ListModelsResponse.Data
-					}
-					if result.TextCompletionResponse != nil {
-						if len(result.TextCompletionResponse.Choices) > 0 {
-							choice := result.TextCompletionResponse.Choices[0]
-							if choice.TextCompletionResponseChoice != nil {
-								updateData.ChatOutput = &schemas.ChatMessage{
-									Role: schemas.ChatMessageRoleAssistant,
-									Content: &schemas.ChatMessageContent{
-										ContentStr: choice.TextCompletionResponseChoice.Text,
-									},
-								}
-							}
-						}
-					}
-					if result.ChatResponse != nil {
-						// Output message and tool calls
-						if len(result.ChatResponse.Choices) > 0 {
-							choice := result.ChatResponse.Choices[0]
-							// Check if this is a non-stream response choice
-							if choice.ChatNonStreamResponseChoice != nil {
-								updateData.ChatOutput = choice.ChatNonStreamResponseChoice.Message
-							}
-						}
-					}
-					if result.ResponsesResponse != nil {
-						updateData.ResponsesOutput = result.ResponsesResponse.Output
-					}
-					if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
-						updateData.EmbeddingOutput = result.EmbeddingResponse.Data
-					}
-					if result.RerankResponse != nil {
-						updateData.RerankOutput = result.RerankResponse.Results
-					}
-					// Handle speech and transcription outputs for NON-streaming responses
-					if result.SpeechResponse != nil {
-						updateData.SpeechOutput = result.SpeechResponse
-					}
-					if result.TranscriptionResponse != nil {
-						updateData.TranscriptionOutput = result.TranscriptionResponse
-					}
-					if result.ImageGenerationResponse != nil {
-						updateData.ImageGenerationOutput = result.ImageGenerationResponse
-					}
-					if result.VideoGenerationResponse != nil {
-						switch requestType {
-						case schemas.VideoGenerationRequest:
-							updateData.VideoGenerationOutput = result.VideoGenerationResponse
-						case schemas.VideoRetrieveRequest:
-							updateData.VideoRetrieveOutput = result.VideoGenerationResponse
-						case schemas.VideoRemixRequest:
-							updateData.VideoGenerationOutput = result.VideoGenerationResponse
-						}
-					}
-					if result.VideoDownloadResponse != nil {
-						updateData.VideoDownloadOutput = result.VideoDownloadResponse
-					}
-					if result.VideoListResponse != nil {
-						updateData.VideoListOutput = result.VideoListResponse
-					}
-					if result.VideoDeleteResponse != nil {
-						updateData.VideoDeleteOutput = result.VideoDeleteResponse
-					}
-				}
-			}
-			logMsg.UpdateData = updateData
-
-			// Return pooled data structures to their respective pools
-			defer func() {
-				if logMsg.UpdateData != nil {
-					p.putUpdateLogData(logMsg.UpdateData)
-				}
-			}()
-			if result != nil {
-				logMsg.SemanticCacheDebug = result.GetExtraFields().CacheDebug
-			}
-			if logMsg.UpdateData != nil && p.pricingManager != nil {
-				cost := p.pricingManager.CalculateCostWithCacheDebug(result)
-				logMsg.UpdateData.Cost = &cost
-			}
-			// Here we pass plugin level context for background processing to avoid context cancellation
-			processingErr := retryOnNotFound(p.ctx, func() error {
-				return p.updateLogEntry(
-					p.ctx,
-					logMsg.RequestID,
-					logMsg.SelectedKeyID,
-					logMsg.SelectedKeyName,
-					logMsg.Latency,
-					logMsg.VirtualKeyID,
-					logMsg.VirtualKeyName,
-					logMsg.RoutingRuleID,
-					logMsg.RoutingRuleName,
-					logMsg.NumberOfRetries,
-					logMsg.SemanticCacheDebug,
-					logMsg.RoutingEngineLogs,
-					logMsg.UpdateData,
-				)
-			})
-			if processingErr != nil {
-				p.logger.Warn("failed to process log update for request %s: %v", logMsg.RequestID, processingErr)
-			} else {
-				// Call callback immediately for both streaming and regular updates
-				// UI will handle debouncing if needed
-				p.mu.Lock()
-				callback := p.logCallback
-				p.mu.Unlock()
-				if callback != nil {
-					if updatedEntry, getErr := p.getLogEntry(p.ctx, logMsg.RequestID); getErr == nil {
-						updatedEntry.SelectedKey = &schemas.Key{
-							ID:   updatedEntry.SelectedKeyID,
-							Name: updatedEntry.SelectedKeyName,
-						}
-						if updatedEntry.VirtualKeyID != nil && updatedEntry.VirtualKeyName != nil {
-							updatedEntry.VirtualKey = &tables.TableVirtualKey{
-								ID:   *updatedEntry.VirtualKeyID,
-								Name: *updatedEntry.VirtualKeyName,
-							}
-						}
-						if updatedEntry.RoutingRuleID != nil && updatedEntry.RoutingRuleName != nil {
-							updatedEntry.RoutingRule = &tables.TableRoutingRule{
-								ID:   *updatedEntry.RoutingRuleID,
-								Name: *updatedEntry.RoutingRuleName,
-							}
-						}
-						callback(p.ctx, updatedEntry)
-					}
+			if bifrostErr.ExtraFields.RawResponse != nil {
+				rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse)
+				if err == nil {
+					entry.RawResponse = string(rawRespBytes)
 				}
 			}
 		}
-	}()
+		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		return result, bifrostErr, nil
+	}
+
+	// Path B: Streaming final chunk
+	if bifrost.IsStreamRequestType(requestType) {
+		var streamResponse *streaming.ProcessedStreamResponse
+		if tracer != nil && traceID != "" {
+			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
+			if accResult != nil {
+				streamResponse = convertToProcessedStreamResponse(accResult, requestType)
+			}
+		}
+
+		if streamResponse == nil {
+			// tracer or traceID not available, or accumulator returned nil - still write what we have
+			entry.Status = "success"
+			entry.Stream = true
+		} else if isFinalChunk {
+			// Apply streaming output fields to the entry
+			entry.Stream = true
+			p.applyStreamingOutputToEntry(entry, streamResponse)
+		}
+
+		// Cleanup stream accumulator
+		if tracer != nil && traceID != "" {
+			tracer.CleanupStreamAccumulator(traceID)
+		}
+
+		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		return result, bifrostErr, nil
+	}
+
+	// Path C: Non-streaming response
+	if bifrostErr != nil {
+		entry.Status = "error"
+		// Serialize error details immediately since bifrostErr may be released
+		// back to the pool before the async batch writer processes this entry.
+		if data, err := sonic.Marshal(bifrostErr); err == nil {
+			entry.ErrorDetails = string(data)
+		}
+	} else if result != nil {
+		entry.Status = "success"
+		p.applyNonStreamingOutputToEntry(entry, result)
+	}
+
+	// Calculate cost
+	var cacheDebug *schemas.BifrostCacheDebug
+	if result != nil {
+		cacheDebug = result.GetExtraFields().CacheDebug
+	}
+	entry.CacheDebugParsed = cacheDebug
+	if p.pricingManager != nil {
+		cost := p.pricingManager.CalculateCostWithCacheDebug(result)
+		entry.Cost = &cost
+	}
+
+	p.enqueueLogEntry(entry, p.makePostWriteCallback(func(updatedEntry *logstore.Log) {
+		updatedEntry.SelectedKey = &schemas.Key{
+			ID:   updatedEntry.SelectedKeyID,
+			Name: updatedEntry.SelectedKeyName,
+		}
+		if updatedEntry.VirtualKeyID != nil && updatedEntry.VirtualKeyName != nil {
+			updatedEntry.VirtualKey = &tables.TableVirtualKey{
+				ID:   *updatedEntry.VirtualKeyID,
+				Name: *updatedEntry.VirtualKeyName,
+			}
+		}
+		if updatedEntry.RoutingRuleID != nil && updatedEntry.RoutingRuleName != nil {
+			updatedEntry.RoutingRule = &tables.TableRoutingRule{
+				ID:   *updatedEntry.RoutingRuleID,
+				Name: *updatedEntry.RoutingRuleName,
+			}
+		}
+	}))
 	return result, bifrostErr, nil
 }
 
@@ -855,9 +645,13 @@ func (p *LoggerPlugin) Cleanup() error {
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
-		// Signal the background worker to stop
+		// Signal the cleanup worker to stop
 		close(p.done)
-		// Wait for the background worker to finish processing remaining items
+		// Prevent new enqueues before closing the channel
+		p.closed.Store(true)
+		// Close the write queue to signal the batch writer to drain and exit
+		close(p.writeQueue)
+		// Wait for the cleanup worker and batch writer to finish
 		p.wg.Wait()
 		// Note: Accumulator cleanup is handled by the tracer, not the logging plugin
 		// GORM handles connection cleanup automatically
