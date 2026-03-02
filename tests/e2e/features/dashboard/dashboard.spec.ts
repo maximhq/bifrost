@@ -211,14 +211,11 @@ test.describe('Dashboard', () => {
       await waitForNetworkIdle(dashboardPage.page)
       await dashboardPage.waitForChartsToLoad()
 
-      // Verify page loaded with correct state
+      // Verify page loaded with correct state from URL
       const url = dashboardPage.page.url()
       expect(url).toContain('period=7d')
-      // Chart state may be in URL or DOM - check both
-      const hasChartInUrl = url.includes('volume_chart=')
-      const toggleState = await dashboardPage.getChartToggleState(dashboardPage.volumeChartToggle)
-      // Either URL contains chart state OR DOM has toggle state
-      expect(hasChartInUrl || toggleState).toBeTruthy()
+      // volume_chart=line was in the URL - verify exact value persisted
+      expect(url).toContain('volume_chart=line')
     })
   })
 
@@ -233,14 +230,17 @@ test.describe('Dashboard', () => {
       const costChartContent = dashboardPage.costChart.locator('canvas, svg')
       const modelChartContent = dashboardPage.modelUsageChart.locator('canvas, svg')
 
-      // At least one of these should be visible (depends on data availability)
-      const hasVolumeChart = await volumeChartContent.count() > 0
-      const hasTokenChart = await tokenChartContent.count() > 0
-      const hasCostChart = await costChartContent.count() > 0
-      const hasModelChart = await modelChartContent.count() > 0
+      // Each chart card should have canvas or SVG content (chart library renders into these)
+      const volumeCount = await volumeChartContent.count()
+      const tokenCount = await tokenChartContent.count()
+      const costCount = await costChartContent.count()
+      const modelCount = await modelChartContent.count()
 
-      // All charts should have rendered content
-      expect(hasVolumeChart || hasTokenChart || hasCostChart || hasModelChart).toBe(true)
+      // All four chart cards should have rendered content (count > 0)
+      expect(volumeCount).toBeGreaterThan(0)
+      expect(tokenCount).toBeGreaterThan(0)
+      expect(costCount).toBeGreaterThan(0)
+      expect(modelCount).toBeGreaterThan(0)
     })
 
     test('should show chart legends', async ({ dashboardPage }) => {

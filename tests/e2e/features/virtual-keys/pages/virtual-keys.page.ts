@@ -139,6 +139,19 @@ export class VirtualKeysPage extends BasePage {
   }
 
   /**
+   * Check if the key value is revealed (visible) or masked in the table.
+   * When masked, the display shows bullets (•); when revealed, it shows the full key.
+   */
+  async isKeyRevealed(name: string): Promise<boolean> {
+    const row = this.getVirtualKeyRow(name)
+    const keyCell = row.getByTestId('vk-key-value')
+    await keyCell.waitFor({ state: 'visible', timeout: 5000 })
+    const text = (await keyCell.textContent())?.trim() ?? ''
+    // Masked keys contain bullet character; revealed keys do not
+    return text.length > 0 && !text.includes('•')
+  }
+
+  /**
    * Create a new virtual key
    */
   async createVirtualKey(config: VirtualKeyConfig): Promise<void> {

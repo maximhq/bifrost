@@ -108,7 +108,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="mcp-settings-view">
 			<div>
 				<h2 className="text-lg font-semibold tracking-tight">MCP Settings</h2>
 				<p className="text-muted-foreground text-sm">Configure MCP (Model Context Protocol) agent and tool settings.</p>
@@ -124,6 +124,7 @@ export default function MCPView() {
 					</div>
 					<Input
 						id="mcp-agent-depth"
+						data-testid="mcp-agent-depth-input"
 						type="number"
 						className="w-24"
 						value={localValues.mcp_agent_depth}
@@ -142,6 +143,7 @@ export default function MCPView() {
 					</div>
 					<Input
 						id="mcp-tool-execution-timeout"
+						data-testid="mcp-tool-timeout-input"
 						type="number"
 						className="w-24"
 						value={localValues.mcp_tool_execution_timeout}
@@ -222,7 +224,7 @@ export default function MCPView() {
 				</div>
 			</div>
 			<div className="flex justify-end pt-2">
-				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>
 			</div>

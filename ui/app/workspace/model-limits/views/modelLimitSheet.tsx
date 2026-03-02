@@ -211,6 +211,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8"
 				onInteractOutside={(e) => { if (form.formState.isDirty) e.preventDefault(); }}
 				onEscapeKeyDown={(e) => { if (form.formState.isDirty) e.preventDefault(); }}
+				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>

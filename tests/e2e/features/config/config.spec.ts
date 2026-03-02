@@ -42,6 +42,97 @@ test.describe('Config Settings', () => {
       await expect(configSettingsPage.saveBtn).toBeVisible()
       await expect(configSettingsPage.page.getByRole('heading', { name: /Pricing/i })).toBeVisible()
     })
+
+    test('should navigate to MCP settings', async ({ configSettingsPage }) => {
+      await configSettingsPage.goto('mcp-gateway')
+      await expect(configSettingsPage.page.getByTestId('mcp-settings-view')).toBeVisible()
+      await expect(configSettingsPage.page.getByLabel('Max Agent Depth')).toBeVisible()
+      await expect(configSettingsPage.page.getByLabel('Tool Execution Timeout (seconds)')).toBeVisible()
+    })
+  })
+
+  test.describe('MCP Settings', () => {
+    test('should display MCP settings form', async ({ configSettingsPage }) => {
+      await configSettingsPage.goto('mcp-gateway')
+
+      await expect(configSettingsPage.page.getByTestId('mcp-settings-view')).toBeVisible()
+      await expect(configSettingsPage.page.locator('#mcp-agent-depth')).toBeVisible()
+      await expect(configSettingsPage.page.locator('#mcp-tool-execution-timeout')).toBeVisible()
+      await expect(configSettingsPage.page.locator('#mcp-binding-level')).toBeVisible()
+    })
+
+    test('should have save button disabled when no changes', async ({ configSettingsPage }) => {
+      await configSettingsPage.goto('mcp-gateway')
+
+      const saveBtn = configSettingsPage.page.getByTestId('mcp-settings-save-btn')
+      await expect(saveBtn).toBeVisible()
+      await expect(saveBtn).toBeDisabled()
+    })
+  })
+
+  test.describe('Pricing Config', () => {
+    let originalPricingUrl: string
+
+    test.beforeEach(async ({ configSettingsPage }) => {
+      await configSettingsPage.goto('pricing-config')
+      originalPricingUrl = await configSettingsPage.pricingDatasheetUrlInput.inputValue()
+    })
+
+    test.afterEach(async ({ configSettingsPage }) => {
+      await configSettingsPage.goto('pricing-config')
+      const canEdit = await configSettingsPage.pricingDatasheetUrlInput.isEditable().catch(() => false)
+      if (!canEdit) return
+      await configSettingsPage.setPricingDatasheetUrl(originalPricingUrl)
+      const isSaveEnabled = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
+      if (isSaveEnabled) {
+        await configSettingsPage.savePricingConfig()
+        await configSettingsPage.dismissToasts()
+      }
+    })
+
+    test('should display pricing config view', async ({ configSettingsPage }) => {
+      await expect(configSettingsPage.pricingConfigView).toBeVisible()
+      await expect(configSettingsPage.pricingDatasheetUrlInput).toBeVisible()
+      await expect(configSettingsPage.pricingForceSyncBtn).toBeVisible()
+      await expect(configSettingsPage.pricingSaveBtn).toBeVisible()
+    })
+
+    test('should set and save datasheet URL', async ({ configSettingsPage }) => {
+      const testUrl = 'https://example.com/pricing.json'
+      await configSettingsPage.setPricingDatasheetUrl(testUrl)
+
+      const isSaveEnabled = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
+      if (!isSaveEnabled) {
+        test.skip(true, 'Save button disabled (no changes detected or RBAC)')
+        return
+      }
+
+      await configSettingsPage.savePricingConfig()
+      await configSettingsPage.dismissToasts()
+    })
+
+    test('should trigger force sync', async ({ configSettingsPage }) => {
+      const isForceSyncEnabled = await configSettingsPage.pricingForceSyncBtn.isDisabled().then((d) => !d)
+      if (!isForceSyncEnabled) {
+        test.skip(true, 'Force sync button disabled (RBAC or no datasheet URL)')
+        return
+      }
+
+      await configSettingsPage.triggerForceSync()
+      await configSettingsPage.dismissToasts()
+    })
+
+    test('should validate URL format', async ({ configSettingsPage }) => {
+      await configSettingsPage.pricingDatasheetUrlInput.fill('invalid-url-no-http')
+      const canSave = await configSettingsPage.pricingSaveBtn.isDisabled().then((d) => !d)
+      if (!canSave) {
+        test.skip(true, 'Save button disabled (RBAC)')
+        return
+      }
+      await configSettingsPage.pricingSaveBtn.click()
+
+      await expect(configSettingsPage.page.getByText(/URL must start with http|valid URL/i)).toBeVisible()
+    })
   })
 
   test.describe('Client Settings', () => {
@@ -65,6 +156,15 @@ test.describe('Config Settings', () => {
       await expect(configSettingsPage.dropExcessRequestsSwitch).toBeVisible()
       await expect(configSettingsPage.enableLiteLLMFallbacksSwitch).toBeVisible()
       await expect(configSettingsPage.disableDBPingsSwitch).toBeVisible()
+    })
+
+    test('should display async job result TTL input when available', async ({ configSettingsPage }) => {
+      const isVisible = await configSettingsPage.asyncJobResultTtlInput.isVisible().catch(() => false)
+      if (isVisible) {
+        await expect(configSettingsPage.asyncJobResultTtlInput).toBeVisible()
+      } else {
+        test.skip(true, 'Async job result TTL not available')
+      }
     })
 
     test('should toggle drop excess requests', async ({ configSettingsPage }) => {
@@ -162,6 +262,15 @@ test.describe('Config Settings', () => {
       // Check for main logging controls
       await expect(configSettingsPage.page.getByText(/Enable Logs/i)).toBeVisible()
       await expect(configSettingsPage.page.getByText(/Log Retention/i)).toBeVisible()
+    })
+
+    test('should display workspace logging headers textarea when available', async ({ configSettingsPage }) => {
+      const isVisible = await configSettingsPage.workspaceLoggingHeadersTextarea.isVisible().catch(() => false)
+      if (isVisible) {
+        await expect(configSettingsPage.workspaceLoggingHeadersTextarea).toBeVisible()
+      } else {
+        test.skip(true, 'Workspace logging headers not available (depends on log connector)')
+      }
     })
 
     test('should toggle content logging when available', async ({ configSettingsPage }) => {
@@ -272,9 +381,42 @@ test.describe('Config Settings', () => {
       await expect(configSettingsPage.saveBtn).toBeVisible()
     })
 
+    test('should display enforce auth on inference switch', async ({ configSettingsPage }) => {
+      const isVisible = await configSettingsPage.enforceAuthOnInferenceSwitch.isVisible().catch(() => false)
+      if (!isVisible) {
+        test.skip(true, 'Enforce auth on inference not available')
+        return
+      }
+      await expect(configSettingsPage.enforceAuthOnInferenceSwitch).toBeVisible()
+    })
+
+    test('should toggle enforce auth on inference', async ({ configSettingsPage }) => {
+      const isVisible = await configSettingsPage.enforceAuthOnInferenceSwitch.isVisible().catch(() => false)
+      if (!isVisible) {
+        test.skip(true, 'Enforce auth on inference not available')
+        return
+      }
+      const initialState = await configSettingsPage.getSwitchState(configSettingsPage.enforceAuthOnInferenceSwitch)
+      await configSettingsPage.toggleEnforceAuthOnInference()
+      const newState = await configSettingsPage.getSwitchState(configSettingsPage.enforceAuthOnInferenceSwitch)
+      expect(newState).toBe(!initialState)
+      await configSettingsPage.toggleEnforceAuthOnInference()
+      if (await configSettingsPage.hasPendingChanges()) {
+        await configSettingsPage.saveSettings()
+      }
+    })
+
+    test('should display required headers textarea', async ({ configSettingsPage }) => {
+      const isVisible = await configSettingsPage.requiredHeadersTextarea.isVisible().catch(() => false)
+      if (!isVisible) {
+        test.skip(true, 'Required headers control not available')
+        return
+      }
+      await expect(configSettingsPage.requiredHeadersTextarea).toBeVisible()
+    })
+
     test('should display rate limiting section', async ({ configSettingsPage }) => {
       const isVisible = await configSettingsPage.isRateLimitingSectionVisible()
-      // Rate limiting section should exist
       expect(isVisible).toBeDefined()
     })
   })

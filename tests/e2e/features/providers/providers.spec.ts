@@ -195,6 +195,27 @@ test.describe('Providers', () => {
       const providerExists = await providersPage.providerExists('cancelled-provider')
       expect(providerExists).toBe(false)
     })
+
+    test('should delete custom provider and update UI', async ({ providersPage }) => {
+      const providerData = createCustomProviderData({
+        name: `delete-test-${Date.now()}`,
+        baseProviderType: 'openai',
+        baseUrl: 'https://api.delete-test.com/v1',
+      })
+      createdProviders.push(providerData.name)
+
+      await providersPage.createProvider(providerData)
+
+      const providerItem = providersPage.getProviderItem(providerData.name)
+      await expect(providerItem).toBeVisible({ timeout: 15000 })
+
+      await providersPage.deleteProvider(providerData.name)
+
+      const idx = createdProviders.indexOf(providerData.name)
+      if (idx >= 0) createdProviders.splice(idx, 1)
+
+      await expect(providerItem).not.toBeVisible({ timeout: 5000 })
+    })
   })
 
   test.describe('Form Validation', () => {
@@ -268,14 +289,14 @@ test.describe('Provider Key Management', () => {
 
     await providersPage.addKey(keyData)
 
-    // Now edit it
+    // Now edit it - set weight to 0.7
     await providersPage.editKey(keyData.name, {
       weight: 0.7,
     })
 
-    // Key should still exist
-    const keyExists = await providersPage.keyExists(keyData.name)
-    expect(keyExists).toBe(true)
+    // Verify weight was saved and displayed correctly
+    const weight = await providersPage.getKeyWeight(keyData.name)
+    expect(weight).toContain('0.7')
   })
 
   test('should delete a key', async ({ providersPage }) => {
@@ -313,12 +334,14 @@ test.describe('Provider Key Management', () => {
 
     await providersPage.addKey(keyData)
 
-    // Toggle the key
-    await providersPage.toggleKeyEnabled(keyData.name)
+    // Key starts enabled
+    let isEnabled = await providersPage.getKeyEnabledState(keyData.name)
+    expect(isEnabled).toBe(true)
 
-    // Key should still exist
-    const keyExists = await providersPage.keyExists(keyData.name)
-    expect(keyExists).toBe(true)
+    // Toggle to disabled
+    await providersPage.toggleKeyEnabled(keyData.name)
+    isEnabled = await providersPage.getKeyEnabledState(keyData.name)
+    expect(isEnabled).toBe(false)
   })
 })
 
@@ -342,12 +365,16 @@ test.describe('Provider Configuration', () => {
     // Select OpenAI provider
     await providersPage.selectProvider('openai')
 
-    // Check for models section or tab
+    // Check for models section or tab - verify it exists and has deterministic state
     const modelsSection = providersPage.page.getByText(/Models/i).first()
     const modelsVisible = await modelsSection.isVisible().catch(() => false)
 
-    // Either models are shown directly or there's no models section
-    expect(modelsVisible !== undefined).toBe(true)
+    // Models section is either visible (when models tab/section exists) or not
+    // Assert we observed a concrete state rather than undefined
+    expect(typeof modelsVisible).toBe('boolean')
+    if (modelsVisible) {
+      await expect(modelsSection).toBeVisible()
+    }
   })
 })
 
@@ -401,6 +428,10 @@ test.describe('Performance Tuning', () => {
     const saveBtn = providersPage.getConfigSaveBtn('performance')
     await expect(saveBtn).toBeEnabled()
     await providersPage.savePerformanceConfig()
+
+    // Verify value persisted after save (reload would be ideal but we restore instead)
+    const afterSaveValue = await concurrencyInput.inputValue()
+    expect(afterSaveValue).toBe(newValue)
 
     // Restore original value
     await providersPage.fillNumberInput(concurrencyInput, originalValue)
@@ -710,5 +741,144 @@ test.describe('Governance (Budget & Rate Limits)', () => {
       expect(await tokenInput.inputValue()).toBe('100000')
       expect(await requestInput.inputValue()).toBe('1000')
     }
+  })
+})
+
+test.describe('Pricing Overrides Tab', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+    await providersPage.selectProvider('openai')
+  })
+
+  test('should display pricing overrides JSON input in Governance tab', async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible()
+
+    if (!isVisible) {
+      test.skip(true, 'Governance tab not visible (RBAC or governance plugin)')
+      return
+    }
+
+    await providersPage.selectConfigTab('governance')
+
+    await expect(providersPage.pricingOverridesJsonInput).toBeVisible()
+    await expect(providersPage.pricingOverridesResetBtn).toBeVisible()
+    await expect(providersPage.pricingOverridesSaveBtn).toBeVisible()
+  })
+
+  test('should save valid pricing overrides JSON', async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible()
+
+    if (!isVisible) {
+      test.skip(true, 'Governance tab not visible (RBAC or governance plugin)')
+      return
+    }
+
+    await providersPage.selectConfigTab('governance')
+    const initialValue = await providersPage.pricingOverridesJsonInput.inputValue()
+
+    const validOverrides = `[
+  {
+    "model_pattern": "gpt-4o*",
+    "match_type": "wildcard",
+    "request_types": ["chat_completion"],
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000015
+  }
+]`
+
+    await providersPage.setPricingOverrides(validOverrides)
+
+    const isSaveEnabled = await providersPage.pricingOverridesSaveBtn.isDisabled().then((d) => !d)
+    if (!isSaveEnabled) {
+      test.skip(true, 'Save button disabled (RBAC or no changes detected)')
+      return
+    }
+
+    await providersPage.savePricingOverrides()
+    await providersPage.dismissToasts()
+
+    // Restore original value for test isolation
+    await providersPage.setPricingOverrides(initialValue)
+    const restoreEnabled = await providersPage.pricingOverridesSaveBtn.isDisabled().then((d) => !d)
+    if (restoreEnabled) {
+      await providersPage.savePricingOverrides()
+      await providersPage.dismissToasts()
+    }
+  })
+
+  test('should reset pricing overrides', async ({ providersPage }) => {
+    const isVisible = await providersPage.isGovernanceTabVisible()
+
+    if (!isVisible) {
+      test.skip(true, 'Governance tab not visible (RBAC or governance plugin)')
+      return
+    }
+
+    await providersPage.selectConfigTab('governance')
+
+    const initialValue = await providersPage.pricingOverridesJsonInput.inputValue()
+
+    await providersPage.setPricingOverrides('[{"model_pattern":"test"}]')
+
+    const isResetEnabled = await providersPage.pricingOverridesResetBtn.isDisabled().then((d) => !d)
+    if (!isResetEnabled) {
+      test.skip(true, 'Reset button disabled (no changes)')
+      return
+    }
+
+    await providersPage.resetPricingOverrides()
+
+    const afterReset = await providersPage.pricingOverridesJsonInput.inputValue()
+    expect(afterReset).toBe(initialValue)
+  })
+})
+
+test.describe('Debugging Tab', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+    await providersPage.selectProvider('openai')
+  })
+
+  test('should display debugging tab', async ({ providersPage }) => {
+    await providersPage.openConfigSheet()
+    const debuggingTab = providersPage.page.getByTestId('provider-tab-debugging')
+    await expect(debuggingTab).toBeVisible()
+  })
+
+  test('should navigate to debugging tab', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('debugging')
+
+    await expect(providersPage.page.getByText(/Debugging|Raw Request|Raw Response/i)).toBeVisible()
+  })
+})
+
+test.describe('vLLM Provider', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+  })
+
+  test('should display vLLM-specific key fields when adding key to vLLM provider', async ({ providersPage }) => {
+    const vllmAvailable = await providersPage.providerExists('vllm')
+    if (!vllmAvailable) {
+      test.skip(true, 'vLLM provider not in sidebar (add from dropdown first)')
+      return
+    }
+
+    await providersPage.selectProvider('vllm')
+    await providersPage.addKeyBtn.click()
+
+    const vllmUrlInput = providersPage.page.getByTestId('key-input-vllm-url')
+    const vllmModelInput = providersPage.page.getByTestId('key-input-vllm-model-name')
+
+    const urlVisible = await vllmUrlInput.isVisible().catch(() => false)
+    const modelVisible = await vllmModelInput.isVisible().catch(() => false)
+
+    if (urlVisible || modelVisible) {
+      expect(urlVisible || modelVisible).toBe(true)
+    } else {
+      test.skip(true, 'vLLM key form fields not shown (provider may use standard key form)')
+    }
+
+    await providersPage.keyCancelBtn.click()
   })
 })

@@ -29,6 +29,11 @@ export class ProvidersPage extends BasePage {
   readonly keySaveBtn: Locator
   readonly keyCancelBtn: Locator
 
+  // Pricing overrides (Governance tab)
+  readonly pricingOverridesJsonInput: Locator
+  readonly pricingOverridesResetBtn: Locator
+  readonly pricingOverridesSaveBtn: Locator
+
   constructor(page: Page) {
     super(page)
 
@@ -52,6 +57,11 @@ export class ProvidersPage extends BasePage {
     this.keyForm = page.getByTestId('key-form')
     this.keySaveBtn = page.getByTestId('key-save-btn')
     this.keyCancelBtn = page.getByTestId('key-cancel-btn')
+
+    // Pricing overrides (Governance tab)
+    this.pricingOverridesJsonInput = page.getByTestId('provider-pricing-overrides-json-input')
+    this.pricingOverridesResetBtn = page.getByTestId('provider-pricing-overrides-reset-button')
+    this.pricingOverridesSaveBtn = page.getByTestId('provider-pricing-overrides-save-button')
   }
 
   /**
@@ -164,14 +174,12 @@ export class ProvidersPage extends BasePage {
    * @param options.skipToastWait - If true, do not wait for success toast (e.g. for cleanup); avoids cleanup failures when toast is missing or already gone.
    */
   async deleteProvider(name: string, options?: { skipToastWait?: boolean }): Promise<void> {
-    // First select the provider
+    // First select the provider (config panel shows with delete button)
     await this.selectProvider(name)
 
-    // Find and click the delete button
-    const providerItem = this.getProviderItem(name)
-    await providerItem.hover()
-
-    const deleteBtn = providerItem.locator('svg.lucide-trash')
+    // Click the delete button in the config panel
+    const deleteBtn = this.page.getByTestId('provider-delete-btn')
+    await deleteBtn.waitFor({ state: 'visible', timeout: 5000 })
     await deleteBtn.click()
 
     // Confirm deletion in dialog
@@ -195,6 +203,24 @@ export class ProvidersPage extends BasePage {
     return this.page.getByTestId(`key-row-${name}`).or(
       this.page.locator('tr, [role="row"]').filter({ hasText: name })
     )
+  }
+
+  /**
+   * Get the displayed weight for a key
+   */
+  async getKeyWeight(name: string): Promise<string> {
+    const keyRow = this.getKeyRow(name)
+    return (await keyRow.getByTestId('key-weight-value').textContent()) ?? ''
+  }
+
+  /**
+   * Get the enabled state of a key (switch checked or not)
+   */
+  async getKeyEnabledState(name: string): Promise<boolean> {
+    const keyRow = this.getKeyRow(name)
+    const switchEl = keyRow.getByTestId('key-enabled-switch')
+    const checked = await switchEl.getAttribute('data-state')
+    return checked === 'checked'
   }
 
   /**
@@ -289,7 +315,7 @@ export class ProvidersPage extends BasePage {
    */
   async toggleKeyEnabled(keyName: string): Promise<void> {
     const keyRow = this.getKeyRow(keyName)
-    const switchEl = keyRow.locator('button[role="switch"]')
+    const switchEl = keyRow.getByTestId('key-enabled-switch')
     await switchEl.click()
     await this.waitForSuccessToast()
   }
@@ -352,17 +378,10 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Promise<void> {
     await this.openConfigSheet()
 
-    const tabLabels: Record<string, string> = {
-      network: 'Network config',
-      proxy: 'Proxy config',
-      performance: 'Performance tuning',
-      governance: 'Governance',
-    }
-
-    const tab = this.page.getByRole('tab', { name: tabLabels[tabName] })
+    const tab = this.page.getByTestId(`provider-tab-${tabName}`)
     await tab.click()
     await this.page.waitForTimeout(300)
   }
@@ -607,7 +626,30 @@ export class ProvidersPage extends BasePage {
    */
   async isGovernanceTabVisible(): Promise<boolean> {
     await this.openConfigSheet()
-    const tab = this.page.getByRole('tab', { name: 'Governance' })
+    const tab = this.page.getByTestId('provider-tab-governance')
     return await tab.isVisible().catch(() => false)
+  }
+
+  /**
+   * Set pricing overrides JSON (must be on Governance tab)
+   */
+  async setPricingOverrides(json: string): Promise<void> {
+    await this.pricingOverridesJsonInput.clear()
+    await this.pricingOverridesJsonInput.fill(json)
+  }
+
+  /**
+   * Reset pricing overrides to initial value
+   */
+  async resetPricingOverrides(): Promise<void> {
+    await this.pricingOverridesResetBtn.click()
+  }
+
+  /**
+   * Save pricing overrides
+   */
+  async savePricingOverrides(): Promise<void> {
+    await this.pricingOverridesSaveBtn.click()
+    await this.waitForSuccessToast()
   }
 }

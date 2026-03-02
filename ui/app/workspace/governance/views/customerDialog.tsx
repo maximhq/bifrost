@@ -210,7 +210,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 
 	return (
 		<Dialog open onOpenChange={onCancel}>
-			<DialogContent className="max-w-2xl">
+			<DialogContent className="max-w-2xl" data-testid="customer-dialog">
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">{isEditing ? "Edit Customer" : "Create Customer"}</DialogTitle>
 					<DialogDescription>
@@ -228,6 +228,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 								<Label htmlFor="name">Customer Name *</Label>
 								<Input
 									id="name"
+									data-testid="customer-name-input"
 									placeholder="e.g., Acme Corporation"
 									value={formData.name}
 									maxLength={50}
@@ -246,6 +247,7 @@ export default function CustomerDialog({ customer, onSave, onCancel }: CustomerD
 							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
+							dataTestId="budget-max-limit-input"
 						/>
 
 						{/* Rate Limit Configuration - Token Limits */}

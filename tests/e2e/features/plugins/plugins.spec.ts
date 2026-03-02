@@ -237,16 +237,17 @@ test.describe('Plugins', () => {
       await sheetPathInput.fill(ensureTestPluginExists()) // Path is required; use same path as build
       await pluginsPage.saveBtn.click()
 
-      // Either sheet stays open with error OR error toast appears
+      // Duplicate creation should be rejected: either sheet stays open with error OR error toast appears
       const sheetVisible = await pluginsPage.sheet.isVisible()
-      const hasError = await pluginsPage.page.locator('[role="alert"], .text-destructive, [data-sonner-toast]').count() > 0
+      const inlineError = pluginsPage.sheet.locator('[role="alert"], .text-destructive')
+      const errorToast = pluginsPage.page.locator('[data-sonner-toast][data-type="error"]')
 
-      // At least one of these should be true
-      expect(sheetVisible || hasError).toBe(true)
-
-      // Cancel if sheet is still open
       if (sheetVisible) {
+        await expect(pluginsPage.sheet).toBeVisible()
+        await expect(inlineError.first()).toBeVisible()
         await pluginsPage.cancelPlugin()
+      } else {
+        await expect(errorToast.first()).toBeVisible()
       }
     })
   })
@@ -336,15 +337,17 @@ test.describe('Plugins', () => {
       // Wait for response
       await pluginsPage.page.waitForTimeout(1000)
 
-      // Sheet may close with error toast or stay open with error
+      // Invalid path: sheet may close with error toast or stay open with error
       const sheetVisible = await pluginsPage.sheet.isVisible()
-      const hasErrorToast = await pluginsPage.page.locator('[data-sonner-toast][data-type="error"]').count() > 0
-
-      // Expect either the sheet to remain open OR an error toast
-      expect(sheetVisible || hasErrorToast).toBe(true)
+      const inlineError = pluginsPage.sheet.locator('[role="alert"], .text-destructive')
+      const errorToast = pluginsPage.page.locator('[data-sonner-toast][data-type="error"]')
 
       if (sheetVisible) {
+        await expect(pluginsPage.sheet).toBeVisible()
+        await expect(inlineError.first()).toBeVisible()
         await pluginsPage.cancelPlugin()
+      } else {
+        await expect(errorToast.first()).toBeVisible()
       }
     })
   })
