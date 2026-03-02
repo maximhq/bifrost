@@ -340,35 +340,36 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VLLMModelName = nil
 	}
 
-	// Serialize SAP AI Core config to DB columns
+	// Serialize SAP AI Core config to DB columns.
+	// Create standalone value copies so encryption never mutates the caller-owned SAPAICoreKeyConfig.
 	if k.SAPAICoreKeyConfig != nil {
 		if k.SAPAICoreKeyConfig.ClientID.GetValue() != "" {
-			clientID := k.SAPAICoreKeyConfig.ClientID
-			k.SAPAICoreClientID = &clientID
+			sapaicoreClientIDValue := k.SAPAICoreKeyConfig.ClientID
+			k.SAPAICoreClientID = &sapaicoreClientIDValue
 		} else {
 			k.SAPAICoreClientID = nil
 		}
 		if k.SAPAICoreKeyConfig.ClientSecret.GetValue() != "" {
-			clientSecret := k.SAPAICoreKeyConfig.ClientSecret
-			k.SAPAICoreClientSecret = &clientSecret
+			sapaicoreClientSecretValue := k.SAPAICoreKeyConfig.ClientSecret
+			k.SAPAICoreClientSecret = &sapaicoreClientSecretValue
 		} else {
 			k.SAPAICoreClientSecret = nil
 		}
 		if k.SAPAICoreKeyConfig.AuthURL.GetValue() != "" {
-			authURL := k.SAPAICoreKeyConfig.AuthURL
-			k.SAPAICoreAuthURL = &authURL
+			sapaicoreAuthURLValue := k.SAPAICoreKeyConfig.AuthURL
+			k.SAPAICoreAuthURL = &sapaicoreAuthURLValue
 		} else {
 			k.SAPAICoreAuthURL = nil
 		}
 		if k.SAPAICoreKeyConfig.BaseURL.GetValue() != "" {
-			baseURL := k.SAPAICoreKeyConfig.BaseURL
-			k.SAPAICoreBaseURL = &baseURL
+			sapaicoreBaseURLValue := k.SAPAICoreKeyConfig.BaseURL
+			k.SAPAICoreBaseURL = &sapaicoreBaseURLValue
 		} else {
 			k.SAPAICoreBaseURL = nil
 		}
 		if k.SAPAICoreKeyConfig.ResourceGroup.GetValue() != "" {
-			resourceGroup := k.SAPAICoreKeyConfig.ResourceGroup
-			k.SAPAICoreResourceGroup = &resourceGroup
+			sapaicoreResourceGroupValue := k.SAPAICoreKeyConfig.ResourceGroup
+			k.SAPAICoreResourceGroup = &sapaicoreResourceGroupValue
 		} else {
 			k.SAPAICoreResourceGroup = nil
 		}
