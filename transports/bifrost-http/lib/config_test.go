@@ -15353,6 +15353,85 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 // AUTH CONFIG PASSWORD HASHING TESTS
 // ===================================================================================
 
+func TestResolveFrameworkPricingConfig(t *testing.T) {
+	defaultURL := modelcatalog.DefaultPricingURL
+	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+	fileURL := "https://example.com/pricing.json"
+	fileSyncDuration := 12 * time.Hour
+	fileSyncSeconds := int64(fileSyncDuration.Seconds())
+	dbURL := "https://db.example.com/pricing.json"
+	dbSyncSeconds := int64((6 * time.Hour).Seconds())
+
+	t.Run("db values take precedence", func(t *testing.T) {
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  7,
+			PricingURL:          &dbURL,
+			PricingSyncInterval: &dbSyncSeconds,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,
+				PricingSyncInterval: &fileSyncDuration,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, uint(7), normalizedTable.ID)
+		require.Equal(t, dbURL, *normalizedTable.PricingURL)
+		require.Equal(t, dbSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, dbURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, 6*time.Hour, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("fallback to file when db fields are missing", func(t *testing.T) {
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  3,
+			PricingURL:          nil,
+			PricingSyncInterval: nil,
+		}
+		fileConfig := &framework.FrameworkConfig{
+			Pricing: &modelcatalog.Config{
+				PricingURL:          &fileURL,
+				PricingSyncInterval: &fileSyncDuration,
+			},
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, fileConfig)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uint(3), normalizedTable.ID)
+		require.Equal(t, fileURL, *normalizedTable.PricingURL)
+		require.Equal(t, fileSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, fileURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, fileSyncDuration, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("fallback to defaults when db and file are missing", func(t *testing.T) {
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(nil, nil)
+		require.False(t, needsDBUpdate)
+		require.Equal(t, defaultURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, defaultURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, modelcatalog.DefaultPricingSyncInterval, *normalizedModelCatalog.PricingSyncInterval)
+	})
+
+	t.Run("invalid db interval falls back and requests db update", func(t *testing.T) {
+		invalidDBSync := int64(0)
+		dbConfig := &tables.TableFrameworkConfig{
+			ID:                  5,
+			PricingURL:          &dbURL,
+			PricingSyncInterval: &invalidDBSync,
+		}
+
+		normalizedTable, normalizedModelCatalog, needsDBUpdate := ResolveFrameworkPricingConfig(dbConfig, nil)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, dbURL, *normalizedTable.PricingURL)
+		require.Equal(t, defaultSyncSeconds, *normalizedTable.PricingSyncInterval)
+		require.Equal(t, dbURL, *normalizedModelCatalog.PricingURL)
+		require.Equal(t, modelcatalog.DefaultPricingSyncInterval, *normalizedModelCatalog.PricingSyncInterval)
+	})
+}
+
 func TestIsBcryptHash(t *testing.T) {
 	tests := []struct {
 		name     string
