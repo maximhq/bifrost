@@ -1,2 +1,3 @@
 - fix: filter openrouter list models response based on allowed models on key
 - feat: add count tokens support for bedrock
+- fix: nil properties in tool function parameters handled

@@ -3785,6 +3785,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				ModelRequested: model,
 				RawRequest:     primaryErr.ExtraFields.RawRequest,
 				RawResponse:    primaryErr.ExtraFields.RawResponse,
+				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 			}
 		}
 		return primaryResult, primaryErr
@@ -3834,6 +3835,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 				ModelRequested: fallback.Model,
 				RawRequest:     fallbackErr.ExtraFields.RawRequest,
 				RawResponse:    fallbackErr.ExtraFields.RawResponse,
+				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
 			}
 			return nil, fallbackErr
 		}
@@ -3846,6 +3848,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			ModelRequested: model,
 			RawRequest:     primaryErr.ExtraFields.RawRequest,
 			RawResponse:    primaryErr.ExtraFields.RawResponse,
+			KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 		}
 	}
 
@@ -3896,6 +3899,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				ModelRequested: model,
 				RawRequest:     primaryErr.ExtraFields.RawRequest,
 				RawResponse:    primaryErr.ExtraFields.RawResponse,
+				KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 			}
 		}
 		return primaryResult, primaryErr
@@ -3943,6 +3947,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 				ModelRequested: fallback.Model,
 				RawRequest:     fallbackErr.ExtraFields.RawRequest,
 				RawResponse:    fallbackErr.ExtraFields.RawResponse,
+				KeyStatuses:    fallbackErr.ExtraFields.KeyStatuses,
 			}
 			return nil, fallbackErr
 		}
@@ -3955,6 +3960,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 			ModelRequested: model,
 			RawRequest:     primaryErr.ExtraFields.RawRequest,
 			RawResponse:    primaryErr.ExtraFields.RawResponse,
+			KeyStatuses:    primaryErr.ExtraFields.KeyStatuses,
 		}
 	}
 

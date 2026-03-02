@@ -670,7 +670,7 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel() // Ensure cleanup on function exit
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -789,7 +789,7 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	if req.Stream != nil && *req.Stream {
@@ -892,7 +892,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	if req.Stream != nil && *req.Stream {
@@ -979,7 +979,7 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1047,7 +1047,7 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1133,7 +1133,7 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1196,7 +1196,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1224,7 +1224,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 
 	if resp.Audio == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Speech response is missing audio data")
+		SendError(ctx, fasthttp.StatusBadRequest, "Speech response is missing audio data")
 		return
 	}
 
@@ -1307,7 +1307,7 @@ func (h *CompletionHandler) transcription(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1340,7 +1340,7 @@ func (h *CompletionHandler) countTokens(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
@@ -1690,7 +1690,7 @@ func (h *CompletionHandler) imageGeneration(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		cancel()
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -1895,7 +1895,7 @@ func (h *CompletionHandler) imageEdit(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2031,7 +2031,7 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
@@ -2094,7 +2094,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	if bifrostCtx == nil {
 		cancel()
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	defer cancel()
@@ -2141,7 +2141,7 @@ func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2192,7 +2192,7 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2246,7 +2246,7 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2290,7 +2290,7 @@ func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2360,7 +2360,7 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2421,7 +2421,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2474,7 +2474,7 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2513,7 +2513,7 @@ func (h *CompletionHandler) batchRetrieve(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2552,7 +2552,7 @@ func (h *CompletionHandler) batchCancel(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2591,7 +2591,7 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2649,7 +2649,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// Open and read the file
 	file, err := fileHeader.Open()
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to open uploaded file: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
 		return
 	}
 	defer file.Close()
@@ -2657,7 +2657,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	// Read file data
 	fileData, err := io.ReadAll(file)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to read uploaded file: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
 		return
 	}
 
@@ -2673,7 +2673,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2732,7 +2732,7 @@ func (h *CompletionHandler) fileList(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2771,7 +2771,7 @@ func (h *CompletionHandler) fileRetrieve(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2810,7 +2810,7 @@ func (h *CompletionHandler) fileDelete(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2849,7 +2849,7 @@ func (h *CompletionHandler) fileContent(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 
@@ -2905,7 +2905,7 @@ func (h *CompletionHandler) containerCreate(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -2957,7 +2957,7 @@ func (h *CompletionHandler) containerList(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -2997,7 +2997,7 @@ func (h *CompletionHandler) containerRetrieve(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3037,7 +3037,7 @@ func (h *CompletionHandler) containerDelete(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3088,14 +3088,14 @@ func (h *CompletionHandler) containerFileCreate(ctx *fasthttp.RequestCtx) {
 		}
 		file, err := fileHeader.Open()
 		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to open uploaded file")
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
 			return
 		}
 		defer file.Close()
 
 		fileContent, err := io.ReadAll(file)
 		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to read uploaded file")
+			SendError(ctx, fasthttp.StatusInternalServerError, "Internal Server Error")
 			return
 		}
 		bifrostContainerFileReq.File = fileContent
@@ -3127,7 +3127,7 @@ func (h *CompletionHandler) containerFileCreate(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3180,7 +3180,7 @@ func (h *CompletionHandler) containerFileList(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3228,7 +3228,7 @@ func (h *CompletionHandler) containerFileRetrieve(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3276,7 +3276,7 @@ func (h *CompletionHandler) containerFileContent(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)
@@ -3326,7 +3326,7 @@ func (h *CompletionHandler) containerFileDelete(ctx *fasthttp.RequestCtx) {
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.handlerStore.ShouldAllowDirectKeys(), h.config.GetHeaderFilterConfig())
 	defer cancel()
 	if bifrostCtx == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to convert context")
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
 	enableRawRequestResponseForContainer(bifrostCtx)

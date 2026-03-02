@@ -365,7 +365,9 @@ type ToolFunctionParameters struct {
 // Properties is always emitted as an object, never null.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 	if t.Properties == nil {
-		t.Properties = &OrderedMap{}
+		// Initialize with an empty map (not nil values) so it marshals to {} instead of null
+		// Required by OpenAI and JSON Schema spec
+		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
 	type Alias ToolFunctionParameters
 	data, err := Marshal(Alias(t))
@@ -866,7 +868,7 @@ type ChatAudioMessageAudio struct {
 type BifrostResponseChoice struct {
 	Index        int              `json:"index"`
 	FinishReason *string          `json:"finish_reason,omitempty"`
-	LogProbs     *BifrostLogProbs `json:"log_probs,omitempty"`
+	LogProbs     *BifrostLogProbs `json:"logprobs,omitempty"`
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice

@@ -254,7 +254,7 @@ export default function SecurityView() {
 				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
 					<div className="space-y-0.5">
 						<label htmlFor="enforce-auth-on-inference" className="text-sm font-medium">
-							Enable Auth on Inference
+						{IS_ENTERPRISE ? "Enable Auth on Inference" : "Enforce Virtual Keys on Inference"}
 						</label>
 						<p className="text-muted-foreground text-sm">
 							{IS_ENTERPRISE

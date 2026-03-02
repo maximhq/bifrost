@@ -23,7 +23,7 @@ jobs:
       should-skip: ${{ steps.check.outputs.should-skip }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check if pipeline should be skipped
         id: check        
@@ -46,7 +46,7 @@ jobs:
     steps:
       # Checkout the repository
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-tags: true
 

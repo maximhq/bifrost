@@ -266,6 +266,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// Add provider to store (env vars will be processed by store)
 	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
+		if errors.Is(err, lib.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err))
 		return
 	}

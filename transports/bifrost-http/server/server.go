@@ -498,6 +498,7 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 
 	bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
 	bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
 	defer bfCtx.Cancel()
 
 	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
@@ -630,7 +631,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	config, err := s.Config.ConfigStore.GetClientConfig(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get client config: %v", err)
-	}
+	}	
 	s.Config.ClientConfig = *config
 	// Reloading config in bifrost client
 	if s.Client != nil {

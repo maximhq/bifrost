@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directories:
+      - "/core"
+      - "/framework"
+      - "/transports"
+      - "/plugins/*"
+      - "/examples/**"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "npm"
+    directories:
+      - "/ui"
+      - "/npx"
+      - "/examples/**"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "docker"
+    directory: "/transports"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0

@@ -335,10 +335,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
-	// Handle unified auth on inference toggle
-	if payload.ClientConfig.EnforceAuthOnInference != currentConfig.EnforceAuthOnInference {
-		restartReasons = append(restartReasons, "Enforce auth on inference")
-	}
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference

@@ -3,6 +3,8 @@
 package utils
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -829,20 +831,33 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
 // It returns a copy of the body to avoid race conditions when the response is released
-// back to fasthttp's buffer pool.
+// back to fasthttp's buffer pool. Uses pooled gzip readers to reduce GC pressure.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	switch contentEncoding {
-	case "gzip":
-		// BodyGunzip already returns a new slice, so it's safe
-		return resp.BodyGunzip()
-	default:
-		// Copy the body to avoid race conditions when response is released back to pool
+	if strings.Contains(contentEncoding, "gzip") {
 		body := resp.Body()
-		result := make([]byte, len(body))
-		copy(result, body)
-		return result, nil
+		if len(body) == 0 {
+			return nil, nil
+		}
+
+		reader := bytes.NewReader(body)
+		gz, err := AcquireGzipReader(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer ReleaseGzipReader(gz)
+
+		decompressed, err := io.ReadAll(gz)
+		if err != nil {
+			return nil, err
+		}
+		return decompressed, nil
 	}
+	// Copy the body to avoid race conditions when response is released back to pool
+	body := resp.Body()
+	result := make([]byte, len(body))
+	copy(result, body)
+	return result, nil
 }
 
 // IsHTMLResponse checks if the response is HTML by examining the Content-Type header
@@ -1509,6 +1524,13 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			getLogger().Error("recovered panic in ReleaseStreamingResponse: %v", r)
+		}
+		// Always release the response to prevent leaks, even after a panic
+		fasthttp.ReleaseResponse(resp)
+	}()
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
@@ -1522,7 +1544,6 @@ func ReleaseStreamingResponse(resp *fasthttp.Response) {
 			}
 		}
 	}
-	fasthttp.ReleaseResponse(resp)
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.
@@ -1966,4 +1987,78 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 		return defaultProvider
 	}
 	return defaultProvider
+}
+
+// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
+var gzipReaderPool = sync.Pool{
+	New: func() any {
+		return &gzip.Reader{}
+	},
+}
+
+// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
+// or creates a new one if the pool is empty or reset fails.
+func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
+	if v := gzipReaderPool.Get(); v != nil {
+		gz := v.(*gzip.Reader)
+		if err := gz.Reset(r); err == nil {
+			return gz, nil
+		}
+		// Reset failed, return to pool to avoid leaking
+		gzipReaderPool.Put(gz)
+	}
+	return gzip.NewReader(r)
+}
+
+// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
+func ReleaseGzipReader(gz *gzip.Reader) {
+	if gz != nil {
+		gz.Close()
+		gzipReaderPool.Put(gz)
+	}
+}
+
+// decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
+// with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
+// header so downstream consumers don't double-decompress. Returns original reader
+// unchanged if not gzip-encoded or if gzip reader creation fails.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
+	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if !strings.Contains(ce, "gzip") {
+		return nil, stream, false
+	}
+	gz, err := AcquireGzipReader(stream)
+	if err != nil {
+		ReleaseGzipReader(gz)
+		return nil, stream, false
+	}
+	resp.Header.Del("Content-Encoding")
+	return gz, gz, true
+}
+
+// DecompressStreamBody returns a reader for consuming the response body, with
+// on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
+// object is NOT modified (no SetBodyStream call), so the original requestStream
+// remains live for proper cleanup by ReleaseStreamingResponse. Clears the
+// Content-Encoding header to prevent double-decompression.
+//
+// Returns:
+//   - io.Reader: the reader to use for scanning (gzip reader if gzip-encoded,
+//     original body stream otherwise).
+//   - func(): cleanup function that releases the gzip reader back to the pool.
+//     Must be called (typically via defer) after streaming is complete.
+func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		// Return an empty reader instead of nil to prevent panics in callers
+		// that pass the reader to bufio.NewScanner without nil checks.
+		return bytes.NewReader(nil), func() {}
+	}
+	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	if !wasGzip {
+		return bodyStream, func() {}
+	}
+	return decompressed, func() {
+		ReleaseGzipReader(gz)
+	}
 }

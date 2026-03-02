@@ -56,6 +56,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 		TTL                          interface{}   `json:"ttl,omitempty"`
 		Threshold                    float64       `json:"threshold,omitempty"`
 		VectorStoreNamespace         string        `json:"vector_store_namespace,omitempty"`
+		DefaultCacheKey              string        `json:"default_cache_key,omitempty"`
 		ConversationHistoryThreshold int           `json:"conversation_history_threshold,omitempty"`
 		CacheByModel                 *bool         `json:"cache_by_model,omitempty"`
 		CacheByProvider              *bool         `json:"cache_by_provider,omitempty"`
@@ -78,6 +79,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	c.VectorStoreNamespace = temp.VectorStoreNamespace
 	c.ConversationHistoryThreshold = temp.ConversationHistoryThreshold
 	c.Threshold = temp.Threshold
+	c.DefaultCacheKey = temp.DefaultCacheKey
 	c.ExcludeSystemPrompt = temp.ExcludeSystemPrompt
 	// Handle TTL field with custom parsing for VectorStore-backed cache behavior
 	if temp.TTL != nil {

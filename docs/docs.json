@@ -350,13 +350,14 @@
             "icon": "book",
             "pages": [
               "deployment-guides/how-to/install-make",
-              "deployment-guides/how-to/multinode"
+              "deployment-guides/how-to/multinode",
+              "deployment-guides/docker-tuning"
             ]
           }
         ]
       },
       {
-        "tab": "API Reference",
+        "tab": "API Reference", 
         "icon": "code",
         "groups": [
           {

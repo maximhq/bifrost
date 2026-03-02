@@ -89,21 +89,27 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 type SampleToolType string
 
 const (
-	SampleToolTypeWeather   SampleToolType = "weather"
-	SampleToolTypeCalculate SampleToolType = "calculate"
-	SampleToolTypeTime      SampleToolType = "time"
+	SampleToolTypeWeather              SampleToolType = "weather"
+	SampleToolTypeCalculate            SampleToolType = "calculate"
+	SampleToolTypeTime                 SampleToolType = "time"
+	SampleToolTypePingWithEmpty        SampleToolType = "ping_empty"
+	SampleToolTypePingWithNil          SampleToolType = "ping_nil"
 )
 
 var SampleToolFunctions = map[SampleToolType]*schemas.ChatToolFunction{
-	SampleToolTypeWeather:   WeatherToolFunction,
-	SampleToolTypeCalculate: CalculatorToolFunction,
-	SampleToolTypeTime:      TimeToolFunction,
+	SampleToolTypeWeather:       WeatherToolFunction,
+	SampleToolTypeCalculate:     CalculatorToolFunction,
+	SampleToolTypeTime:          TimeToolFunction,
+	SampleToolTypePingWithEmpty: PingToolFunctionWithEmpty,
+	SampleToolTypePingWithNil:   PingToolFunctionWithNil,
 }
 
 var sampleToolDescriptions = map[SampleToolType]string{
-	SampleToolTypeWeather:   "Get the current weather in a given location",
-	SampleToolTypeCalculate: "Perform basic mathematical calculations",
-	SampleToolTypeTime:      "Get the current time in a specific timezone",
+	SampleToolTypeWeather:       "Get the current weather in a given location",
+	SampleToolTypeCalculate:     "Perform basic mathematical calculations",
+	SampleToolTypeTime:          "Get the current time in a specific timezone",
+	SampleToolTypePingWithEmpty: "A simple ping tool with no parameters (explicit empty properties)",
+	SampleToolTypePingWithNil:   "A simple ping tool with no parameters (nil properties)",
 }
 
 var WeatherToolFunction = &schemas.ChatToolFunction{
@@ -149,6 +155,22 @@ var TimeToolFunction = &schemas.ChatToolFunction{
 	},
 }
 
+// PingToolFunctionWithEmpty has an explicitly empty OrderedMap for properties
+var PingToolFunctionWithEmpty = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type:       "object",
+		Properties: schemas.NewOrderedMap(), // Explicitly empty OrderedMap
+	},
+}
+
+// PingToolFunctionWithNil has nil properties that get auto-initialized during marshalling
+var PingToolFunctionWithNil = &schemas.ChatToolFunction{
+	Parameters: &schemas.ToolFunctionParameters{
+		Type:       "object",
+		Properties: nil, // Will be auto-populated during marshalling
+	},
+}
+
 func GetSampleChatTool(toolName SampleToolType) *schemas.ChatTool {
 	function, ok := SampleToolFunctions[toolName]
 	if !ok {
@@ -160,10 +182,16 @@ func GetSampleChatTool(toolName SampleToolType) *schemas.ChatTool {
 		return nil
 	}
 
+	// Use "ping" as the tool name for ping tools
+	toolDisplayName := string(toolName)
+	if toolName == SampleToolTypePingWithEmpty || toolName == SampleToolTypePingWithNil {
+		toolDisplayName = "ping"
+	}
+
 	return &schemas.ChatTool{
 		Type: "function",
 		Function: &schemas.ChatToolFunction{
-			Name:        string(toolName),
+			Name:        toolDisplayName,
 			Description: bifrost.Ptr(description),
 			Parameters:  function.Parameters,
 		},
@@ -181,9 +209,15 @@ func GetSampleResponsesTool(toolName SampleToolType) *schemas.ResponsesTool {
 		return nil
 	}
 
+	// Use "ping" as the tool name for ping tools
+	toolDisplayName := string(toolName)
+	if toolName == SampleToolTypePingWithEmpty || toolName == SampleToolTypePingWithNil {
+		toolDisplayName = "ping"
+	}
+
 	return &schemas.ResponsesTool{
 		Type:        "function",
-		Name:        bifrost.Ptr(string(toolName)),
+		Name:        bifrost.Ptr(toolDisplayName),
 		Description: bifrost.Ptr(description),
 		ResponsesToolFunction: &schemas.ResponsesToolFunction{
 			Parameters: function.Parameters,

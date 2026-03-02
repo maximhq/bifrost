@@ -1,0 +1,436 @@
+---
+title: "Docker Performance Tuning"
+description: "Optimize Bifrost container performance with Go runtime tuning, resource limits, and system configuration"
+icon: "docker"
+---
+
+This guide covers performance tuning for Bifrost when running in Docker containers. Proper tuning ensures Bifrost can fully utilize container resources and achieve optimal throughput.
+
+<Note>
+These optimizations apply to Docker, Docker Compose, Kubernetes, and any container runtime using cgroups for resource management.
+</Note>
+
+## Quick Start
+
+For most production deployments, add these settings to your container:
+
+```yaml
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    environment:
+      - GOGC=200
+      - GOMEMLIMIT=3600MiB  # 90% of 4GB memory limit
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+```
+
+---
+
+## Go Runtime Tuning
+
+### GOMAXPROCS (Automatic)
+
+Bifrost automatically detects container CPU limits using [automaxprocs](https://github.com/uber-go/automaxprocs). This sets `GOMAXPROCS` to match your container's CPU quota from cgroups (v1 and v2).
+
+**No configuration needed** — this works automatically. You'll see a log line at startup:
+
+```
+maxprocs: Updating GOMAXPROCS=4: determined from CPU quota
+```
+
+<Warning>
+Without automaxprocs, Go would detect all host CPUs (e.g., 64 on an EC2 instance) even when the container is limited to 4 CPUs, causing excessive context switching and degraded performance.
+</Warning>
+
+### GOGC (Garbage Collection)
+
+`GOGC` controls garbage collection frequency. The default is `100` (GC triggers when heap grows 100% since last collection).
+
+| Scenario | Recommended GOGC | Trade-off |
+|----------|------------------|-----------|
+| Memory constrained | 50-100 | More frequent GC, lower memory |
+| High throughput, memory available | 200-400 | Less GC overhead, higher memory |
+| Latency sensitive | 50-100 | More predictable latency |
+
+```yaml
+environment:
+  - GOGC=200
+```
+
+<Tip>
+For high-throughput API gateways, `GOGC=200` or `GOGC=400` typically provides the best balance of throughput and memory usage.
+</Tip>
+
+### GOMEMLIMIT (Memory Limit)
+
+`GOMEMLIMIT` sets a soft memory limit for the Go runtime. When approaching this limit, Go becomes more aggressive about garbage collection.
+
+**Best practice:** Set to ~90% of your container's memory limit to leave headroom for non-heap memory (goroutine stacks, CGO, etc.).
+
+| Container Memory | Recommended GOMEMLIMIT |
+|------------------|------------------------|
+| 512 MB | 450MiB |
+| 1 GB | 900MiB |
+| 2 GB | 1800MiB |
+| 4 GB | 3600MiB |
+| 8 GB | 7200MiB |
+
+```yaml
+environment:
+  - GOMEMLIMIT=3600MiB
+```
+
+<Note>
+When using both `GOGC` and `GOMEMLIMIT`, Go GCs based on whichever trigger fires first. For high-throughput workloads, set `GOGC=200` or higher and let `GOMEMLIMIT` be the primary constraint.
+</Note>
+
+---
+
+## System Limits
+
+### File Descriptor Limits (ulimits)
+
+Each HTTP connection requires a file descriptor. The default container limit (often 1024) is too low for high-concurrency workloads.
+
+```yaml
+ulimits:
+  nofile:
+    soft: 65536
+    hard: 65536
+```
+
+| Expected Concurrent Connections | Recommended nofile |
+|--------------------------------|-------------------|
+| < 1000 | 4096 |
+| 1000-5000 | 16384 |
+| 5000-10000 | 32768 |
+| > 10000 | 65536+ |
+
+<Warning>
+If you see errors like `too many open files` or connections being refused under load, increase your `nofile` limit.
+</Warning>
+
+### Resource Limits
+
+Set CPU and memory limits to match your expected workload:
+
+```yaml
+deploy:
+  resources:
+    limits:
+      cpus: '4'
+      memory: 4G
+    reservations:
+      cpus: '2'
+      memory: 2G
+```
+
+**Sizing guidance:**
+
+| Expected RPS | Recommended CPUs | Recommended Memory |
+|--------------|------------------|-------------------|
+| 100-500 | 1-2 | 512MB-1GB |
+| 500-2000 | 2-4 | 1-2GB |
+| 2000-5000 | 4-8 | 2-4GB |
+| 5000+ | 8+ | 4GB+ |
+
+---
+
+## Docker Compose Examples
+
+### Development
+
+```yaml
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - LOG_LEVEL=debug
+```
+
+### Production (Single Node)
+
+```yaml
+services:
+  bifrost:
+    image: maximhq/bifrost:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - bifrost-data:/app/data
+    environment:
+      - LOG_LEVEL=info
+      - LOG_STYLE=json
+      - GOGC=200
+      - GOMEMLIMIT=3600MiB
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  bifrost-data:
+```
+
+### Production (Multi-Node with PostgreSQL)
+
+```yaml
+services:
+  bifrost-1:
+    image: maximhq/bifrost:latest
+    ports:
+      - "8081:8080"
+    environment:
+      - LOG_LEVEL=info
+      - GOGC=200
+      - GOMEMLIMIT=1800MiB
+      - BIFROST_DB_TYPE=postgres
+      - BIFROST_DB_DSN=postgres://user:pass@postgres:5432/bifrost?sslmode=disable
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    depends_on:
+      - postgres
+
+  bifrost-2:
+    image: maximhq/bifrost:latest
+    ports:
+      - "8082:8080"
+    environment:
+      - LOG_LEVEL=info
+      - GOGC=200
+      - GOMEMLIMIT=1800MiB
+      - BIFROST_DB_TYPE=postgres
+      - BIFROST_DB_DSN=postgres://user:pass@postgres:5432/bifrost?sslmode=disable
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=pass
+      - POSTGRES_DB=bifrost
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:
+```
+
+---
+
+## Kubernetes Configuration
+
+### Basic Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bifrost
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: bifrost
+  template:
+    metadata:
+      labels:
+        app: bifrost
+    spec:
+      containers:
+        - name: bifrost
+          image: maximhq/bifrost:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GOGC
+              value: "200"
+            - name: GOMEMLIMIT
+              value: "3600MiB"
+          resources:
+            limits:
+              cpu: "4"
+              memory: "4Gi"
+            requests:
+              cpu: "2"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+```
+
+### File Descriptor Limits in Kubernetes
+
+File descriptor limits in Kubernetes are typically set at the node level. Options include:
+
+1. **Node-level configuration** (recommended): Set `fs.file-max` and ulimits in your node configuration
+2. **Init container**: Use an init container with elevated privileges to set limits
+3. **Security context**: Some clusters allow setting capabilities
+
+```yaml
+securityContext:
+  capabilities:
+    add: ["SYS_RESOURCE"]
+```
+
+<Note>
+Check your current limits inside a container with: `cat /proc/sys/fs/file-max` and `ulimit -n`
+</Note>
+
+---
+
+## Bifrost Application Settings
+
+Align Bifrost's internal settings with your container resources:
+
+### Concurrency and Buffer Size
+
+Configure per provider in `config.json`:
+
+```json
+{
+  "providers": {
+    "openai": {
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 1500
+      }
+    }
+  }
+}
+```
+
+**Formula:**
+- `concurrency` = expected RPS per provider
+- `buffer_size` = 1.5 × concurrency
+
+### Initial Pool Size
+
+Configure globally in `config.json`:
+
+```json
+{
+  "client": {
+    "initial_pool_size": 3000
+  }
+}
+```
+
+**Formula:** `initial_pool_size` = 1.5 × total expected RPS across all providers
+
+<Tip>
+See the [Performance Tuning](/providers/performance) guide for detailed sizing recommendations.
+</Tip>
+
+---
+
+## Tuning Checklist
+
+<Steps>
+  <Step title="Set container resource limits">
+    Define CPU and memory limits based on expected workload. Start with 2 CPUs / 2GB for moderate loads.
+  </Step>
+  <Step title="Configure GOMEMLIMIT">
+    Set to 90% of container memory limit (e.g., `1800MiB` for 2GB container).
+  </Step>
+  <Step title="Tune GOGC">
+    Start with `GOGC=200` for throughput; reduce to 100 if memory pressure is high.
+  </Step>
+  <Step title="Set file descriptor limits">
+    Set `nofile` ulimit to at least 2× your expected concurrent connections.
+  </Step>
+  <Step title="Align Bifrost settings">
+    Match `concurrency` and `buffer_size` to your container's CPU count and expected RPS.
+  </Step>
+  <Step title="Monitor and adjust">
+    Watch memory usage, GC pause times, and request latencies. Adjust settings based on observed behavior.
+  </Step>
+</Steps>
+
+---
+
+## Troubleshooting
+
+### High Memory Usage
+
+- Reduce `GOGC` (e.g., from 200 to 100)
+- Ensure `GOMEMLIMIT` is set
+- Reduce `buffer_size` and `initial_pool_size`
+
+### High Latency Spikes
+
+- May indicate GC pauses; try reducing `GOGC`
+- Check if container is hitting CPU limits
+- Verify `GOMAXPROCS` matches container CPU quota (check startup logs)
+
+### Connection Errors Under Load
+
+- Increase `nofile` ulimit
+- Ensure `buffer_size` is large enough for traffic spikes
+- Check provider rate limits
+
+### Container OOM Killed
+
+- Reduce `GOMEMLIMIT` to 85% of container memory
+- Reduce `GOGC` to trigger more frequent GC
+- Reduce `buffer_size` and `initial_pool_size`
+
+---
+
+## Related Documentation
+
+- **[Performance Tuning](/providers/performance)** - Bifrost-specific performance configuration
+- **[Helm Deployment](/deployment-guides/helm)** - Kubernetes deployment with Helm
+- **[Multi-Node Setup](/deployment-guides/how-to/multinode)** - Scaling across multiple instances

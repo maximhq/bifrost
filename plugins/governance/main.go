@@ -81,6 +81,8 @@ type GovernancePlugin struct {
 	// Transport dependencies
 	inMemoryStore InMemoryStore
 
+	cfgMutex sync.RWMutex
+
 	isVkMandatory   *bool
 	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise    bool
@@ -212,6 +214,7 @@ func Init(
 		mcpCatalog:      mcpCatalog,
 		logger:          logger,
 		isVkMandatory:   isVkMandatory,
+		cfgMutex:        sync.RWMutex{},
 		requiredHeaders: requiredHeaders,
 		isEnterprise:    config != nil && config.IsEnterprise,
 		inMemoryStore:   inMemoryStore,
@@ -297,6 +300,7 @@ func InitFromStore(
 		logger:          logger,
 		inMemoryStore:   inMemoryStore,
 		isVkMandatory:   isVkMandatory,
+		cfgMutex:        sync.RWMutex{},
 		requiredHeaders: requiredHeaders,
 		isEnterprise:    config != nil && config.IsEnterprise,
 	}
@@ -306,6 +310,13 @@ func InitFromStore(
 // GetName returns the name of the plugin
 func (p *GovernancePlugin) GetName() string {
 	return PluginName
+}
+
+// UpdateEnforceAuthOnInference updates the enforce auth on inference config
+func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference bool) {
+	p.cfgMutex.Lock()
+	defer p.cfgMutex.Unlock()
+	p.isVkMandatory = bifrost.Ptr(enforceAuthOnInference)
 }
 
 // HTTPTransportPreHook intercepts requests before they are processed (governance decision point)
@@ -838,11 +849,21 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest, requestType schemas.RequestType) (*EvaluationResult, *schemas.BifrostError) {
 	// Check if authentication is mandatory (either VK or user auth)
-	if evaluationRequest.VirtualKey == "" && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
+	// Checking if the virtual key is valid or not
+	isVirtualKeyValid := false
+	if evaluationRequest.VirtualKey != "" {
+		_, exists := p.store.GetVirtualKey(evaluationRequest.VirtualKey)
+		if exists {
+			isVirtualKeyValid = true
+		}
+	}
+	p.cfgMutex.RLock()
+	if !isVirtualKeyValid && evaluationRequest.UserID == "" && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
 		}
+		p.cfgMutex.RUnlock()
 		return nil, &schemas.BifrostError{
 			Type:       bifrost.Ptr("virtual_key_required"),
 			StatusCode: bifrost.Ptr(401),
@@ -850,7 +871,10 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 				Message: message,
 			},
 		}
+	} else if !isVirtualKeyValid && (p.isVkMandatory == nil || !*p.isVkMandatory) {
+		return nil, nil
 	}
+	p.cfgMutex.RUnlock()
 
 	// First evaluate model and provider checks (applies even when virtual keys are disabled or not present)
 	result := p.resolver.EvaluateModelAndProviderRequest(ctx, evaluationRequest.Provider, evaluationRequest.Model)

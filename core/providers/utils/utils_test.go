@@ -1,7 +1,11 @@
 package utils
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -567,4 +571,151 @@ func TestMarshalSorted_Deterministic(t *testing.T) {
 			t.Fatalf("MarshalSortedIndent() produced different output on iteration %d:\nfirst: %s\ngot:   %s", i, firstIndent, got)
 		}
 	}
+}
+
+// TestCheckAndDecodeBody_PooledGzip verifies that CheckAndDecodeBody correctly
+// decompresses gzip-encoded responses using pooled gzip readers.
+func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
+	tests := []struct {
+		name            string
+		body            []byte
+		contentEncoding string
+		wantBody        string
+		wantErr         bool
+	}{
+		{
+			name:            "gzip encoded body",
+			body:            gzipCompress([]byte(`{"message":"hello world"}`)),
+			contentEncoding: "gzip",
+			wantBody:        `{"message":"hello world"}`,
+			wantErr:         false,
+		},
+		{
+			name:            "gzip with uppercase header",
+			body:            gzipCompress([]byte(`test data`)),
+			contentEncoding: "GZIP",
+			wantBody:        `test data`,
+			wantErr:         false,
+		},
+		{
+			name:            "gzip with whitespace in header",
+			body:            gzipCompress([]byte(`trimmed`)),
+			contentEncoding: "  gzip  ",
+			wantBody:        `trimmed`,
+			wantErr:         false,
+		},
+		{
+			name:            "no encoding - plain body",
+			body:            []byte(`plain text`),
+			contentEncoding: "",
+			wantBody:        `plain text`,
+			wantErr:         false,
+		},
+		{
+			name:            "empty gzip body",
+			body:            []byte{},
+			contentEncoding: "gzip",
+			wantBody:        "",
+			wantErr:         false,
+		},
+		{
+			name:            "invalid gzip data",
+			body:            []byte{0xFF, 0xFE, 0xFD},
+			contentEncoding: "gzip",
+			wantErr:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+			resp.SetBody(tt.body)
+			if tt.contentEncoding != "" {
+				resp.Header.Set("Content-Encoding", tt.contentEncoding)
+			}
+
+			got, err := CheckAndDecodeBody(resp)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("CheckAndDecodeBody() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("CheckAndDecodeBody() unexpected error: %v", err)
+				return
+			}
+			if string(got) != tt.wantBody {
+				t.Errorf("CheckAndDecodeBody() = %q, want %q", string(got), tt.wantBody)
+			}
+		})
+	}
+}
+
+// TestAcquireReleaseGzipReader verifies the pool acquire/release cycle works correctly.
+func TestAcquireReleaseGzipReader(t *testing.T) {
+	testData := []byte(`test data for gzip pool`)
+	compressed := gzipCompress(testData)
+
+	for i := 0; i < 10; i++ {
+		reader := bytes.NewReader(compressed)
+		gz, err := AcquireGzipReader(reader)
+		if err != nil {
+			t.Fatalf("iteration %d: AcquireGzipReader() error: %v", i, err)
+		}
+
+		decompressed, err := io.ReadAll(gz)
+		if err != nil {
+			t.Fatalf("iteration %d: ReadAll() error: %v", i, err)
+		}
+
+		if string(decompressed) != string(testData) {
+			t.Errorf("iteration %d: got %q, want %q", i, string(decompressed), string(testData))
+		}
+
+		ReleaseGzipReader(gz)
+	}
+}
+
+// TestCheckAndDecodeBody_Concurrent verifies no data races with concurrent access.
+func TestCheckAndDecodeBody_Concurrent(t *testing.T) {
+	testData := []byte(`{"concurrent":"test"}`)
+	compressed := gzipCompress(testData)
+
+	done := make(chan bool)
+	for i := 0; i < 100; i++ {
+		go func() {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+			resp.SetBody(compressed)
+			resp.Header.Set("Content-Encoding", "gzip")
+
+			got, err := CheckAndDecodeBody(resp)
+			if err != nil {
+				t.Errorf("CheckAndDecodeBody() error: %v", err)
+			}
+			if string(got) != string(testData) {
+				t.Errorf("CheckAndDecodeBody() = %q, want %q", string(got), string(testData))
+			}
+			done <- true
+		}()
+	}
+
+	for i := 0; i < 100; i++ {
+		<-done
+	}
+}
+
+// gzipCompress compresses data using gzip for testing.
+func gzipCompress(data []byte) []byte {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		panic(fmt.Errorf("gzip write: %w", err))
+	}
+	if err := gz.Close(); err != nil {
+		panic(fmt.Errorf("gzip close: %w", err))
+	}
+	return buf.Bytes()
 }
