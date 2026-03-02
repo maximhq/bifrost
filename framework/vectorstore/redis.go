@@ -68,7 +68,7 @@ func (s *RedisStore) CreateNamespace(ctx context.Context, namespace string, dime
 		return nil // Index already exists
 	}
 	if err := infoResult.Err(); err != nil && strings.Contains(strings.ToLower(err.Error()), "unknown command") {
-		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). Original error: %w", err)
+		return fmt.Errorf("search module not available: please use Redis Stack or a Valkey bundle with search support (FT.* commands required). original error: %w", err)
 	}
 
 	// Extract metadata field names from properties
@@ -597,6 +597,71 @@ func (s *RedisStore) parseSearchResults(result interface{}, namespace string, se
 	}
 }
 
+func parseSearchResultIDs(result interface{}, namespace string) []string {
+	ids := make([]string, 0)
+	appendID := func(value interface{}) {
+		id, ok := toString(value)
+		if !ok {
+			return
+		}
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		if namespace != "" {
+			prefix := namespace + ":"
+			if strings.HasPrefix(id, prefix) {
+				id = strings.TrimPrefix(id, prefix)
+			}
+		}
+		if id == "" {
+			return
+		}
+		ids = append(ids, id)
+	}
+
+	extractRESP3IDs := func(rawResults interface{}) {
+		resultItems, ok := rawResults.([]interface{})
+		if !ok {
+			return
+		}
+		for _, item := range resultItems {
+			switch doc := item.(type) {
+			case map[string]interface{}:
+				appendID(doc["id"])
+			case map[interface{}]interface{}:
+				appendID(doc["id"])
+			default:
+				appendID(item)
+			}
+		}
+	}
+
+	switch typed := result.(type) {
+	case map[interface{}]interface{}:
+		extractRESP3IDs(typed["results"])
+	case map[string]interface{}:
+		extractRESP3IDs(typed["results"])
+	case []interface{}:
+		if len(typed) < 2 {
+			return ids
+		}
+		for i := 1; i < len(typed); i++ {
+			appendID(typed[i])
+
+			// RESP2 payloads can be [total, id, attrs, id, attrs, ...].
+			if i+1 < len(typed) {
+				switch typed[i+1].(type) {
+				case []interface{}, map[string]interface{}, map[interface{}]interface{}:
+					i++
+				}
+			}
+		}
+	}
+
+	return ids
+}
+
 func parseSearchResultDocument(resultItem interface{}, namespace string, selectFields []string) (SearchResult, bool) {
 	var docMap map[string]interface{}
 
@@ -756,6 +821,15 @@ func (s *RedisStore) cacheNamespaceFieldTypes(namespace string, properties map[s
 		s.namespaceFieldTypes = make(map[string]map[string]VectorStorePropertyType)
 	}
 	s.namespaceFieldTypes[namespace] = fieldTypes
+}
+
+func (s *RedisStore) deleteNamespaceFieldTypes(namespace string) {
+	if strings.TrimSpace(namespace) == "" {
+		return
+	}
+	s.namespaceFieldTypesMu.Lock()
+	defer s.namespaceFieldTypesMu.Unlock()
+	delete(s.namespaceFieldTypes, namespace)
 }
 
 func (s *RedisStore) getNamespaceFieldTypes(namespace string) map[string]VectorStorePropertyType {
@@ -1129,19 +1203,13 @@ func (s *RedisStore) DeleteAll(ctx context.Context, namespace string, queries []
 // deleteAllBySnapshot snapshots matching ids before deleting to avoid
 // offset/cursor drift while mutating the dataset.
 func (s *RedisStore) deleteAllBySnapshot(ctx context.Context, namespace string, queries []Query) ([]DeleteResult, error) {
-	results, _, err := s.GetAll(ctx, namespace, queries, []string{}, nil, 0)
+	ids, err := s.getAllMatchingIDs(ctx, namespace, queries)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find documents to delete: %w", err)
 	}
 
-	if len(results) == 0 {
+	if len(ids) == 0 {
 		return []DeleteResult{}, nil
-	}
-
-	// Extract IDs from results
-	ids := make([]string, len(results))
-	for i, result := range results {
-		ids[i] = result.ID
 	}
 
 	// Delete this batch of documents
@@ -1207,6 +1275,68 @@ func (s *RedisStore) deleteAllBySnapshot(ctx context.Context, namespace string, 
 	return deleteResults, nil
 }
 
+func (s *RedisStore) getAllMatchingIDs(ctx context.Context, namespace string, queries []Query) ([]string, error) {
+	redisQuery := buildRedisQuery(queries, s.getNamespaceFieldTypes(namespace))
+	offset := 0
+	ids := make([]string, 0)
+
+	for {
+		args := []interface{}{
+			"FT.SEARCH", namespace,
+			redisQuery,
+			"RETURN", 0,
+			"LIMIT", offset, BatchLimit,
+			"DIALECT", "2",
+		}
+
+		result := s.client.Do(ctx, args...)
+		if result.Err() != nil {
+			errMsg := strings.ToLower(result.Err().Error())
+			if isQuerySyntaxError(errMsg) {
+				s.logger.Debug(fmt.Sprintf("FT.SEARCH DIALECT fallback triggered for namespace %s while collecting ids: %s", namespace, result.Err()))
+				compatArgs := make([]interface{}, 0, len(args)-2)
+				for i := 0; i < len(args); i++ {
+					if i+1 < len(args) && args[i] == "DIALECT" {
+						i++
+						continue
+					}
+					compatArgs = append(compatArgs, args[i])
+				}
+				result = s.client.Do(ctx, compatArgs...)
+			}
+			if result.Err() != nil {
+				errMsg = strings.ToLower(result.Err().Error())
+				if isQuerySyntaxError(errMsg) {
+					s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s while collecting ids: %s", namespace, result.Err()))
+					scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, nil, nil, 0)
+					if scanErr != nil {
+						return nil, fmt.Errorf("failed to collect matching ids via scan fallback: %w", scanErr)
+					}
+					scanIDs := make([]string, 0, len(scanResults))
+					for _, scanResult := range scanResults {
+						scanIDs = append(scanIDs, scanResult.ID)
+					}
+					return scanIDs, nil
+				}
+				return nil, fmt.Errorf("failed to search for matching ids: %w", result.Err())
+			}
+		}
+
+		pageIDs := parseSearchResultIDs(result.Val(), namespace)
+		if len(pageIDs) == 0 {
+			break
+		}
+		ids = append(ids, pageIDs...)
+
+		if len(pageIDs) < BatchLimit {
+			break
+		}
+		offset += len(pageIDs)
+	}
+
+	return ids, nil
+}
+
 // DeleteNamespace deletes a namespace from the Redis vector store.
 func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) error {
 	ctx, cancel := withTimeout(ctx, s.config.ContextTimeout)
@@ -1216,11 +1346,13 @@ func (s *RedisStore) DeleteNamespace(ctx context.Context, namespace string) erro
 	if err := s.client.Do(ctx, "FT.DROPINDEX", namespace).Err(); err != nil {
 		// Check if error is "Unknown Index name" - that's OK, index doesn't exist
 		if strings.Contains(strings.ToLower(err.Error()), "unknown index name") {
+			s.deleteNamespaceFieldTypes(namespace)
 			return nil // Index doesn't exist, nothing to drop
 		}
 		return fmt.Errorf("failed to drop semantic index %s: %w", namespace, err)
 	}
 
+	s.deleteNamespaceFieldTypes(namespace)
 	return nil
 }
 
@@ -1428,9 +1560,9 @@ func newRedisStore(_ context.Context, config RedisConfig, logger schemas.Logger)
 	})
 	// Creating store connection
 	store := &RedisStore{
-		client: client,
-		config: config,
-		logger: logger,
+		client:              client,
+		config:              config,
+		logger:              logger,
 		namespaceFieldTypes: make(map[string]map[string]VectorStorePropertyType),
 	}
 	return store, nil

@@ -358,6 +358,45 @@ func TestRedisStore_ParseSearchResults_NamespaceWithColon(t *testing.T) {
 	assert.Equal(t, "doc-1", results[0].ID)
 }
 
+func TestParseSearchResultIDs(t *testing.T) {
+	t.Run("RESP3 map parses namespace-trimmed ids", func(t *testing.T) {
+		namespace := "ns:team"
+		resp := map[interface{}]interface{}{
+			"results": []interface{}{
+				map[interface{}]interface{}{"id": namespace + ":doc-1"},
+				map[interface{}]interface{}{"id": "other:doc-2"},
+			},
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "other:doc-2"}, ids)
+	})
+
+	t.Run("RESP2 no-content parses ids", func(t *testing.T) {
+		namespace := "ns"
+		resp := []interface{}{
+			int64(2),
+			"ns:doc-1",
+			"ns:doc-2",
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "doc-2"}, ids)
+	})
+
+	t.Run("RESP2 pair payload parses ids", func(t *testing.T) {
+		namespace := "ns"
+		resp := []interface{}{
+			int64(2),
+			"ns:doc-1", []interface{}{"field", "value"},
+			"ns:doc-2", []interface{}{"field", "value"},
+		}
+
+		ids := parseSearchResultIDs(resp, namespace)
+		assert.Equal(t, []string{"doc-1", "doc-2"}, ids)
+	})
+}
+
 func TestParseOffsetCursor(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -478,7 +517,7 @@ func TestBuildRedisQueryCondition_NumericEquality(t *testing.T) {
 }
 
 func ptr(v string) *string {
-	return &v
+	return bifrost.Ptr(v)
 }
 
 func TestMatchesQueriesForScan(t *testing.T) {
@@ -1284,6 +1323,39 @@ func TestRedisStore_DeleteOperations(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "keep_large", keepDoc.Properties["type"])
 	})
+
+	t.Run("getAllMatchingIDs returns matching ids", func(t *testing.T) {
+		targetType := "ids_only_target"
+		for i := 0; i < 3; i++ {
+			err := setup.Store.Add(
+				setup.ctx,
+				TestNamespace,
+				generateUUID(),
+				generateTestEmbedding(RedisTestDimension),
+				map[string]interface{}{"type": targetType, "category": "test"},
+			)
+			require.NoError(t, err)
+		}
+		err := setup.Store.Add(
+			setup.ctx,
+			TestNamespace,
+			generateUUID(),
+			generateTestEmbedding(RedisTestDimension),
+			map[string]interface{}{"type": "ids_only_other", "category": "test"},
+		)
+		require.NoError(t, err)
+
+		time.Sleep(300 * time.Millisecond)
+
+		ids, err := setup.Store.getAllMatchingIDs(setup.ctx, TestNamespace, []Query{
+			{Field: "type", Operator: QueryOperatorEqual, Value: targetType},
+		})
+		require.NoError(t, err)
+		assert.Len(t, ids, 3)
+		for _, id := range ids {
+			assert.NotEmpty(t, id)
+		}
+	})
 }
 
 // ============================================================================
@@ -1398,6 +1470,7 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		// Step 2: Delete the namespace
 		err = setup.Store.DeleteNamespace(setup.ctx, testNamespace)
 		require.NoError(t, err)
+		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 
 		// Step 3: Create namespace with same name but different dimension - should not crash
 		err = setup.Store.CreateNamespace(setup.ctx, testNamespace, 1024, properties)
@@ -1429,5 +1502,6 @@ func TestRedisStore_NamespaceDimensionHandling(t *testing.T) {
 		if err != nil {
 			t.Logf("Warning: Failed to cleanup namespace: %v", err)
 		}
+		assert.Empty(t, setup.Store.getNamespaceFieldTypes(testNamespace))
 	})
 }
