@@ -945,6 +945,29 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 				}
 			}
 
+			if updateKey.SAPAICoreKeyConfig != nil && oldRedactedKey.SAPAICoreKeyConfig != nil && oldRawKey.SAPAICoreKeyConfig != nil {
+				if updateKey.SAPAICoreKeyConfig.ClientID.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ClientID.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ClientID) {
+					mergedKey.SAPAICoreKeyConfig.ClientID = oldRawKey.SAPAICoreKeyConfig.ClientID
+				}
+				if updateKey.SAPAICoreKeyConfig.ClientSecret.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ClientSecret.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ClientSecret) {
+					mergedKey.SAPAICoreKeyConfig.ClientSecret = oldRawKey.SAPAICoreKeyConfig.ClientSecret
+				}
+				if updateKey.SAPAICoreKeyConfig.AuthURL.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.AuthURL.Equals(&oldRedactedKey.SAPAICoreKeyConfig.AuthURL) {
+					mergedKey.SAPAICoreKeyConfig.AuthURL = oldRawKey.SAPAICoreKeyConfig.AuthURL
+				}
+				if updateKey.SAPAICoreKeyConfig.BaseURL.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.BaseURL.Equals(&oldRedactedKey.SAPAICoreKeyConfig.BaseURL) {
+					mergedKey.SAPAICoreKeyConfig.BaseURL = oldRawKey.SAPAICoreKeyConfig.BaseURL
+				}
+				if updateKey.SAPAICoreKeyConfig.ResourceGroup.IsRedacted() &&
+					updateKey.SAPAICoreKeyConfig.ResourceGroup.Equals(&oldRedactedKey.SAPAICoreKeyConfig.ResourceGroup) {
+					mergedKey.SAPAICoreKeyConfig.ResourceGroup = oldRawKey.SAPAICoreKeyConfig.ResourceGroup
+				}
+			}
+
 			// Preserve ConfigHash from old key (UI doesn't send it back)
 			mergedKey.ConfigHash = oldRawKey.ConfigHash
 

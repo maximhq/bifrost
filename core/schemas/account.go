@@ -24,6 +24,7 @@ type Key struct {
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
 	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
+	SAPAICoreKeyConfig   *SAPAICoreKeyConfig   `json:"sapaicore_key_config,omitempty"`   // SAP AI Core-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
 	UseForBatchAPI       *bool                 `json:"use_for_batch_api,omitempty"`      // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	ConfigHash           string                `json:"config_hash,omitempty"`            // Hash of config.json version, used for change detection
@@ -98,6 +99,17 @@ type ReplicateKeyConfig struct {
 type VLLMKeyConfig struct {
 	URL       EnvVar `json:"url"`        // VLLM server base URL (required, supports env. prefix)
 	ModelName string `json:"model_name"` // Exact model name served on this VLLM instance (used for key selection)
+}
+
+// SAPAICoreKeyConfig represents the SAP AI Core-specific configuration.
+// It contains SAP AI Core-specific settings required for OAuth2 authentication and service access.
+type SAPAICoreKeyConfig struct {
+	ClientID      EnvVar            `json:"client_id"`             // OAuth2 client ID for authentication
+	ClientSecret  EnvVar            `json:"client_secret"`         // OAuth2 client secret for authentication
+	AuthURL       EnvVar            `json:"auth_url"`              // OAuth2 token endpoint URL
+	BaseURL       EnvVar            `json:"base_url"`              // SAP AI Core base URL for API requests
+	ResourceGroup EnvVar            `json:"resource_group"`        // SAP AI Core resource group
+	Deployments   map[string]string `json:"deployments,omitempty"` // Mapping of model names to deployment IDs (optional, auto-resolved if not provided)
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

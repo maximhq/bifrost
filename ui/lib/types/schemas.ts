@@ -161,6 +161,52 @@ export const vllmKeyConfigSchema = z.object({
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
 
+// Helper to check if an env var has a value
+const hasEnvVarValue = (envVar: { value?: string; env_var?: string; from_env?: boolean } | undefined): boolean => {
+	if (!envVar) return false;
+	if (envVar.from_env && envVar.env_var && envVar.env_var.length > 0) return true;
+	if (envVar.value && envVar.value.length > 0) return true;
+	return false;
+};
+
+export const sapaicoreKeyConfigSchema = z
+	.object({
+		client_id: envVarSchema.optional(),
+		client_secret: envVarSchema.optional(),
+		auth_url: envVarSchema.optional(),
+		base_url: envVarSchema.optional(),
+		resource_group: envVarSchema.optional(),
+		deployments: z.union([z.record(z.string(), z.string()), z.string()]).optional(),
+	})
+	.refine(
+		(data) => {
+			// If deployments is not provided, it's valid
+			if (!data.deployments) return true;
+			// If it's already an object, it's valid
+			if (typeof data.deployments === "object") return true;
+			// If it's a string, check if it's valid JSON or an env variable
+			if (typeof data.deployments === "string") {
+				const trimmed = data.deployments.trim();
+				// Allow empty string
+				if (trimmed === "") return true;
+				// Allow env variables
+				if (trimmed.startsWith("env.")) return true;
+				// Validate JSON format
+				try {
+					const parsed = JSON.parse(trimmed);
+					return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+				} catch {
+					return false;
+				}
+			}
+			return false;
+		},
+		{
+			message: "Deployments must be a valid JSON object or an environment variable reference",
+			path: ["deployments"],
+		},
+	);
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -193,6 +239,7 @@ export const modelProviderKeySchema = z
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		sapaicore_key_config: sapaicoreKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
@@ -201,12 +248,65 @@ export const modelProviderKeySchema = z
 			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
 				return true;
 			}
+			// For SAP AI Core, check if required fields are filled
+			if (data.sapaicore_key_config) {
+				const cfg = data.sapaicore_key_config;
+				const hasRequiredFields =
+					hasEnvVarValue(cfg.client_id) &&
+					hasEnvVarValue(cfg.client_secret) &&
+					hasEnvVarValue(cfg.auth_url) &&
+					hasEnvVarValue(cfg.base_url) &&
+					hasEnvVarValue(cfg.resource_group);
+				if (hasRequiredFields) {
+					return true;
+				}
+				// If sapaicore_key_config exists but not all required fields are filled,
+				// check if at least one field has a value (user started filling it)
+				const hasAnyField =
+					hasEnvVarValue(cfg.client_id) ||
+					hasEnvVarValue(cfg.client_secret) ||
+					hasEnvVarValue(cfg.auth_url) ||
+					hasEnvVarValue(cfg.base_url) ||
+					hasEnvVarValue(cfg.resource_group);
+				if (hasAnyField) {
+					// User started filling SAP AI Core config but hasn't completed all required fields
+					return false;
+				}
+			}
 			// Otherwise, value is required
 			return data.value?.value && data.value?.value?.length > 0;
 		},
 		{
 			message: "Value is required",
 			path: ["value"],
+		},
+	)
+	.refine(
+		(data) => {
+			// If sapaicore_key_config has any values, all required fields must be filled
+			if (data.sapaicore_key_config) {
+				const cfg = data.sapaicore_key_config;
+				const hasAnyField =
+					hasEnvVarValue(cfg.client_id) ||
+					hasEnvVarValue(cfg.client_secret) ||
+					hasEnvVarValue(cfg.auth_url) ||
+					hasEnvVarValue(cfg.base_url) ||
+					hasEnvVarValue(cfg.resource_group);
+				if (hasAnyField) {
+					const hasAllRequired =
+						hasEnvVarValue(cfg.client_id) &&
+						hasEnvVarValue(cfg.client_secret) &&
+						hasEnvVarValue(cfg.auth_url) &&
+						hasEnvVarValue(cfg.base_url) &&
+						hasEnvVarValue(cfg.resource_group);
+					return hasAllRequired;
+				}
+			}
+			return true;
+		},
+		{
+			message: "All SAP AI Core required fields (Client ID, Client Secret, Auth URL, Base URL, Resource Group) must be filled",
+			path: ["sapaicore_key_config"],
 		},
 	);
 

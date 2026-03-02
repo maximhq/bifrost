@@ -1375,7 +1375,39 @@ export const ProviderIcons = {
 		return (
 			<svg fill="currentColor" fillRule="evenodd" height={resolvedSize} style={{ flex: "none", lineHeight: "1" }} viewBox="0 0 24 24" width={resolvedSize} xmlns="http://www.w3.org/2000/svg" className={className}><title>Runway</title><path d="M17.86 22.992c-2.669.245-4.887-2.876-6.597-4.454C10.398 24.759 1 24.177 1 17.86V6.15c0-.921.244-1.861.733-2.65C2.635 1.977 4.383.98 6.15 1h11.71c6.316 0 6.918 9.398.677 10.243l2.97 2.951c3.252 3.064.808 8.929-3.646 8.797zm-1.428-3.721c1.842 1.898 4.774-1.034 2.876-2.876l-5.132-5.132H11.3v2.876l4.436 4.436.696.696zM4.12 17.842c-.037 2.632 4.117 2.632 4.06 0V6.132c.038-1.316-1.353-2.35-2.612-1.955-.057.019-.113.037-.15.056-.79.301-1.335 1.09-1.317 1.936v11.673h.02zm13.74-9.68c2.632.037 2.632-4.098 0-4.06h-6.973c.526 1.109.395 2.857.413 4.06h6.56z"></path></svg>
 		)
-	}
+	},
+	sapaicore: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 412.38 204"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>SAP AI Core</title>
+				<defs>
+					<linearGradient id="sap-gradient" x1="206.19" x2="206.19" y2="204" gradientUnits="userSpaceOnUse">
+						<stop offset="0" stopColor="#00b8f1" />
+						<stop offset="0.02" stopColor="#01b6f0" />
+						<stop offset="0.31" stopColor="#0d90d9" />
+						<stop offset="0.58" stopColor="#1775c8" />
+						<stop offset="0.82" stopColor="#1c65bf" />
+						<stop offset="1" stopColor="#1e5fbb" />
+					</linearGradient>
+				</defs>
+				<polyline fillRule="evenodd" fill="url(#sap-gradient)" points="0 204 208.41 204 412.38 0 0 0 0 204" />
+				<path
+					fillRule="evenodd"
+					fill="#fff"
+					d="M244.73,38.36l-40.6,0v96.52L168.67,38.33H133.51l-30.27,80.72C100,98.7,79,91.67,62.4,86.4,51.46,82.89,39.85,77.72,40,72c.09-4.68,6.23-9,18.38-8.38,8.17.43,15.37,1.09,29.71,8l14.1-24.55C89.06,40.42,71,36.21,56.17,36.19h-.09c-17.28,0-31.68,5.6-40.6,14.83A34.23,34.23,0,0,0,5.77,74.7C5.54,87.15,10.11,96,19.71,103c8.1,5.94,18.46,9.79,27.6,12.62,11.27,3.49,20.47,6.53,20.36,13A9.57,9.57,0,0,1,65,135c-2.81,2.9-7.13,4-13.09,4.1-11.49.24-20-1.56-33.61-9.59L5.77,154.42a93.77,93.77,0,0,0,46,12.22l2.11,0c14.24-.25,25.74-4.31,34.92-11.71.53-.41,1-.84,1.49-1.28L86.17,164.5H123l6.19-18.82a67.46,67.46,0,0,0,21.68,3.43,68.33,68.33,0,0,0,21.16-3.25l6,18.64h60.14v-39h13.11c31.71,0,50.46-16.15,50.46-43.2C301.74,52.19,283.52,38.36,244.73,38.36ZM150.91,121a36.93,36.93,0,0,1-13-2.28l12.87-40.59H151l12.65,40.71A38.5,38.5,0,0,1,150.91,121Zm96.2-23.33h-8.94V64.91h8.94c11.93,0,21.44,4,21.44,16.14,0,12.6-9.51,16.57-21.44,16.57"
+				/>
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

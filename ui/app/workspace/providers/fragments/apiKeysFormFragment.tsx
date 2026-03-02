@@ -55,6 +55,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isSAPAICore = providerName === "sapaicore";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key' or 'entra_id'
@@ -165,7 +166,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 				/>
 			</div>
 			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
-			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && (
+			{!(isAzure && azureAuthType === 'entra_id') && !(isBedrock && bedrockAuthType === 'iam_role') && !isSAPAICore && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -570,6 +571,124 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
+		{isSAPAICore && (
+			<div className="space-y-4">
+				<Separator className="my-6" />
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>SAP AI Core Authentication</AlertTitle>
+					<AlertDescription>
+						SAP AI Core uses OAuth2 client credentials authentication. Deployment IDs are automatically resolved from model names.
+					</AlertDescription>
+				</Alert>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.client_id`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Client ID (Required)</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="your-client-id or env.SAP_AI_CORE_CLIENT_ID" {...field} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.client_secret`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Client Secret (Required)</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="your-client-secret or env.SAP_AI_CORE_CLIENT_SECRET" {...field} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.auth_url`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Auth URL (Required)</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="https://your-tenant.authentication.region.hana.ondemand.com or env.SAP_AI_CORE_AUTH_URL" {...field} />
+							</FormControl>
+							<FormDescription>OAuth2 token endpoint URL</FormDescription>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.base_url`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Base URL (Required)</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="https://api.ai.your-region.aws.ml.hana.ondemand.com or env.SAP_AI_CORE_BASE_URL" {...field} />
+							</FormControl>
+							<FormDescription>SAP AI Core API base URL</FormDescription>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.resource_group`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Resource Group (Required)</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="default or env.SAP_AI_CORE_RESOURCE_GROUP" {...field} />
+							</FormControl>
+							<FormDescription>SAP AI Core resource group name</FormDescription>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+				<FormField
+					control={control}
+					name={`key.sapaicore_key_config.deployments`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>Deployments (Optional)</FormLabel>
+							<FormDescription>JSON object mapping model names to deployment IDs. If not provided, deployment IDs are auto-resolved.</FormDescription>
+							<FormControl>
+								<Textarea
+									placeholder='{"gpt-4o": "d123456", "anthropic--claude-3-5-sonnet": "d789012"}'
+									value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
+									onChange={(e) => {
+										// Store as string during editing to allow intermediate invalid states
+										field.onChange(e.target.value);
+									}}
+									onBlur={(e) => {
+										// Try to parse as JSON on blur, but keep as string if invalid
+										const value = e.target.value.trim();
+										if (value) {
+											try {
+												const parsed = JSON.parse(value);
+												if (typeof parsed === "object" && parsed !== null) {
+													field.onChange(parsed);
+												}
+											} catch {
+												// Keep as string for validation on submit
+											}
+										}
+										field.onBlur();
+									}}
+									rows={3}
+									className="max-w-full font-mono text-sm wrap-anywhere"
+								/>
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			</div>
+		)}
 			{isBedrock && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
