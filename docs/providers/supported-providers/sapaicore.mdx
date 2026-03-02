@@ -53,7 +53,7 @@ The key configuration requires five fields for SAP AI Core:
   "sapaicore_key_config": {
     "client_id": "sb-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx!bxxxxx|aicore!bxxxx",
     "client_secret": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-    "token_url": "https://your-subdomain.authentication.region.hana.ondemand.com/oauth/token",
+    "auth_url": "https://your-subdomain.authentication.region.hana.ondemand.com/oauth/token",
     "base_url": "https://api.ai.your-region.aws.ml.hana.ondemand.com/v2",
     "resource_group": "default"
   }
@@ -63,7 +63,7 @@ The key configuration requires five fields for SAP AI Core:
 **Configuration Details**:
 - `client_id` - SAP AI Core service key client ID (required)
 - `client_secret` - SAP AI Core service key client secret (required)
-- `token_url` - OAuth2 token endpoint URL from service key (required)
+- `auth_url` - OAuth2 token endpoint URL from service key (required)
 - `base_url` - SAP AI Core API base URL from service key (required)
 - `resource_group` - AI Core resource group, typically `"default"` (required)
 
@@ -78,7 +78,7 @@ The key configuration requires five fields for SAP AI Core:
 {
   "clientid": "→ client_id",
   "clientsecret": "→ client_secret",
-  "url": "→ token_url (append /oauth/token)",
+  "url": "→ auth_url (append /oauth/token)",
   "serviceurls": {
     "AI_API_URL": "→ base_url"
   }
@@ -124,40 +124,42 @@ SAP AI Core automatically routes requests based on model name prefixes:
 ### Example Requests
 
 <Tabs>
-<Tab title="Gateway (OpenAI model)">
+<Tab title="Web UI">
+
+Set the following in the Chat Completions request form:
+
+- **Model**: `sapaicore/<model-name>` (e.g., `sapaicore/gpt-4o`, `sapaicore/anthropic--claude-3.5-sonnet`, `sapaicore/gemini-1.5-pro`)
+- **Messages**: Add a user message with your prompt
+- **Max Completion Tokens**: Set as needed per model
+
+</Tab>
+<Tab title="API">
 
 ```bash
+# OpenAI model
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/gpt-4o",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_completion_tokens": 1000
   }'
-```
 
-</Tab>
-<Tab title="Gateway (Claude model)">
-
-```bash
+# Claude model (via Bedrock)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/anthropic--claude-3.5-sonnet",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_completion_tokens": 4096
   }'
-```
 
-</Tab>
-<Tab title="Gateway (Gemini model)">
-
-```bash
+# Gemini model (via Vertex)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/gemini-1.5-pro",
     "messages": [{"role": "user", "content": "Hello!"}],
@@ -166,21 +168,29 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 </Tab>
-<Tab title="Go SDK">
+<Tab title="config.json">
 
-```go
-resp, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
-    Provider: schemas.SAPAICore,
-    Model:    "anthropic--claude-3.5-sonnet",
-    Input: []schemas.ChatMessage{
-        {Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{
-            ContentStr: schemas.Ptr("Hello!"),
-        }},
-    },
-    Params: &schemas.ChatParameters{
-        MaxCompletionTokens: schemas.Ptr(4096),
-    },
-})
+```json
+{
+  "providers": [
+    {
+      "name": "sapaicore",
+      "provider": "sapaicore",
+      "keys": [
+        {
+          "name": "sapaicore-key-1",
+          "sapaicore_key_config": {
+            "client_id": "your-client-id",
+            "client_secret": "your-client-secret",
+            "auth_url": "https://your-subdomain.authentication.region.hana.ondemand.com/oauth/token",
+            "base_url": "https://api.ai.your-region.aws.ml.hana.ondemand.com/v2",
+            "resource_group": "default"
+          }
+        }
+      ]
+    }
+  ]
+}
 ```
 
 </Tab>
@@ -193,7 +203,7 @@ Streaming is supported for all backends. The streaming format is normalized to O
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/anthropic--claude-3.5-sonnet",
     "messages": [{"role": "user", "content": "Write a haiku"}],
@@ -208,29 +218,36 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 The Responses API is supported for Bedrock-backed models (Anthropic/Amazon) and uses the Bedrock Converse API under the hood. This enables native tool/function calling and streaming.
 
 <Tabs>
-<Tab title="Gateway (Anthropic model)">
+<Tab title="Web UI">
+
+Set the following in the Responses API request form:
+
+- **Model**: `sapaicore/anthropic--claude-3.5-sonnet` (or any Bedrock-backed model)
+- **Input**: Add a user message with your prompt
+- **Tools** (optional): Add function definitions for tool calling
+- **Stream** (optional): Enable for streaming responses
+
+</Tab>
+<Tab title="API">
 
 ```bash
+# Non-streaming
 curl -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/anthropic--claude-3.5-sonnet",
     "input": [
       {"role": "user", "content": [
-        {"type": "input_text", "text": "What\'s the weather in Paris?"}
+        {"type": "input_text", "text": "What'\''s the weather in Paris?"}
       ]}
     ]
   }'
-```
 
-</Tab>
-<Tab title="Gateway (Streaming)">
-
-```bash
+# Streaming
 curl -N -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/anthropic--claude-3.5-sonnet",
     "input": [
@@ -240,20 +257,16 @@ curl -N -X POST http://localhost:8080/v1/responses \
     ],
     "stream": true
   }'
-```
 
-</Tab>
-<Tab title="Gateway (With Tools)">
-
-```bash
+# With tools
 curl -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/anthropic--claude-3.5-sonnet",
     "input": [
       {"role": "user", "content": [
-        {"type": "input_text", "text": "What\'s the weather in Paris and Berlin?"}
+        {"type": "input_text", "text": "What'\''s the weather in Paris and Berlin?"}
       ]}
     ],
     "tools": [
@@ -276,6 +289,11 @@ curl -X POST http://localhost:8080/v1/responses \
 ```
 
 </Tab>
+<Tab title="config.json">
+
+The Responses API uses the same provider configuration as Chat Completions. See the [Chat Completions config.json tab](#example-requests) above.
+
+</Tab>
 </Tabs>
 
 <Note>
@@ -295,7 +313,7 @@ Configure deployment mappings in your key configuration:
   "sapaicore_key_config": {
     "client_id": "...",
     "client_secret": "...",
-    "token_url": "...",
+    "auth_url": "...",
     "base_url": "...",
     "resource_group": "default",
     "deployments": {
@@ -330,12 +348,17 @@ If no static deployment is configured, Bifrost automatically:
 SAP AI Core supports embeddings through OpenAI-compatible deployments.
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
+
+Select `sapaicore` as the provider and set the model to an embedding model (e.g., `text-embedding-ada-002`).
+
+</Tab>
+<Tab title="API">
 
 ```bash
 curl -X POST http://localhost:8080/v1/embeddings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -H "Authorization: Bearer ${BIFROST_API_KEY}" \
   -d '{
     "model": "sapaicore/text-embedding-ada-002",
     "input": "The quick brown fox jumps over the lazy dog"
@@ -343,15 +366,9 @@ curl -X POST http://localhost:8080/v1/embeddings \
 ```
 
 </Tab>
-<Tab title="Go SDK">
+<Tab title="config.json">
 
-```go
-resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
-    Provider: schemas.SAPAICore,
-    Model:    "text-embedding-ada-002",
-    Input:    "The quick brown fox jumps over the lazy dog",
-})
-```
+Uses the same provider configuration as Chat Completions. See the [Chat Completions config.json tab](#example-requests) above.
 
 </Tab>
 </Tabs>
@@ -363,25 +380,22 @@ resp, err := client.EmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{
 Retrieve available models (deployments) from SAP AI Core:
 
 <Tabs>
-<Tab title="Gateway">
+<Tab title="Web UI">
+
+Navigate to the Models page and filter by the `sapaicore` provider.
+
+</Tab>
+<Tab title="API">
 
 ```bash
 curl http://localhost:8080/v1/models?provider=sapaicore \
-  -H "Authorization: Bearer YOUR_BIFROST_KEY"
+  -H "Authorization: Bearer ${BIFROST_API_KEY}"
 ```
 
 </Tab>
-<Tab title="Go SDK">
+<Tab title="config.json">
 
-```go
-resp, err := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{
-    Provider: schemas.SAPAICore,
-})
-
-for _, model := range resp.Data {
-    fmt.Printf("Model: %s (Deployment: %s)\n", model.ID, model.DeploymentID)
-}
-```
+Uses the same provider configuration as Chat Completions. See the [Chat Completions config.json tab](#example-requests) above.
 
 </Tab>
 </Tabs>

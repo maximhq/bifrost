@@ -149,42 +149,42 @@ func TestTokenCache_ConcurrentAccess(t *testing.T) {
 func TestCachedToken_Expiration(t *testing.T) {
 	t.Parallel()
 
-	// Test that a token with 30 second buffer is considered expired
-	now := time.Now()
+	// Use a single reference time for deterministic assertions (avoids time-drift flakes)
+	referenceTime := time.Now()
 
 	tests := []struct {
 		name         string
-		expiresAt    time.Time
+		expiresIn    time.Duration
 		shouldExpire bool
 		description  string
 	}{
 		{
 			name:         "future expiration - valid",
-			expiresAt:    now.Add(2 * time.Minute),
+			expiresIn:    2 * time.Minute,
 			shouldExpire: false,
 			description:  "Token expiring in 2 minutes should be valid",
 		},
 		{
 			name:         "within buffer - should refresh",
-			expiresAt:    now.Add(25 * time.Second),
+			expiresIn:    25 * time.Second,
 			shouldExpire: true,
 			description:  "Token expiring in 25 seconds should be refreshed (within 30s buffer)",
 		},
 		{
 			name:         "past expiration",
-			expiresAt:    now.Add(-1 * time.Minute),
+			expiresIn:    -1 * time.Minute,
 			shouldExpire: true,
 			description:  "Token that expired 1 minute ago should be refreshed",
 		},
 		{
 			name:         "exactly at buffer boundary",
-			expiresAt:    now.Add(30 * time.Second),
+			expiresIn:    30 * time.Second,
 			shouldExpire: true,
 			description:  "Token expiring exactly at buffer boundary should be refreshed",
 		},
 		{
 			name:         "just past buffer boundary",
-			expiresAt:    now.Add(31 * time.Second),
+			expiresIn:    31 * time.Second,
 			shouldExpire: false,
 			description:  "Token expiring just past buffer boundary should be valid",
 		},
@@ -194,11 +194,11 @@ func TestCachedToken_Expiration(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			token := &cachedToken{
 				accessToken: "test-token",
-				expiresAt:   tt.expiresAt,
+				expiresAt:   referenceTime.Add(tt.expiresIn),
 			}
 
 			// Check if token would be considered expired with 30 second buffer
-			isExpired := !time.Now().Add(30 * time.Second).Before(token.expiresAt)
+			isExpired := !referenceTime.Add(30 * time.Second).Before(token.expiresAt)
 
 			if isExpired != tt.shouldExpire {
 				t.Errorf("%s: got expired=%v, want expired=%v", tt.description, isExpired, tt.shouldExpire)

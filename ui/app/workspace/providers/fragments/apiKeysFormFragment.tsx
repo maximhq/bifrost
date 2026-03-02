@@ -599,7 +599,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>Client ID (Required)</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="your-client-id or env.SAP_AI_CORE_CLIENT_ID" {...field} />
+								<EnvVarInput data-testid="key-input-sapaicore-client-id" placeholder="your-client-id or env.SAP_AI_CORE_CLIENT_ID" {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -612,7 +612,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>Client Secret (Required)</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="your-client-secret or env.SAP_AI_CORE_CLIENT_SECRET" {...field} />
+								<EnvVarInput data-testid="key-input-sapaicore-client-secret" placeholder="your-client-secret or env.SAP_AI_CORE_CLIENT_SECRET" {...field} />
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -625,7 +625,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>Auth URL (Required)</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="https://your-tenant.authentication.region.hana.ondemand.com or env.SAP_AI_CORE_AUTH_URL" {...field} />
+								<EnvVarInput data-testid="key-input-sapaicore-auth-url" placeholder="https://your-tenant.authentication.region.hana.ondemand.com or env.SAP_AI_CORE_AUTH_URL" {...field} />
 							</FormControl>
 							<FormDescription>OAuth2 token endpoint URL</FormDescription>
 							<FormMessage />
@@ -639,7 +639,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>Base URL (Required)</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="https://api.ai.your-region.aws.ml.hana.ondemand.com or env.SAP_AI_CORE_BASE_URL" {...field} />
+								<EnvVarInput data-testid="key-input-sapaicore-base-url" placeholder="https://api.ai.your-region.aws.ml.hana.ondemand.com or env.SAP_AI_CORE_BASE_URL" {...field} />
 							</FormControl>
 							<FormDescription>SAP AI Core API base URL</FormDescription>
 							<FormMessage />
@@ -653,7 +653,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						<FormItem>
 							<FormLabel>Resource Group (Required)</FormLabel>
 							<FormControl>
-								<EnvVarInput placeholder="default or env.SAP_AI_CORE_RESOURCE_GROUP" {...field} />
+								<EnvVarInput data-testid="key-input-sapaicore-resource-group" placeholder="default or env.SAP_AI_CORE_RESOURCE_GROUP" {...field} />
 							</FormControl>
 							<FormDescription>SAP AI Core resource group name</FormDescription>
 							<FormMessage />
@@ -669,6 +669,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							<FormDescription>JSON object mapping model names to deployment IDs. If not provided, deployment IDs are auto-resolved.</FormDescription>
 							<FormControl>
 								<Textarea
+									data-testid="key-input-sapaicore-deployments"
 									placeholder='{"gpt-4o": "d123456", "anthropic--claude-3-5-sonnet": "d789012"}'
 									value={typeof field.value === "string" ? field.value : JSON.stringify(field.value || {}, null, 2)}
 									onChange={(e) => {
