@@ -5,7 +5,9 @@ package schemas
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -50,6 +52,44 @@ type MCPToolManagerConfig struct {
 	ToolExecutionTimeout time.Duration        `json:"tool_execution_timeout"`
 	MaxAgentDepth        int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"` // How tools are exposed in VFS: "server" or "tool"
+}
+
+// UnmarshalJSON handles both string duration formats (e.g. "30s", "2m") and
+// legacy integer nanosecond values for ToolExecutionTimeout.
+func (m *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
+	type Alias MCPToolManagerConfig
+	aux := &struct {
+		ToolExecutionTimeout json.RawMessage `json:"tool_execution_timeout"`
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if aux.ToolExecutionTimeout != nil {
+		raw := aux.ToolExecutionTimeout
+		if string(raw) == "null" {
+			return nil
+		}
+		// String format: "30s", "1m", "2m30s", etc.
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			d, err := time.ParseDuration(s)
+			if err != nil {
+				return fmt.Errorf("invalid tool_execution_timeout %q: %w", s, err)
+			}
+			m.ToolExecutionTimeout = d
+			return nil
+		}
+		// Numeric — treat as nanoseconds for backward compatibility
+		var ns int64
+		if err := json.Unmarshal(raw, &ns); err != nil {
+			return fmt.Errorf("invalid tool_execution_timeout: %w", err)
+		}
+		m.ToolExecutionTimeout = time.Duration(ns)
+	}
+	return nil
 }
 
 const (

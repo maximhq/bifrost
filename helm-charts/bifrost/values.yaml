@@ -276,10 +276,12 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+      #   isCodeModeClient: false
     # Tool manager configuration
     toolManagerConfig:
-      toolExecutionTimeout: 30
+      toolExecutionTimeout: "30s"
       maxAgentDepth: 10
+      codeModeBindingLevel: "server"
 
   # Plugins configuration
   plugins:
