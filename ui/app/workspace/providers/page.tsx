@@ -107,7 +107,7 @@ export default function Providers() {
 	// When current provider is no longer configured (e.g. all keys deleted), switch to another configured provider
 	useEffect(() => {
 		if (!provider || configuredProviderNamesArr.length === 0) return;
-		const isCurrentConfigured = configuredProviderNamesArr.includes(provider);
+		const isCurrentConfigured = configuredProviderNamesArr.includes(provider as ModelProviderName);
 		if (!isCurrentConfigured) {
 			setProvider(configuredProviderNamesArr[0]);
 		}
