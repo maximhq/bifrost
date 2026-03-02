@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -548,6 +549,116 @@ func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]int
 	}
 }
 
+// MergeExtraParamsIntoJSON merges extra params into serialized JSON while preserving
+// the original key ordering. This avoids the order-destroying roundtrip through
+// map[string]interface{} that would lose key ordering in tool schemas and other
+// order-sensitive JSON structures.
+func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{}) ([]byte, error) {
+	trimmed := bytes.TrimSpace(jsonBody)
+	if len(trimmed) < 2 || trimmed[0] != '{' {
+		return jsonBody, nil // not a JSON object, return as-is
+	}
+
+	// Parse existing JSON into ordered key-value pairs using encoding/json
+	// (not sonic) to preserve document key order via token-by-token parsing.
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+
+	if _, err := dec.Token(); err != nil { // '{'
+		return jsonBody, nil
+	}
+
+	type kvPair struct {
+		key string
+		val json.RawMessage
+	}
+	var pairs []kvPair
+	seen := make(map[string]int)
+
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return jsonBody, nil
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return jsonBody, nil
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return jsonBody, nil
+		}
+		seen[key] = len(pairs)
+		pairs = append(pairs, kvPair{key, val})
+	}
+
+	// Add/merge extra params (deterministic order for new keys)
+	extraKeys := make([]string, 0, len(extraParams))
+	for k := range extraParams {
+		extraKeys = append(extraKeys, k)
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		v := extraParams[k]
+		newValBytes, err := sonic.Marshal(v)
+		if err != nil {
+			continue
+		}
+		if idx, exists := seen[k]; exists {
+			// If both existing and new are JSON objects, merge recursively
+			existingTrimmed := bytes.TrimSpace(pairs[idx].val)
+			newTrimmed := bytes.TrimSpace(newValBytes)
+			if len(existingTrimmed) > 0 && existingTrimmed[0] == '{' &&
+				len(newTrimmed) > 0 && newTrimmed[0] == '{' {
+				var existingMap, newMap map[string]interface{}
+				existingDec := json.NewDecoder(bytes.NewReader(existingTrimmed))
+				existingDec.UseNumber()
+				newDec := json.NewDecoder(bytes.NewReader(newTrimmed))
+				newDec.UseNumber()
+				if existingDec.Decode(&existingMap) == nil {
+					if newDec.Decode(&newMap) == nil {
+						MergeExtraParams(existingMap, newMap)
+						if merged, err := sonic.Marshal(existingMap); err == nil {
+							pairs[idx].val = merged
+							continue
+						}
+					}
+				}
+			}
+			// Non-object or merge failed: overwrite in place (preserving position)
+			pairs[idx].val = newValBytes
+		} else {
+			// New key: append at end
+			pairs = append(pairs, kvPair{k, newValBytes})
+		}
+	}
+
+	// Rebuild compact JSON, then indent for consistent formatting
+	var compact bytes.Buffer
+	compact.WriteByte('{')
+	for i, kv := range pairs {
+		if i > 0 {
+			compact.WriteByte(',')
+		}
+		keyBytes, err := sonic.Marshal(kv.key)
+		if err != nil {
+			return jsonBody, err
+		}
+		compact.Write(keyBytes)
+		compact.WriteByte(':')
+		// Use trimmed value to remove any existing indentation
+		compact.Write(bytes.TrimSpace(kv.val))
+	}
+	compact.WriteByte('}')
+
+	// Re-indent to match the expected formatting
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
+		return compact.Bytes(), nil
+	}
+	return indented.Bytes(), nil
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
@@ -568,16 +679,9 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 			extraParams := convertedBody.GetExtraParams()
 			if len(extraParams) > 0 {
-				var jsonMap map[string]interface{}
-				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
-				}
-
-				// Merge ExtraParams recursively (handles nested maps)
-				MergeExtraParams(jsonMap, extraParams)
-
-				// Re-marshal the merged map
-				jsonBody, err = MarshalSortedIndent(jsonMap, "", "  ")
+				// Use order-preserving merge to avoid destroying key ordering in
+				// tool schemas and other order-sensitive JSON structures.
+				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 				}
@@ -736,25 +840,15 @@ func EnrichError(
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
-		var rawRequest interface{}
-		if err := sonic.Unmarshal(requestBody, &rawRequest); err != nil {
-			getLogger().Warn("Failed to parse raw request for error: %v", err)
-			return bifrostErr
-		}
-		bifrostErr.ExtraFields.RawRequest = rawRequest
+		// Store as json.RawMessage to preserve exact JSON bytes (including key ordering)
+		bifrostErr.ExtraFields.RawRequest = json.RawMessage(requestBody)
 	} else {
 		bifrostErr.ExtraFields.RawRequest = nil
 	}
 
 	if ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
 		if len(responseBody) > 0 {
-			// We have a responseBody to set
-			var rawResponse interface{}
-			if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-				getLogger().Warn("Failed to parse raw response for error: %v", err)
-				return bifrostErr
-			}
-			bifrostErr.ExtraFields.RawResponse = rawResponse
+			bifrostErr.ExtraFields.RawResponse = json.RawMessage(responseBody)
 		}
 	} else {
 		bifrostErr.ExtraFields.RawResponse = nil
@@ -781,42 +875,22 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 		}
 	}
 
-	var wg sync.WaitGroup
-	var structuredErr, rawRequestErr, rawResponseErr error
-
 	// Skip raw request capture if requestBody is nil (e.g., for GET requests)
 	shouldCaptureRawRequest := sendBackRawRequest && requestBody != nil
 
-	// Count goroutines to spawn
-	numGoroutines := 1 // Always unmarshal structured response
 	if shouldCaptureRawRequest {
-		numGoroutines++
-	}
-	if sendBackRawResponse {
-		numGoroutines++
-	}
-
-	wg.Add(numGoroutines)
-	go func() {
-		defer wg.Done()
-		structuredErr = sonic.Unmarshal(responseBody, response)
-	}()
-
-	if shouldCaptureRawRequest {
-		go func() {
-			defer wg.Done()
-			rawRequestErr = sonic.Unmarshal(requestBody, &rawRequest)
-		}()
+		// Store as json.RawMessage to preserve the exact JSON bytes (including key ordering).
+		// Previously this used sonic.Unmarshal into interface{} which created map[string]interface{}
+		// and destroyed key ordering in tool schemas and other order-sensitive structures.
+		rawRequest = json.RawMessage(requestBody)
 	}
 
 	if sendBackRawResponse {
-		go func() {
-			defer wg.Done()
-			rawResponseErr = sonic.Unmarshal(responseBody, &rawResponse)
-		}()
+		rawResponse = json.RawMessage(responseBody)
 	}
-	wg.Wait()
 
+	// Unmarshal the structured response
+	structuredErr := sonic.Unmarshal(responseBody, response)
 	if structuredErr != nil {
 		// JSON parsing failed - check if it's an HTML response (expensive operation)
 		if IsHTMLResponse(nil, responseBody) {
@@ -838,51 +912,18 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 		}
 	}
 
-	if shouldCaptureRawRequest {
-		if rawRequestErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawRequestUnmarshal,
-					Error:   rawRequestErr,
-				},
-			}
-		}
-		if sendBackRawResponse && rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
-		}
-		return rawRequest, rawResponse, nil
-	}
-
-	if sendBackRawResponse {
-		if rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
-		}
+	if shouldCaptureRawRequest || sendBackRawResponse {
 		return rawRequest, rawResponse, nil
 	}
 
 	return nil, nil, nil
 }
 
-// ParseAndSetRawRequest parses the raw request body and sets it in the extra fields.
+// ParseAndSetRawRequest stores the raw request body in the extra fields.
+// Uses json.RawMessage to preserve the exact JSON bytes (including key ordering).
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
-	var rawRequest interface{}
-	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
-		getLogger().Warn("failed to parse raw request: %v", err)
-	} else {
-		extraFields.RawRequest = rawRequest
+	if len(jsonBody) > 0 {
+		extraFields.RawRequest = json.RawMessage(jsonBody)
 	}
 }
 

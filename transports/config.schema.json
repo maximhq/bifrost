@@ -825,6 +825,13 @@
                   "type": "object",
                   "description": "Configuration for the telemetry plugin (Prometheus metrics)",
                   "properties": {
+                    "custom_labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Custom labels to add to Prometheus metrics"
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -895,7 +902,19 @@
                 "config": {
                   "type": "object",
                   "description": "Configuration for the logging plugin",
-                  "properties": {},
+                  "properties": {
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Disable logging of request and response content"
+                    },
+                    "logging_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of headers to capture in log metadata"
+                    }
+                  },
                   "additionalProperties": false
                 }
               }
@@ -921,6 +940,17 @@
                     "is_vk_mandatory": {
                       "type": "boolean",
                       "description": "Whether virtual key (x-bf-vk header) is mandatory for all requests"
+                    },
+                    "required_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of headers that must be present in requests"
+                    },
+                    "is_enterprise": {
+                      "type": "boolean",
+                      "description": "Enable enterprise mode features"
                     }
                   },
                   "additionalProperties": false
@@ -1150,6 +1180,21 @@
                       "default": 15,
                       "minimum": 1,
                       "maximum": 300
+                    },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+                    },
+                    "tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to TLS CA certificate file"
+                    },
+                    "insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
                     }
                   },
                   "required": [

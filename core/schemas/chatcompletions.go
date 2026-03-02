@@ -506,6 +506,83 @@ type ChatToolChoiceStruct struct {
 	AllowedTools *ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
 }
 
+// MarshalJSON serializes ChatToolChoiceStruct to JSON, emitting only the "type"
+// field and the active variant. This prevents zero-value fields from unused
+// variants (e.g., "custom", "allowed_tools") from appearing in the output,
+// and ensures consistent field ordering with "type" always first.
+func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	// Always emit "type" first
+	typeBytes, err := Marshal(string(s.Type))
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteString(`"type":`)
+	buf.Write(typeBytes)
+
+	switch s.Type {
+	case ChatToolChoiceTypeFunction:
+		if s.Function != nil {
+			funcBytes, err := Marshal(s.Function)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"function":`)
+			buf.Write(funcBytes)
+		}
+	case ChatToolChoiceTypeCustom:
+		if s.Custom != nil {
+			customBytes, err := Marshal(s.Custom)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"custom":`)
+			buf.Write(customBytes)
+		}
+	case ChatToolChoiceTypeAllowedTools:
+		if s.AllowedTools != nil {
+			allowedBytes, err := Marshal(s.AllowedTools)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"allowed_tools":`)
+			buf.Write(allowedBytes)
+		}
+	}
+
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// UnmarshalJSON deserializes JSON into ChatToolChoiceStruct and cleans up
+// zero-value pointers that sonic may allocate for absent fields.
+func (s *ChatToolChoiceStruct) UnmarshalJSON(data []byte) error {
+	type Alias ChatToolChoiceStruct
+	var temp Alias
+	if err := Unmarshal(data, &temp); err != nil {
+		return err
+	}
+	*s = ChatToolChoiceStruct(temp)
+
+	// Clean up zero-value pointers that sonic may allocate even when the
+	// corresponding key was absent from the JSON input.
+	switch s.Type {
+	case ChatToolChoiceTypeFunction:
+		s.Custom = nil
+		s.AllowedTools = nil
+	case ChatToolChoiceTypeCustom:
+		s.Function = nil
+		s.AllowedTools = nil
+	case ChatToolChoiceTypeAllowedTools:
+		s.Function = nil
+		s.Custom = nil
+	}
+
+	return nil
+}
+
 type ChatToolChoice struct {
 	ChatToolChoiceStr    *string
 	ChatToolChoiceStruct *ChatToolChoiceStruct

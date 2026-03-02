@@ -719,3 +719,105 @@ func gzipCompress(data []byte) []byte {
 	}
 	return buf.Bytes()
 }
+
+func TestMergeExtraParamsIntoJSON_PreservesKeyOrder(t *testing.T) {
+	// JSON with a specific key order that must be preserved
+	jsonBody := []byte(`{
+  "model": "gpt-4",
+  "messages": [],
+  "tool_choice": {"type": "function", "function": {"name": "test"}},
+  "tools": []
+}`)
+
+	extraParams := map[string]interface{}{
+		"custom_field": "value",
+	}
+
+	result, err := MergeExtraParamsIntoJSON(jsonBody, extraParams)
+	if err != nil {
+		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+	}
+
+	// Verify original key order is preserved and custom_field is appended
+	resultStr := string(result)
+	modelIdx := bytes.Index(result, []byte(`"model"`))
+	messagesIdx := bytes.Index(result, []byte(`"messages"`))
+	toolChoiceIdx := bytes.Index(result, []byte(`"tool_choice"`))
+	toolsIdx := bytes.Index(result, []byte(`"tools"`))
+	customIdx := bytes.Index(result, []byte(`"custom_field"`))
+
+	if modelIdx >= messagesIdx || messagesIdx >= toolChoiceIdx || toolChoiceIdx >= toolsIdx || toolsIdx >= customIdx {
+		t.Fatalf("Key order not preserved. Result:\n%s", resultStr)
+	}
+}
+
+func TestMergeExtraParamsIntoJSON_OverwriteExistingKey(t *testing.T) {
+	jsonBody := []byte(`{"z_first": "original", "a_second": "original"}`)
+
+	extraParams := map[string]interface{}{
+		"z_first": "overwritten",
+	}
+
+	result, err := MergeExtraParamsIntoJSON(jsonBody, extraParams)
+	if err != nil {
+		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+	}
+
+	// z_first should still come before a_second (preserving original position)
+	zIdx := bytes.Index(result, []byte(`"z_first"`))
+	aIdx := bytes.Index(result, []byte(`"a_second"`))
+	if zIdx >= aIdx {
+		t.Fatalf("Overwritten key should preserve its position. Result: %s", string(result))
+	}
+
+	// z_first should have the new value
+	if !bytes.Contains(result, []byte(`"overwritten"`)) {
+		t.Fatalf("Value should be overwritten. Result: %s", string(result))
+	}
+}
+
+func TestMergeExtraParamsIntoJSON_DeepMerge(t *testing.T) {
+	jsonBody := []byte(`{"outer": {"a": 1, "b": 2}}`)
+
+	extraParams := map[string]interface{}{
+		"outer": map[string]interface{}{
+			"c": 3,
+		},
+	}
+
+	result, err := MergeExtraParamsIntoJSON(jsonBody, extraParams)
+	if err != nil {
+		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+	}
+
+	// Verify the merge happened
+	var parsed map[string]interface{}
+	if err := sonic.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+
+	outer, ok := parsed["outer"].(map[string]interface{})
+	if !ok {
+		t.Fatal("outer should be a map")
+	}
+	if len(outer) != 3 {
+		t.Fatalf("outer should have 3 keys after merge, got %d: %v", len(outer), outer)
+	}
+}
+
+func TestMergeExtraParamsIntoJSON_EmptyExtraParams(t *testing.T) {
+	jsonBody := []byte(`{"a": 1, "b": 2}`)
+	result, err := MergeExtraParamsIntoJSON(jsonBody, map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+	}
+
+	// Should be valid JSON with same content
+	var parsed map[string]interface{}
+	if err := sonic.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("Failed to parse result: %v", err)
+	}
+	if len(parsed) != 2 {
+		t.Fatalf("Expected 2 keys, got %d", len(parsed))
+	}
+}

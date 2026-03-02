@@ -4,9 +4,17 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.0.9
+**Latest Version:** 2.0.10
 
 ## Changelog
+
+### v2.0.10
+
+- Added missing plugin config properties from Go implementations:
+  - governance: `required_headers`, `is_enterprise`
+  - logging: `disable_content_logging`, `logging_headers`
+  - otel: `headers`, `tls_ca_cert`, `insecure`
+  - telemetry: `custom_labels`
 
 ### v2.0.9
 
