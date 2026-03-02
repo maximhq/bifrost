@@ -311,7 +311,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 
 	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
 	// These models don't accept max_completion_tokens and temperature when accessed via SAP AI Core
-	if isOpenAIReasoningOrGPT5Model(req.Model) {
+	if isOpenAIReasoningOrGPT5Model(req.Model) && req.Params != nil {
 		req.Params.MaxCompletionTokens = nil
 		req.Params.Temperature = nil
 	}
@@ -533,7 +533,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 	}
 
 	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
-	if isOpenAIReasoningOrGPT5Model(req.Model) {
+	if isOpenAIReasoningOrGPT5Model(req.Model) && req.Params != nil {
 		req.Params.MaxCompletionTokens = nil
 		req.Params.Temperature = nil
 	}

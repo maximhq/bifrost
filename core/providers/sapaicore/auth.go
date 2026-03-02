@@ -34,9 +34,10 @@ func NewTokenCache(client *fasthttp.Client) *TokenCache {
 	}
 }
 
-// cacheKey generates a unique key for the token cache based on auth config
+// cacheKey generates a unique key for the token cache based on auth config.
+// Uses length-prefixed format to avoid collisions when values contain ":"
 func cacheKey(clientID, authURL string) string {
-	return clientID + ":" + authURL
+	return fmt.Sprintf("%d:%s:%s", len(clientID), clientID, authURL)
 }
 
 // GetToken retrieves a valid token from cache or fetches a new one

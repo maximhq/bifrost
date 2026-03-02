@@ -263,8 +263,7 @@ export const modelProviderKeySchema = z
 				if (hasRequiredFields) {
 					return true;
 				}
-				// If sapaicore_key_config exists but not all required fields are filled,
-				// check if at least one field has a value (user started filling it)
+				// If partially filled, let the second refine report the specific missing-fields error
 				const hasAnyField =
 					hasEnvVarValue(cfg.client_id) ||
 					hasEnvVarValue(cfg.client_secret) ||
@@ -272,8 +271,7 @@ export const modelProviderKeySchema = z
 					hasEnvVarValue(cfg.base_url) ||
 					hasEnvVarValue(cfg.resource_group);
 				if (hasAnyField) {
-					// User started filling SAP AI Core config but hasn't completed all required fields
-					return false;
+					return true;
 				}
 			}
 			// Otherwise, value is required
