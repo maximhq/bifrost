@@ -246,7 +246,7 @@ func TestRedisStore_ParseSearchResults_RESP3Map(t *testing.T) {
 		},
 	}
 
-	results, err := store.parseSearchResults(resp, []string{"request_hash"})
+	results, err := store.parseSearchResults(resp, TestNamespace, []string{"request_hash"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "doc-1", results[0].ID)
@@ -269,7 +269,7 @@ func TestRedisStore_ParseSearchResults_RESP2Array(t *testing.T) {
 		},
 	}
 
-	results, err := store.parseSearchResults(resp, nil)
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "doc-2", results[0].ID)
@@ -295,7 +295,7 @@ func TestRedisStore_ParseSearchResults_RESP3StringKeyMap(t *testing.T) {
 		},
 	}
 
-	results, err := store.parseSearchResults(resp, []string{"request_hash"})
+	results, err := store.parseSearchResults(resp, TestNamespace, []string{"request_hash"})
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "doc-3", results[0].ID)
@@ -313,7 +313,7 @@ func TestRedisStore_ParseSearchResults_EmptyRESP2(t *testing.T) {
 		int64(0),
 	}
 
-	results, err := store.parseSearchResults(resp, nil)
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
 	require.NoError(t, err)
 	assert.Empty(t, results)
 }
@@ -330,12 +330,89 @@ func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
 		},
 	}
 
-	results, err := store.parseSearchResults(resp, nil)
+	results, err := store.parseSearchResults(resp, TestNamespace, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "doc-4", results[0].ID)
 	require.NotNil(t, results[0].Score)
 	assert.InDelta(t, 0.75, *results[0].Score, 0.000001)
+}
+
+func TestRedisStore_ParseSearchResults_NamespaceWithColon(t *testing.T) {
+	store := &RedisStore{}
+	namespace := "ns:team"
+	resp := map[interface{}]interface{}{
+		"results": []interface{}{
+			map[interface{}]interface{}{
+				"id": namespace + ":doc-1",
+				"extra_attributes": map[interface{}]interface{}{
+					"request_hash": "abc123",
+				},
+			},
+		},
+	}
+
+	results, err := store.parseSearchResults(resp, namespace, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "doc-1", results[0].ID)
+}
+
+func TestParseOffsetCursor(t *testing.T) {
+	tests := []struct {
+		name      string
+		cursor    *string
+		want      int
+		errSubstr string
+	}{
+		{
+			name:   "nil cursor",
+			cursor: nil,
+			want:   0,
+		},
+		{
+			name:   "empty cursor",
+			cursor: ptr(""),
+			want:   0,
+		},
+		{
+			name:   "valid positive cursor",
+			cursor: ptr("12"),
+			want:   12,
+		},
+		{
+			name:      "negative cursor errors",
+			cursor:    ptr("-1"),
+			errSubstr: "cannot be negative",
+		},
+		{
+			name:      "cursor overflow errors",
+			cursor:    ptr("2147483648"),
+			errSubstr: "exceeds maximum allowed value",
+		},
+		{
+			name:   "invalid cursor treated as zero",
+			cursor: ptr("not-a-number"),
+			want:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseOffsetCursor(tt.cursor)
+			if tt.errSubstr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errSubstr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func ptr(v string) *string {
+	return &v
 }
 
 func TestMatchesQueriesForScan(t *testing.T) {

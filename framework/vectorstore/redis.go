@@ -246,18 +246,9 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 	}
 
 	// Add OFFSET for pagination if cursor is provided
-	offset := 0
-	if cursor != nil && *cursor != "" {
-		if parsedOffset, err := strconv.ParseInt(*cursor, 10, 64); err == nil {
-			// Check for integer overflow before conversion
-			if parsedOffset > math.MaxInt32 {
-				return nil, nil, fmt.Errorf("offset value %d exceeds maximum allowed value", parsedOffset)
-			}
-			if parsedOffset < 0 {
-				return nil, nil, fmt.Errorf("offset value %d cannot be negative", parsedOffset)
-			}
-			offset = int(parsedOffset)
-		}
+	offset, err := parseOffsetCursor(cursor)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	args = append(args, "LIMIT", offset, int(searchLimit), "DIALECT", "2")
@@ -291,7 +282,7 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 	}
 
 	// Parse search results
-	results, err := s.parseSearchResults(result.Val(), selectFields)
+	results, err := s.parseSearchResults(result.Val(), namespace, selectFields)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to parse search results: %w", err)
 	}
@@ -327,12 +318,9 @@ func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries
 	)
 
 	// Parse offset early so we can compute an early-exit target.
-	offset := 0
-	if cursor != nil && *cursor != "" {
-		parsedOffset, err := strconv.Atoi(*cursor)
-		if err == nil && parsedOffset > 0 {
-			offset = parsedOffset
-		}
+	offset, err := parseOffsetCursor(cursor)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Pre-calculate target count for early exit on bounded queries.
@@ -543,8 +531,8 @@ func matchesQueriesForScan(properties map[string]interface{}, queries []Query) b
 	return true
 }
 
-// parseSearchResults parses FT.SEARCH results into SearchResult slice
-func (s *RedisStore) parseSearchResults(result interface{}, selectFields []string) ([]SearchResult, error) {
+// parseSearchResults parses FT.SEARCH results into SearchResult slice.
+func (s *RedisStore) parseSearchResults(result interface{}, namespace string, selectFields []string) ([]SearchResult, error) {
 	results := []SearchResult{}
 
 	// RESP3 style in Redis/Valkey:
@@ -560,7 +548,7 @@ func (s *RedisStore) parseSearchResults(result interface{}, selectFields []strin
 			return results, nil
 		}
 		for _, item := range resultItems {
-			if parsed, ok := parseSearchResultDocument(item, selectFields); ok {
+			if parsed, ok := parseSearchResultDocument(item, namespace, selectFields); ok {
 				results = append(results, parsed)
 			}
 		}
@@ -575,7 +563,7 @@ func (s *RedisStore) parseSearchResults(result interface{}, selectFields []strin
 			return results, nil
 		}
 		for _, item := range resultItems {
-			if parsed, ok := parseSearchResultDocument(item, selectFields); ok {
+			if parsed, ok := parseSearchResultDocument(item, namespace, selectFields); ok {
 				results = append(results, parsed)
 			}
 		}
@@ -593,7 +581,7 @@ func (s *RedisStore) parseSearchResults(result interface{}, selectFields []strin
 				"id":               idValue,
 				"extra_attributes": attrsValue,
 			}
-			if parsed, ok := parseSearchResultDocument(doc, selectFields); ok {
+			if parsed, ok := parseSearchResultDocument(doc, namespace, selectFields); ok {
 				results = append(results, parsed)
 			}
 		}
@@ -603,7 +591,7 @@ func (s *RedisStore) parseSearchResults(result interface{}, selectFields []strin
 	}
 }
 
-func parseSearchResultDocument(resultItem interface{}, selectFields []string) (SearchResult, bool) {
+func parseSearchResultDocument(resultItem interface{}, namespace string, selectFields []string) (SearchResult, bool) {
 	var docMap map[string]interface{}
 
 	switch item := resultItem.(type) {
@@ -628,9 +616,12 @@ func parseSearchResultDocument(resultItem interface{}, selectFields []string) (S
 		return SearchResult{}, false
 	}
 
-	keyParts := strings.Split(id, ":")
-	if len(keyParts) < 2 {
-		return SearchResult{}, false
+	docID := id
+	if namespace != "" {
+		prefix := namespace + ":"
+		if strings.HasPrefix(id, prefix) {
+			docID = strings.TrimPrefix(id, prefix)
+		}
 	}
 
 	attrsRaw, ok := docMap["extra_attributes"]
@@ -644,7 +635,7 @@ func parseSearchResultDocument(resultItem interface{}, selectFields []string) (S
 	}
 
 	searchResult := SearchResult{
-		ID:         strings.Join(keyParts[1:], ":"),
+		ID:         docID,
 		Properties: make(map[string]interface{}, len(attrs)),
 	}
 
@@ -911,7 +902,7 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 	}
 
 	// Parse search results
-	results, err := s.parseSearchResults(result.Val(), selectFields)
+	results, err := s.parseSearchResults(result.Val(), namespace, selectFields)
 	if err != nil {
 		return nil, err
 	}
@@ -1202,6 +1193,29 @@ func isQuerySyntaxError(errMsg string) bool {
 		strings.Contains(errMsg, "invalid filter") ||
 		strings.Contains(errMsg, "invalid query") ||
 		strings.Contains(errMsg, "vector query clause is missing")
+}
+
+func parseOffsetCursor(cursor *string) (int, error) {
+	offset := 0
+	if cursor == nil || *cursor == "" {
+		return offset, nil
+	}
+
+	parsedOffset, err := strconv.ParseInt(*cursor, 10, 64)
+	if err != nil {
+		// Keep existing behavior: malformed cursor is treated as offset 0.
+		return offset, nil
+	}
+	if parsedOffset > math.MaxInt32 {
+		return 0, fmt.Errorf("offset value %d exceeds maximum allowed value", parsedOffset)
+	}
+	if parsedOffset < 0 {
+		return 0, fmt.Errorf("offset value %d cannot be negative", parsedOffset)
+	}
+	if parsedOffset > 0 {
+		offset = int(parsedOffset)
+	}
+	return offset, nil
 }
 
 func parseStringValuesForContains(value interface{}) ([]string, bool) {
