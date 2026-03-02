@@ -2742,7 +2742,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	)
 
 	// Create prediction with appropriate mode
-	prediction, rawResponse, latency, err := createPrediction(
+	prediction, rawResponse, latency, providerResponseHeaders, err := createPrediction(
 		ctx,
 		provider.client,
 		jsonData,
@@ -2770,6 +2770,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	bifrostResponse.ExtraFields.RequestType = schemas.VideoGenerationRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)
 	}

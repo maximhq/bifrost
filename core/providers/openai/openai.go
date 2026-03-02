@@ -555,8 +555,8 @@ func HandleOpenAITextCompletionStreaming(
 				// Quick check for error field (allocation-free using sonic.GetFromString)
 				if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 					// Only unmarshal when we know there's an error
-					bifrostErr := schemas.AcquireBifrostError()
-					if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+					var bifrostErr schemas.BifrostError
+					if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 						if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 							bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 								Provider:       providerName,
@@ -564,11 +564,10 @@ func HandleOpenAITextCompletionStreaming(
 								RequestType:    schemas.TextCompletionStreamRequest,
 							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 							return
 						}
 					}
-					schemas.ReleaseBifrostError(bifrostErr)
 				}
 
 				// Parse into bifrost response
@@ -1046,8 +1045,8 @@ func HandleOpenAIChatCompletionStreaming(
 			// Quick check for error field (allocation-free using sonic.GetFromString)
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 				// Only unmarshal when we know there's an error
-				bifrostErr := schemas.AcquireBifrostError()
-				if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+				var bifrostErr schemas.BifrostError
+				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 							Provider:       providerName,
@@ -1055,11 +1054,10 @@ func HandleOpenAIChatCompletionStreaming(
 							RequestType:    streamRequestType,
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 						return
 					}
 				}
-				schemas.ReleaseBifrostError(bifrostErr)
 			}
 
 			// Parse into bifrost response
@@ -2116,8 +2114,8 @@ func HandleOpenAISpeechStreamRequest(
 			// Quick check for error field (allocation-free using sonic.GetFromString)
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 				// Only unmarshal when we know there's an error
-				bifrostErr := schemas.AcquireBifrostError()
-				if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+				var bifrostErr schemas.BifrostError
+				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 							Provider:       providerName,
@@ -2125,11 +2123,10 @@ func HandleOpenAISpeechStreamRequest(
 							RequestType:    schemas.SpeechStreamRequest,
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 						return
 					}
 				}
-				schemas.ReleaseBifrostError(bifrostErr)
 			}
 
 			// Parse into bifrost response
@@ -2522,7 +2519,7 @@ func HandleOpenAITranscriptionStreamRequest(
 			}
 			// TODo fix this
 			response := &schemas.BifrostTranscriptionStreamResponse{}
-			bifrostErr := schemas.AcquireBifrostError()
+			var bifrostErr *schemas.BifrostError
 			if customResponseHandler != nil {
 				_, _, bifrostErr = customResponseHandler([]byte(jsonData), response, nil, false, false)
 				if bifrostErr != nil {
@@ -2542,20 +2539,19 @@ func HandleOpenAITranscriptionStreamRequest(
 				// Quick check for error field (allocation-free using sonic.GetFromString)
 				if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 					// Only unmarshal when we know there's an error
-					bifrostErr := schemas.AcquireBifrostError()
-					if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
-						if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
-							bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					var bifrostErrVal schemas.BifrostError
+					if err := sonic.UnmarshalString(jsonData, &bifrostErrVal); err == nil {
+						if bifrostErrVal.Error != nil && bifrostErrVal.Error.Message != "" {
+							bifrostErrVal.ExtraFields = schemas.BifrostErrorExtraFields{
 								Provider:       providerName,
 								ModelRequested: request.Model,
 								RequestType:    schemas.TranscriptionStreamRequest,
 							}
 							ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, false, sendBackRawResponse), responseChan, logger)
+							providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErrVal, nil, nil, false, sendBackRawResponse), responseChan, logger)
 							return
 						}
 					}
-					schemas.ReleaseBifrostError(bifrostErr)
 				}
 
 				var response schemas.BifrostTranscriptionStreamResponse
@@ -2946,8 +2942,8 @@ func HandleOpenAIImageGenerationStreaming(
 			// Quick check for error field (allocation-free using sonic.GetFromString)
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 				// Only unmarshal when we know there's an error
-				bifrostErr := schemas.AcquireBifrostError()
-				if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+				var bifrostErr schemas.BifrostError
+				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 							Provider:       providerName,
@@ -2955,11 +2951,10 @@ func HandleOpenAIImageGenerationStreaming(
 							RequestType:    schemas.ImageGenerationStreamRequest,
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 						return
 					}
 				}
-				schemas.ReleaseBifrostError(bifrostErr)
 			}
 
 			// Parse minimally to extract usage and check for errors
@@ -4099,8 +4094,8 @@ func HandleOpenAIImageEditStreamRequest(
 			// Quick check for error field (allocation-free using sonic.GetFromString)
 			if errorNode, _ := sonic.GetFromString(jsonData, "error"); errorNode.Exists() {
 				// Only unmarshal when we know there's an error
-				bifrostErr := schemas.AcquireBifrostError()
-				if err := sonic.UnmarshalString(jsonData, bifrostErr); err == nil {
+				var bifrostErr schemas.BifrostError
+				if err := sonic.UnmarshalString(jsonData, &bifrostErr); err == nil {
 					if bifrostErr.Error != nil && bifrostErr.Error.Message != "" {
 						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 							Provider:       providerName,
@@ -4108,11 +4103,10 @@ func HandleOpenAIImageEditStreamRequest(
 							RequestType:    schemas.ImageEditStreamRequest,
 						}
 						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, &bifrostErr, body.Bytes(), nil, sendBackRawRequest, sendBackRawResponse), responseChan, logger)
 						return
 					}
 				}
-				schemas.ReleaseBifrostError(bifrostErr)
 			}
 
 			// Parse minimally to extract usage and check for errors
