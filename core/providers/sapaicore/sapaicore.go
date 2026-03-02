@@ -747,22 +747,14 @@ func (provider *SAPAICoreProvider) handleVertexChatCompletionStream(
 	return responseChan, nil
 }
 
-// TextCompletion is not directly supported - returns an error
-func (provider *SAPAICoreProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"TextCompletion is not supported by SAP AI Core provider - use ChatCompletion instead",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// TextCompletion is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) TextCompletion(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionRequest, provider.GetProviderKey())
 }
 
-// TextCompletionStream is not directly supported - returns an error
-func (provider *SAPAICoreProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"TextCompletionStream is not supported by SAP AI Core provider - use ChatCompletionStream instead",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// TextCompletionStream is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) TextCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
 // Embedding performs an embedding request to SAP AI Core.
@@ -1041,265 +1033,149 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 	return responseChan, nil
 }
 
-// CountTokens is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) CountTokens(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"CountTokens is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// CountTokens is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) CountTokens(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"Speech is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// Speech is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) Speech(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
 }
 
-// SpeechStream is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"SpeechStream is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// SpeechStream is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) SpeechStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
-// Transcription is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"Transcription is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// Transcription is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) Transcription(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
 }
 
-// TranscriptionStream is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"TranscriptionStream is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// TranscriptionStream is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) TranscriptionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ImageGeneration is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ImageGeneration is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ImageGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
 }
 
-// ImageGenerationStream is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ImageGenerationStream is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ImageGenerationStream is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ImageGenerationStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
-// ImageEdit is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ImageEdit is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ImageEdit is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ImageEdit(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
 }
 
-// ImageEditStream is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ImageEditStream is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ImageEditStream is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ImageEditStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
 }
 
-// ImageVariation is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ImageVariation is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ImageVariation is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ImageVariation(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
-// BatchCreate is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"BatchCreate is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// BatchCreate is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) BatchCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCreateRequest, provider.GetProviderKey())
 }
 
-// BatchList is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) BatchList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"BatchList is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// BatchList is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) BatchList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchListRequest) (*schemas.BifrostBatchListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchListRequest, provider.GetProviderKey())
 }
 
-// BatchRetrieve is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"BatchRetrieve is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// BatchRetrieve is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) BatchRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchRetrieveRequest) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchRetrieveRequest, provider.GetProviderKey())
 }
 
-// BatchCancel is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) BatchCancel(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"BatchCancel is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// BatchCancel is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) BatchCancel(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchCancelRequest) (*schemas.BifrostBatchCancelResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
-// BatchResults is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"BatchResults is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// BatchResults is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
 }
 
-// FileUpload is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"FileUpload is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// FileUpload is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) FileUpload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileUploadRequest, provider.GetProviderKey())
 }
 
-// FileList is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) FileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"FileList is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// FileList is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) FileList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileListRequest) (*schemas.BifrostFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileListRequest, provider.GetProviderKey())
 }
 
-// FileRetrieve is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) FileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"FileRetrieve is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// FileRetrieve is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) FileRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileRetrieveRequest) (*schemas.BifrostFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileRetrieveRequest, provider.GetProviderKey())
 }
 
-// FileDelete is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) FileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"FileDelete is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// FileDelete is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) FileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileDeleteRequest) (*schemas.BifrostFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileDeleteRequest, provider.GetProviderKey())
 }
 
-// FileContent is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"FileContent is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// FileContent is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) FileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.FileContentRequest, provider.GetProviderKey())
 }
 
-// ContainerCreate is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerCreate is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerCreate is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerCreateRequest, provider.GetProviderKey())
 }
 
-// ContainerList is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerListRequest) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerList is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerList is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerListRequest) (*schemas.BifrostContainerListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerListRequest, provider.GetProviderKey())
 }
 
-// ContainerRetrieve is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerRetrieveRequest) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerRetrieve is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerRetrieve is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerRetrieveRequest) (*schemas.BifrostContainerRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerRetrieveRequest, provider.GetProviderKey())
 }
 
-// ContainerDelete is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerDeleteRequest) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerDelete is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerDelete is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerDeleteRequest) (*schemas.BifrostContainerDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerDeleteRequest, provider.GetProviderKey())
 }
 
-// ContainerFileCreate is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerFileCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerFileCreate is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerFileCreate is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerFileCreate(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileCreateRequest, provider.GetProviderKey())
 }
 
-// ContainerFileList is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerFileList(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileListRequest) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerFileList is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerFileList is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerFileList(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileListRequest) (*schemas.BifrostContainerFileListResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileListRequest, provider.GetProviderKey())
 }
 
-// ContainerFileRetrieve is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerFileRetrieve(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileRetrieveRequest) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerFileRetrieve is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerFileRetrieve is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerFileRetrieve(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileRetrieveRequest) (*schemas.BifrostContainerFileRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileRetrieveRequest, provider.GetProviderKey())
 }
 
-// ContainerFileContent is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerFileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerFileContent is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerFileContent is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerFileContent(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileContentRequest) (*schemas.BifrostContainerFileContentResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileContentRequest, provider.GetProviderKey())
 }
 
-// ContainerFileDelete is not supported by SAP AI Core provider
-func (provider *SAPAICoreProvider) ContainerFileDelete(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewBifrostOperationError(
-		"ContainerFileDelete is not supported by SAP AI Core provider",
-		fmt.Errorf("unsupported operation"),
-		schemas.SAPAICore,
-	)
+// ContainerFileDelete is not supported by the SAP AI Core provider.
+func (provider *SAPAICoreProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
 // processVertexSSEStream processes Vertex SSE stream and sends chunks to the channel
@@ -1447,6 +1323,13 @@ func processVertexSSEStream(
 				usage.CompletionTokens = vertexResp.UsageMetadata.CandidatesTokenCount
 				usage.TotalTokens = vertexResp.UsageMetadata.TotalTokenCount
 			}
+		}
+	}
+
+	// Check for scanner errors (I/O errors, buffer overflow, etc.)
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() == nil { // Only log if not cancelled
+			logger.Warn("Vertex SSE scanner error: %v", err)
 		}
 	}
 
