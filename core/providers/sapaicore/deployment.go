@@ -194,8 +194,12 @@ func (dc *DeploymentCache) fetchDeployments(
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
+		body := string(resp.Body())
+		if len(body) > 256 {
+			body = body[:256] + "...(truncated)"
+		}
 		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("deployments request failed with status %d: %s", resp.StatusCode(), string(resp.Body())),
+			fmt.Sprintf("deployments request failed with status %d: %s", resp.StatusCode(), body),
 			fmt.Errorf("HTTP %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
@@ -265,8 +269,12 @@ func (dc *DeploymentCache) ListModels(
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
+		body := string(resp.Body())
+		if len(body) > 256 {
+			body = body[:256] + "...(truncated)"
+		}
 		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("model listing request failed with status %d: %s", resp.StatusCode(), string(resp.Body())),
+			fmt.Sprintf("model listing request failed with status %d: %s", resp.StatusCode(), body),
 			fmt.Errorf("HTTP %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
@@ -341,11 +349,9 @@ func DetermineBackend(modelName string) SAPAICoreBackendType {
 
 // normalizeBaseURL ensures the base URL has the /v2 suffix
 func normalizeBaseURL(baseURL string) string {
-	if strings.HasSuffix(baseURL, "/v2") {
-		return baseURL
+	trimmed := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(trimmed, "/v2") {
+		return trimmed
 	}
-	if strings.HasSuffix(baseURL, "/") {
-		return baseURL + "v2"
-	}
-	return baseURL + "/v2"
+	return trimmed + "/v2"
 }

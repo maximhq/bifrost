@@ -383,6 +383,11 @@ func TestNormalizeBaseURL(t *testing.T) {
 			expected: "https://api.ai.sap.com/v2",
 		},
 		{
+			name:     "trailing /v2/",
+			input:    "https://api.ai.sap.com/v2/",
+			expected: "https://api.ai.sap.com/v2",
+		},
+		{
 			name:     "empty URL",
 			input:    "",
 			expected: "/v2",
