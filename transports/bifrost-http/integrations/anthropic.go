@@ -274,6 +274,32 @@ func CreateAnthropicListModelsRouteConfigs(pathPrefix string, handlerStore lib.H
 	}
 }
 
+// stripModelPrefixFromBody updates the raw HTTP request body to replace a
+// provider-prefixed model name (e.g. "anthropic/claude-sonnet-4-6") with the
+// bare model name. The governance plugin's load balancer adds the prefix for
+// routing, but when passthrough mode sends the raw body directly to the
+// provider API, the prefix causes 404 errors.
+func stripModelPrefixFromBody(ctx *fasthttp.RequestCtx, prefixedModel, bareModel string) {
+	body := ctx.Request.Body()
+	if len(body) == 0 {
+		return
+	}
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return
+	}
+	currentModel, ok := payload["model"].(string)
+	if !ok || currentModel != prefixedModel {
+		return
+	}
+	payload["model"] = bareModel
+	newBody, err := sonic.Marshal(payload)
+	if err != nil {
+		return
+	}
+	ctx.Request.SetBody(newBody)
+}
+
 // checkAnthropicPassthrough pre-callback checks if the request is for a claude model.
 // If it is, it attaches the raw request body for direct use by the provider.
 // It also checks for anthropic oauth headers and sets the bifrost context.
@@ -284,15 +310,15 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	switch r := req.(type) {
 	case *anthropic.AnthropicTextRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			stripModelPrefixFromBody(ctx, r.Model, model)
 			r.Model = model
 		}
 
 	case *anthropic.AnthropicMessageRequest:
 		provider, model = schemas.ParseModelString(r.Model, "")
-		// Check if model parameter explicitly has `anthropic/` prefix
 		if provider == schemas.Anthropic {
+			stripModelPrefixFromBody(ctx, r.Model, model)
 			r.Model = model
 		}
 	}
