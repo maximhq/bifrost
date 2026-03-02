@@ -96,17 +96,16 @@ func (dc *DeploymentCache) resolveDeployment(
 	}
 	dc.mu.RUnlock()
 
-	// Need to refresh cache (write lock)
+	// Short write-lock check, then release before external I/O
 	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	// Double-check after acquiring write lock
 	if cached, ok := dc.deployments[cacheKey]; ok {
 		if time.Since(cached.fetchedAt) < dc.ttl {
 			if deployment, ok := cached.modelToDeployment[modelName]; ok {
+				dc.mu.Unlock()
 				return deployment.DeploymentID, deployment.Backend, nil
 			}
 			// Model not found in fresh cache
+			dc.mu.Unlock()
 			return "", "", providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("no running deployment found for model: %s", modelName),
 				fmt.Errorf("model not deployed"),
@@ -114,11 +113,30 @@ func (dc *DeploymentCache) resolveDeployment(
 			)
 		}
 	}
+	dc.mu.Unlock()
 
-	// Fetch deployments from API
+	// Fetch deployments from API without holding lock
 	deployments, err := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
 	if err != nil {
 		return "", "", err
+	}
+
+	// Re-lock to publish result
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	// Double-check: another goroutine may have refreshed while we were fetching
+	if cached, ok := dc.deployments[cacheKey]; ok {
+		if time.Since(cached.fetchedAt) < dc.ttl {
+			if deployment, ok := cached.modelToDeployment[modelName]; ok {
+				return deployment.DeploymentID, deployment.Backend, nil
+			}
+			return "", "", providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("no running deployment found for model: %s", modelName),
+				fmt.Errorf("model not deployed"),
+				schemas.SAPAICore,
+			)
+		}
 	}
 
 	// Cache the results

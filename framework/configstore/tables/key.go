@@ -68,7 +68,7 @@ type TableKey struct {
 	SAPAICoreClientSecret    *schemas.EnvVar `gorm:"column:sapaicore_client_secret;type:text" json:"sapaicore_client_secret,omitempty"`
 	SAPAICoreAuthURL         *schemas.EnvVar `gorm:"column:sapaicore_auth_url;type:text" json:"sapaicore_auth_url,omitempty"`
 	SAPAICoreBaseURL         *schemas.EnvVar `gorm:"column:sapaicore_base_url;type:text" json:"sapaicore_base_url,omitempty"`
-	SAPAICoreResourceGroup   *schemas.EnvVar `gorm:"column:sapaicore_resource_group;type:varchar(255)" json:"sapaicore_resource_group,omitempty"`
+	SAPAICoreResourceGroup   *schemas.EnvVar `gorm:"column:sapaicore_resource_group;type:text" json:"sapaicore_resource_group,omitempty"`
 	SAPAICoreDeploymentsJSON *string         `gorm:"column:sapaicore_deployments_json;type:text" json:"-"`
 
 	// Batch API configuration
@@ -343,27 +343,32 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 	// Serialize SAP AI Core config to DB columns
 	if k.SAPAICoreKeyConfig != nil {
 		if k.SAPAICoreKeyConfig.ClientID.GetValue() != "" {
-			k.SAPAICoreClientID = &k.SAPAICoreKeyConfig.ClientID
+			clientID := k.SAPAICoreKeyConfig.ClientID
+			k.SAPAICoreClientID = &clientID
 		} else {
 			k.SAPAICoreClientID = nil
 		}
 		if k.SAPAICoreKeyConfig.ClientSecret.GetValue() != "" {
-			k.SAPAICoreClientSecret = &k.SAPAICoreKeyConfig.ClientSecret
+			clientSecret := k.SAPAICoreKeyConfig.ClientSecret
+			k.SAPAICoreClientSecret = &clientSecret
 		} else {
 			k.SAPAICoreClientSecret = nil
 		}
 		if k.SAPAICoreKeyConfig.AuthURL.GetValue() != "" {
-			k.SAPAICoreAuthURL = &k.SAPAICoreKeyConfig.AuthURL
+			authURL := k.SAPAICoreKeyConfig.AuthURL
+			k.SAPAICoreAuthURL = &authURL
 		} else {
 			k.SAPAICoreAuthURL = nil
 		}
 		if k.SAPAICoreKeyConfig.BaseURL.GetValue() != "" {
-			k.SAPAICoreBaseURL = &k.SAPAICoreKeyConfig.BaseURL
+			baseURL := k.SAPAICoreKeyConfig.BaseURL
+			k.SAPAICoreBaseURL = &baseURL
 		} else {
 			k.SAPAICoreBaseURL = nil
 		}
 		if k.SAPAICoreKeyConfig.ResourceGroup.GetValue() != "" {
-			k.SAPAICoreResourceGroup = &k.SAPAICoreKeyConfig.ResourceGroup
+			resourceGroup := k.SAPAICoreKeyConfig.ResourceGroup
+			k.SAPAICoreResourceGroup = &resourceGroup
 		} else {
 			k.SAPAICoreResourceGroup = nil
 		}

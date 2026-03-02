@@ -173,8 +173,14 @@ func TestParseSAPAICoreError_WithEventID(t *testing.T) {
 		t.Errorf("expected event_id 'evt_123', got %v", result.EventID)
 	}
 	// Error-level event_id
-	if result.Error != nil && result.Error.EventID != nil && *result.Error.EventID != "err_evt_456" {
-		t.Errorf("expected error event_id 'err_evt_456', got %v", result.Error.EventID)
+	if result.Error == nil {
+		t.Fatal("expected error field to be set")
+	}
+	if result.Error.EventID == nil {
+		t.Fatal("expected error event_id to be set")
+	}
+	if *result.Error.EventID != "err_evt_456" {
+		t.Errorf("expected error event_id 'err_evt_456', got %q", *result.Error.EventID)
 	}
 }
 

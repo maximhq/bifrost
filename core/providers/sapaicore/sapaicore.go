@@ -302,11 +302,18 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
+	// Copy request to avoid mutating the caller's object (breaks retries/fallbacks)
+	req := *request
+	if req.Params != nil {
+		paramsCopy := *req.Params
+		req.Params = &paramsCopy
+	}
+
 	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
 	// These models don't accept max_completion_tokens and temperature when accessed via SAP AI Core
-	if isOpenAIReasoningOrGPT5Model(request.Model) {
-		request.Params.MaxCompletionTokens = nil
-		request.Params.Temperature = nil
+	if isOpenAIReasoningOrGPT5Model(req.Model) {
+		req.Params.MaxCompletionTokens = nil
+		req.Params.Temperature = nil
 	}
 
 	// Build URL with api-version query parameter
@@ -329,7 +336,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 		ctx,
 		provider.client,
 		requestURL,
-		request,
+		&req,
 		mockKey,
 		extraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -518,6 +525,19 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
+	// Copy request to avoid mutating the caller's object (breaks retries/fallbacks)
+	req := *request
+	if req.Params != nil {
+		paramsCopy := *req.Params
+		req.Params = &paramsCopy
+	}
+
+	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
+	if isOpenAIReasoningOrGPT5Model(req.Model) {
+		req.Params.MaxCompletionTokens = nil
+		req.Params.Temperature = nil
+	}
+
 	// Build URL with api-version query parameter
 	baseRequestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/chat/completions")
 	requestURL := baseRequestURL + "?api-version=" + SAPAICoreAPIVersion
@@ -532,7 +552,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 		ctx,
 		provider.client,
 		requestURL,
-		request,
+		&req,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

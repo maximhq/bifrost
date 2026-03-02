@@ -55,24 +55,31 @@ func (tc *TokenCache) GetToken(clientID, clientSecret, authURL string) (string, 
 	}
 	tc.mu.RUnlock()
 
-	// Need to fetch a new token (write lock)
+	// Short write-lock check, then release before external I/O
 	tc.mu.Lock()
-	defer tc.mu.Unlock()
-
-	// Double-check after acquiring write lock
 	if cached, ok := tc.tokens[key]; ok {
 		if time.Now().Add(30 * time.Second).Before(cached.expiresAt) {
-			return cached.accessToken, nil
+			token := cached.accessToken
+			tc.mu.Unlock()
+			return token, nil
 		}
 	}
+	tc.mu.Unlock()
 
-	// Fetch new token
+	// Fetch new token without holding global lock
 	token, expiresIn, err := tc.fetchToken(clientID, clientSecret, authURL)
 	if err != nil {
 		return "", err
 	}
 
-	// Cache the token
+	// Re-lock to publish result (double-check in case another goroutine already refreshed)
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	if cached, ok := tc.tokens[key]; ok {
+		if time.Now().Add(30 * time.Second).Before(cached.expiresAt) {
+			return cached.accessToken, nil
+		}
+	}
 	tc.tokens[key] = &cachedToken{
 		accessToken: token,
 		expiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),

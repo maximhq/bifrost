@@ -281,6 +281,14 @@ export const ProviderFormSchema = z
 			// Providers that don't use the standard API key field
 			const noApiKeyProviders = ["vertex", "bedrock", "sapaicore"];
 			data.keys.forEach((key, index) => {
+				if (effectiveProviderType === "sapaicore" && !key.sapaicore_key_config) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						message: "SAP AI Core key config is required",
+						path: ["keys", index, "sapaicore_key_config"],
+					});
+					return;
+				}
 				if (!noApiKeyProviders.includes(effectiveProviderType) && !key.value.trim()) {
 					ctx.addIssue({
 						code: z.ZodIssueCode.custom,

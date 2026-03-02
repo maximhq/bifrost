@@ -167,8 +167,8 @@ export const vllmKeyConfigSchema = z.object({
 // Helper to check if an env var has a value
 const hasEnvVarValue = (envVar: { value?: string; env_var?: string; from_env?: boolean } | undefined): boolean => {
 	if (!envVar) return false;
-	if (envVar.from_env && envVar.env_var && envVar.env_var.length > 0) return true;
-	if (envVar.value && envVar.value.length > 0) return true;
+	if (envVar.from_env && envVar.env_var?.trim().length) return true;
+	if (envVar.value?.trim().length) return true;
 	return false;
 };
 
