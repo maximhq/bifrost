@@ -200,12 +200,12 @@ func Init(
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:           ctx,
-		cancelFunc:    cancelFunc,
-		store:         governanceStore,
-		resolver:      resolver,
-		tracker:       tracker,
-		engine:        engine,
+		ctx:             ctx,
+		cancelFunc:      cancelFunc,
+		store:           governanceStore,
+		resolver:        resolver,
+		tracker:         tracker,
+		engine:          engine,
 		configStore:     configStore,
 		modelCatalog:    modelCatalog,
 		mcpCatalog:      mcpCatalog,
@@ -946,6 +946,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 	// Extract governance information
 	virtualKey := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
+	selectedKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID)
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
 	// Extract user ID for enterprise user-level governance
 	userID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceUserID)
@@ -983,7 +984,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.postHookWorker(result, provider, model, requestType, effectiveVK, requestID, userID, isCacheRead, isBatch, isFinalChunk)
+			p.postHookWorker(ctx, result, provider, model, requestType, effectiveVK, selectedKeyID, requestID, userID, isCacheRead, isBatch, isFinalChunk)
 		}()
 	}
 
@@ -1135,7 +1136,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, requestID, userID string, _, _, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, providerKeyID, requestID, userID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
 
@@ -1145,7 +1146,11 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCost(result)
+			cost = p.modelCatalog.CalculateCostWithScopes(result, modelcatalog.PricingLookupScopes{
+				VirtualKeyID:  virtualKey,
+				ProviderKeyID: providerKeyID,
+				ProviderID:    string(provider),
+			})
 		}
 		tokensUsed := 0
 		if result != nil {

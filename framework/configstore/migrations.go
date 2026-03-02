@@ -271,7 +271,7 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddEnforceAuthOnInferenceColumn(ctx, db); err != nil {
 		return err
 	}
-	if err := migrationAddProviderPricingOverridesColumn(ctx, db); err != nil {
+	if err := migrationReconcilePricingOverridesTable(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddEncryptionColumns(ctx, db); err != nil {
@@ -279,6 +279,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	}
 	if err := migrationAddOutputCostPerVideoPerSecond(ctx, db); err != nil {
 
+		return err
+	}
+	if err := migrationAddExtendedPricingColumns(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationDropEnableGovernanceColumn(ctx, db); err != nil {
@@ -393,6 +396,11 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 					return err
 				}
 			}
+			if !migrator.HasTable(&tables.TablePricingOverride{}) {
+				if err := migrator.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return err
+				}
+			}
 			if !migrator.HasTable(&tables.TablePlugin{}) {
 				if err := migrator.CreateTable(&tables.TablePlugin{}); err != nil {
 					return err
@@ -448,6 +456,9 @@ func migrationInit(ctx context.Context, db *gorm.DB) error {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TableModelPricing{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePricingOverride{}); err != nil {
 				return err
 			}
 			if err := migrator.DropTable(&tables.TablePlugin{}); err != nil {
@@ -3769,33 +3780,49 @@ func migrationAddEnforceAuthOnInferenceColumn(ctx context.Context, db *gorm.DB) 
 	return nil
 }
 
-// migrationAddProviderPricingOverridesColumn adds the pricing_overrides_json column to the config_provider table
-func migrationAddProviderPricingOverridesColumn(ctx context.Context, db *gorm.DB) error {
+func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
-		ID: "add_provider_pricing_overrides_column",
+		ID: "reconcile_pricing_overrides_table",
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if !migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.AddColumn(&tables.TableProvider{}, "PricingOverridesJSON"); err != nil {
-					return fmt.Errorf("failed to add pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+
+			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to drop governance_pricing_overrides table for reconcile: %w", err)
 				}
+			}
+			if err := dropPricingOverrideIndexesIfExists(tx); err != nil {
+				return err
+			}
+
+			if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
+				return fmt.Errorf("failed to recreate governance_pricing_overrides table: %w", err)
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			migrator := tx.Migrator()
-			if migrator.HasColumn(&tables.TableProvider{}, "pricing_overrides_json") {
-				if err := migrator.DropColumn(&tables.TableProvider{}, "pricing_overrides_json"); err != nil {
-					return fmt.Errorf("failed to drop pricing_overrides_json column: %w", err)
+			mgr := tx.Migrator()
+			if mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to drop governance_pricing_overrides table: %w", err)
 				}
 			}
 			return nil
 		},
 	}})
 	if err := m.Migrate(); err != nil {
-		return fmt.Errorf("error running provider pricing overrides column migration: %s", err.Error())
+		return fmt.Errorf("error while running pricing overrides table reconcile migration: %s", err.Error())
+	}
+	return nil
+}
+
+func dropPricingOverrideIndexesIfExists(tx *gorm.DB) error {
+	for _, idx := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
+		if err := tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", idx)).Error; err != nil {
+			return fmt.Errorf("failed to drop pricing override index %s: %w", idx, err)
+		}
 	}
 	return nil
 }
@@ -3976,6 +4003,61 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddExtendedPricingColumns adds extended pricing columns to governance_model_pricing.
+func migrationAddExtendedPricingColumns(ctx context.Context, db *gorm.DB) error {
+	columns := []string{
+		"input_cost_per_token_priority",
+		"output_cost_per_token_priority",
+		"cache_creation_input_token_cost_above_1hr",
+		"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+		"cache_creation_input_audio_token_cost",
+		"cache_read_input_token_cost_priority",
+		"input_cost_per_pixel",
+		"output_cost_per_pixel",
+		"output_cost_per_image_premium_image",
+		"output_cost_per_image_above_512_and_512_pixels",
+		"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+		"output_cost_per_image_above_1024_and_1024_pixels",
+		"output_cost_per_image_above_1024_and_1024_pixels_and_premium_image",
+		"input_cost_per_audio_token",
+		"input_cost_per_second",
+		"output_cost_per_audio_token",
+		"search_context_cost_per_query",
+		"code_interpreter_cost_per_session",
+	}
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_extended_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, column := range columns {
+				if !mgr.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mgr.AddColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to add %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			for _, column := range columns {
+				if mgr.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mgr.DropColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to drop %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running extended pricing columns migration: %s", err.Error())
 	}
 	return nil
 }
