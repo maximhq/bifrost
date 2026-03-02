@@ -35,7 +35,7 @@ Key features include:
 | Batch | ❌ | ❌ | Not supported |
 
 <Note>
-**Backend-specific features**: Tool calling and vision capabilities depend on the underlying backend model. Claude and GPT models support tool calling; Gemini and Claude models support vision.
+**Backend-specific features**: Tool calling and vision capabilities depend on the underlying backend model. Claude and GPT models support tool calling; Gemini and Claude models support vision. The Responses API also supports native tool calling for Bedrock-backed models (Anthropic/Amazon) via the Converse API.
 </Note>
 
 ---
@@ -202,6 +202,85 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 ```
 
 ---
+
+## Responses API
+
+The Responses API is supported for Bedrock-backed models (Anthropic/Amazon) and uses the Bedrock Converse API under the hood. This enables native tool/function calling and streaming.
+
+<Tabs>
+<Tab title="Gateway (Anthropic model)">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/anthropic--claude-3.5-sonnet",
+    "input": [
+      {"role": "user", "content": [
+        {"type": "input_text", "text": "What\'s the weather in Paris?"}
+      ]}
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Gateway (Streaming)">
+
+```bash
+curl -N -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/anthropic--claude-3.5-sonnet",
+    "input": [
+      {"role": "user", "content": [
+        {"type": "input_text", "text": "Write a short poem about the sea"}
+      ]}
+    ],
+    "stream": true
+  }'
+```
+
+</Tab>
+<Tab title="Gateway (With Tools)">
+
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_BIFROST_KEY" \
+  -d '{
+    "model": "sapaicore/anthropic--claude-3.5-sonnet",
+    "input": [
+      {"role": "user", "content": [
+        {"type": "input_text", "text": "What\'s the weather in Paris and Berlin?"}
+      ]}
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "description": "Get current weather by city name",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {"type": "string"}
+            },
+            "required": ["city"]
+          }
+        }
+      }
+    ]
+  }'
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Currently, the SAP AI Core provider supports the Responses API only for Bedrock-backed models (Anthropic/Amazon). OpenAI/Vertex-backed models should use Chat Completions.
+</Note>
 
 # 3. Deployment Resolution
 
