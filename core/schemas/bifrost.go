@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 )
 
 const (
@@ -893,48 +892,3 @@ type BifrostErrorExtraFields struct {
 	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
 }
 
-// bifrostErrorPool provides a pool for BifrostError objects to reduce allocations
-// during streaming error detection. This is particularly useful in streaming handlers
-// where error checking happens on every chunk but errors are rare.
-var bifrostErrorPool = sync.Pool{
-	New: func() interface{} {
-		return &BifrostError{
-			Error: &ErrorField{},
-		}
-	},
-}
-
-// AcquireBifrostError gets a BifrostError from the pool and resets it.
-// Use this for streaming error detection to avoid allocations on every chunk.
-func AcquireBifrostError() *BifrostError {
-	err := bifrostErrorPool.Get().(*BifrostError)
-	// Reset all fields to zero values
-	err.EventID = nil
-	err.Type = nil
-	err.IsBifrostError = false
-	err.StatusCode = nil
-	err.AllowFallbacks = nil
-	err.StreamControl = nil
-	err.ExtraFields = BifrostErrorExtraFields{}
-	// Reset ErrorField
-	if err.Error == nil {
-		err.Error = &ErrorField{}
-	} else {
-		err.Error.Type = nil
-		err.Error.Code = nil
-		err.Error.Message = ""
-		err.Error.Error = nil
-		err.Error.Param = nil
-		err.Error.EventID = nil
-	}
-	return err
-}
-
-// ReleaseBifrostError returns a BifrostError to the pool.
-// Do NOT release errors that are passed to error handlers or sent on channels,
-// as they may still be in use.
-func ReleaseBifrostError(err *BifrostError) {
-	if err != nil {
-		bifrostErrorPool.Put(err)
-	}
-}
