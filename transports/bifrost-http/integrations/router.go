@@ -51,6 +51,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -92,6 +93,7 @@ type BatchRequest struct {
 	ListRequest     *schemas.BifrostBatchListRequest
 	RetrieveRequest *schemas.BifrostBatchRetrieveRequest
 	CancelRequest   *schemas.BifrostBatchCancelRequest
+	DeleteRequest   *schemas.BifrostBatchDeleteRequest
 	ResultsRequest  *schemas.BifrostBatchResultsRequest
 }
 
@@ -199,6 +201,10 @@ type BatchCancelResponseConverter func(ctx *schemas.BifrostContext, resp *schema
 // BatchResultsResponseConverter is a function that converts BifrostBatchResultsResponse to integration-specific format.
 // It takes a BifrostBatchResultsResponse and returns the format expected by the specific integration.
 type BatchResultsResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchResultsResponse) (interface{}, error)
+
+// BatchDeleteResponseConverter is a function that converts BifrostBatchDeleteResponse to integration-specific format.
+// It takes a BifrostBatchDeleteResponse and returns the format expected by the specific integration.
+type BatchDeleteResponseConverter func(ctx *schemas.BifrostContext, resp *schemas.BifrostBatchDeleteResponse) (interface{}, error)
 
 // FileUploadResponseConverter is a function that converts BifrostFileUploadResponse to integration-specific format.
 // It takes a BifrostFileUploadResponse and returns the format expected by the specific integration.
@@ -342,6 +348,9 @@ type PostRequestCallback func(ctx *fasthttp.RequestCtx, req interface{}, resp in
 // returns a schemas.RequestType indicating the HTTP request type derived from the context.
 type HTTPRequestTypeGetter func(ctx *fasthttp.RequestCtx) schemas.RequestType
 
+// ShortCircuit is a function that determines if the request should be short-circuited.
+type ShortCircuit func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) (bool, error)
+
 // StreamConfig defines streaming-specific configuration for an integration
 //
 // SSE FORMAT BEHAVIOR:
@@ -415,6 +424,7 @@ type RouteConfig struct {
 	BatchListResponseConverter             BatchListResponseConverter             // Function to convert BifrostBatchListResponse to integration format
 	BatchRetrieveResponseConverter         BatchRetrieveResponseConverter         // Function to convert BifrostBatchRetrieveResponse to integration format
 	BatchCancelResponseConverter           BatchCancelResponseConverter           // Function to convert BifrostBatchCancelResponse to integration format
+	BatchDeleteResponseConverter           BatchDeleteResponseConverter           // Function to convert BifrostBatchDeleteResponse to integration format
 	BatchResultsResponseConverter          BatchResultsResponseConverter          // Function to convert BifrostBatchResultsResponse to integration format
 	FileUploadResponseConverter            FileUploadResponseConverter            // Function to convert BifrostFileUploadResponse to integration format
 	FileListResponseConverter              FileListResponseConverter              // Function to convert BifrostFileListResponse to integration format
@@ -435,26 +445,35 @@ type RouteConfig struct {
 	StreamConfig                           *StreamConfig                          // Optional: Streaming configuration (if nil, streaming not supported)
 	PreCallback                            PreRequestCallback                     // Optional: called after parsing but before Bifrost processing
 	PostCallback                           PostRequestCallback                    // Optional: called after request processing
+	ShortCircuit                           ShortCircuit
+}
+
+type PassthroughConfig struct {
+	Provider         schemas.ModelProvider                            // which provider's key pool to draw from
+	ProviderDetector func(*fasthttp.RequestCtx) schemas.ModelProvider // optional: dynamic provider detection
+	StripPrefix      []string                                         // e.g. "/openai" — stripped before forwarding
 }
 
 // GenericRouter provides a reusable router implementation for all integrations.
 // It handles the common flow of: parse request → convert to Bifrost → execute → convert response.
 // Integration-specific logic is handled through the RouteConfig callbacks and converters.
 type GenericRouter struct {
-	client       *bifrost.Bifrost // Bifrost client for executing requests
-	handlerStore lib.HandlerStore // Config provider for the router
-	routes       []RouteConfig    // List of route configurations
-	logger       schemas.Logger   // Logger for the router
+	client         *bifrost.Bifrost   // Bifrost client for executing requests
+	handlerStore   lib.HandlerStore   // Config provider for the router
+	routes         []RouteConfig      // List of route configurations
+	passthroughCfg *PassthroughConfig // Passthrough configuration
+	logger         schemas.Logger     // Logger for the router
 }
 
 // NewGenericRouter creates a new generic router with the given bifrost client and route configurations.
 // Each integration should create their own routes and pass them to this constructor.
-func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig, logger schemas.Logger) *GenericRouter {
+func NewGenericRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, routes []RouteConfig, passthroughCfg *PassthroughConfig, logger schemas.Logger) *GenericRouter {
 	return &GenericRouter{
-		client:       client,
-		handlerStore: handlerStore,
-		routes:       routes,
-		logger:       logger,
+		client:         client,
+		handlerStore:   handlerStore,
+		routes:         routes,
+		passthroughCfg: passthroughCfg,
+		logger:         logger,
 	}
 }
 
@@ -521,6 +540,16 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 			r.HEAD(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...))
 		default:
 			r.POST(route.Path, lib.ChainMiddlewares(handler, routeMiddlewares...)) // Default to POST
+		}
+	}
+
+	if g.passthroughCfg != nil {
+		catchAll := lib.ChainMiddlewares(g.handlePassthrough, middlewares...)
+		// Register for all methods that need forwarding
+		for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodPut, fasthttp.MethodDelete, fasthttp.MethodPatch, fasthttp.MethodHead} {
+			for _, prefix := range g.passthroughCfg.StripPrefix {
+				r.Handle(method, prefix+"/{path:*}", catchAll)
+			}
 		}
 	}
 }
@@ -603,6 +632,22 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
+		// Execute short-circuit handler if configured.
+		// If it returns handled=true the callback has already written a response
+		// to ctx and we return immediately, bypassing the Bifrost flow entirely.
+		if config.ShortCircuit != nil {
+			handled, err := config.ShortCircuit(ctx, bifrostCtx, req)
+			if err != nil {
+				defer cancel()
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "short-circuit handler error: "+err.Error()))
+				return
+			}
+			if handled {
+				defer cancel()
+				return
+			}
+		}
+
 		// Set direct key from context if available
 		if ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)) != nil {
 			key, ok := ctx.UserValue(string(schemas.BifrostContextKeyDirectKey)).(schemas.Key)
@@ -612,7 +657,11 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		}
 
 		// Handle batch requests if BatchRequestConverter is set
-		if config.BatchRequestConverter != nil {
+		// GenAI has two cases: (1) Dedicated batch routes (list/retrieve) have only BatchRequestConverter — always use batch path.
+		// (2) The models path has both BatchRequestConverter and RequestConverter — use batch path only for batch create.
+		isGenAIBatchCreate := config.Type == RouteConfigTypeGenAI && bifrostCtx.Value(isGeminiBatchCreateRequestContextKey) != nil
+		useBatchPath := config.BatchRequestConverter != nil && (config.RequestConverter == nil || config.Type != RouteConfigTypeGenAI || isGenAIBatchCreate)
+		if useBatchPath {
 			defer cancel()
 			batchReq, err := config.BatchRequestConverter(bifrostCtx, req)
 			if err != nil {
@@ -626,7 +675,6 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.handleBatchRequest(ctx, config, req, batchReq, bifrostCtx)
 			return
 		}
-
 		// Handle file requests if FileRequestConverter is set
 		if config.FileRequestConverter != nil {
 			defer cancel()
@@ -1492,6 +1540,27 @@ func (g *GenericRouter) handleBatchRequest(ctx *fasthttp.RequestCtx, config Rout
 		} else {
 			response = batchResponse
 		}
+	case schemas.BatchDeleteRequest:
+		if batchReq.DeleteRequest == nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "Invalid batch delete request"))
+			return
+		}
+		batchResponse, bifrostErr := g.client.BatchDeleteRequest(bifrostCtx, batchReq.DeleteRequest)
+		if bifrostErr != nil {
+			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
+			return
+		}
+		if config.PostCallback != nil {
+			if err := config.PostCallback(ctx, req, batchResponse); err != nil {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to execute post-request callback"))
+				return
+			}
+		}
+		if config.BatchDeleteResponseConverter != nil {
+			response, err = config.BatchDeleteResponseConverter(bifrostCtx, batchResponse)
+		} else {
+			response = batchResponse
+		}
 
 	case schemas.BatchResultsRequest:
 		if batchReq.ResultsRequest == nil {
@@ -2340,6 +2409,134 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				g.logger.Warn("Failed to write SSE done marker: %v", err)
 				cancel()
 				return // End stream on error, Bifrost handles cleanup internally
+			}
+		}
+	})
+}
+
+func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
+	cfg := g.passthroughCfg
+	// Determine which provider to use
+	provider := cfg.Provider // default
+	if cfg.ProviderDetector != nil {
+		provider = cfg.ProviderDetector(ctx)
+	}
+
+	safeHeaders := make(map[string]string)
+	ctx.Request.Header.All()(func(key, value []byte) bool {
+		keyStr := strings.ToLower(string(key))
+		switch keyStr {
+		case "authorization", "x-api-key", "x-goog-api-key",
+			"host", "connection", "transfer-encoding":
+			// drop
+		default:
+			safeHeaders[keyStr] = string(value)
+		}
+		return true
+	})
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, false, g.handlerStore.GetHeaderFilterConfig())
+
+	path := string(ctx.Path())
+	for _, prefix := range g.passthroughCfg.StripPrefix {
+		if strings.HasPrefix(path, prefix) {
+			path = path[len(prefix):]
+			break
+		}
+	}
+
+	resp, bifrostErr := g.client.Passthrough(bifrostCtx, provider, &schemas.PassthroughRequest{
+		Method:      string(ctx.Method()),
+		Path:        path,
+		RawQuery:    string(ctx.URI().QueryString()),
+		Body:        ctx.Request.Body(),
+		SafeHeaders: safeHeaders,
+	})
+	if bifrostErr != nil {
+		cancel()
+		if resp != nil {
+			fasthttp.ReleaseResponse(resp)
+		}
+		// sendError using a generic error converter
+		g.sendError(ctx, bifrostCtx, func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return err
+		}, bifrostErr)
+		return
+	}
+
+	accept := strings.ToLower(string(ctx.Request.Header.Peek("accept")))
+	respContentType := strings.ToLower(string(resp.Header.Peek("content-type")))
+	isStream := strings.Contains(accept, "text/event-stream") ||
+		strings.Contains(respContentType, "text/event-stream")
+
+	ctx.SetStatusCode(resp.StatusCode())
+	resp.Header.All()(func(key, value []byte) bool {
+		keyLower := strings.ToLower(string(key))
+		switch keyLower {
+		case "connection", "transfer-encoding":
+		case "content-length":
+			if !isStream {
+				ctx.Response.Header.SetBytesKV(key, value)
+			}
+		default:
+			ctx.Response.Header.SetBytesKV(key, value)
+		}
+		return true
+	})
+
+	if !isStream {
+		ctx.Response.SetBody(resp.Body())
+		fasthttp.ReleaseResponse(resp)
+		cancel()
+		return
+	}
+
+	// Streaming: pipe the provider's body stream directly to the client.
+	ctx.Response.SetBodyStreamWriter(func(w *bufio.Writer) {
+		defer func() {
+			if bodyStream := resp.BodyStream(); bodyStream != nil {
+				io.Copy(io.Discard, bodyStream)
+				if closer, ok := bodyStream.(io.Closer); ok {
+					closer.Close()
+				}
+			}
+			fasthttp.ReleaseResponse(resp)
+			cancel()
+		}()
+
+		bodyStream := resp.BodyStream()
+		if bodyStream == nil {
+			return
+		}
+
+		// Close the body stream if the client disconnects mid-stream.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-bifrostCtx.Done():
+				if closer, ok := bodyStream.(io.Closer); ok {
+					closer.Close()
+				}
+			case <-done:
+			}
+		}()
+		defer close(done)
+
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := bodyStream.Read(buf)
+			if n > 0 {
+				if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+					cancel()
+					return
+				}
+				if flushErr := w.Flush(); flushErr != nil {
+					cancel()
+					return
+				}
+			}
+			if readErr != nil {
+				break
 			}
 		}
 	})

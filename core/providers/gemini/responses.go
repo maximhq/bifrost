@@ -52,7 +52,7 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
 	}
 
-	if request.ToolConfig.FunctionCallingConfig != nil {
+	if request.ToolConfig != nil && request.ToolConfig.FunctionCallingConfig != nil {
 		params.ToolChoice = convertGeminiToolConfigToToolChoice(request.ToolConfig)
 	}
 
@@ -1990,8 +1990,8 @@ func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	return responsesTools
 }
 
-func convertGeminiToolConfigToToolChoice(toolConfig ToolConfig) *schemas.ResponsesToolChoice {
-	if toolConfig.FunctionCallingConfig == nil {
+func convertGeminiToolConfigToToolChoice(toolConfig *ToolConfig) *schemas.ResponsesToolChoice {
+	if toolConfig == nil || toolConfig.FunctionCallingConfig == nil {
 		return nil
 	}
 
@@ -2628,8 +2628,8 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool) []Tool {
 }
 
 // convertResponsesToolChoiceToGemini converts Responses tool choice to Gemini tool config
-func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice) ToolConfig {
-	config := ToolConfig{}
+func convertResponsesToolChoiceToGemini(toolChoice *schemas.ResponsesToolChoice) *ToolConfig {
+	config := &ToolConfig{}
 
 	if toolChoice.ResponsesToolChoiceStruct != nil {
 		funcConfig := &FunctionCallingConfig{}

@@ -33,6 +33,181 @@ func ToBifrostBatchStatus(geminiState string) schemas.BatchStatus {
 	}
 }
 
+// ToGeminiBatchStatus converts Bifrost batch status to Gemini batch job state.
+func ToGeminiBatchStatus(status schemas.BatchStatus) string {
+	switch status {
+	case schemas.BatchStatusValidating, schemas.BatchStatusInProgress:
+		return GeminiBatchStateRunning
+	case schemas.BatchStatusCompleted:
+		return GeminiBatchStateSucceeded
+	case schemas.BatchStatusFailed:
+		return GeminiBatchStateFailed
+	case schemas.BatchStatusCancelling:
+		return GeminiBatchStateCancelling
+	case schemas.BatchStatusCancelled:
+		return GeminiBatchStateCancelled
+	case schemas.BatchStatusExpired:
+		return GeminiBatchStateExpired
+	default:
+		return GeminiBatchStateUnspecified
+	}
+}
+
+// ToGeminiBatchJobResponse converts Bifrost batch create response to Gemini batch job response format.
+func ToGeminiBatchJobResponse(resp *schemas.BifrostBatchCreateResponse) *GeminiBatchJobResponse {
+	if resp == nil {
+		return nil
+	}
+
+	geminiResp := &GeminiBatchJobResponse{
+		Name: resp.ID,
+		Metadata: &GeminiBatchMetadata{
+			Name:       resp.ID,
+			Type:       "type.googleapis.com/google.ai.generativelanguage.v1beta.BatchPredictionJob",
+			CreateTime: formatGeminiTimestamp(resp.CreatedAt),
+			UpdateTime: formatGeminiTimestamp(resp.CreatedAt),
+			State:      ToGeminiBatchStatus(resp.Status),
+			BatchStats: &GeminiBatchStats{
+				RequestCount:           resp.RequestCounts.Total,
+				PendingRequestCount:    resp.RequestCounts.Total - resp.RequestCounts.Completed - resp.RequestCounts.Failed,
+				SuccessfulRequestCount: resp.RequestCounts.Completed,
+			},
+		},
+	}
+
+	if resp.OperationName != nil && *resp.OperationName != "" {
+		geminiResp.Metadata.Name = *resp.OperationName
+		geminiResp.Name = *resp.OperationName
+	}
+
+	if resp.InputFileID != "" {
+		geminiResp.Metadata.InputConfig = &GeminiBatchMetadataInputConfig{
+			FileName: resp.InputFileID,
+		}
+	}
+
+	if resp.OutputFileID != nil && *resp.OutputFileID != "" {
+		geminiResp.Dest = &GeminiBatchDest{
+			FileName: *resp.OutputFileID,
+		}
+		geminiResp.Metadata.Output = &GeminiBatchMetadataOutputConfig{
+			ResponsesFile: *resp.OutputFileID,
+		}
+	}
+
+	if resp.Status == schemas.BatchStatusCompleted || resp.Status == schemas.BatchStatusFailed || resp.Status == schemas.BatchStatusExpired {
+		geminiResp.Done = true
+	}
+
+	return geminiResp
+}
+
+// ToGeminiBatchRetrieveResponse converts a Bifrost batch retrieve response to Gemini batch job response format.
+func ToGeminiBatchRetrieveResponse(resp *schemas.BifrostBatchRetrieveResponse) *GeminiBatchJobResponse {
+	if resp == nil {
+		return nil
+	}
+
+	succeededCount := resp.RequestCounts.Succeeded
+	if succeededCount == 0 {
+		succeededCount = resp.RequestCounts.Completed
+	}
+
+	pendingCount := resp.RequestCounts.Pending
+	if pendingCount == 0 && resp.RequestCounts.Total > 0 {
+		pendingCount = resp.RequestCounts.Total - resp.RequestCounts.Completed - resp.RequestCounts.Failed
+		if pendingCount < 0 {
+			pendingCount = 0
+		}
+	}
+
+	geminiResp := &GeminiBatchJobResponse{
+		Name: resp.ID,
+		Metadata: &GeminiBatchMetadata{
+			Name:       resp.ID,
+			Type:       "type.googleapis.com/google.ai.generativelanguage.v1beta.BatchPredictionJob",
+			CreateTime: formatGeminiTimestamp(resp.CreatedAt),
+			UpdateTime: formatGeminiTimestamp(resp.CreatedAt),
+			State:      ToGeminiBatchStatus(resp.Status),
+			BatchStats: &GeminiBatchStats{
+				RequestCount:           resp.RequestCounts.Total,
+				PendingRequestCount:    pendingCount,
+				SuccessfulRequestCount: succeededCount,
+			},
+		},
+	}
+
+	if resp.OperationName != nil && *resp.OperationName != "" {
+		geminiResp.Metadata.Name = *resp.OperationName
+		geminiResp.Name = *resp.OperationName
+	}
+
+	if resp.Done != nil {
+		geminiResp.Done = *resp.Done
+	} else {
+		geminiResp.Done = resp.Status == schemas.BatchStatusCompleted ||
+			resp.Status == schemas.BatchStatusFailed ||
+			resp.Status == schemas.BatchStatusExpired ||
+			resp.Status == schemas.BatchStatusCancelled
+	}
+
+	if resp.InputFileID != "" {
+		geminiResp.Metadata.InputConfig = &GeminiBatchMetadataInputConfig{
+			FileName: resp.InputFileID,
+		}
+	}
+
+	if resp.OutputFileID != nil && *resp.OutputFileID != "" {
+		geminiResp.Dest = &GeminiBatchDest{
+			FileName: *resp.OutputFileID,
+		}
+		geminiResp.Metadata.Output = &GeminiBatchMetadataOutputConfig{
+			ResponsesFile: *resp.OutputFileID,
+		}
+	}
+
+	// Set end time from the most relevant terminal timestamp
+	var endTime int64
+	if resp.CompletedAt != nil {
+		endTime = *resp.CompletedAt
+	} else if resp.FailedAt != nil {
+		endTime = *resp.FailedAt
+	} else if resp.ExpiredAt != nil {
+		endTime = *resp.ExpiredAt
+	} else if resp.CancelledAt != nil {
+		endTime = *resp.CancelledAt
+	}
+	if endTime > 0 {
+		geminiResp.Metadata.EndTime = formatGeminiTimestamp(endTime)
+	}
+
+	return geminiResp
+}
+
+// ToGeminiBatchListResponse converts a Bifrost batch list response to Gemini format.
+func ToGeminiBatchListResponse(resp *schemas.BifrostBatchListResponse) *GeminiBatchListResponse {
+	if resp == nil {
+		return nil
+	}
+
+	operations := make([]GeminiBatchJobResponse, 0, len(resp.Data))
+	for i := range resp.Data {
+		if geminiResp := ToGeminiBatchRetrieveResponse(&resp.Data[i]); geminiResp != nil {
+			operations = append(operations, *geminiResp)
+		}
+	}
+
+	geminiListResp := &GeminiBatchListResponse{
+		Operations: operations,
+	}
+
+	if resp.NextCursor != nil {
+		geminiListResp.NextPageToken = *resp.NextCursor
+	}
+
+	return geminiListResp
+}
+
 // parseGeminiTimestamp converts Gemini RFC3339 timestamp to Unix timestamp.
 func parseGeminiTimestamp(timestamp string) int64 {
 	if timestamp == "" {
@@ -49,90 +224,6 @@ func parseGeminiTimestamp(timestamp string) int64 {
 // e.g., "batches/abc123" -> "batches/abc123"
 func extractBatchIDFromName(name string) string {
 	return name
-}
-
-// buildBatchRequestItems converts Bifrost batch requests to Gemini format.
-func buildBatchRequestItems(requests []schemas.BatchRequestItem) []GeminiBatchRequestItem {
-	items := make([]GeminiBatchRequestItem, 0, len(requests))
-
-	for _, req := range requests {
-		contents := []Content{}
-
-		// Try Body first, then fall back to Params (Anthropic SDK uses Params)
-		requestData := req.Body
-		if requestData == nil {
-			requestData = req.Params
-		}
-
-		// Extract messages from the request data - handle multiple possible types
-		// Go type assertions don't work across slice types, so we handle each case
-		if requestData != nil {
-			var messages []map[string]interface{}
-
-			// Try []interface{} first (generic JSON unmarshaling)
-			if msgsInterface, ok := requestData["messages"].([]interface{}); ok {
-				for _, m := range msgsInterface {
-					if msgMap, ok := m.(map[string]interface{}); ok {
-						messages = append(messages, msgMap)
-					}
-				}
-			} else if msgsTyped, ok := requestData["messages"].([]map[string]interface{}); ok {
-				// Try []map[string]interface{} (typed maps)
-				messages = msgsTyped
-			} else if msgsString, ok := requestData["messages"].([]map[string]string); ok {
-				// Try []map[string]string (test case format)
-				for _, m := range msgsString {
-					msgMap := make(map[string]interface{})
-					for k, v := range m {
-						msgMap[k] = v
-					}
-					messages = append(messages, msgMap)
-				}
-			}
-
-			// Process extracted messages
-			for _, msgMap := range messages {
-				role := "user"
-				if r, ok := msgMap["role"].(string); ok {
-					if r == "assistant" {
-						role = "model"
-					} else if r == "system" {
-						// System messages are handled separately in Gemini
-						continue
-					} else {
-						role = r
-					}
-				}
-
-				parts := []*Part{}
-				if c, ok := msgMap["content"].(string); ok {
-					parts = append(parts, &Part{Text: c})
-				}
-
-				contents = append(contents, Content{
-					Role:  role,
-					Parts: parts,
-				})
-			}
-		}
-
-		item := GeminiBatchRequestItem{
-			Request: GeminiBatchGenerateContentRequest{
-				Contents: contents,
-			},
-		}
-
-		// Add metadata with custom_id as key
-		if req.CustomID != "" {
-			item.Metadata = &GeminiBatchMetadata{
-				Key: req.CustomID,
-			}
-		}
-
-		items = append(items, item)
-	}
-
-	return items
 }
 
 // downloadBatchResultsFile downloads and parses a batch results file from Gemini.

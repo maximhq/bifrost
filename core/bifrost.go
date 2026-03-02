@@ -1846,6 +1846,47 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 	return response.BatchCancelResponse, nil
 }
 
+// BatchCancelRequest cancels a batch job.
+func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch delete request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch delete request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch delete request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchDeleteRequest
+	bifrostReq.BatchDeleteRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchDeleteResponse, nil
+}
+
 // BatchResultsRequest retrieves results from a completed batch job.
 func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -2108,6 +2149,56 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 		return nil, err
 	}
 	return response.FileContentResponse, nil
+}
+
+func (bifrost *Bifrost) Passthrough(
+	ctx *schemas.BifrostContext,
+	provider schemas.ModelProvider,
+	req *schemas.PassthroughRequest,
+) (*fasthttp.Response, *schemas.BifrostError) {
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+	if req == nil {
+		sc := fasthttp.StatusBadRequest
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: "passthrough request is nil"},
+		}
+	}
+	if provider == "" {
+		sc := fasthttp.StatusBadRequest
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: "provider is required for passthrough request"},
+		}
+	}
+	p := bifrost.getProviderByKey(provider)
+	if p == nil {
+		sc := fasthttp.StatusNotFound
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("provider %s not configured", provider),
+			},
+		}
+	}
+
+	// Key selection — reuses existing weighted selection logic
+	key, err := bifrost.selectKeyFromProviderForModel(ctx, schemas.UnknownRequest, provider, "", provider)
+	if err != nil {
+		sc := fasthttp.StatusServiceUnavailable
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: err.Error(), Error: err},
+		}
+	}
+
+	return p.Passthrough(ctx, key, req)
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
@@ -4960,6 +5051,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.BatchCancelResponse = batchCancelResponse
+	case schemas.BatchDeleteRequest:
+		batchDeleteResponse, bifrostError := provider.BatchDelete(req.Context, keys, req.BifrostRequest.BatchDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchDeleteResponse = batchDeleteResponse
 	case schemas.BatchResultsRequest:
 		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest)
 		if bifrostError != nil {
@@ -5649,6 +5746,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.BatchListRequest = nil
 	req.BatchRetrieveRequest = nil
 	req.BatchCancelRequest = nil
+	req.BatchDeleteRequest = nil
 	req.BatchResultsRequest = nil
 	req.ContainerCreateRequest = nil
 	req.ContainerListRequest = nil

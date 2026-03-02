@@ -19,6 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
@@ -1114,6 +1115,13 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load config %v", err)
 	}
+	s.Config.KVStore, err = kvstore.New(kvstore.Config{
+		DefaultTTL:      30 * time.Minute,
+		CleanupInterval: 1 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize kvstore: %w", err)
+	}
 	// Initialize WebSocket handler early so plugins can wire event broadcasters during Init.
 	// Log callbacks are registered later in RegisterAPIRoutes when logging plugin is available.
 	s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
@@ -1374,6 +1382,11 @@ func (s *BifrostHTTPServer) Start() error {
 			}
 			if s.Config != nil && s.Config.VectorStore != nil {
 				s.Config.VectorStore.Close(shutdownCtx, "")
+			}
+			if s.Config != nil && s.Config.KVStore != nil {
+				if err := s.Config.KVStore.Close(); err != nil {
+					logger.Warn("failed to close kvstore: %v", err)
+				}
 			}
 			logger.Info("storage engines cleanup completed")
 		}()

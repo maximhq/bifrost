@@ -20,7 +20,7 @@ type CohereRouter struct {
 // NewCohereRouter creates a new CohereRouter with the given bifrost client.
 func NewCohereRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *CohereRouter {
 	return &CohereRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, CreateCohereRouteConfigs("/cohere"), logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, CreateCohereRouteConfigs("/cohere"), nil, logger),
 	}
 }
 

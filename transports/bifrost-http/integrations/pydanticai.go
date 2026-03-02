@@ -33,6 +33,6 @@ func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore,
 	// Supports: converse, converse-stream, invoke, invoke-with-response-stream
 	routes = append(routes, CreateBedrockRouteConfigs("/pydanticai", handlerStore)...)
 	return &PydanticAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }

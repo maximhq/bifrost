@@ -42,6 +42,7 @@ type FileObject struct {
 	Object        string      `json:"object,omitempty"` // "file"
 	Bytes         int64       `json:"bytes"`
 	CreatedAt     int64       `json:"created_at"`
+	UpdatedAt     int64       `json:"updated_at,omitempty"`
 	Filename      string      `json:"filename"`
 	Purpose       FilePurpose `json:"purpose"`
 	Status        FileStatus  `json:"status,omitempty"`
@@ -179,6 +180,7 @@ type BifrostFileRetrieveResponse struct {
 	Object        string      `json:"object,omitempty"` // "file"
 	Bytes         int64       `json:"bytes"`
 	CreatedAt     int64       `json:"created_at"`
+	UpdatedAt     int64       `json:"updated_at,omitempty"`
 	Filename      string      `json:"filename"`
 	Purpose       FilePurpose `json:"purpose"`
 	Status        FileStatus  `json:"status,omitempty"`

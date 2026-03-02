@@ -74,10 +74,10 @@ type BifrostBatchCreateRequest struct {
 	Requests []BatchRequestItem `json:"requests,omitempty"` // Inline request items
 
 	// Common fields
-	Endpoint            BatchEndpoint      `json:"endpoint,omitempty"`              // Target endpoint for batch requests
-	CompletionWindow    string             `json:"completion_window,omitempty"`     // Time window (e.g., "24h")
-	Metadata            map[string]string  `json:"metadata,omitempty"`              // User-provided metadata
-	OutputExpiresAfter  *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
+	Endpoint           BatchEndpoint      `json:"endpoint,omitempty"`             // Target endpoint for batch requests
+	CompletionWindow   string             `json:"completion_window,omitempty"`    // Time window (e.g., "24h")
+	Metadata           map[string]string  `json:"metadata,omitempty"`             // User-provided metadata
+	OutputExpiresAfter *BatchExpiresAfter `json:"output_expires_after,omitempty"` // Expiration for batch output (OpenAI only)
 
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]interface{} `json:"-"`
@@ -233,6 +233,33 @@ type BifrostBatchCancelResponse struct {
 	RequestCounts BatchRequestCounts `json:"request_counts,omitempty"`
 	CancellingAt  *int64             `json:"cancelling_at,omitempty"`
 	CancelledAt   *int64             `json:"cancelled_at,omitempty"`
+
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// BifrostBatchDeleteRequest represents a request to delete a batch job.
+type BifrostBatchDeleteRequest struct {
+	Provider ModelProvider `json:"provider"`
+	Model    *string       `json:"model"`
+	BatchID  string        `json:"batch_id"` // ID of the batch to delete
+
+	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
+
+	// Extra parameters for provider-specific features
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetRawRequestBody returns the raw request body.
+func (request *BifrostBatchDeleteRequest) GetRawRequestBody() []byte {
+	return request.RawRequestBody
+}
+
+// BifrostBatchDeleteResponse represents the response from deleting a batch job.
+type BifrostBatchDeleteResponse struct {
+	ID            string             `json:"id"`
+	Object        string             `json:"object,omitempty"`
+	Status        BatchStatus        `json:"status"`
+	RequestCounts BatchRequestCounts `json:"request_counts,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }

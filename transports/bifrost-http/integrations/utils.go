@@ -388,3 +388,11 @@ func ParseProviderScopedVideoID(videoID string) (schemas.ModelProvider, string, 
 
 	return provider, rawID, nil
 }
+
+func getProviderFromHeader(ctx *fasthttp.RequestCtx, defaultProvider schemas.ModelProvider) schemas.ModelProvider {
+	providerHeader := string(ctx.Request.Header.Peek("x-model-provider"))
+	if providerHeader == "" {
+		return defaultProvider
+	}
+	return schemas.ModelProvider(providerHeader)
+}
