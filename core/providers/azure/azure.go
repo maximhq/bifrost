@@ -68,6 +68,25 @@ func (p *AzureProvider) getOrCreateAuth(
 	return actual.(azcore.TokenCredential), nil
 }
 
+// getOrCreateDefaultAzureCredential returns a DefaultAzureCredential, creating and caching it if needed.
+// It automatically detects the auth environment: managed identity on Azure VMs/containers,
+// workload identity in AKS, environment variables, Azure CLI, and more.
+func (p *AzureProvider) getOrCreateDefaultAzureCredential() (azcore.TokenCredential, error) {
+	const cacheKey = "default_azure_credential"
+
+	if val, ok := p.credentials.Load(cacheKey); ok {
+		return val.(azcore.TokenCredential), nil
+	}
+
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	actual, _ := p.credentials.LoadOrStore(cacheKey, cred)
+	return actual.(azcore.TokenCredential), nil
+}
+
 // getAzureAuthHeaders returns authentication headers based on priority:
 // 1. Service Principal (client ID/secret/tenant ID) - Bearer token
 // 2. Context token - Bearer token
@@ -108,7 +127,30 @@ func (provider *AzureProvider) getAzureAuthHeaders(ctx *schemas.BifrostContext, 
 
 	value := key.Value.GetValue()
 	if value == "" {
-		return nil, providerUtils.NewBifrostOperationError("API key is empty", errors.New("API key is empty"), schemas.Azure)
+		// No explicit credentials provided - attempt DefaultAzureCredential auto-detection.
+		// This covers managed identity on Azure VMs/containers, workload identity in AKS,
+		// environment variables, Azure CLI, and more - with no config required.
+		scopes := getAzureScopes(nil)
+		if key.AzureKeyConfig != nil {
+			scopes = getAzureScopes(key.AzureKeyConfig.Scopes)
+		}
+
+		cred, err := provider.getOrCreateDefaultAzureCredential()
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential unavailable", err, schemas.Azure)
+		}
+
+		token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: scopes})
+		if err != nil {
+			return nil, providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential failed to get token", err, schemas.Azure)
+		}
+
+		if token.Token == "" {
+			return nil, providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential returned empty token", errors.New("token is empty"), schemas.Azure)
+		}
+
+		authHeader["Authorization"] = fmt.Sprintf("Bearer %s", token.Token)
+		return authHeader, nil
 	}
 
 	// API key authentication

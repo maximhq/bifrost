@@ -290,6 +290,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationWidenEncryptedVarcharColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4022,6 +4025,58 @@ func migrationWidenEncryptedVarcharColumns(ctx context.Context, db *gorm.DB) err
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running widen encrypted varchar columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddBedrockAssumeRoleColumns adds bedrock_role_arn, bedrock_external_id, and bedrock_role_session_name
+// columns to the config_keys table for STS AssumeRole support in Bedrock keys.
+func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_bedrock_assume_role_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableKey{}, "bedrock_role_arn") {
+				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_role_arn"); err != nil {
+					return fmt.Errorf("failed to add bedrock_role_arn column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableKey{}, "bedrock_external_id") {
+				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_external_id"); err != nil {
+					return fmt.Errorf("failed to add bedrock_external_id column: %w", err)
+				}
+			}
+			if !mg.HasColumn(&tables.TableKey{}, "bedrock_role_session_name") {
+				if err := mg.AddColumn(&tables.TableKey{}, "bedrock_role_session_name"); err != nil {
+					return fmt.Errorf("failed to add bedrock_role_session_name column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_arn") {
+				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_arn"); err != nil {
+					return fmt.Errorf("failed to drop bedrock_role_arn column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableKey{}, "bedrock_external_id") {
+				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_external_id"); err != nil {
+					return fmt.Errorf("failed to drop bedrock_external_id column: %w", err)
+				}
+			}
+			if mg.HasColumn(&tables.TableKey{}, "bedrock_role_session_name") {
+				if err := mg.DropColumn(&tables.TableKey{}, "bedrock_role_session_name"); err != nil {
+					return fmt.Errorf("failed to drop bedrock_role_session_name column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
 	}
 	return nil
 }

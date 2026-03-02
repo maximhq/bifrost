@@ -8,7 +8,8 @@ icon: "microsoft"
 
 Azure is a cloud provider offering access to OpenAI and Anthropic models through the Azure OpenAI Service. Bifrost performs conversions including:
 - **Deployment mapping** - Model identifiers mapped to Azure deployment IDs with version handling
-- **Authentication modes** - API key or bearer token (OAuth) support
+- **Authentication modes** - API key, Entra ID (Service Principal), or Managed Identity (DefaultAzureCredential) with
+  automatic environment detection
 - **Model routing** - Automatic provider detection (OpenAI vs Anthropic) based on deployment
 - **API versioning** - Configurable API versions with preview support for Responses API
 - **Custom endpoints** - Full control over Azure endpoint configuration
@@ -92,7 +93,24 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
 
 ### Key Configuration
 
-Azure supports two authentication methods:
+Azure supports three authentication methods: **Managed Identity** (DefaultAzureCredential), **Entra ID** (Service Principal), and **Direct** (API Key). Precedence: Entra ID (if configured) → API key (if `value` set) → DefaultAzureCredential.
+
+#### Managed Identity / DefaultAzureCredential
+
+If no API key and no Entra ID credentials are provided, Bifrost automatically uses `DefaultAzureCredential`, which
+detects the auth environment.
+
+```json
+{
+  "azure_key_config": {
+    "endpoint": "https://your-org.openai.azure.com",
+    "api_version": "2024-10-21",
+    "deployments": {
+      "gpt-4": "my-gpt4-deployment"
+    }
+  }
+}
+```
 
 #### Azure Entra ID (Service Principal)
 

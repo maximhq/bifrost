@@ -811,7 +811,64 @@ S3-backed file operations. Files are stored in S3 buckets integrated with Bedroc
 
 # 11. AWS Authentication & Configuration
 
-Bifrost automatically handles AWS Bedrock authentication via multiple methods including explicit credentials, IAM roles, and bearer tokens with automatic Signature Version 4 (SigV4) signing.
+Bifrost signs every Bedrock request with AWS Signature Version 4 (SigV4). Credentials are resolved in the following priority order, and STS AssumeRole can be layered on top of any of them.
+
+## Authentication Methods
+
+### 1. Explicit Credentials
+
+Provide `access_key` and `secret_key` directly in `bedrock_key_config`. Optionally include a `session_token` for pre-obtained temporary credentials.
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "us-east-1"
+  }
+}
+```
+
+### 2. Default Credential Chain (IAM Role / Instance Profile)
+
+Leave `access_key` and `secret_key` empty (or omit them). Bifrost calls AWS `LoadDefaultConfig` which automatically resolves credentials from the environment in this order:
+
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
+- EKS IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN`)
+- ECS task role
+- EC2 instance profile (IMDS)
+- `~/.aws/credentials` default profile
+
+```json
+{
+  "bedrock_key_config": {
+    "region": "us-east-1"
+  }
+}
+```
+
+### 3. STS AssumeRole
+
+Set `role_arn` to assume an IAM role before signing requests. AssumeRole requires a valid source identity — it works when credentials are available either via explicit `access_key`/`secret_key` in key config, or via the default credential chain (environment variables, EC2 instance profile, ECS task role, EKS IRSA, etc.). **If no credentials are available from either source, AssumeRole will fail.**
+
+```json
+{
+  "bedrock_key_config": {
+    "role_arn": "arn:aws:iam::123456789012:role/BedrockRole",
+    "external_id": "optional-external-id",
+    "session_name": "my-session",
+    "region": "us-east-1"
+  }
+}
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `role_arn` | Yes (for STS) | - | IAM role ARN to assume |
+| `external_id` | No | - | Required when the role's trust policy demands it |
+| `session_name` | No | `bifrost-session` | Identifies the session in CloudTrail logs |
+
 
 ## Setup & Configuration
 

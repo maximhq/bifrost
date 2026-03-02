@@ -1816,13 +1816,13 @@ func ResolveFrameworkPricingConfig(
 	syncDuration := time.Duration(*resolvedSyncSeconds) * time.Second
 
 	return &configstoreTables.TableFrameworkConfig{
-		ID:                  configID,
-		PricingURL:          resolvedPricingURL,
-		PricingSyncInterval: resolvedSyncSeconds,
-	}, &modelcatalog.Config{
-		PricingURL:          resolvedPricingURL,
-		PricingSyncInterval: &syncDuration,
-	}, needsDBUpdate
+			ID:                  configID,
+			PricingURL:          resolvedPricingURL,
+			PricingSyncInterval: resolvedSyncSeconds,
+		}, &modelcatalog.Config{
+			PricingURL:          resolvedPricingURL,
+			PricingSyncInterval: &syncDuration,
+		}, needsDBUpdate
 }
 
 // initFrameworkConfigFromFile initializes framework config and pricing manager from file
@@ -3531,8 +3531,9 @@ func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
 	availableProviders := []schemas.ModelProvider{}
 	for provider, config := range c.Providers {
 		// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
+		// If the provider allows empty keys, add the provider to the list.
 		for _, key := range config.Keys {
-			if key.Value.GetValue() != "" {
+			if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
 				if key.Enabled != nil && !*key.Enabled {
 					continue
 				}

@@ -13,10 +13,11 @@ import (
 )
 
 // setAzureAuth sets the Azure authentication header on the request for OpenAI models.
-// It handles three authentication methods in order of priority:
+// It handles authentication in order of priority:
 // 1. Service Principal (client ID/secret/tenant ID) - uses Bearer token
 // 2. Context token - uses Bearer token
 // 3. API key - uses api-key header
+// 4. DefaultAzureCredential auto-detection (managed identity, workload identity, env vars, CLI)
 func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
 	// Service Principal authentication
 	if key.AzureKeyConfig != nil && key.AzureKeyConfig.ClientID != nil &&
@@ -52,8 +53,35 @@ func (provider *AzureProvider) setAzureAuth(ctx context.Context, req *fasthttp.R
 	}
 
 	// API key authentication
-	req.Header.Del("Authorization")
-	req.Header.Set("api-key", key.Value.GetValue())
+	value := key.Value.GetValue()
+	if value != "" {
+		req.Header.Del("Authorization")
+		req.Header.Set("api-key", value)
+		return nil
+	}
+
+	// No explicit credentials - attempt DefaultAzureCredential auto-detection.
+	scopes := getAzureScopes(nil)
+	if key.AzureKeyConfig != nil {
+		scopes = getAzureScopes(key.AzureKeyConfig.Scopes)
+	}
+
+	cred, err := provider.getOrCreateDefaultAzureCredential()
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential unavailable", err, schemas.Azure)
+	}
+
+	token, err := cred.GetToken(ctx, policy.TokenRequestOptions{Scopes: scopes})
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential failed to get token", err, schemas.Azure)
+	}
+
+	if token.Token == "" {
+		return providerUtils.NewBifrostOperationError("no credentials provided and DefaultAzureCredential returned empty token", fmt.Errorf("token is empty"), schemas.Azure)
+	}
+
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.Token))
+	req.Header.Del("api-key")
 	return nil
 }
 

@@ -318,6 +318,9 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 				dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 				dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+				dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
+				dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
+				dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
 				if key.BedrockKeyConfig.BatchS3Config != nil {
 					data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 					if err != nil {
@@ -341,11 +344,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 
 			if result.Error == nil {
 				// Update existing key with new data
-				dbKey.ID = existingKey.ID                           // Keep the same database ID
-				dbKey.ProviderID = existingKey.ProviderID           // Preserve the existing ProviderID
-				dbKey.Enabled = existingKey.Enabled                 // Preserve the existing Enabled status
-				dbKey.Status = existingKey.Status                   // Preserve status (UI-managed)
-				dbKey.Description = existingKey.Description         // Preserve description (UI-managed)
+				dbKey.ID = existingKey.ID                             // Keep the same database ID
+				dbKey.ProviderID = existingKey.ProviderID             // Preserve the existing ProviderID
+				dbKey.Enabled = existingKey.Enabled                   // Preserve the existing Enabled status
+				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
+				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
@@ -355,12 +358,12 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				result = txDB.WithContext(ctx).Where("name = ?", dbKey.Name).First(&existingKey)
 				if result.Error == nil {
 					// Found by name - update existing key, preserve original KeyID
-					dbKey.ID = existingKey.ID                           // Keep the same database ID
-					dbKey.KeyID = existingKey.KeyID                     // Preserve original KeyID
-					dbKey.ProviderID = existingKey.ProviderID           // Preserve the existing ProviderID
-					dbKey.Enabled = existingKey.Enabled                 // Preserve the existing Enabled status
-					dbKey.Status = existingKey.Status                   // Preserve status (UI-managed)
-					dbKey.Description = existingKey.Description         // Preserve description (UI-managed)
+					dbKey.ID = existingKey.ID                             // Keep the same database ID
+					dbKey.KeyID = existingKey.KeyID                       // Preserve original KeyID
+					dbKey.ProviderID = existingKey.ProviderID             // Preserve the existing ProviderID
+					dbKey.Enabled = existingKey.Enabled                   // Preserve the existing Enabled status
+					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
+					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
@@ -482,6 +485,9 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
+			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
+			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 				if err != nil {
@@ -596,6 +602,9 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.BedrockSessionToken = key.BedrockKeyConfig.SessionToken
 			dbKey.BedrockRegion = key.BedrockKeyConfig.Region
 			dbKey.BedrockARN = key.BedrockKeyConfig.ARN
+			dbKey.BedrockRoleARN = key.BedrockKeyConfig.RoleARN
+			dbKey.BedrockExternalID = key.BedrockKeyConfig.ExternalID
+			dbKey.BedrockRoleSessionName = key.BedrockKeyConfig.RoleSessionName
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				data, err := sonic.Marshal(key.BedrockKeyConfig.BatchS3Config)
 				if err != nil {
@@ -637,7 +646,7 @@ func (s *RDBConfigStore) DeleteProvider(ctx context.Context, provider schemas.Mo
 	// Store the budget and rate limit IDs before deleting
 	budgetID := dbProvider.BudgetID
 	rateLimitID := dbProvider.RateLimitID
-	
+
 	// Delete the provider first (keys will be deleted due to CASCADE constraint)
 	if err := txDB.WithContext(ctx).Delete(&dbProvider).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

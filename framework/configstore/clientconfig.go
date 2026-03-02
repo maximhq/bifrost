@@ -354,6 +354,15 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			if key.BedrockKeyConfig.ARN != nil {
 				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
 			}
+			if key.BedrockKeyConfig.RoleARN != nil {
+				bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
+			}
+			if key.BedrockKeyConfig.ExternalID != nil {
+				bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
+			}
+			if key.BedrockKeyConfig.RoleSessionName != nil {
+				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
+			}
 			// Add back s3 config
 			if key.BedrockKeyConfig.BatchS3Config != nil {
 				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config

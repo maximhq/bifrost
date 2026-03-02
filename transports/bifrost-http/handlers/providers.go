@@ -935,6 +935,30 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 						mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
 					}
 				}
+				if updateKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleARN.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockKeyConfig.RoleARN) {
+						mergedKey.BedrockKeyConfig.RoleARN = oldRawKey.BedrockKeyConfig.RoleARN
+					}
+				}
+				if updateKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRedactedKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.ExternalID.IsRedacted() &&
+						updateKey.BedrockKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockKeyConfig.ExternalID) {
+						mergedKey.BedrockKeyConfig.ExternalID = oldRawKey.BedrockKeyConfig.ExternalID
+					}
+				}
+				if updateKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockKeyConfig.RoleSessionName) {
+						mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
+					}
+				}
 			}
 
 			// Handle VLLM config redacted values
