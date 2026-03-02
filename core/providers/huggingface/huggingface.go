@@ -126,12 +126,12 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	originalModelName string,
 	requiredTask string,
 	requestType schemas.RequestType,
-) ([]byte, time.Duration, *schemas.BifrostError) {
+) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 
 	// Build URL with original model name
 	url, urlErr := provider.getInferenceProviderRouteURL(ctx, inferenceProvider, originalModelName, requestType)
 	if urlErr != nil {
-		return nil, 0, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
+		return nil, 0, nil, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
 	}
 
 	// For fal-ai, nebius, and together image generation, skip validation (model format is already correct)
@@ -144,7 +144,7 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	} else {
 		modelName, err = provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 	}
 
@@ -167,7 +167,7 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 	}
 
 	// Make the request
-	responseBody, latency, err := provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
 	if err != nil {
 		// If we got a 404, clear cache and retry once
 		if err.StatusCode != nil && *err.StatusCode == 404 {
@@ -181,7 +181,7 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 				var retryErr *schemas.BifrostError
 				modelName, retryErr = provider.getValidatedProviderModelID(ctx, inferenceProvider, originalModelName, requiredTask, requestType)
 				if retryErr != nil {
-					return nil, 0, retryErr
+					return nil, 0, nil, retryErr
 				}
 			}
 
@@ -205,23 +205,23 @@ func (provider *HuggingFaceProvider) completeRequestWithModelAliasCache(
 			}
 			url, urlErr = provider.getInferenceProviderRouteURL(ctx, inferenceProvider, retryModelName, requestType)
 			if urlErr != nil {
-				return nil, 0, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
+				return nil, 0, nil, providerUtils.NewUnsupportedOperationError(requestType, provider.GetProviderKey())
 			}
 
 			// Retry the request
-			responseBody, latency, err = provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
+			responseBody, latency, providerResponseHeaders, err = provider.completeRequest(ctx, updatedJSONData, url, key, isHFInferenceAudioRequest, isHFInferenceImageRequest)
 			if err != nil {
-				return nil, 0, err
+				return nil, 0, nil, err
 			}
 		} else {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 	}
 
-	return responseBody, latency, nil
+	return responseBody, latency, providerResponseHeaders, nil
 }
 
-func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, isHFInferenceAudioRequest bool, isHFInferenceImageRequest bool) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, isHFInferenceAudioRequest bool, isHFInferenceImageRequest bool) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -248,24 +248,27 @@ func (provider *HuggingFaceProvider) completeRequest(ctx *schemas.BifrostContext
 
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
-		return nil, latency, bifrostErr
+		return nil, latency, nil, bifrostErr
 	}
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, latency, parseHuggingFaceImageError(resp, nil)
+		return nil, latency, nil, parseHuggingFaceImageError(resp, nil)
 	}
+
+	// Extract provider response headers before releasing the response
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
+		return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err, provider.GetProviderKey())
 	}
 
 	// Read the response body and copy it before releasing the response
 	// to avoid use-after-free since resp.Body() references fasthttp's internal buffer
 	bodyCopy := append([]byte(nil), body...)
 
-	return bodyCopy, latency, nil
+	return bodyCopy, latency, providerResponseHeaders, nil
 }
 
 func (provider *HuggingFaceProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -489,7 +492,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 
 	requestURL := provider.buildRequestURL(ctx, "/v1/chat/completions", schemas.ChatCompletionRequest)
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, requestURL, key.Value.GetValue(), false, false)
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, requestURL, key.Value.GetValue(), false, false)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -517,6 +520,7 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -657,7 +661,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequestWithModelAliasCache(
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequestWithModelAliasCache(
 		ctx,
 		jsonBody,
 		key.Value.GetValue(),
@@ -697,6 +701,7 @@ func (provider *HuggingFaceProvider) Embedding(ctx *schemas.BifrostContext, key 
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -743,7 +748,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequestWithModelAliasCache(
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequestWithModelAliasCache(
 		ctx,
 		jsonData,
 		key.Value.GetValue(),
@@ -784,6 +789,7 @@ func (provider *HuggingFaceProvider) Speech(ctx *schemas.BifrostContext, key sch
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.SpeechRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
@@ -849,7 +855,7 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 		}
 	}
 
-	responseBody, latency, err := provider.completeRequestWithModelAliasCache(
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequestWithModelAliasCache(
 		ctx,
 		jsonData,
 		key.Value.GetValue(),
@@ -896,6 +902,7 @@ func (provider *HuggingFaceProvider) Transcription(ctx *schemas.BifrostContext, 
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.TranscriptionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		bifrostResponse.ExtraFields.RawResponse = rawResponse
 	}
@@ -946,7 +953,7 @@ func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext
 		return nil, err
 	}
 
-	responseBody, latency, err := provider.completeRequestWithModelAliasCache(
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequestWithModelAliasCache(
 		ctx,
 		jsonBody,
 		key.Value.GetValue(),
@@ -988,6 +995,7 @@ func (provider *HuggingFaceProvider) ImageGeneration(ctx *schemas.BifrostContext
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.ImageGenerationRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1215,33 +1223,38 @@ func HandleHuggingFaceImageGenerationStreaming(
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := &schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: errorResp.Message,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       providerName,
+								ModelRequested: request.Model,
+								RequestType:    schemas.ImageGenerationStreamRequest,
+							},
+						}
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}
@@ -1387,7 +1400,7 @@ func (provider *HuggingFaceProvider) ImageEdit(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
 	}
 
-	responseBody, latency, err := provider.completeRequest(ctx, jsonBody, url, key.Value.GetValue(), false, true)
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, url, key.Value.GetValue(), false, true)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1419,6 +1432,7 @@ func (provider *HuggingFaceProvider) ImageEdit(ctx *schemas.BifrostContext, key 
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.RequestType = schemas.ImageEditRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1620,33 +1634,38 @@ func (provider *HuggingFaceProvider) ImageEditStream(ctx *schemas.BifrostContext
 				continue
 			}
 
-			// Try to parse as error first
-			var errorResp HuggingFaceResponseError
-			if err := sonic.Unmarshal([]byte(jsonData), &errorResp); err == nil {
-				if errorResp.Error != "" || errorResp.Message != "" {
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorResp.Message,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
-						},
+			// Quick check for error/message fields (allocation-free using sonic.GetFromString)
+			errorNode, _ := sonic.GetFromString(jsonData, "error")
+			messageNode, _ := sonic.GetFromString(jsonData, "message")
+			if errorNode.Exists() || messageNode.Exists() {
+				// Only unmarshal when we know there might be an error
+				var errorResp HuggingFaceResponseError
+				if err := sonic.UnmarshalString(jsonData, &errorResp); err == nil {
+					if errorResp.Error != "" || errorResp.Message != "" {
+						bifrostErr := &schemas.BifrostError{
+							IsBifrostError: false,
+							Error: &schemas.ErrorField{
+								Message: errorResp.Message,
+							},
+							ExtraFields: schemas.BifrostErrorExtraFields{
+								Provider:       providerName,
+								ModelRequested: request.Model,
+								RequestType:    schemas.ImageEditStreamRequest,
+							},
+						}
+						if errorResp.Error != "" {
+							bifrostErr.Error.Message = errorResp.Error
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+						return
 					}
-					if errorResp.Error != "" {
-						bifrostErr.Error.Message = errorResp.Error
-					}
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-					return
 				}
 			}
 
 			// Parse fal-ai response
 			var response HuggingFaceFalAIImageStreamResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &response); err != nil {
+			if err := sonic.UnmarshalString(jsonData, &response); err != nil {
 				provider.logger.Warn(fmt.Sprintf("Failed to parse fal-ai stream response: %v", err))
 				continue
 			}

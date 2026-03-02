@@ -321,19 +321,13 @@ func (a *Accumulator) processImageStreamingResponse(ctx *schemas.BifrostContext,
 		return nil, nil
 	}
 
-	// This is going to be a delta response
-	data, processErr := a.processAccumulatedImageStreamingChunks(requestID, bifrostErr, isFinalChunk)
-	if processErr != nil {
-		a.logger.Error(fmt.Sprintf("failed to process accumulated chunks for request %s: %v", requestID, processErr))
-		return nil, processErr
-	}
-
-	// This is not the final chunk, so we will send back the delta
+	// Non-final chunk: skip expensive rebuild since no consumer uses intermediate data.
+	// Both logging and maxim plugins return early when !isFinalChunk.
 	return &ProcessedStreamResponse{
 		RequestID:  requestID,
 		StreamType: StreamTypeImage,
 		Provider:   provider,
 		Model:      model,
-		Data:       data,
+		Data:       nil,
 	}, nil
 }

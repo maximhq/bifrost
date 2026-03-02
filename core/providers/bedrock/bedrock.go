@@ -89,7 +89,7 @@ func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 // completeRequest sends a request to Bedrock's API and handles the response.
 // It constructs the API URL, sets up AWS authentication, and processes the response.
 // Returns the response body, request latency, or an error if the request fails.
-func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key) ([]byte, time.Duration, *schemas.BifrostError) {
+func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, path string, key schemas.Key) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	config := key.BedrockKeyConfig
 
 	region := DefaultBedrockRegion
@@ -100,7 +100,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	// Create the request with the JSON body
 	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s", region, path), bytes.NewBuffer(jsonData))
 	if err != nil {
-		return nil, 0, &schemas.BifrostError{
+		return nil, 0, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error creating request",
@@ -118,7 +118,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	} else {
 		// Sign the request using either explicit credentials or IAM role authentication
 		if err := signAWSRequest(ctx, req, config.AccessKey, config.SecretKey, config.SessionToken, region, "bedrock", provider.GetProviderKey()); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 	}
 
@@ -128,7 +128,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	latency := time.Since(startTime)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil, latency, &schemas.BifrostError{
+			return nil, latency, nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
@@ -140,16 +140,16 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		// Check for timeout first using net.Error before checking net.OpError
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+			return nil, latency, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
 		}
 		// Check for DNS lookup and network errors after timeout checks
 		var opErr *net.OpError
 		var dnsErr *net.DNSError
 		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, &schemas.BifrostError{
+			return nil, latency, nil, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
 					Message: schemas.ErrProviderNetworkError,
@@ -157,7 +157,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 				},
 			}
 		}
-		return nil, latency, &schemas.BifrostError{
+		return nil, latency, nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
 				Message: schemas.ErrProviderDoRequest,
@@ -165,12 +165,15 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 			},
 		}
 	}
+
+	// Extract provider response headers before closing the body
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeadersFromHTTP(resp)
 	defer resp.Body.Close()
 
 	// Read response body
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, latency, &schemas.BifrostError{
+		return nil, latency, nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
 				Message: "error reading request",
@@ -188,7 +191,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 
 		if err := sonic.Unmarshal(body, &errorResp); err != nil {
-			return nil, latency, &schemas.BifrostError{
+			return nil, latency, nil, &schemas.BifrostError{
 				IsBifrostError: true,
 				StatusCode:     &resp.StatusCode,
 				Error: &schemas.ErrorField{
@@ -201,7 +204,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 			}
 		}
 
-		return nil, latency, &schemas.BifrostError{
+		return nil, latency, nil, &schemas.BifrostError{
 			StatusCode: &resp.StatusCode,
 			Error: &schemas.ErrorField{
 				Message: errorResp.Message,
@@ -212,7 +215,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 		}
 	}
 
-	return body, latency, nil
+	return body, latency, providerResponseHeaders, nil
 }
 
 // completeAgentRuntimeRequest sends a request to Bedrock Agent Runtime API and handles the response.
@@ -658,7 +661,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	}
 
 	path, deployment := provider.getModelPath("invoke", request.Model, key)
-	body, latency, err := provider.completeRequest(ctx, jsonData, path, key)
+	body, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, path, key)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -690,6 +693,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.TextCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -737,6 +741,8 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeadersFromHTTP(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -865,7 +871,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	path, deployment := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -901,6 +907,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -943,6 +950,8 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeadersFromHTTP(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1206,7 +1215,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	path, deployment := provider.getModelPath("converse", request.Model, key)
 
 	// Create the signed request
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1234,6 +1243,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.ResponsesRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1276,6 +1286,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeadersFromHTTP(resp))
 
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
@@ -1526,6 +1538,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	var rawResponse []byte
 	var bifrostError *schemas.BifrostError
 	var latency time.Duration
+	var providerResponseHeaders map[string]string
 	var path string
 	var deployment string
 	var jsonData []byte
@@ -1543,7 +1556,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			return nil, bifrostError
 		}
 		path, deployment = provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 
 	case "cohere":
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
@@ -1557,7 +1570,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 			return nil, bifrostError
 		}
 		path, deployment = provider.getModelPath("invoke", request.Model, key)
-		rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+		rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 
 	default:
 		return nil, providerUtils.NewConfigurationError("unsupported embedding model type", providerName)
@@ -1593,6 +1606,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.RequestType = schemas.EmbeddingRequest
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -1704,6 +1718,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	var jsonData []byte
 	var bifrostError *schemas.BifrostError
 	var latency time.Duration
+	var providerResponseHeaders map[string]string
 	var path string
 	var deployment string
 
@@ -1718,7 +1733,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 		return nil, bifrostError
 	}
 	path, deployment = provider.getModelPath("invoke", request.Model, key)
-	rawResponse, latency, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError = provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostError != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1741,6 +1756,7 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1790,7 +1806,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 
 	// Make API request (same URL as image generation)
 	path, deployment := provider.getModelPath("invoke", request.Model, key)
-	rawResponse, latency, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostError != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1813,6 +1829,7 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request/response if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -1863,7 +1880,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 
 	// Make API request (same URL as image generation)
 	path, deployment := provider.getModelPath("invoke", request.Model, key)
-	rawResponse, latency, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
+	rawResponse, latency, providerResponseHeaders, bifrostError := provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostError != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostError, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -1886,6 +1903,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	bifrostResponse.ExtraFields.ModelRequested = request.Model
 	bifrostResponse.ExtraFields.ModelDeployment = deployment
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request/response if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -3411,7 +3429,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	path, deployment := provider.getModelPath("count-tokens", request.Model, key)
 
 	// Send the request
-	responseBody, latency, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, path, key)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
@@ -3437,6 +3455,7 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 	response.ExtraFields.ModelRequested = request.Model
 	response.ExtraFields.ModelDeployment = deployment
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequest
