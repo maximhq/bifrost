@@ -40,6 +40,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 	}
+
+	// Some OpenAI-compatible providers (for example Fireworks) require reasoning_content
+	// and reject reasoning in assistant history messages.
+	openaiReq.applyReasoningMessageCompatibility(bifrostReq.Model)
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		return openaiReq
@@ -72,6 +77,35 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters()
 		return openaiReq
 	}
+}
+
+// applyReasoningMessageCompatibility applies model-specific assistant message compatibility rules.
+func (req *OpenAIChatRequest) applyReasoningMessageCompatibility(model string) {
+	if req == nil || len(req.Messages) == 0 || !isFireworksModel(model) {
+		return
+	}
+
+	for i := range req.Messages {
+		assistant := req.Messages[i].OpenAIChatAssistantMessage
+		if assistant == nil {
+			continue
+		}
+		if assistant.ReasoningContent == nil && assistant.Reasoning != nil {
+			assistant.ReasoningContent = assistant.Reasoning
+		}
+		if assistant.ReasoningContent != nil {
+			assistant.Reasoning = nil
+		}
+		// Fireworks/Kimi currently rejects reasoning_details in assistant history payloads.
+		if len(assistant.ReasoningDetails) > 0 {
+			assistant.ReasoningDetails = nil
+		}
+	}
+}
+
+func isFireworksModel(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "accounts/fireworks/models/") || strings.Contains(model, "/fireworks/")
 }
 
 // Filter OpenAI Specific Parameters

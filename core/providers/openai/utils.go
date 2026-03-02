@@ -16,11 +16,18 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.OpenAIChatAssistantMessage != nil {
+			reasoning := message.OpenAIChatAssistantMessage.Reasoning
+			if reasoning == nil {
+				reasoning = message.OpenAIChatAssistantMessage.ReasoningContent
+			}
+
 			bifrostMessages[i].ChatAssistantMessage = &schemas.ChatAssistantMessage{
-				Refusal:     message.OpenAIChatAssistantMessage.Refusal,
-				Reasoning:   message.OpenAIChatAssistantMessage.Reasoning,
-				Annotations: message.OpenAIChatAssistantMessage.Annotations,
-				ToolCalls:   message.OpenAIChatAssistantMessage.ToolCalls,
+				Refusal:          message.OpenAIChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningContent: message.OpenAIChatAssistantMessage.ReasoningContent,
+				ReasoningDetails: message.OpenAIChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.OpenAIChatAssistantMessage.Annotations,
+				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
@@ -37,11 +44,20 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			ChatToolMessage: message.ChatToolMessage,
 		}
 		if message.ChatAssistantMessage != nil {
+			reasoning := message.ChatAssistantMessage.Reasoning
+			// Prefer the explicit reasoning_content field when available so provider passthrough
+			// preserves the original wire format expected by OpenAI-compatible backends.
+			if message.ChatAssistantMessage.ReasoningContent != nil {
+				reasoning = nil
+			}
+
 			openaiMessages[i].OpenAIChatAssistantMessage = &OpenAIChatAssistantMessage{
-				Refusal:     message.ChatAssistantMessage.Refusal,
-				Reasoning:   message.ChatAssistantMessage.Reasoning,
-				Annotations: message.ChatAssistantMessage.Annotations,
-				ToolCalls:   message.ChatAssistantMessage.ToolCalls,
+				Refusal:          message.ChatAssistantMessage.Refusal,
+				Reasoning:        reasoning,
+				ReasoningContent: message.ChatAssistantMessage.ReasoningContent,
+				ReasoningDetails: message.ChatAssistantMessage.ReasoningDetails,
+				Annotations:      message.ChatAssistantMessage.Annotations,
+				ToolCalls:        message.ChatAssistantMessage.ToolCalls,
 			}
 		}
 	}
