@@ -1049,16 +1049,16 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if usage.PromptTokensDetails == nil {
 							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 						}
-						if streamEvent.Usage.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
-							usage.PromptTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
+						if streamEvent.Usage.CacheReadInputTokens > usage.PromptTokensDetails.CachedReadTokens {
+							usage.PromptTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						if usage.CompletionTokensDetails == nil {
-							usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+						if usage.PromptTokensDetails == nil {
+							usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 						}
-						if streamEvent.Usage.CacheWriteInputTokens > usage.CompletionTokensDetails.CachedTokens {
-							usage.CompletionTokensDetails.CachedTokens = streamEvent.Usage.CacheWriteInputTokens
+						if streamEvent.Usage.CacheWriteInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
+							usage.PromptTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 				}
@@ -1159,6 +1159,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
 				}
 			}
+		}
+
+		if usage.PromptTokensDetails != nil {
+			usage.PromptTokens = usage.PromptTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 		}
 
 		// Send final response
@@ -1411,16 +1415,16 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						if usage.InputTokensDetails == nil {
 							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 						}
-						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
-							usage.InputTokensDetails.CachedTokens = streamEvent.Usage.CacheReadInputTokens
+						if streamEvent.Usage.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
+							usage.InputTokensDetails.CachedReadTokens = streamEvent.Usage.CacheReadInputTokens
 						}
 					}
 					if streamEvent.Usage.CacheWriteInputTokens > 0 {
-						if usage.OutputTokensDetails == nil {
-							usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+						if usage.InputTokensDetails == nil {
+							usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 						}
-						if streamEvent.Usage.CacheWriteInputTokens > usage.OutputTokensDetails.CachedTokens {
-							usage.OutputTokensDetails.CachedTokens = streamEvent.Usage.CacheWriteInputTokens
+						if streamEvent.Usage.CacheWriteInputTokens > usage.InputTokensDetails.CachedWriteTokens {
+							usage.InputTokensDetails.CachedWriteTokens = streamEvent.Usage.CacheWriteInputTokens
 						}
 					}
 				}

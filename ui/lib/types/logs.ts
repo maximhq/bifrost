@@ -358,7 +358,8 @@ export interface ModelParameters {
 
 // Token usage types
 export interface TokenDetails {
-	cached_tokens?: number;
+	cached_read_tokens?: number;
+	cached_write_tokens?: number;
 	audio_tokens?: number;
 }
 
@@ -797,7 +798,8 @@ export interface ResponsesPrompt {
 
 // Response usage information
 export interface ResponsesResponseInputTokens {
-	cached_tokens: number;
+	cached_read_tokens: number;
+	cached_write_tokens: number;
 }
 
 export interface ResponsesResponseOutputTokens {

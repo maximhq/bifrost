@@ -393,7 +393,7 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				// Extract cached tokens
 				var cachedTokens int
 				if response.Usage.PromptTokensDetails != nil {
-					cachedTokens = response.Usage.PromptTokensDetails.CachedTokens
+					cachedTokens = response.Usage.PromptTokensDetails.CachedReadTokens + response.Usage.PromptTokensDetails.CachedWriteTokens
 				}
 
 				promptTokens := response.Usage.PromptTokens

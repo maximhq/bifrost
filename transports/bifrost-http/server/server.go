@@ -631,7 +631,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	config, err := s.Config.ConfigStore.GetClientConfig(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to get client config: %v", err)
-	}	
+	}
 	s.Config.ClientConfig = *config
 	// Reloading config in bifrost client
 	if s.Client != nil {
@@ -649,7 +649,7 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
 		})
-	}	
+	}
 	return nil
 }
 

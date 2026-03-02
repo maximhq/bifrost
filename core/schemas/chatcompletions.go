@@ -1010,9 +1010,54 @@ type ChatPromptTokensDetails struct {
 	AudioTokens int `json:"audio_tokens,omitempty"`
 	ImageTokens int `json:"image_tokens,omitempty"`
 
-	// For Providers which follow OpenAI's spec, CachedTokens means the number of input tokens read from the cache+input tokens used to create the cache entry. (because they do not differentiate between cache creation and cache read tokens)
-	// For Providers which do not follow OpenAI's spec, CachedTokens means only the number of input tokens read from the cache.
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
+	CachedReadTokens  int `json:"cached_read_tokens,omitempty"`
+	CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+}
+
+// UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
+func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		TextTokens        int  `json:"text_tokens"`
+		AudioTokens       int  `json:"audio_tokens"`
+		ImageTokens       int  `json:"image_tokens"`
+		CachedReadTokens  int  `json:"cached_read_tokens"`
+		CachedWriteTokens int  `json:"cached_write_tokens"`
+		CachedTokens      *int `json:"cached_tokens"`
+	}
+	if err := Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	d.TextTokens = raw.TextTokens
+	d.AudioTokens = raw.AudioTokens
+	d.ImageTokens = raw.ImageTokens
+	d.CachedReadTokens = raw.CachedReadTokens
+	d.CachedWriteTokens = raw.CachedWriteTokens
+	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
+	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
+		d.CachedReadTokens = *raw.CachedTokens
+	}
+	return nil
+}
+
+// MarshalJSON emits cached_tokens (read+write) alongside the individual fields for OpenAI spec compatibility.
+func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
+	type raw struct {
+		TextTokens        int `json:"text_tokens,omitempty"`
+		AudioTokens       int `json:"audio_tokens,omitempty"`
+		ImageTokens       int `json:"image_tokens,omitempty"`
+		CachedReadTokens  int `json:"cached_read_tokens,omitempty"`
+		CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+		CachedTokens      int `json:"cached_tokens,omitempty"`
+	}
+	return Marshal(raw{
+		TextTokens:        d.TextTokens,
+		AudioTokens:       d.AudioTokens,
+		ImageTokens:       d.ImageTokens,
+		CachedReadTokens:  d.CachedReadTokens,
+		CachedWriteTokens: d.CachedWriteTokens,
+		CachedTokens:      d.CachedReadTokens + d.CachedWriteTokens,
+	})
 }
 
 type ChatCompletionTokensDetails struct {
@@ -1024,9 +1069,6 @@ type ChatCompletionTokensDetails struct {
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
-
-	// This means the number of input tokens used to create the cache entry. (cache creation tokens)
-	CachedTokens int `json:"cached_tokens,omitempty"` // Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 }
 
 type BifrostCost struct {

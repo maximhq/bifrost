@@ -7,3 +7,7 @@
   </Warning>
 - fix: added missing routing logic for bedrock integration
 - fix: nil properties in tool function parameters handled
+- fix: standardized cached tokens handling for all providers
+  <Note>
+    **Breaking change.** Cache tokens moved from usage top-level into `prompt_tokens_details` (Chat) and `input_tokens_details` (Responses), with standardized keys. If you have persisted data (logs, analytics, or custom storage), migrate: (1) move `usage.cache_read_input_tokens` → `usage.prompt_tokens_details.cached_read_tokens` or `usage.input_tokens_details.cached_read_tokens`; (2) move `usage.cache_creation_input_tokens` → `usage.prompt_tokens_details.cached_write_tokens` or `usage.input_tokens_details.cached_write_tokens`.
+  </Note>

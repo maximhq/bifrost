@@ -26,10 +26,9 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { Clipboard, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
-
 import BlockHeader from "../views/blockHeader";
 import { CodeEditor } from "../views/codeEditor";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -124,6 +123,10 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</Button>
 							</DropdownMenuTrigger>
 							<DropdownMenuContent align="end">
+								<DropdownMenuItem onClick={() => copyRequestBody(log)} data-testid="logdetails-copy-request-body-button">
+									<Clipboard className="h-4 w-4" />
+									Copy request body
+								</DropdownMenuItem>
 								<AlertDialogTrigger asChild>
 									<DropdownMenuItem variant="destructive">
 										<Trash2 className="h-4 w-4" />
@@ -261,11 +264,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
 									{log.token_usage?.prompt_tokens_details && (
 										<>
-											{log.token_usage.prompt_tokens_details.cached_tokens && (
+											{(log.token_usage.prompt_tokens_details.cached_read_tokens || log.token_usage.prompt_tokens_details.cached_write_tokens) && (
 												<LogEntryDetailsView
 													className="w-full"
 													label="Cached Tokens"
-													value={log.token_usage.prompt_tokens_details.cached_tokens || "-"}
+													value={(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0) + (log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0) || "-"}
 												/>
 											)}
 											{log.token_usage.prompt_tokens_details.audio_tokens && (
@@ -711,3 +714,139 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 		</Sheet>
 	);
 }
+
+// Normalize log.object to canonical underscore form (handles dotted backend names like chat.completion, audio.speech)
+const normalizeObjectForCopy = (object: string | undefined): string => {
+	const normalized = (object?.toLowerCase() || "").replace(/\./g, "_").replace(/_chunk$/, "_stream");
+	const mapping: Record<string, string> = {
+		response: "responses",
+		response_completion_stream: "responses_stream",
+		audio_speech: "speech",
+		audio_speech_stream: "speech_stream",
+		audio_transcription: "transcription",
+		audio_transcription_stream: "transcription_stream",
+	};
+	return mapping[normalized] ?? normalized;
+};
+
+const copyRequestBody = async (log: LogEntry) => {
+	try {
+		// Check if request is for responses, chat, speech, text completion, or embedding (exclude transcriptions)
+		const object = normalizeObjectForCopy(log.object);
+		const isChat = object === "chat_completion" || object === "chat_completion_stream";
+		const isResponses = object === "responses" || object === "responses_stream";
+		const isSpeech = object === "speech" || object === "speech_stream";
+		const isTextCompletion = object === "text_completion" || object === "text_completion_stream";
+		const isEmbedding = object === "embedding";
+		const isTranscription = object === "transcription" || object === "transcription_stream";
+
+		// Skip if transcription
+		if (isTranscription) {
+			toast.error("Copy request body is not available for transcription requests");
+			return;
+		}
+
+		// Skip if not a supported request type
+		if (!isChat && !isResponses && !isSpeech && !isTextCompletion && !isEmbedding) {
+			toast.error("Copy request body is only available for chat, responses, speech, text completion, and embedding requests");
+			return;
+		}
+
+		// Helper function to extract text content from ChatMessage
+		const extractTextFromMessage = (message: any): string => {
+			if (!message || !message.content) {
+				return "";
+			}
+			if (typeof message.content === "string") {
+				return message.content;
+			}
+			if (Array.isArray(message.content)) {
+				return message.content
+					.filter((block: any) => block && block.type === "text" && block.text)
+					.map((block: any) => block.text || "")
+					.join("");
+			}
+			return "";
+		};
+
+		// Helper function to extract texts from ChatMessage content blocks (for embeddings)
+		const extractTextsFromMessage = (message: any): string[] => {
+			if (!message || !message.content) {
+				return [];
+			}
+			if (typeof message.content === "string") {
+				return message.content ? [message.content] : [];
+			}
+			if (Array.isArray(message.content)) {
+				return message.content.filter((block: any) => block && block.type === "text" && block.text).map((block: any) => block.text);
+			}
+			return [];
+		};
+
+		// Build request body following OpenAI schema
+		const requestBody: any = {
+			model: log.provider && log.model ? `${log.provider}/${log.model}` : log.model || "",
+		};
+
+		// Add messages/input/prompt based on request type
+		if (isChat && log.input_history && log.input_history.length > 0) {
+			requestBody.messages = log.input_history;
+		} else if (isResponses && log.responses_input_history && log.responses_input_history.length > 0) {
+			requestBody.input = log.responses_input_history;
+		} else if (isSpeech && log.speech_input) {
+			requestBody.input = log.speech_input.input;
+		} else if (isTextCompletion && log.input_history && log.input_history.length > 0) {
+			// For text completions, extract prompt from input_history
+			const firstMessage = log.input_history[0];
+			const prompt = extractTextFromMessage(firstMessage);
+			if (prompt) {
+				requestBody.prompt = prompt;
+			}
+		} else if (isEmbedding && log.input_history && log.input_history.length > 0) {
+			// For embeddings, extract all texts from input_history
+			const texts: string[] = [];
+			for (const message of log.input_history) {
+				const messageTexts = extractTextsFromMessage(message);
+				texts.push(...messageTexts);
+			}
+			if (texts.length > 0) {
+				// Use single string if only one text, otherwise use array
+				requestBody.input = texts.length === 1 ? texts[0] : texts;
+			}
+		}
+
+		// Add params (excluding tools and instructions as they're handled separately in OpenAI schema)
+		if (log.params) {
+			const paramsCopy = { ...log.params };
+			// Remove tools and instructions from params as they're typically top-level in OpenAI schema
+			// Keep all other params (temperature, max_tokens, voice, etc.)
+			delete paramsCopy.tools;
+			delete paramsCopy.instructions;
+
+			// Merge remaining params into request body
+			Object.assign(requestBody, paramsCopy);
+		}
+
+		// Add tools if they exist (for chat and responses) - OpenAI schema has tools at top level
+		if ((isChat || isResponses) && log.params?.tools && Array.isArray(log.params.tools) && log.params.tools.length > 0) {
+			requestBody.tools = log.params.tools;
+		}
+
+		// Add instructions if they exist (for responses) - OpenAI schema has instructions at top level
+		if (isResponses && log.params?.instructions) {
+			requestBody.instructions = log.params.instructions;
+		}
+
+		const requestBodyJson = JSON.stringify(requestBody, null, 2);
+		navigator.clipboard
+			.writeText(requestBodyJson)
+			.then(() => {
+				toast.success("Request body copied to clipboard");
+			})
+			.catch((error) => {
+				toast.error("Failed to copy request body");
+			});
+	} catch (error) {
+		toast.error("Failed to copy request body");
+	}
+};

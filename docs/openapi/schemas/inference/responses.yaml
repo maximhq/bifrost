@@ -572,8 +572,18 @@ ResponsesResponseInputTokens:
       type: integer
     image_tokens:
       type: integer
-    cached_tokens:
+    cached_read_tokens:
       type: integer
+      description: >
+        Tokens served from the prompt cache (cache hit), billed at the reduced
+        cache-read rate. Already included in the parent input_tokens total.
+    cached_write_tokens:
+      type: integer
+      description: >
+        Tokens written to the prompt cache on this request, billed at the
+        cache-creation rate. Already included in the parent input_tokens total.
+        Populated for providers that separately report cache write tokens
+        (Anthropic, Bedrock).
 
 ResponsesResponseOutputTokens:
   type: object
@@ -591,8 +601,6 @@ ResponsesResponseOutputTokens:
     citation_tokens:
       type: integer
     num_search_queries:
-      type: integer
-    cached_tokens:
       type: integer
 
 ResponsesStreamResponse:

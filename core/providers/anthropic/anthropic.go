@@ -632,17 +632,16 @@ func HandleAnthropicChatCompletionStreaming(
 					if usage.PromptTokensDetails == nil {
 						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 					}
-					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedTokens {
-						usage.PromptTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
+					if usageToProcess.CacheReadInputTokens > usage.PromptTokensDetails.CachedReadTokens {
+						usage.PromptTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
 					}
 				}
-				// Handle cached tokens if present
 				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.CompletionTokensDetails == nil {
-						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+					if usage.PromptTokensDetails == nil {
+						usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 					}
-					if usageToProcess.CacheCreationInputTokens > usage.CompletionTokensDetails.CachedTokens {
-						usage.CompletionTokensDetails.CachedTokens = usageToProcess.CacheCreationInputTokens
+					if usageToProcess.CacheCreationInputTokens > usage.PromptTokensDetails.CachedWriteTokens {
+						usage.PromptTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
 					}
 				}
 			}
@@ -774,6 +773,10 @@ func HandleAnthropicChatCompletionStreaming(
 			logger.Warn("Error reading %s stream: %v", providerName, err)
 			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ChatCompletionStreamRequest, providerName, modelName, logger)
 			return
+		}
+		if usage.PromptTokensDetails != nil {
+			usage.PromptTokens = usage.PromptTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
+			usage.TotalTokens = usage.TotalTokens + usage.PromptTokensDetails.CachedReadTokens + usage.PromptTokensDetails.CachedWriteTokens
 		}
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, modelName)
 		if postResponseConverter != nil {
@@ -1009,7 +1012,7 @@ func HandleAnthropicResponsesStream(
 		// Create stream state for stateful conversions
 		streamState := acquireAnthropicResponsesStreamState()
 		defer releaseAnthropicResponsesStreamState(streamState)
-		
+
 		// Set structured output tool name if present
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 			streamState.StructuredOutputToolName = toolName
@@ -1083,17 +1086,17 @@ func HandleAnthropicResponsesStream(
 					if usage.InputTokensDetails == nil {
 						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 					}
-					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedTokens {
-						usage.InputTokensDetails.CachedTokens = usageToProcess.CacheReadInputTokens
+					if usageToProcess.CacheReadInputTokens > usage.InputTokensDetails.CachedReadTokens {
+						usage.InputTokensDetails.CachedReadTokens = usageToProcess.CacheReadInputTokens
 					}
 				}
 				// Handle cached tokens if present
 				if usageToProcess.CacheCreationInputTokens > 0 {
-					if usage.OutputTokensDetails == nil {
-						usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+					if usage.InputTokensDetails == nil {
+						usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 					}
-					if usageToProcess.CacheCreationInputTokens > usage.OutputTokensDetails.CachedTokens {
-						usage.OutputTokensDetails.CachedTokens = usageToProcess.CacheCreationInputTokens
+					if usageToProcess.CacheCreationInputTokens > usage.InputTokensDetails.CachedWriteTokens {
+						usage.InputTokensDetails.CachedWriteTokens = usageToProcess.CacheCreationInputTokens
 					}
 				}
 			}
@@ -1141,6 +1144,10 @@ func HandleAnthropicResponsesStream(
 					if isLastChunk && i == len(responses)-1 {
 						if response.Response == nil {
 							response.Response = &schemas.BifrostResponsesResponse{}
+						}
+						if usage.InputTokensDetails != nil {
+							usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
+							usage.TotalTokens = usage.TotalTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
 						}
 						response.Response.Usage = usage
 						// Set raw request if enabled

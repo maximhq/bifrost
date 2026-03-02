@@ -1099,6 +1099,10 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 	// Note: Tool calls are already closed in the first loop above.
 	// This section is intentionally left empty to avoid duplicate events.
 
+	if usage.InputTokensDetails != nil {
+		usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
+	}
+
 	// Emit response.completed
 	response := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
@@ -1721,16 +1725,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 					} else if schemas.IsAnthropicModel(bifrostReq.Model) {
-					if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
-						// Opus 4.6+: adaptive thinking + output_config.effort
-						effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-							"type": "adaptive",
-						})
-						bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-							"effort": effort,
-						})
-					} else {
+						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+							// Opus 4.6+: adaptive thinking + output_config.effort
+							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+								"type": "adaptive",
+							})
+							bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
+								"effort": effort,
+							})
+						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
 							defaultMaxTokens := DefaultCompletionMaxTokens
 							if inferenceConfig.MaxTokens != nil {
@@ -1942,14 +1946,18 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 		}
 		// Handle cached tokens if present
 		if response.Usage.CacheReadInputTokens > 0 {
-			bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
+			bifrostResp.Usage.InputTokensDetails.CachedReadTokens = response.Usage.CacheReadInputTokens
+			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheReadInputTokens
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {
-			bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-				CachedTokens: response.Usage.CacheWriteInputTokens,
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
+			bifrostResp.Usage.InputTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
@@ -2018,10 +2026,14 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
 
 		if bifrostResp.Usage.InputTokensDetails != nil {
-			bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
-		}
-		if bifrostResp.Usage.OutputTokensDetails != nil {
-			bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
+			if bifrostResp.Usage.InputTokensDetails.CachedReadTokens > 0 {
+				bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedReadTokens
+				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedReadTokens
+			}
+			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
+				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+			}
 		}
 	}
 

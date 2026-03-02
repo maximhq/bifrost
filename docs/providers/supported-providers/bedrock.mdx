@@ -337,8 +337,11 @@ Structured output uses a special tool-based approach:
 ### Field Mapping
 
 - `stopReason` → `finish_reason`: `endTurn`/`stopSequence` → `stop`, `maxTokens` → `length`, `toolUse` → `tool_calls`
-- `usage.inputTokens` → `prompt_tokens` | `usage.outputTokens` → `completion_tokens`
-- Cache tokens: `cacheReadInputTokens`, `cacheWriteInputTokens` → `prompt_tokens_details`/`completion_tokens_details`
+- `usage.inputTokens + usage.cacheReadInputTokens + usage.cacheWriteInputTokens` → `prompt_tokens` (all cache counts rolled into the total)
+- Cache token breakdown surfaced in `prompt_tokens_details`:
+  - `usage.cacheReadInputTokens` → `prompt_tokens_details.cached_read_tokens`
+  - `usage.cacheWriteInputTokens` → `prompt_tokens_details.cached_write_tokens`
+- `usage.outputTokens` → `completion_tokens`
 - `reasoning`/`thinking` blocks → `reasoning_details` with index, type, text, and signature
 - Tool call `input` (object) → `arguments` (JSON string)
 
@@ -458,7 +461,8 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 ## Response Conversion
 
 - `stopReason` → `status`: `endTurn`/`stopSequence` → `completed`, `maxTokens` → `incomplete`
-- `usage.inputTokens`/`usage.outputTokens` preserved with cache tokens → `*_tokens_details.cached_tokens`
+- `usage.inputTokens` is aggregated into `input_tokens` (same semantics as [Chat](#1-chat-completions): Bedrock's `inputTokens` + `cacheReadInputTokens` + `cacheWriteInputTokens` rolled up into `input_tokens`); `usage.outputTokens` → `output_tokens` (preserved as-is)
+- Cache tokens: `cacheReadInputTokens` → `input_tokens_details.cached_read_tokens` | `cacheWriteInputTokens` → `input_tokens_details.cached_write_tokens`
 - Output items: `text` → `message` | `toolUse` → `function_call` | `thinking` → `reasoning`
 
 ## Streaming

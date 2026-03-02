@@ -848,10 +848,11 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 
 	if cu.PromptTokensDetails != nil {
 		usage.InputTokensDetails = &ResponsesResponseInputTokens{
-			TextTokens:   cu.PromptTokensDetails.TextTokens,
-			AudioTokens:  cu.PromptTokensDetails.AudioTokens,
-			ImageTokens:  cu.PromptTokensDetails.ImageTokens,
-			CachedTokens: cu.PromptTokensDetails.CachedTokens,
+			TextTokens:        cu.PromptTokensDetails.TextTokens,
+			AudioTokens:       cu.PromptTokensDetails.AudioTokens,
+			ImageTokens:       cu.PromptTokensDetails.ImageTokens,
+			CachedReadTokens:  cu.PromptTokensDetails.CachedReadTokens,
+			CachedWriteTokens: cu.PromptTokensDetails.CachedWriteTokens,
 		}
 	}
 	if cu.CompletionTokensDetails != nil {
@@ -863,7 +864,6 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
-			CachedTokens:             cu.CompletionTokensDetails.CachedTokens,
 		}
 	}
 
@@ -884,10 +884,11 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 
 	if ru.InputTokensDetails != nil {
 		usage.PromptTokensDetails = &ChatPromptTokensDetails{
-			TextTokens:   ru.InputTokensDetails.TextTokens,
-			AudioTokens:  ru.InputTokensDetails.AudioTokens,
-			ImageTokens:  ru.InputTokensDetails.ImageTokens,
-			CachedTokens: ru.InputTokensDetails.CachedTokens,
+			TextTokens:        ru.InputTokensDetails.TextTokens,
+			AudioTokens:       ru.InputTokensDetails.AudioTokens,
+			ImageTokens:       ru.InputTokensDetails.ImageTokens,
+			CachedReadTokens:  ru.InputTokensDetails.CachedReadTokens,
+			CachedWriteTokens: ru.InputTokensDetails.CachedWriteTokens,
 		}
 	}
 	if ru.OutputTokensDetails != nil {
@@ -900,7 +901,6 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			RejectedPredictionTokens: ru.OutputTokensDetails.RejectedPredictionTokens,
 			CitationTokens:           ru.OutputTokensDetails.CitationTokens,
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
-			CachedTokens:             ru.OutputTokensDetails.CachedTokens,
 		}
 	}
 

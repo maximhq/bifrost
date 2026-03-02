@@ -966,7 +966,7 @@ func (chunk *CohereStreamEvent) ToBifrostResponsesStream(sequenceNumber int, sta
 
 				if chunk.Delta.Usage.CachedTokens != nil {
 					usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-						CachedTokens: *chunk.Delta.Usage.CachedTokens,
+						CachedReadTokens: *chunk.Delta.Usage.CachedTokens,
 					}
 				}
 				response.Usage = usage
@@ -1189,7 +1189,7 @@ func (response *CohereChatResponse) ToBifrostResponsesResponse() *schemas.Bifros
 
 		if response.Usage.CachedTokens != nil {
 			usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: *response.Usage.CachedTokens,
+				CachedReadTokens: *response.Usage.CachedTokens,
 			}
 		}
 

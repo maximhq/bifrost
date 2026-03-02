@@ -863,7 +863,8 @@ type AnthropicTextResponse struct {
 
 // AnthropicUsage represents usage information in Anthropic format
 type AnthropicUsage struct {
-	Type                     *string                      `json:"type,omitempty"`
+	Type *string `json:"type,omitempty"`
+	// Unlike OpenAI models, Anthropic (claude) models separately track cache creation and cache read tokens, and its not included in the input_tokens field.
 	InputTokens              int                          `json:"input_tokens"`
 	CacheCreationInputTokens int                          `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int                          `json:"cache_read_input_tokens"`

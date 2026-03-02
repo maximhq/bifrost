@@ -34,6 +34,12 @@ func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
 			TotalTokens:      result.ResponsesResponse.Usage.TotalTokens,
 			Cost:             result.ResponsesResponse.Usage.Cost,
 		}
+		if result.ResponsesResponse.Usage.InputTokensDetails != nil {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+				CachedReadTokens:  result.ResponsesResponse.Usage.InputTokensDetails.CachedReadTokens,
+				CachedWriteTokens: result.ResponsesResponse.Usage.InputTokensDetails.CachedWriteTokens,
+			}
+		}
 	case result.ResponsesStreamResponse != nil && result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.Usage != nil:
 		usage = &schemas.BifrostLLMUsage{
 			PromptTokens:     result.ResponsesStreamResponse.Response.Usage.InputTokens,
@@ -217,15 +223,15 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 	completionTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
 		return u.CompletionTokens
 	})
-	cachedPromptTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
+	cachedReadTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
 		if u.PromptTokensDetails != nil {
-			return u.PromptTokensDetails.CachedTokens
+			return u.PromptTokensDetails.CachedReadTokens
 		}
 		return 0
 	})
-	cachedCompletionTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
-		if u.CompletionTokensDetails != nil {
-			return u.CompletionTokensDetails.CachedTokens
+	cachedWriteTokens := safeTokenCount(usage, func(u *schemas.BifrostLLMUsage) int {
+		if u.PromptTokensDetails != nil {
+			return u.PromptTokensDetails.CachedWriteTokens
 		}
 		return 0
 	})
@@ -474,14 +480,18 @@ func (mc *ModelCatalog) CalculateCostFromUsage(provider string, model string, de
 		}
 	} else {
 		// Use regular pricing
-		inputCost = float64(promptTokens-cachedPromptTokens) * pricing.InputCostPerToken
+		inputCost = float64(promptTokens-cachedReadTokens-cachedWriteTokens) * pricing.InputCostPerToken
 		if pricing.CacheReadInputTokenCost != nil {
-			inputCost += float64(cachedPromptTokens) * *pricing.CacheReadInputTokenCost
+			inputCost += float64(cachedReadTokens) * *pricing.CacheReadInputTokenCost
+		} else {
+			inputCost += float64(cachedReadTokens) * pricing.InputCostPerToken
 		}
-		outputCost = float64(completionTokens-cachedCompletionTokens) * pricing.OutputCostPerToken
 		if pricing.CacheCreationInputTokenCost != nil {
-			outputCost += float64(cachedCompletionTokens) * *pricing.CacheCreationInputTokenCost
-		} 
+			inputCost += float64(cachedWriteTokens) * *pricing.CacheCreationInputTokenCost
+		} else {
+			inputCost += float64(cachedWriteTokens) * pricing.InputCostPerToken
+		}
+		outputCost = float64(completionTokens) * pricing.OutputCostPerToken
 	}
 
 	totalCost := inputCost + outputCost

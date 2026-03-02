@@ -598,7 +598,7 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 				result.Passed = false
 				result.Errors = append(result.Errors, "Expected prompt tokens details for cached tokens validation but not present")
 			} else {
-				cachedTokens := response.Usage.PromptTokensDetails.CachedTokens
+				cachedTokens := response.Usage.PromptTokensDetails.CachedReadTokens + response.Usage.PromptTokensDetails.CachedWriteTokens
 				promptTokens := response.Usage.PromptTokens
 				if promptTokens > 0 {
 					cachedPercentage := float64(cachedTokens) / float64(promptTokens)
