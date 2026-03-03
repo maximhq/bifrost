@@ -1725,7 +1725,9 @@ compare_postgres_snapshots() {
   # - network_config_json, concurrency_buffer_json, proxy_config_json, custom_provider_config_json:
   #   JSON fields that get normalized with default values during migration
   # - budget_id, rate_limit_id: governance fields that may be reset or initialized during migrations
-  local ignore_columns="updated_at config_hash created_at models_json weight allowed_models network_config_json concurrency_buffer_json proxy_config_json custom_provider_config_json budget_id rate_limit_id"
+  # - status, description: key validation runs after migration, updating these fields
+  #   for invalid/test keys (e.g., status becomes "list_models_failed")
+  local ignore_columns="updated_at config_hash created_at models_json weight allowed_models network_config_json concurrency_buffer_json proxy_config_json custom_provider_config_json budget_id rate_limit_id status description"
   
   # Get tables from before snapshot
   if [ ! -f "$before_dir/tables.txt" ]; then

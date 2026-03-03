@@ -871,8 +871,6 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 				Message: message,
 			},
 		}
-	} else if !isVirtualKeyValid && (p.isVkMandatory == nil || !*p.isVkMandatory) {
-		return nil, nil
 	}
 	p.cfgMutex.RUnlock()
 

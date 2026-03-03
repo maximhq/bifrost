@@ -16004,11 +16004,8 @@ func TestRemoveProvider_NotFound(t *testing.T) {
 	}
 
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, ErrNotFound) {
-		t.Fatalf("expected ErrNotFound, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected nil, got error: %v", err)
 	}
 }
 

@@ -105,7 +105,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
-	assert.Len(t, routes, 5, "should have 5 bedrock routes")
+	assert.Len(t, routes, 6, "should have 6 bedrock routes")
 
 	expectedRoutes := []struct {
 		path   string
@@ -116,6 +116,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 		{"/bedrock/model/{modelId}/invoke-with-response-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke", "POST"},
 		{"/bedrock/rerank", "POST"},
+		{"/bedrock/model/{modelId}/count-tokens", "POST"},
 	}
 
 	for i, expected := range expectedRoutes {
