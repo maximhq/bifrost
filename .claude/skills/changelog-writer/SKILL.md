@@ -106,22 +106,21 @@ git diff --name-only ${BASE}..HEAD -- transports/
 
 Present the identified changes to the user and ask what type of version bump each changed module needs.
 
-**Ask the user with AskUserQuestion:**
+**Always ask the user with AskUserQuestion what bump type to use for each module.**
 
-For EACH module that has actual code changes (not just dependency bumps), ask:
+Ask for **every** module that will be bumped — both modules with code changes and modules with only cascade bumps. Use AskUserQuestion with up to 4 questions at a time (the tool's limit), batching in hierarchy order:
 
-"What type of version bump for **{module}**? Changes detected: {summary of changes}"
+1. First batch: core, framework, and up to 2 plugins
+2. Continue with remaining plugins and transports
+
+For each module ask: "What type of version bump for **{module}**?"
 
 Options:
 - **patch** — Bug fixes, small improvements (0.0.X)
 - **minor** — New features, non-breaking changes (0.X.0)
 - **major** — Breaking changes (X.0.0)
 
-**Rules:**
-1. Only modules with actual code changes get asked about bump type
-2. Modules that only need a dependency bump automatically get a **patch** bump
-3. The user decides the bump type for modules with real changes
-4. Ask about bumps in hierarchy order: core first, then framework, then plugins, then transports
+**Note:** Minor bumps reset the patch version to 0 (e.g., `1.4.24` → `1.5.0`). Patch bumps only increment the last number (e.g., `1.4.24` → `1.4.25`).
 
 ### Step 4: Calculate New Versions
 
