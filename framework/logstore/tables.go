@@ -80,9 +80,9 @@ type SearchStats struct {
 type Log struct {
 	ID                    string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	ParentRequestID       *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp             time.Time `gorm:"index;not null" json:"timestamp"`
+	Timestamp             time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider              string    `gorm:"type:varchar(255);index;not null" json:"provider"`
+	Provider              string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                 string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	NumberOfRetries       int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
@@ -119,7 +119,7 @@ type Log struct {
 	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
 	Cost                  *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
+	Status                string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
 	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
 	ContentSummary        string    `gorm:"type:text" json:"-"`
@@ -1093,4 +1093,62 @@ type LatencyHistogramBucket struct {
 type LatencyHistogramResult struct {
 	Buckets           []LatencyHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
+}
+
+// Provider-level histogram types
+
+// ProviderCostHistogramBucket represents a single time bucket for provider cost data
+type ProviderCostHistogramBucket struct {
+	Timestamp  time.Time          `json:"timestamp"`
+	TotalCost  float64            `json:"total_cost"`
+	ByProvider map[string]float64 `json:"by_provider"`
+}
+
+// ProviderCostHistogramResult represents the provider cost histogram query result
+type ProviderCostHistogramResult struct {
+	Buckets           []ProviderCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                         `json:"bucket_size_seconds"`
+	Providers         []string                      `json:"providers"`
+}
+
+// ProviderTokenStats represents token statistics for a single provider
+type ProviderTokenStats struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
+// ProviderTokenHistogramBucket represents a single time bucket for provider token data
+type ProviderTokenHistogramBucket struct {
+	Timestamp  time.Time                     `json:"timestamp"`
+	ByProvider map[string]ProviderTokenStats `json:"by_provider"`
+}
+
+// ProviderTokenHistogramResult represents the provider token histogram query result
+type ProviderTokenHistogramResult struct {
+	Buckets           []ProviderTokenHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
+	Providers         []string                       `json:"providers"`
+}
+
+// ProviderLatencyStats represents latency statistics for a single provider
+type ProviderLatencyStats struct {
+	AvgLatency    float64 `json:"avg_latency"`
+	P90Latency    float64 `json:"p90_latency"`
+	P95Latency    float64 `json:"p95_latency"`
+	P99Latency    float64 `json:"p99_latency"`
+	TotalRequests int64   `json:"total_requests"`
+}
+
+// ProviderLatencyHistogramBucket represents a single time bucket for provider latency data
+type ProviderLatencyHistogramBucket struct {
+	Timestamp  time.Time                       `json:"timestamp"`
+	ByProvider map[string]ProviderLatencyStats `json:"by_provider"`
+}
+
+// ProviderLatencyHistogramResult represents the provider latency histogram query result
+type ProviderLatencyHistogramResult struct {
+	Buckets           []ProviderLatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                            `json:"bucket_size_seconds"`
+	Providers         []string                         `json:"providers"`
 }

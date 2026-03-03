@@ -23,7 +23,7 @@
 #   rps      - requests per second (default: 20)
 #   duration - how many seconds to run (default: 10)
 
-BIFROST_URL="http://localhost:8080/v1/chat/completions"
+BIFROST_URL="http://localhost:8080/litellm/v1/chat/completions"
 RPS="${1:-20}"
 DURATION="${2:-10}"
 NUM_REQUESTS=$((RPS * DURATION))

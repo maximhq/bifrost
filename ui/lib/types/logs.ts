@@ -579,6 +579,56 @@ export interface LatencyHistogramResponse {
 	bucket_size_seconds: number;
 }
 
+// Provider-level histogram types
+
+export interface ProviderCostHistogramBucket {
+	timestamp: string;
+	total_cost: number;
+	by_provider: Record<string, number>;
+}
+
+export interface ProviderCostHistogramResponse {
+	buckets: ProviderCostHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
+export interface ProviderTokenStats {
+	prompt_tokens: number;
+	completion_tokens: number;
+	total_tokens: number;
+}
+
+export interface ProviderTokenHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderTokenStats>;
+}
+
+export interface ProviderTokenHistogramResponse {
+	buckets: ProviderTokenHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
+export interface ProviderLatencyStats {
+	avg_latency: number;
+	p90_latency: number;
+	p95_latency: number;
+	p99_latency: number;
+	total_requests: number;
+}
+
+export interface ProviderLatencyHistogramBucket {
+	timestamp: string;
+	by_provider: Record<string, ProviderLatencyStats>;
+}
+
+export interface ProviderLatencyHistogramResponse {
+	buckets: ProviderLatencyHistogramBucket[];
+	bucket_size_seconds: number;
+	providers: string[];
+}
+
 export interface LogsResponse {
 	logs: LogEntry[];
 	pagination: Pagination;

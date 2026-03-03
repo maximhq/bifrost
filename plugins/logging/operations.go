@@ -682,6 +682,21 @@ func (p *LoggerPlugin) GetLatencyHistogram(ctx context.Context, filters logstore
 	return p.store.GetLatencyHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters
+func (p *LoggerPlugin) GetProviderCostHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	return p.store.GetProviderCostHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters
+func (p *LoggerPlugin) GetProviderTokenHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	return p.store.GetProviderTokenHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
+func (p *LoggerPlugin) GetProviderLatencyHistogram(ctx context.Context, filters logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	return p.store.GetProviderLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetAvailableModels returns all unique models from logs.
 // Uses DISTINCT to avoid loading all rows (28K+) when only unique values are needed.
 func (p *LoggerPlugin) GetAvailableModels(ctx context.Context) []string {

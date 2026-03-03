@@ -813,7 +813,7 @@ func HandleOpenAIChatCompletionRequest(
 	}
 
 	// Set raw response if enabled
-	if sendBackRawResponse {
+	if providerUtils.ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 
@@ -1383,7 +1383,7 @@ func HandleOpenAIResponsesRequest(
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
 	// Set raw request if enabled
-	if providerUtils.ShouldSendBackRawRequest(ctx, sendBackRawRequest) {
+	if sendBackRawRequest {
 		response.ExtraFields.RawRequest = rawRequest
 	}
 

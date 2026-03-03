@@ -1,3 +1,4 @@
 - feat: added response header forwarding support
 - feat: added new dashboard graphs
 - fix: count tokens route fixes
+- chore: bump core to 1.4.5 and framework to 1.2.24

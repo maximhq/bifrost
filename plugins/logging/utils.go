@@ -42,6 +42,15 @@ type LogManager interface {
 	// GetLatencyHistogram returns time-bucketed latency percentiles for the given filters
 	GetLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.LatencyHistogramResult, error)
 
+	// GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters
+	GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error)
+
+	// GetProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters
+	GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error)
+
+	// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters
+	GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error)
+
 	// Get the number of dropped requests
 	GetDroppedRequests(ctx context.Context) int64
 
@@ -141,6 +150,27 @@ func (p *PluginLogManager) GetLatencyHistogram(ctx context.Context, filters *log
 		return nil, fmt.Errorf("filters cannot be nil")
 	}
 	return p.plugin.GetLatencyHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderCostHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderCostHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderTokenHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderTokenHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderTokenHistogram(ctx, *filters, bucketSizeSeconds)
+}
+
+func (p *PluginLogManager) GetProviderLatencyHistogram(ctx context.Context, filters *logstore.SearchFilters, bucketSizeSeconds int64) (*logstore.ProviderLatencyHistogramResult, error) {
+	if filters == nil {
+		return nil, fmt.Errorf("filters cannot be nil")
+	}
+	return p.plugin.GetProviderLatencyHistogram(ctx, *filters, bucketSizeSeconds)
 }
 
 func (p *PluginLogManager) GetDroppedRequests(ctx context.Context) int64 {

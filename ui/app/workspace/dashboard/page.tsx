@@ -8,6 +8,9 @@ import {
 	useLazyGetLogsHistogramQuery,
 	useLazyGetLogsLatencyHistogramQuery,
 	useLazyGetLogsModelHistogramQuery,
+	useLazyGetLogsProviderCostHistogramQuery,
+	useLazyGetLogsProviderLatencyHistogramQuery,
+	useLazyGetLogsProviderTokenHistogramQuery,
 	useLazyGetLogsTokenHistogramQuery,
 } from "@/lib/store";
 import type {
@@ -16,6 +19,9 @@ import type {
 	LogFilters,
 	LogsHistogramResponse,
 	ModelHistogramResponse,
+	ProviderCostHistogramResponse,
+	ProviderLatencyHistogramResponse,
+	ProviderTokenHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
@@ -28,6 +34,10 @@ import { LatencyChart } from "./components/latencyChart";
 import { LogVolumeChart } from "./components/logVolumeChart";
 import { ModelFilterSelect } from "./components/modelFilterSelect";
 import { ModelUsageChart } from "./components/modelUsageChart";
+import { ProviderCostChart } from "./components/providerCostChart";
+import { ProviderFilterSelect } from "./components/providerFilterSelect";
+import { ProviderLatencyChart } from "./components/providerLatencyChart";
+import { ProviderTokenChart } from "./components/providerTokenChart";
 import { TokenUsageChart } from "./components/tokenUsageChart";
 import { CHART_COLORS, getModelColor, LATENCY_COLORS } from "./utils/chartUtils";
 
@@ -76,6 +86,9 @@ export default function DashboardPage() {
 	const [costData, setCostData] = useState<CostHistogramResponse | null>(null);
 	const [modelData, setModelData] = useState<ModelHistogramResponse | null>(null);
 	const [latencyData, setLatencyData] = useState<LatencyHistogramResponse | null>(null);
+	const [providerCostData, setProviderCostData] = useState<ProviderCostHistogramResponse | null>(null);
+	const [providerTokenData, setProviderTokenData] = useState<ProviderTokenHistogramResponse | null>(null);
+	const [providerLatencyData, setProviderLatencyData] = useState<ProviderLatencyHistogramResponse | null>(null);
 
 	// Loading states
 	const [loadingHistogram, setLoadingHistogram] = useState(true);
@@ -83,6 +96,9 @@ export default function DashboardPage() {
 	const [loadingCost, setLoadingCost] = useState(true);
 	const [loadingModels, setLoadingModels] = useState(true);
 	const [loadingLatency, setLoadingLatency] = useState(true);
+	const [loadingProviderCost, setLoadingProviderCost] = useState(true);
+	const [loadingProviderTokens, setLoadingProviderTokens] = useState(true);
+	const [loadingProviderLatency, setLoadingProviderLatency] = useState(true);
 
 	// RTK Query lazy hooks
 	const [triggerHistogram] = useLazyGetLogsHistogramQuery({});
@@ -90,6 +106,9 @@ export default function DashboardPage() {
 	const [triggerCost] = useLazyGetLogsCostHistogramQuery();
 	const [triggerModels] = useLazyGetLogsModelHistogramQuery();
 	const [triggerLatency] = useLazyGetLogsLatencyHistogramQuery();
+	const [triggerProviderCost] = useLazyGetLogsProviderCostHistogramQuery();
+	const [triggerProviderTokens] = useLazyGetLogsProviderTokenHistogramQuery();
+	const [triggerProviderLatency] = useLazyGetLogsProviderLatencyHistogramQuery();
 
 	// URL state management
 	const [urlState, setUrlState] = useQueryStates(
@@ -113,6 +132,12 @@ export default function DashboardPage() {
 			latency_chart: parseAsString.withDefault("bar"),
 			cost_model: parseAsString.withDefault("all"),
 			usage_model: parseAsString.withDefault("all"),
+			provider_cost_chart: parseAsString.withDefault("bar"),
+			provider_token_chart: parseAsString.withDefault("bar"),
+			provider_latency_chart: parseAsString.withDefault("bar"),
+			provider_cost_provider: parseAsString.withDefault("all"),
+			provider_token_provider: parseAsString.withDefault("all"),
+			provider_latency_provider: parseAsString.withDefault("all"),
 		},
 		{
 			history: "push",
@@ -183,6 +208,18 @@ export default function DashboardPage() {
 		return modelData?.models ?? [];
 	}, [costData?.models, modelData?.models]);
 
+	// Available providers for provider chart filter dropdowns
+	const availableProviders = useMemo(() => {
+		if (providerCostData?.providers?.length) return providerCostData.providers;
+		if (providerTokenData?.providers?.length) return providerTokenData.providers;
+		return providerLatencyData?.providers ?? [];
+	}, [providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers]);
+
+	// Provider lists for each chart's legend
+	const providerCostProviders = useMemo(() => providerCostData?.providers ?? [], [providerCostData?.providers]);
+	const providerTokenProviders = useMemo(() => providerTokenData?.providers ?? [], [providerTokenData?.providers]);
+	const providerLatencyProviders = useMemo(() => providerLatencyData?.providers ?? [], [providerLatencyData?.providers]);
+
 	// Fetch all data
 	const fetchAllData = useCallback(async () => {
 		setLoadingHistogram(true);
@@ -190,16 +227,31 @@ export default function DashboardPage() {
 		setLoadingCost(true);
 		setLoadingModels(true);
 		setLoadingLatency(true);
+		setLoadingProviderCost(true);
+		setLoadingProviderTokens(true);
+		setLoadingProviderLatency(true);
 
 		const fetchFilters = { filters };
 
 		// Fetch all in parallel, forcing fresh data (preferCacheValue: false bypasses RTK Query cache)
-		const [histogramResult, tokenResult, costResult, modelResult, latencyResult] = await Promise.all([
+		const [
+			histogramResult,
+			tokenResult,
+			costResult,
+			modelResult,
+			latencyResult,
+			providerCostResult,
+			providerTokenResult,
+			providerLatencyResult,
+		] = await Promise.all([
 			triggerHistogram(fetchFilters, false),
 			triggerTokens(fetchFilters, false),
 			triggerCost(fetchFilters, false),
 			triggerModels(fetchFilters, false),
 			triggerLatency(fetchFilters, false),
+			triggerProviderCost(fetchFilters, false),
+			triggerProviderTokens(fetchFilters, false),
+			triggerProviderLatency(fetchFilters, false),
 		]);
 
 		if (histogramResult.data) {
@@ -236,7 +288,38 @@ export default function DashboardPage() {
 			setLatencyData(null);
 		}
 		setLoadingLatency(false);
-	}, [filters, triggerHistogram, triggerTokens, triggerCost, triggerModels, triggerLatency]);
+
+		if (providerCostResult.data) {
+			setProviderCostData(providerCostResult.data);
+		} else {
+			setProviderCostData(null);
+		}
+		setLoadingProviderCost(false);
+
+		if (providerTokenResult.data) {
+			setProviderTokenData(providerTokenResult.data);
+		} else {
+			setProviderTokenData(null);
+		}
+		setLoadingProviderTokens(false);
+
+		if (providerLatencyResult.data) {
+			setProviderLatencyData(providerLatencyResult.data);
+		} else {
+			setProviderLatencyData(null);
+		}
+		setLoadingProviderLatency(false);
+	}, [
+		filters,
+		triggerHistogram,
+		triggerTokens,
+		triggerCost,
+		triggerModels,
+		triggerLatency,
+		triggerProviderCost,
+		triggerProviderTokens,
+		triggerProviderLatency,
+	]);
 
 	// Fetch data on mount and when filters change
 	useEffect(() => {
@@ -302,12 +385,30 @@ export default function DashboardPage() {
 		[setUrlState],
 	);
 
+	const handleProviderCostChartToggle = useCallback((type: ChartType) => setUrlState({ provider_cost_chart: type }), [setUrlState]);
+	const handleProviderTokenChartToggle = useCallback((type: ChartType) => setUrlState({ provider_token_chart: type }), [setUrlState]);
+	const handleProviderLatencyChartToggle = useCallback((type: ChartType) => setUrlState({ provider_latency_chart: type }), [setUrlState]);
+
 	// Model filter changes
 	const handleCostModelChange = useCallback((model: string) => setUrlState({ cost_model: model }), [setUrlState]);
 	const handleUsageModelChange = useCallback((model: string) => setUrlState({ usage_model: model }), [setUrlState]);
 
+	// Provider filter changes
+	const handleProviderCostProviderChange = useCallback(
+		(provider: string) => setUrlState({ provider_cost_provider: provider }),
+		[setUrlState],
+	);
+	const handleProviderTokenProviderChange = useCallback(
+		(provider: string) => setUrlState({ provider_token_provider: provider }),
+		[setUrlState],
+	);
+	const handleProviderLatencyProviderChange = useCallback(
+		(provider: string) => setUrlState({ provider_latency_provider: provider }),
+		[setUrlState],
+	);
+
 	return (
-		<div className="mx-auto flex h-full min-h-screen w-full flex-col gap-4">
+		<div className="mx-auto flex h-full min-h-[calc(100vh-100px)] w-full flex-col gap-4">
 			{/* Header with time filter */}
 			<div className="flex items-center justify-between">
 				<div className="flex items-center gap-2">
@@ -582,6 +683,242 @@ export default function DashboardPage() {
 						chartType={toChartType(urlState.latency_chart)}
 						startTime={urlState.start_time}
 						endTime={urlState.end_time}
+					/>
+				</ChartCard>
+			</div>
+
+			{/* Provider Level Metrics */}
+			<h2 className="mt-2 text-sm font-semibold">Provider Level Metrics</h2>
+			<div className="grid grid-cols-1 gap-2 lg:grid-cols-2 2xl:grid-cols-3">
+				{/* Provider Cost Chart */}
+				<ChartCard
+					title="Provider Cost"
+					loading={loadingProviderCost}
+					testId="chart-provider-cost"
+					headerActions={
+						<div className="flex items-center gap-3">
+							<div className="flex items-center gap-2 text-xs">
+								{urlState.provider_cost_provider === "all" ? (
+									providerCostProviders.length > 0 && (
+										<>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span className="flex items-center gap-1">
+														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+														<span className="text-muted-foreground max-w-[100px] truncate">{providerCostProviders[0]}</span>
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>{providerCostProviders[0]}</TooltipContent>
+											</Tooltip>
+											{providerCostProviders.length > 1 && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="text-muted-foreground cursor-default">+{providerCostProviders.length - 1} more</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<div className="flex flex-col gap-1">
+															{providerCostProviders.slice(1).map((provider, idx) => (
+																<span key={provider} className="flex items-center gap-1">
+																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	{provider}
+																</span>
+															))}
+														</div>
+													</TooltipContent>
+												</Tooltip>
+											)}
+										</>
+									)
+								) : (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span className="flex items-center gap-1">
+												<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+												<span className="text-muted-foreground max-w-[100px] truncate">{urlState.provider_cost_provider}</span>
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>{urlState.provider_cost_provider}</TooltipContent>
+									</Tooltip>
+								)}
+							</div>
+							<ProviderFilterSelect
+								providers={availableProviders}
+								selectedProvider={urlState.provider_cost_provider}
+								onProviderChange={handleProviderCostProviderChange}
+								data-testid="dashboard-provider-cost-filter"
+							/>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.provider_cost_chart)}
+								onToggle={handleProviderCostChartToggle}
+								data-testid="dashboard-provider-cost-chart-toggle"
+							/>
+						</div>
+					}
+				>
+					<ProviderCostChart
+						data={providerCostData}
+						chartType={toChartType(urlState.provider_cost_chart)}
+						startTime={urlState.start_time}
+						endTime={urlState.end_time}
+						selectedProvider={urlState.provider_cost_provider}
+					/>
+				</ChartCard>
+
+				{/* Provider Token Usage Chart */}
+				<ChartCard
+					title="Provider Token Usage"
+					loading={loadingProviderTokens}
+					testId="chart-provider-tokens"
+					headerActions={
+						<div className="flex items-center gap-3">
+							<div className="flex items-center gap-2 text-xs">
+								{urlState.provider_token_provider === "all" ? (
+									providerTokenProviders.length > 0 && (
+										<>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span className="flex items-center gap-1">
+														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+														<span className="text-muted-foreground max-w-[100px] truncate">{providerTokenProviders[0]}</span>
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>{providerTokenProviders[0]}</TooltipContent>
+											</Tooltip>
+											{providerTokenProviders.length > 1 && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="text-muted-foreground cursor-default">+{providerTokenProviders.length - 1} more</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<div className="flex flex-col gap-1">
+															{providerTokenProviders.slice(1).map((provider, idx) => (
+																<span key={provider} className="flex items-center gap-1">
+																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	{provider}
+																</span>
+															))}
+														</div>
+													</TooltipContent>
+												</Tooltip>
+											)}
+										</>
+									)
+								) : (
+									<>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
+											<span className="text-muted-foreground">Input</span>
+										</span>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: CHART_COLORS.completionTokens }} />
+											<span className="text-muted-foreground">Output</span>
+										</span>
+									</>
+								)}
+							</div>
+							<ProviderFilterSelect
+								providers={availableProviders}
+								selectedProvider={urlState.provider_token_provider}
+								onProviderChange={handleProviderTokenProviderChange}
+								data-testid="dashboard-provider-token-filter"
+							/>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.provider_token_chart)}
+								onToggle={handleProviderTokenChartToggle}
+								data-testid="dashboard-provider-token-chart-toggle"
+							/>
+						</div>
+					}
+				>
+					<ProviderTokenChart
+						data={providerTokenData}
+						chartType={toChartType(urlState.provider_token_chart)}
+						startTime={urlState.start_time}
+						endTime={urlState.end_time}
+						selectedProvider={urlState.provider_token_provider}
+					/>
+				</ChartCard>
+
+				{/* Provider Latency Chart */}
+				<ChartCard
+					title="Provider Latency"
+					loading={loadingProviderLatency}
+					testId="chart-provider-latency"
+					headerActions={
+						<div className="flex items-center gap-3">
+							<div className="flex items-center gap-2 text-xs">
+								{urlState.provider_latency_provider === "all" ? (
+									providerLatencyProviders.length > 0 && (
+										<>
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span className="flex items-center gap-1">
+														<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(0) }} />
+														<span className="text-muted-foreground max-w-[100px] truncate">{providerLatencyProviders[0]}</span>
+													</span>
+												</TooltipTrigger>
+												<TooltipContent>{providerLatencyProviders[0]}</TooltipContent>
+											</Tooltip>
+											{providerLatencyProviders.length > 1 && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="text-muted-foreground cursor-default">+{providerLatencyProviders.length - 1} more</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<div className="flex flex-col gap-1">
+															{providerLatencyProviders.slice(1).map((provider, idx) => (
+																<span key={provider} className="flex items-center gap-1">
+																	<span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: getModelColor(idx + 1) }} />
+																	{provider}
+																</span>
+															))}
+														</div>
+													</TooltipContent>
+												</Tooltip>
+											)}
+										</>
+									)
+								) : (
+									<>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
+											<span className="text-muted-foreground">Avg</span>
+										</span>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p90 }} />
+											<span className="text-muted-foreground">P90</span>
+										</span>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p95 }} />
+											<span className="text-muted-foreground">P95</span>
+										</span>
+										<span className="flex items-center gap-1">
+											<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.p99 }} />
+											<span className="text-muted-foreground">P99</span>
+										</span>
+									</>
+								)}
+							</div>
+							<ProviderFilterSelect
+								providers={availableProviders}
+								selectedProvider={urlState.provider_latency_provider}
+								onProviderChange={handleProviderLatencyProviderChange}
+								data-testid="dashboard-provider-latency-filter"
+							/>
+							<ChartTypeToggle
+								chartType={toChartType(urlState.provider_latency_chart)}
+								onToggle={handleProviderLatencyChartToggle}
+								data-testid="dashboard-provider-latency-chart-toggle"
+							/>
+						</div>
+					}
+				>
+					<ProviderLatencyChart
+						data={providerLatencyData}
+						chartType={toChartType(urlState.provider_latency_chart)}
+						startTime={urlState.start_time}
+						endTime={urlState.end_time}
+						selectedProvider={urlState.provider_latency_provider}
 					/>
 				</ChartCard>
 			</div>

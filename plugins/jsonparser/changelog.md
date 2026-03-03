@@ -1,0 +1,1 @@
+- chore: bump core to 1.4.5 and framework to 1.2.24

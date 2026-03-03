@@ -1978,23 +1978,23 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 41,
 			},
-			expected: &schemas.BifrostLLMUsage{
-				PromptTokens:     6,
-				CompletionTokens: 42,
-				TotalTokens:      48,
-				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-					TextTokens:  6,
-					AudioTokens: 0,
-					ImageTokens: 0,
-				},
-				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-					TextTokens:      1,
-					ReasoningTokens: 41,
-				},
+		expected: &schemas.BifrostLLMUsage{
+			PromptTokens:     6,
+			CompletionTokens: 83,
+			TotalTokens:      48,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				TextTokens:  6,
+				AudioTokens: 0,
+				ImageTokens: 0,
+			},
+			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+				TextTokens:      1,
+				ReasoningTokens: 41,
 			},
 		},
-		{
-			name: "MultimodalInputWithCache",
+	},
+	{
+		name: "MultimodalInputWithCache",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        150,
 				CandidatesTokenCount:    50,
@@ -2160,24 +2160,24 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 5,
 			},
-			expected: &schemas.ResponsesResponseUsage{
-				TotalTokens:  150,
-				InputTokens:  100,
-				OutputTokens: 50,
-				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-					TextTokens:  60,
-					AudioTokens: 20,
-					ImageTokens: 20,
-				},
-				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
-					TextTokens:      40,
-					AudioTokens:     10,
-					ReasoningTokens: 5,
-				},
+		expected: &schemas.ResponsesResponseUsage{
+			TotalTokens:  150,
+			InputTokens:  100,
+			OutputTokens: 55,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+				TextTokens:  60,
+				AudioTokens: 20,
+				ImageTokens: 20,
+			},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+				TextTokens:      40,
+				AudioTokens:     10,
+				ReasoningTokens: 5,
 			},
 		},
-		{
-			name: "WithCachedTokens",
+	},
+	{
+		name: "WithCachedTokens",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        200,
 				CandidatesTokenCount:    100,
