@@ -6,10 +6,10 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,7 +49,7 @@ func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 }
 
 const (
-	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseInitialBufSize = 8 * 1024         // 8KB — sufficient for >99.9% of SSE lines
 	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
 )
 
@@ -364,34 +364,34 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
 // These are transport-level headers that don't apply when re-serving the response.
 var providerResponseFilterHeaders = map[string]bool{
-	"content-length":                    true,
-	"content-encoding":                  true,
-	"transfer-encoding":                 true,
-	"connection":                        true,
-	"keep-alive":                        true,
-	"proxy-connection":                  true,
-	"proxy-authenticate":                true,
-	"proxy-authorization":               true,
-	"authorization":                     true,
-	"cookie":                            true,
-	"set-cookie":                        true,
-	"set-cookie2":                       true,
-	"www-authenticate":                  true,
-	"te":                                true,
-	"trailer":                           true,
-	"upgrade":                           true,
-	"host":                              true,
-	"date":                              true,
-	"server":                            true,
-	"alt-svc":                           true,
-	"strict-transport-security":         true,
-	"content-type":                      true,
-	"access-control-allow-origin":       true,
-	"access-control-allow-methods":      true,
-	"access-control-allow-headers":      true,
-	"access-control-expose-headers":     true,
-	"access-control-allow-credentials":  true,
-	"access-control-max-age":            true,
+	"content-length":                   true,
+	"content-encoding":                 true,
+	"transfer-encoding":                true,
+	"connection":                       true,
+	"keep-alive":                       true,
+	"proxy-connection":                 true,
+	"proxy-authenticate":               true,
+	"proxy-authorization":              true,
+	"authorization":                    true,
+	"cookie":                           true,
+	"set-cookie":                       true,
+	"set-cookie2":                      true,
+	"www-authenticate":                 true,
+	"te":                               true,
+	"trailer":                          true,
+	"upgrade":                          true,
+	"host":                             true,
+	"date":                             true,
+	"server":                           true,
+	"alt-svc":                          true,
+	"strict-transport-security":        true,
+	"content-type":                     true,
+	"access-control-allow-origin":      true,
+	"access-control-allow-methods":     true,
+	"access-control-allow-headers":     true,
+	"access-control-expose-headers":    true,
+	"access-control-allow-credentials": true,
+	"access-control-max-age":           true,
 }
 
 // ExtractProviderResponseHeaders extracts and filters response headers from a
@@ -1562,6 +1562,7 @@ func CreateBifrostTextCompletionChunkResponse(
 	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
+	created int64,
 	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
 	model string,
@@ -1576,6 +1577,7 @@ func CreateBifrostTextCompletionChunkResponse(
 				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{}, // empty delta
 			},
 		},
+		Created: created,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    requestType,
 			Provider:       providerName,

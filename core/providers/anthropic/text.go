@@ -3,6 +3,7 @@ package anthropic
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -97,6 +98,7 @@ func (response *AnthropicTextResponse) ToBifrostTextCompletionResponse() *schema
 				},
 			},
 		},
+		Created: time.Now().Unix(),
 		Usage: &schemas.BifrostLLMUsage{
 			PromptTokens:     response.Usage.InputTokens,
 			CompletionTokens: response.Usage.OutputTokens,

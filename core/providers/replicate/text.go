@@ -132,6 +132,8 @@ func (response *ReplicatePredictionResponse) ToBifrostTextCompletionResponse() *
 
 	bifrostResponse.Choices = []schemas.BifrostResponseChoice{choice}
 
+	bifrostResponse.Created = ParseReplicateTimestamp(response.CreatedAt)
+
 	// Extract usage information from logs
 	if response.Logs != nil {
 		inputTokens, outputTokens, totalTokens, found := parseTokenUsageFromLogs(response.Logs, schemas.TextCompletionRequest)

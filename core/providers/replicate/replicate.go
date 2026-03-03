@@ -597,6 +597,8 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		var currentEvent ReplicateSSEEvent
 		messageID := prediction.ID
 
+		created := time.Now().Unix()
+
 		for scanner.Scan() {
 			// Check for context cancellation
 			select {
@@ -637,6 +639,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 									},
 								},
 							},
+							Created: created,
 							ExtraFields: schemas.BifrostResponseExtraFields{
 								RequestType:    schemas.TextCompletionStreamRequest,
 								Provider:       provider.GetProviderKey(),
@@ -720,6 +723,7 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 						nil, // usage - not available in done event
 						finishReason,
 						chunkIndex,
+						created,
 						schemas.TextCompletionStreamRequest,
 						provider.GetProviderKey(),
 						request.Model,
