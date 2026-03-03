@@ -34,6 +34,31 @@ export interface GetBaseModelsRequest {
 	limit?: number;
 }
 
+export interface ModelDatasheetParameter {
+	id: string;
+	label: string;
+	helpText?: string;
+	type: string;
+	accesorKey?: string;
+	default?: any;
+	multiple?: boolean;
+	range?: { min: number; max: number; step?: number };
+	array?: { type: string; maxElements?: number; minElements?: number };
+	options?: { label: string; value: string; subFields?: ModelDatasheetParameter[] }[];
+}
+
+export interface ModelDatasheetResponse {
+	model_parameters?: ModelDatasheetParameter[];
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	max_tokens?: number;
+	mode?: string;
+	provider?: string;
+	base_model?: string;
+	supports_vision?: boolean;
+	[key: string]: any;
+}
+
 export interface ListBaseModelsResponse {
 	models: string[];
 	total: number;
@@ -148,6 +173,22 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 			providesTags: ["BaseModels"],
 		}),
+
+		// Get model datasheet (parameters, capabilities) from external API
+		getModelDatasheet: builder.query<ModelDatasheetResponse, string>({
+			queryFn: async (model) => {
+				try {
+					const res = await fetch(`https://getbifrost.ai/datasheet-extended?model=${encodeURIComponent(model)}`);
+					if (!res.ok) {
+						return { error: { status: res.status, data: `Failed to fetch datasheet for ${model}` } };
+					}
+					const data = await res.json();
+					return { data };
+				} catch (err) {
+					return { error: { status: "FETCH_ERROR", data: String(err) } };
+				}
+			},
+		}),
 	}),
 });
 
@@ -165,4 +206,6 @@ export const {
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,
+	useGetModelDatasheetQuery,
+	useLazyGetModelDatasheetQuery,
 } = providersApi;
