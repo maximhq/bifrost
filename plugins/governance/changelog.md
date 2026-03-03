@@ -1,4 +1,4 @@
 - feat: added governance wrong virtual key check
 - feat: added streaming compression support
 - fix: added bedrock integration support for routing in governance
-- chore: bump core to 1.4.5 and framework to 1.2.24
+- chore: bump core to 1.4.6 and framework to 1.2.25

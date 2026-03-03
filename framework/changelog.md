@@ -4,4 +4,4 @@
 - fix: standardized cached tokens handling
 - fix: preserve parallel tool call deltas during streaming (thanks [@KTS-o7](https://github.com/KTS-o7)!)
 - fix: added proper status check for openrouter keys
-- chore: bump core to 1.4.5
+- chore: bump core to 1.4.6
