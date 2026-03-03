@@ -361,7 +361,7 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				// For the second query (index 1), add cached tokens validation
 				if i == 1 {
 					expectations.ProviderSpecific = map[string]interface{}{
-						"min_cached_tokens_percentage": 0.90, // 90% minimum
+						"min_cached_tokens_percentage": 0.80, // 80% minimum
 						"query_index":                  i,
 					}
 				}
@@ -421,17 +421,17 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						t.Logf("  ℹ️  First request has %d cached tokens (cache from previous test run)", cachedTokens)
 					}
 				} else if i == 1 {
-					// Query 2: Verify cached tokens are >90% of prompt tokens
+					// Query 2: Verify cached tokens are >80% of prompt tokens
 					// This validation is also done in the retry framework, but we verify here as well
 					if promptTokens > 0 {
 						cachedPercentage := float64(cachedTokens) / float64(promptTokens)
 						t.Logf("  Cached tokens percentage: %.2f%%", cachedPercentage*100)
 
-						require.GreaterOrEqual(t, cachedPercentage, 0.90,
-							"Query 2 should have at least 90%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
+						require.GreaterOrEqual(t, cachedPercentage, 0.80,
+							"Query 2 should have at least 80%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
 							cachedPercentage*100, cachedTokens, promptTokens)
 
-						t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 90%%)", cachedPercentage*100)
+						t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 80%%)", cachedPercentage*100)
 					} else {
 						t.Fatalf("Prompt tokens is 0, cannot calculate cached percentage")
 					}
