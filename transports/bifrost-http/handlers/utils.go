@@ -100,7 +100,7 @@ func IsOriginAllowed(origin string, allowedOrigins []string) bool {
 			return true
 		}
 
-		if allowedOrigin == "*" {
+		if allowedOrigin == "*" {			
 			return true
 		}
 

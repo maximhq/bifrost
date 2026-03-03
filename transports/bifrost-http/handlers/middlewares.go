@@ -19,6 +19,25 @@ import (
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev"}
 
+// SecurityHeadersMiddleware sets security-related HTTP headers on every response.
+// This should wrap the outermost handler so all responses (API, UI, errors) include these headers.
+func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			ctx.Response.Header.Set("X-Frame-Options", "DENY")
+			ctx.Response.Header.Set("X-Content-Type-Options", "nosniff")
+			ctx.Response.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			ctx.Response.Header.Set("Content-Security-Policy", "frame-ancestors 'none'")
+			ctx.Response.Header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+			// Only set HSTS when serving over HTTPS (detected via reverse proxy header or direct TLS)
+			if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
+				ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+			}
+			next(ctx)
+		}
+	}
+}
+
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
 func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -67,8 +86,15 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+				// Don't send Allow-Credentials when wildcard origin is configured — it's a
+				// CORS spec violation and signals an overly permissive configuration.
+				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") {
+					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+				}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+				// Vary: Origin tells caches that the response varies based on the Origin
+				// request header, preventing incorrect CORS headers from being served.
+				ctx.Response.Header.Set("Vary", "Origin")
 			}
 			// Handle preflight OPTIONS requests
 			if string(ctx.Method()) == "OPTIONS" {
@@ -294,11 +320,12 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 }
 
 type AuthMiddleware struct {
-	store      configstore.ConfigStore
-	authConfig atomic.Pointer[configstore.AuthConfig]
+	store         configstore.ConfigStore
+	authConfig    atomic.Pointer[configstore.AuthConfig]
+	wsTicketStore *WSTicketStore
 }
 
-func InitAuthMiddleware(store configstore.ConfigStore) (*AuthMiddleware, error) {
+func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
 	}
@@ -307,8 +334,9 @@ func InitAuthMiddleware(store configstore.ConfigStore) (*AuthMiddleware, error) 
 		return nil, fmt.Errorf("failed to get auth config from store: %v", err)
 	}
 	am := &AuthMiddleware{
-		store:      store,
-		authConfig: atomic.Pointer[configstore.AuthConfig]{},
+		store:         store,
+		authConfig:    atomic.Pointer[configstore.AuthConfig]{},
+		wsTicketStore: wsTicketStore,
 	}
 	am.authConfig.Store(authConfig)
 	return am, nil
@@ -375,18 +403,40 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			if authorization == "" {
 				// Check if its a websocket 101 upgrade request
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					// Here we get the token from query params
+					// Prefer short-lived ticket-based auth (from POST /api/session/ws-ticket)
+					ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
+					if ticket != "" && m.wsTicketStore != nil {
+						sessionToken := m.wsTicketStore.Consume(ticket)
+						if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
+							next(ctx)
+							return
+						}
+						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+						return
+					}
+					// Fallback: legacy ?token= param (for backward compatibility)
 					token := string(ctx.Request.URI().QueryArgs().Peek("token"))
-					if token == "" {
+					if token != "" {
+						if validateSession(ctx, m.store, token) {
+							next(ctx)
+							return
+						}
 						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 						return
 					}
-					// Verify the session
-					if !validateSession(ctx, m.store, token) {
-						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+					// Fallback: cookie-based WS auth
+					cookieToken := string(ctx.Request.Header.Cookie("token"))
+					if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+						next(ctx)
 						return
 					}
-					// Continue with the next handler
+					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+					return
+				}
+				// Cookie-based auth fallback: if no Authorization header, check for the HTTPOnly session cookie.
+				// This supports the dashboard which relies on cookies instead of localStorage tokens.
+				cookieToken := string(ctx.Request.Header.Cookie("token"))
+				if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
 					next(ctx)
 					return
 				}

@@ -121,6 +121,7 @@ type BifrostHTTPServer struct {
 
 	AuthMiddleware    *handlers.AuthMiddleware
 	TracingMiddleware *handlers.TracingMiddleware
+	WSTicketStore     *handlers.WSTicketStore
 }
 
 var logger schemas.Logger
@@ -982,7 +983,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler := handlers.NewMCPHandler(callbacks, s.Client, s.Config, oauthHandler)
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
-	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore)
+	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
 	// Going ahead with API handlers
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
@@ -1018,7 +1019,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if err == nil && prometheusPlugin.GetRegistry() != nil {
 		// Use the plugin's dedicated registry if available
 		metricsHandler := fasthttpadaptor.NewFastHTTPHandler(promhttp.HandlerFor(prometheusPlugin.GetRegistry(), promhttp.HandlerOpts{}))
-		s.Router.GET("/metrics", metricsHandler)
+		s.Router.GET("/metrics", lib.ChainMiddlewares(metricsHandler, middlewares...))
 	} else {
 		logger.Warn("prometheus plugin not found or registry is nil, skipping metrics endpoint")
 	}
@@ -1252,8 +1253,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.Config.ConfigStore == nil {
 		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
 	} else {
-		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore)
+		s.WSTicketStore = handlers.NewWSTicketStore()
+		s.AuthMiddleware, err = handlers.InitAuthMiddleware(s.Config.ConfigStore, s.WSTicketStore)
 		if err != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
@@ -1263,6 +1267,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// Register routes
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
+		if s.WSTicketStore != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+		}
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
 	// Registering inference routes
@@ -1284,13 +1292,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
+		if s.WSTicketStore != nil {
+			s.WSTicketStore.Stop()
+			s.WSTicketStore = nil
+		}
 		return fmt.Errorf("failed to initialize inference routes: %v", err)
 	}
 	// Register UI handler
 	s.RegisterUIRoutes()
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler)),
+		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     1024 * 64, // 64kb
 	}
@@ -1364,6 +1376,10 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.Config != nil && s.Config.TokenRefreshWorker != nil {
 				logger.Info("stopping token refresh worker...")
 				s.Config.TokenRefreshWorker.Stop()
+			}
+			if s.WSTicketStore != nil {
+				logger.Info("stopping ws ticket store...")
+				s.WSTicketStore.Stop()
 			}
 			if s.devPprofHandler != nil {
 				logger.Info("stopping dev pprof handler...")

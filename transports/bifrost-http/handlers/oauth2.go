@@ -4,7 +4,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"html"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -74,7 +76,7 @@ func (h *OAuthHandler) handleOAuthCallback(ctx *fasthttp.RequestCtx) {
 			<script>
 				// Close the popup window
 				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_success' }, '*');
+					window.opener.postMessage({ type: 'oauth_success' }, window.location.origin);
 					window.close();
 				} else {
 					document.getElementById('message').textContent = 'OAuth authorization successful! You can close this window.';
@@ -111,6 +113,10 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 	if errorDescription != "" {
 		errorMsg = fmt.Sprintf("%s: %s", errorParam, errorDescription)
 	}
+	// JSON-encode for safe embedding in JavaScript context (prevents JS injection)
+	jsEscaped, _ := json.Marshal(errorMsg)
+	// HTML-escape for safe embedding in HTML body (prevents HTML injection)
+	htmlEscaped := html.EscapeString(errorMsg)
 	ctx.SetBodyString(fmt.Sprintf(`
 		<!DOCTYPE html>
 		<html>
@@ -119,7 +125,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 			<script>
 				// Notify parent window
 				if (window.opener) {
-					window.opener.postMessage({ type: 'oauth_failed', error: '%s' }, '*');
+					window.opener.postMessage({ type: 'oauth_failed', error: %s }, window.location.origin);
 					window.close();
 				}
 			</script>
@@ -134,7 +140,7 @@ func (h *OAuthHandler) handleCallbackError(ctx *fasthttp.RequestCtx, state, erro
 			</div>
 		</body>
 		</html>
-	`, errorMsg, errorMsg))
+	`, jsEscaped, htmlEscaped))
 }
 
 // getOAuthConfigStatus returns the current status of an OAuth config
