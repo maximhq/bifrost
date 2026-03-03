@@ -1,1 +1,3 @@
-- fix: added missing routing rules and provider selection logic for bedrock integration cases in PreHTTPTransportHook
+- feat: added governance wrong virtual key check
+- feat: added streaming compression support
+- fix: added bedrock integration support for routing in governance

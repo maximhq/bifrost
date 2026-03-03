@@ -1,1 +1,3 @@
-- fix: added missing count tokens support for usage field
+- feat: added response header forwarding support
+- feat: added new dashboard graphs
+- fix: count tokens route fixes

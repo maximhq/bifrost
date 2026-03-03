@@ -1,2 +1,6 @@
-- fix: route parallel tool call argument deltas by id/index to prevent argument merging during streaming
-- fix: cost calculation for cached tokens handled properly for all providers
+- feat: added response header forwarding support
+- feat: added new dashboard graphs and graph fixes
+- feat: added bedrock invoke streaming support
+- fix: standardized cached tokens handling
+- fix: preserve parallel tool call deltas during streaming (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: added proper status check for openrouter keys
