@@ -8,8 +8,8 @@ require (
 	github.com/bytedance/sonic v1.15.0
 	github.com/google/cel-go v0.26.1
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.4.5
-	github.com/maximhq/bifrost/framework v1.2.24
+	github.com/maximhq/bifrost/core v1.4.6
+	github.com/maximhq/bifrost/framework v1.2.25
 	github.com/stretchr/testify v1.11.1
 	github.com/valyala/fasthttp v1.68.0
 )

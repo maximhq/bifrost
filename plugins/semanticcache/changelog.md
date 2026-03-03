@@ -1,2 +1,0 @@
-- fix: DefaultCacheKey dropped during JSON unmarshal (thanks [@Georgehe4](https://github.com/Georgehe4)!)
-- chore: bump core to 1.4.6 and framework to 1.2.25
