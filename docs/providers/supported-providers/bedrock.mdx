@@ -259,7 +259,7 @@ Reasoning/thinking support varies by model family:
 
 ### Supported Chat Content Blocks
 
-The Chat Completions request format remains OpenAI-compatible (`type: "image_url"`, `type: "file"`, etc.). Bifrost converts these blocks to Bedrock Converse blocks internally.
+The Chat Completions request format is OpenAI-compatible for standard blocks (`type: "text"`, `type: "image_url"`, `type: "file"`). Bifrost converts these blocks to Bedrock Converse blocks internally. Bedrock-specific extensions (for example, standalone `cachePoint`) are also accepted when using the Bedrock provider.
 
 | Block Type | Request Shape (Bifrost/OpenAI) | Bedrock Handling | Support |
 |------------|--------------------------------|------------------|---------|
