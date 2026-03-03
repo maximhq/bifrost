@@ -206,7 +206,13 @@ Write simple flat-list entries to each module's `changelog.md`:
 - hotfix: description of urgent fix
 ```
 
-For modules with only cascading bumps (no code changes), leave their `changelog.md` empty or unchanged.
+For modules with only cascading bumps (no code changes), add a `chore:` entry describing which upstream dependencies were bumped. **No changelog should ever be left empty.** Example:
+
+```markdown
+- chore: upgraded core to v1.5.0 and framework to v1.3.0
+```
+
+If only one upstream changed, mention just that one (e.g., `- chore: upgraded core to v1.5.0`). Always use the actual new versions of the upstream modules.
 
 **Formatting rules for per-module changelogs:**
 - Each entry starts with `- ` followed by the type prefix and colon
@@ -238,6 +244,7 @@ The transports changelog uses a categorized format with bold names. Write it usi
 - Include changes from ALL modules (transports is the top-level summary)
 - Breaking changes get a `<Warning>` or `<Note>` block indented under the entry
 - Omit sections that have no entries (e.g., if there are no features, skip the Features section)
+- If the release has only cascading bumps and no meaningful features or fixes, add a `## 🔧 Maintenance` section with an entry like: `- **Dependency Upgrades** — Bumped core to v1.5.0 and framework to v1.3.0 across all modules`
 
 ### Step 6: Update Version Files
 
