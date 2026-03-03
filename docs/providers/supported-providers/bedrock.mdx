@@ -178,7 +178,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("This context will be cached"),
                         CacheControl: &schemas.CacheControl{
@@ -193,7 +193,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleSystem,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("You are a helpful assistant"),
                         CacheControl: &schemas.CacheControl{
@@ -255,13 +255,172 @@ Reasoning/thinking support varies by model family:
 - **System message extraction**: System messages are **removed from messages array** and placed in separate `system` field
 - **Tool message grouping**: Consecutive tool messages are **merged into single user message** with tool result content blocks
 - **Image format**: **Only base64/data URI supported**; remote image URLs are **not supported** by Bedrock Converse API
-- **Document support**: PDF, CSV, DOC, DOCX, XLS, XLSX, HTML, TXT, MD formats supported
+- **Document support**: Bifrost's Bedrock conversion path currently supports PDF, CSV, DOC, DOCX, XLS, XLSX, HTML, TXT, MD formats
+
+### Supported Chat Content Blocks
+
+The Chat Completions request format remains OpenAI-compatible (`type: "image_url"`, `type: "file"`, etc.). Bifrost converts these blocks to Bedrock Converse blocks internally.
+
+| Block Type | Request Shape (Bifrost/OpenAI) | Bedrock Handling | Support |
+|------------|--------------------------------|------------------|---------|
+| Text | `{"type":"text","text":"..."}` | Converted to Bedrock `text` block | ✅ |
+| Image | `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}` | Converted to Bedrock `image.source.bytes` | ✅ (base64/data URI only) |
+| File | `{"type":"file","file":{...}}` | Converted to Bedrock `document` block | ✅ |
+| Input audio | `{"type":"input_audio",...}` | Returns `audio input not supported in Bedrock Converse API` | ❌ |
+| Standalone cache point | `{"cachePoint":{"type":"default"}}` (no outer `type` field) | Converted to Bedrock `cachePoint` marker | ✅ (Bedrock-specific extension) |
 
 ### Image Conversion
 
-- **Base64 images**: Data URL → `{type: "image", source: {type: "base64", mediaType: "image/png", data: "..."}}`
+- **Request shape (client → Bifrost)**: `type: "image_url"` with `image_url.url` set to a data URI/base64 image
+- **Internal Bedrock shape (Bifrost → Bedrock)**: Converted to `image: { format, source: { bytes } }`
 - **URL images**: ❌ **Not supported** - Will fail if attempted
 - **Documents**: Converted to document content blocks with MIME types
+
+### Image Block Example (`image_url`)
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "What is in this image?"},
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+// Note: In the Go SDK, ChatContentBlockTypeImage maps to the OpenAI-compatible "image_url" block.
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatContentBlock{
+                    {
+                        Type: schemas.ChatContentBlockTypeText,
+                        Text: schemas.Ptr("What is in this image?"),
+                    },
+                    {
+                        Type: schemas.ChatContentBlockTypeImage,
+                        ImageURLStruct: &schemas.ChatInputImage{
+                            URL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+                        },
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+### File Block Example (`file` → Bedrock `document`)
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "Summarize this document."},
+          {
+            "type": "file",
+            "file": {
+              "file_data": "JVBERi0xLjQKJcfs...",
+              "filename": "report.pdf",
+              "file_type": "application/pdf"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.Bedrock,
+    Model:    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    Input: []schemas.ChatMessage{
+        {
+            Role: schemas.ChatMessageRoleUser,
+            Content: &schemas.ChatMessageContent{
+                ContentBlocks: []schemas.ChatContentBlock{
+                    {
+                        Type: schemas.ChatContentBlockTypeText,
+                        Text: schemas.Ptr("Summarize this document."),
+                    },
+                    {
+                        Type: schemas.ChatContentBlockTypeFile,
+                        File: &schemas.ChatInputFile{
+                            FileData: schemas.Ptr("JVBERi0xLjQKJcfs..."),
+                            Filename: schemas.Ptr("report.pdf"),
+                            FileType: schemas.Ptr("application/pdf"),
+                        },
+                    },
+                },
+            },
+        },
+    },
+})
+```
+
+</Tab>
+</Tabs>
+
+Note: `file_data` is raw base64-encoded content (no `data:` URI prefix, unlike `image_url`).
+
+Formats currently supported by Bifrost's Bedrock document conversion path: `pdf`, `txt`, `md`, `html`, `csv`, `doc`, `docx`, `xls`, `xlsx`.
+
+### Standalone Cache Point Example (Bedrock-specific)
+
+```json
+{
+  "role": "system",
+  "content": [
+    {"type": "text", "text": "Long context to cache"},
+    {"cachePoint": {"type": "default"}}
+  ]
+}
+```
+
+This standalone `cachePoint` block is a Bifrost/Bedrock extension (not OpenAI-standard) and should be used only with the Bedrock provider.
+
+### Unsupported Block Notes
+
+- `input_audio` blocks are not supported by Bedrock Converse and return an error.
+- For chat content conversion, use `file.file_data` for document payloads. `file_url` and `file_id` are not the documented Bedrock chat-content path here.
 
 ### Cache Control Locations
 
