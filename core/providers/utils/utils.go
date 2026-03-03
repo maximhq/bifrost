@@ -2101,6 +2101,7 @@ func CreateBifrostTextCompletionChunkResponse(
 	usage *schemas.BifrostLLMUsage,
 	finishReason *string,
 	currentChunkIndex int,
+	created int64,
 	requestType schemas.RequestType,
 	providerName schemas.ModelProvider,
 	model string,
@@ -2115,6 +2116,7 @@ func CreateBifrostTextCompletionChunkResponse(
 				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{}, // empty delta
 			},
 		},
+		Created: created,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:    requestType,
 			Provider:       providerName,
