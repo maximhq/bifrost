@@ -258,26 +258,27 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 		for _, tool := range existingTools {
 			if tool.Function != nil && tool.Function.Name != "" {
 				existingToolName := tool.Function.Name
-				toolName := existingToolName
 
-				// If the tool name contains "__", extract the last segment as
-				// the canonical (un-prefixed) tool name.
-				// e.g. "mcp__myserver__read_file" → "read_file"
-				if strings.Contains(existingToolName, "__") {
-					parts := strings.Split(existingToolName, "__")
-					if len(parts) > 1 {
-						toolName = parts[len(parts)-1]
-					}
-				}
+				// If the tool name starts with "mcp__", it's from a CLI client
+				// e.g., "mcp__filesystem_stdio__read_file" needs to map to "filesystem_stdio-read_file"
+				// because Bifrost internally creates tools using the "{clientName}-{toolName}" pattern
+				if strings.HasPrefix(existingToolName, "mcp__") {
+					cleanName := strings.TrimPrefix(existingToolName, "mcp__")
+					cleanName = strings.ReplaceAll(cleanName, "__", "-")
 
-				if toolName != "" {
-					// Mark the clean name so Bifrost won't add it again.
-					duplicateCheckMap[toolName] = true
-					// Also mark the prefixed name for direct matching.
+					// Mark the reconstructed clean name (e.g., "filesystem_stdio-read_file")
+					duplicateCheckMap[cleanName] = true
+					// Also mark the original prefixed name for direct matching
 					duplicateCheckMap[existingToolName] = true
+				} else {
+					// Fallback for tools without standard MCP prefix
+					if existingToolName != "" {
+						duplicateCheckMap[existingToolName] = true
+					}
 				}
 			}
 		}
+	default:
 	}
 
 	return duplicateCheckMap
@@ -326,7 +327,6 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 			// Build integration-aware duplicate check map
 			duplicateCheckMap := buildIntegrationDuplicateCheckMap(tools, integrationUserAgentStr)
 
-			// Add MCP tools that are not already present
 			for _, mcpTool := range availableTools {
 				// Skip tools with nil Function or empty Name
 				if mcpTool.Function == nil || mcpTool.Function.Name == "" {

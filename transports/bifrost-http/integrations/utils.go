@@ -335,9 +335,15 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 //   - claude-cli  (User-Agent contains "claude-cli")
 //   - gemini-cli  (User-Agent contains "gemini-cli")
 //   - qwen-cli    (User-Agent contains "qwen-cli")
-//   - cursor      (User-Agent contains "cursor")
-//   - codex       (User-Agent contains "codex")
-//   - n8n         (User-Agent contains "n8n")
+//   - cursor      (User-Agent token is exactly "cursor" or "cursor/<version>")
+//   - codex       (User-Agent token is exactly "codex" or "codex/<version>")
+//   - n8n         (User-Agent token is exactly "n8n" or "n8n/<version>")
+//
+// For "cursor", "codex" and "n8n" we require a word-boundary match to avoid
+// false positives from User-Agents that merely contain those strings as substrings
+// (e.g. "precursor/2.0", "vs-codex-plugin/1.0").  A token matches when it appears
+// at the very beginning of the header value, or is immediately preceded by a
+// non-alphanumeric character (space, '/', '-', etc.).
 func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) string {
 	userAgent := string(ctx.Request.Header.Peek("User-Agent"))
 	userAgentLower := strings.ToLower(userAgent)
@@ -350,11 +356,11 @@ func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostCon
 		detectedAgent = "gemini-cli"
 	case strings.Contains(userAgentLower, "qwen-cli"):
 		detectedAgent = "qwen-cli"
-	case strings.Contains(userAgentLower, "cursor"):
+	case isCLIToken(userAgentLower, "cursor"):
 		detectedAgent = "cursor"
-	case strings.Contains(userAgentLower, "codex"):
+	case isCLIToken(userAgentLower, "codex"):
 		detectedAgent = "codex"
-	case strings.Contains(userAgentLower, "n8n"):
+	case isCLIToken(userAgentLower, "n8n"):
 		detectedAgent = "n8n"
 	}
 
@@ -363,6 +369,38 @@ func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostCon
 	}
 
 	return detectedAgent
+}
+
+// isCLIToken returns true when token appears in ua as a proper product token.
+// Matching rules (all must hold):
+//   - The token must be preceded by start-of-string or a whitespace/slash
+//     (i.e. it must be a new product token, not a suffix of another word).
+//   - The token must be followed by end-of-string, '/', ' ', or '@'
+//     (i.e. it is not a prefix of a longer word like "cursor-editor").
+//
+// Examples that MATCH    : "cursor/1.0", "codex/0.1", "n8n/2.0", "my-app cursor/1.0"
+// Examples that DON'T    : "precursor/2.0", "my-cursor-editor/1.0", "vs-codex-plugin/1.0", "plugin-n8n/1.0"
+func isCLIToken(ua, token string) bool {
+	idx := strings.Index(ua, token)
+	if idx < 0 {
+		return false
+	}
+	// Check left boundary: must be start or preceded by space or '/'
+	if idx > 0 {
+		prev := ua[idx-1]
+		if prev != ' ' && prev != '/' {
+			return false
+		}
+	}
+	// Check right boundary: must be end, or followed by '/', ' ', or '@'
+	end := idx + len(token)
+	if end < len(ua) {
+		next := ua[end]
+		if next != '/' && next != ' ' && next != '@' {
+			return false
+		}
+	}
+	return true
 }
 
 // getVirtualKeyFromBifrostContext extracts the virtual key value from bifrost context.
