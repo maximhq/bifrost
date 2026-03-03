@@ -162,10 +162,10 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 						{mode === "single" ? (
 							<>
 								<Tooltip content={<SingleProviderTooltip provider={selectedProvider} />} cursor={{ fill: "#8c8c8f", fillOpacity: 0.15 }} />
-								<Bar dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
-								<Bar dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={8} radius={[2, 2, 0, 0]} />
+								<Bar dataKey="avg_latency" fill={LATENCY_COLORS.avg} fillOpacity={0.9} barSize={30} radius={[2, 2, 0, 0]} />
+								<Bar dataKey="p90_latency" fill={LATENCY_COLORS.p90} fillOpacity={0.9} barSize={30} radius={[2, 2, 0, 0]} />
+								<Bar dataKey="p95_latency" fill={LATENCY_COLORS.p95} fillOpacity={0.9} barSize={30} radius={[2, 2, 0, 0]} />
+								<Bar dataKey="p99_latency" fill={LATENCY_COLORS.p99} fillOpacity={0.9} barSize={30} radius={[2, 2, 0, 0]} />
 							</>
 						) : (
 							<>
@@ -176,7 +176,7 @@ export function ProviderLatencyChart({ data, chartType, startTime, endTime, sele
 										dataKey={`provider_${idx}`}
 										fill={getModelColor(idx)}
 										fillOpacity={0.9}
-										barSize={8}
+										barSize={30}
 										radius={[2, 2, 0, 0]}
 									/>
 								))}
