@@ -1,0 +1,6 @@
+{
+  "name": "newman-reporter-dbverify",
+  "version": "1.0.0",
+  "description": "Newman reporter that verifies CRUD operations against PostgreSQL",
+  "main": "index.js"
+}
