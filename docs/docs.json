@@ -407,7 +407,7 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.5.0",
+          "changelogs/v1.4.10",
           {
             "group": "February 2026",
             "pages": [
