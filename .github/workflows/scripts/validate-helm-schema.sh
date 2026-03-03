@@ -493,7 +493,7 @@ echo "🔍 Checking required fields in plugin configs..."
 
 # Check semantic cache plugin required fields (dimension)
 # Config uses an allOf pattern on plugins array items; Helm uses conditional on semanticCache.enabled
-CONFIG_SEMCACHE_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "semanticcache") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+CONFIG_SEMCACHE_REQUIRED=$(jq -r '.properties.plugins.items.allOf[] | select(.if.properties.name.const == "semantic_cache") | .then.properties.config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_SEMCACHE_REQUIRED=$(jq -r '.properties.bifrost.properties.plugins.properties.semanticCache.then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_SEMCACHE_REQUIRED" != "$HELM_SEMCACHE_REQUIRED" ]; then

@@ -254,8 +254,8 @@ echo ""
 echo -e "${CYAN}🔌 4/4 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
-# Verify semantic cache plugin renders with correct name ("semantic_cache", not "semanticcache")
-# Go registry: plugins/semanticcache/main.go defines PluginName = "semantic_cache"
+# Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")
+# Go registry: plugins/semantic_cache/main.go defines PluginName = "semantic_cache"
 test_name="semanticCache plugin name matches Go registry (semantic_cache)"
 if helm template bifrost ./helm-charts/bifrost \
   --set image.tag=v1.0.0 \

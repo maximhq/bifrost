@@ -11,7 +11,7 @@
   "plugins": [
     {
       "enabled": true,
-      "name": "semanticcache",
+      "name": "semantic_cache",
       "config": {
         "vector_store_namespace": "test"
       }

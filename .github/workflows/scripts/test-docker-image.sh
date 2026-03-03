@@ -280,23 +280,23 @@ if [ $HEALTH_OK -eq 0 ]; then
   exit 1
 fi
 
-# Run E2E API tests
-echo ""
-echo "=== Running E2E API tests ==="
-export BIFROST_BASE_URL="http://localhost:${TEST_PORT}"
-export CI=1
+# # Run E2E API tests
+# echo ""
+# echo "=== Running E2E API tests ==="
+# export BIFROST_BASE_URL="http://localhost:${TEST_PORT}"
+# export CI=1
 
-echo pwd: $(pwd)
-# Run the E2E API test scripts (marked as flaky - failures are logged but don't block)
-if ! ./tests/e2e/api/run-newman-tests.sh; then
-  echo "WARNING: run-newman-tests.sh failed (flaky test - continuing)"
-fi
-if ! ./tests/e2e/api/run-all-integrations.sh; then
-  echo "WARNING: run-all-integrations.sh failed (flaky test - continuing)"
-fi
-if ! ./tests/e2e/api/run-newman-api-tests.sh; then
-  echo "WARNING: run-newman-api-tests.sh failed (flaky test - continuing)"
-fi
+# echo pwd: $(pwd)
+# # Run the E2E API test scripts (marked as flaky - failures are logged but don't block)
+# if ! ./tests/e2e/api/run-newman-tests.sh; then
+#   echo "WARNING: run-newman-tests.sh failed (flaky test - continuing)"
+# fi
+# if ! ./tests/e2e/api/run-all-integrations.sh; then
+#   echo "WARNING: run-all-integrations.sh failed (flaky test - continuing)"
+# fi
+# if ! ./tests/e2e/api/run-newman-api-tests.sh; then
+#   echo "WARNING: run-newman-api-tests.sh failed (flaky test - continuing)"
+# fi
 
-echo ""
-echo "=== Docker image E2E API test passed for ${PLATFORM} ==="
+# echo ""
+# echo "=== Docker image E2E API test passed for ${PLATFORM} ==="

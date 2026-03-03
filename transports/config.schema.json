@@ -788,7 +788,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semanticcache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -996,7 +996,7 @@
             "if": {
               "properties": {
                 "name": {
-                  "const": "semanticcache"
+                  "const": "semantic_cache"
                 }
               }
             },
