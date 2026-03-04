@@ -2,7 +2,10 @@
 
 package schemas
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // Marshal encodes v to JSON bytes using the standard library.
 func Marshal(v interface{}) ([]byte, error) {
@@ -21,4 +24,10 @@ func MarshalString(v interface{}) (string, error) {
 // Unmarshal decodes JSON data into v using the standard library.
 func Unmarshal(data []byte, v interface{}) error {
 	return json.Unmarshal(data, v)
+}
+
+// Compact removes insignificant whitespace from JSON-encoded src
+// and appends the result to dst.
+func Compact(dst *bytes.Buffer, src []byte) error {
+	return json.Compact(dst, src)
 }

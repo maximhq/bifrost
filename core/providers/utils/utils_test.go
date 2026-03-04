@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -819,5 +821,182 @@ func TestMergeExtraParamsIntoJSON_EmptyExtraParams(t *testing.T) {
 	}
 	if len(parsed) != 2 {
 		t.Fatalf("Expected 2 keys, got %d", len(parsed))
+	}
+}
+
+// TestParseAndSetRawRequest_CompactsJSON verifies that indented JSON input
+// (with literal newlines from MarshalIndent) is compacted to a single line.
+// This is critical for SSE streaming where newlines break data-line framing.
+func TestParseAndSetRawRequest_CompactsJSON(t *testing.T) {
+	indentedJSON := []byte(`{
+  "model": "gpt-4",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ],
+  "temperature": 0.7
+}`)
+
+	var extraFields schemas.BifrostResponseExtraFields
+	ParseAndSetRawRequest(&extraFields, indentedJSON)
+
+	if extraFields.RawRequest == nil {
+		t.Fatal("RawRequest should be set")
+	}
+
+	raw, ok := extraFields.RawRequest.(json.RawMessage)
+	if !ok {
+		t.Fatalf("RawRequest should be json.RawMessage, got %T", extraFields.RawRequest)
+	}
+
+	// The compacted output must not contain any literal newlines
+	if strings.Contains(string(raw), "\n") {
+		t.Errorf("Compacted RawRequest should not contain newlines, got:\n%s", string(raw))
+	}
+
+	// Verify it's still valid JSON with the same content
+	var parsed map[string]interface{}
+	if err := sonic.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("Compacted RawRequest is not valid JSON: %v", err)
+	}
+
+	if parsed["model"] != "gpt-4" {
+		t.Errorf("Expected model=gpt-4, got %v", parsed["model"])
+	}
+}
+
+// TestParseAndSetRawRequest_PreservesKeyOrdering verifies that JSON key order
+// is maintained after compaction. This is essential for LLM prompt caching
+// where key ordering affects cache hit rates.
+func TestParseAndSetRawRequest_PreservesKeyOrdering(t *testing.T) {
+	// Keys are intentionally not alphabetically sorted
+	jsonBody := []byte(`{"z_last":"z","a_first":"a","m_middle":"m"}`)
+
+	var extraFields schemas.BifrostResponseExtraFields
+	ParseAndSetRawRequest(&extraFields, jsonBody)
+
+	raw := extraFields.RawRequest.(json.RawMessage)
+	result := string(raw)
+
+	zIdx := strings.Index(result, `"z_last"`)
+	aIdx := strings.Index(result, `"a_first"`)
+	mIdx := strings.Index(result, `"m_middle"`)
+
+	if zIdx >= aIdx || aIdx >= mIdx {
+		t.Errorf("Key ordering not preserved. Got: %s", result)
+	}
+}
+
+// TestParseAndSetRawRequest_EmptyBody verifies that empty input is a no-op.
+func TestParseAndSetRawRequest_EmptyBody(t *testing.T) {
+	var extraFields schemas.BifrostResponseExtraFields
+	ParseAndSetRawRequest(&extraFields, []byte{})
+
+	if extraFields.RawRequest != nil {
+		t.Error("RawRequest should be nil for empty body")
+	}
+
+	ParseAndSetRawRequest(&extraFields, nil)
+
+	if extraFields.RawRequest != nil {
+		t.Error("RawRequest should be nil for nil body")
+	}
+}
+
+// TestParseAndSetRawRequest_SSEStreamingChunks simulates the actual SSE streaming
+// flow end-to-end: a response chunk with raw_request containing indented JSON is
+// marshaled, framed as SSE "data: <json>\n\n", and then each SSE data line is
+// parsed back. This is the exact scenario that caused issue #1905 — pretty-printed
+// JSON in raw_request introduced literal newlines that broke SSE data-line framing.
+func TestParseAndSetRawRequest_SSEStreamingChunks(t *testing.T) {
+	// Simulate indented request body (as produced by MarshalSortedIndent)
+	indentedRequest := []byte(`{
+  "model": "gpt-4",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hello"
+    }
+  ],
+  "stream": true,
+  "temperature": 0.7
+}`)
+
+	// Build a response chunk with raw_request set via ParseAndSetRawRequest.
+	// Uses BifrostChatResponse which is the actual type marshaled in the streaming path.
+	chunk := schemas.BifrostChatResponse{
+		ID:     "chatcmpl-test",
+		Model:  "gpt-4",
+		Object: "chat.completion.chunk",
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+					Delta: &schemas.ChatStreamResponseChoiceDelta{
+						Content: schemas.Ptr("Hello"),
+					},
+				},
+			},
+		},
+	}
+	ParseAndSetRawRequest(&chunk.ExtraFields, indentedRequest)
+
+	// Marshal the chunk (exactly like the transport layer does: sonic.Marshal)
+	chunkJSON, err := sonic.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("Failed to marshal chunk: %v", err)
+	}
+
+	// Frame as SSE: "data: <json>\n\n" (exactly as in inference.go:1591)
+	sseFrame := fmt.Sprintf("data: %s\n\n", chunkJSON)
+
+	// Parse the SSE frame line-by-line as a real SSE client would.
+	// Split on \n and check that there is exactly one "data:" line.
+	lines := strings.Split(strings.TrimRight(sseFrame, "\n"), "\n")
+
+	var dataLines []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "data: ") {
+			dataLines = append(dataLines, line)
+		} else if line != "" {
+			// Any non-empty, non-data line means SSE framing is broken —
+			// this is exactly what happened in #1905
+			t.Errorf("Unexpected non-data line in SSE frame (broken framing): %q", line)
+		}
+	}
+
+	if len(dataLines) != 1 {
+		t.Fatalf("Expected exactly 1 SSE data line, got %d:\n%s", len(dataLines), sseFrame)
+	}
+
+	// Parse the JSON payload from the single data line
+	jsonPayload := strings.TrimPrefix(dataLines[0], "data: ")
+	var parsed schemas.BifrostChatResponse
+	if err := sonic.Unmarshal([]byte(jsonPayload), &parsed); err != nil {
+		t.Fatalf("Failed to parse SSE data line as JSON (this is the #1905 bug): %v\nPayload: %s", err, jsonPayload)
+	}
+
+	// Verify the parsed response has the correct content
+	if parsed.ID != "chatcmpl-test" {
+		t.Errorf("Expected ID=chatcmpl-test, got %s", parsed.ID)
+	}
+	if parsed.ExtraFields.RawRequest == nil {
+		t.Error("RawRequest should be present in parsed chunk")
+	}
+
+	// Verify raw_request round-trips correctly — the client should be able
+	// to parse it back into the original request structure
+	rawBytes, err := sonic.Marshal(parsed.ExtraFields.RawRequest)
+	if err != nil {
+		t.Fatalf("Failed to marshal raw_request: %v", err)
+	}
+	var rawParsed map[string]interface{}
+	if err := sonic.Unmarshal(rawBytes, &rawParsed); err != nil {
+		t.Fatalf("raw_request is not valid JSON after round-trip: %v", err)
+	}
+	if rawParsed["model"] != "gpt-4" {
+		t.Errorf("Expected raw_request.model=gpt-4, got %v", rawParsed["model"])
 	}
 }

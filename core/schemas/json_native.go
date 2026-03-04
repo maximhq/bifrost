@@ -2,7 +2,12 @@
 
 package schemas
 
-import "github.com/bytedance/sonic"
+import (
+	"bytes"
+	"encoding/json"
+
+	"github.com/bytedance/sonic"
+)
 
 // Marshal encodes v to JSON bytes using the high-performance sonic library.
 func Marshal(v interface{}) ([]byte, error) {
@@ -17,4 +22,10 @@ func MarshalString(v interface{}) (string, error) {
 // Unmarshal decodes JSON data into v using sonic.
 func Unmarshal(data []byte, v interface{}) error {
 	return sonic.Unmarshal(data, v)
+}
+
+// Compact removes insignificant whitespace from JSON-encoded src
+// and appends the result to dst.
+func Compact(dst *bytes.Buffer, src []byte) error {
+	return json.Compact(dst, src)
 }
