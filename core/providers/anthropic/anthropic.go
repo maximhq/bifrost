@@ -2,7 +2,6 @@
 package anthropic
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -1022,7 +1021,7 @@ func HandleAnthropicResponsesStream(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 		defer stopCancellation()
 
-		scanner := bufio.NewScanner(reader)
+		scanner := providerUtils.NewSSEScanner(reader)
 		chunkIndex := 0
 
 		startTime := time.Now()
