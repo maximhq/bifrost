@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -1009,6 +1010,7 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 
 	// Convert Input messages using existing ToChatMessages()
 	bcr.Input = ToChatMessages(brr.Input)
+	normalizeDeveloperRoleForChatFallback(bcr.Input)
 
 	// Convert Parameters
 	if brr.Params != nil {
@@ -1037,20 +1039,13 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 			}
 		}
 
-		// Convert Tools using existing ResponsesTool.ToChatTool()
-		if len(brr.Params.Tools) > 0 {
-			chatTools := make([]ChatTool, 0, len(brr.Params.Tools))
-			for _, responsesTool := range brr.Params.Tools {
-				chatTool := responsesTool.ToChatTool()
-				chatTools = append(chatTools, *chatTool)
-			}
-			bcr.Params.Tools = chatTools
-		}
+		// Responses -> Chat fallback only supports function tools in a valid chat shape.
+		bcr.Params.Tools = sanitizeResponsesToolsForChatFallback(brr.Params.Tools)
 
 		// Convert ToolChoice using existing ResponsesToolChoice.ToChatToolChoice()
 		if brr.Params.ToolChoice != nil {
 			chatToolChoice := brr.Params.ToolChoice.ToChatToolChoice()
-			bcr.Params.ToolChoice = chatToolChoice
+			bcr.Params.ToolChoice = sanitizeChatToolChoiceForFallback(chatToolChoice, bcr.Params.Tools)
 		}
 
 		// Handle Reasoning from Reasoning
@@ -1070,6 +1065,77 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 	bcr.RawRequestBody = brr.RawRequestBody
 
 	return bcr
+}
+
+func sanitizeResponsesToolsForChatFallback(tools []ResponsesTool) []ChatTool {
+	if len(tools) == 0 {
+		return nil
+	}
+
+	chatTools := make([]ChatTool, 0, len(tools))
+	for _, responsesTool := range tools {
+		if responsesTool.Type != ResponsesToolTypeFunction {
+			continue
+		}
+		if responsesTool.Name == nil || strings.TrimSpace(*responsesTool.Name) == "" {
+			continue
+		}
+
+		chatTool := responsesTool.ToChatTool()
+		if chatTool == nil || chatTool.Function == nil || strings.TrimSpace(chatTool.Function.Name) == "" {
+			continue
+		}
+
+		chatTool.Type = ChatToolTypeFunction
+		chatTool.Custom = nil
+		chatTools = append(chatTools, *chatTool)
+	}
+
+	if len(chatTools) == 0 {
+		return nil
+	}
+
+	return chatTools
+}
+
+func normalizeDeveloperRoleForChatFallback(messages []ChatMessage) {
+	for i := range messages {
+		if messages[i].Role == ChatMessageRoleDeveloper {
+			messages[i].Role = ChatMessageRoleSystem
+		}
+	}
+}
+
+func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatTool) *ChatToolChoice {
+	if toolChoice == nil {
+		return nil
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+
+	validToolNames := make(map[string]struct{}, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && strings.TrimSpace(tool.Function.Name) != "" {
+			validToolNames[tool.Function.Name] = struct{}{}
+		}
+	}
+
+	if toolChoice.ChatToolChoiceStruct != nil {
+		switch toolChoice.ChatToolChoiceStruct.Type {
+		case ChatToolChoiceTypeFunction:
+			if toolChoice.ChatToolChoiceStruct.Function == nil {
+				return nil
+			}
+			if _, ok := validToolNames[toolChoice.ChatToolChoiceStruct.Function.Name]; !ok {
+				return nil
+			}
+		case ChatToolChoiceTypeAllowedTools, ChatToolChoiceTypeCustom:
+			return nil
+		}
+	}
+
+	return toolChoice
 }
 
 // =============================================================================
@@ -1185,6 +1251,7 @@ type ChatToResponsesStreamState struct {
 	TextItemAdded         bool              // Whether text item has been added
 	TextItemClosed        bool              // Whether text item has been closed
 	TextItemHasContent    bool              // Whether text item has received any content deltas
+	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
 	CurrentOutputIndex    int               // Current output index counter
 	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
 	SequenceNumber        int               // Monotonic sequence number across all chunks
@@ -1207,6 +1274,7 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			TextItemAdded:         false,
 			TextItemClosed:        false,
 			TextItemHasContent:    false,
+			TextBuffer:            strings.Builder{},
 		}
 	},
 }
@@ -1251,6 +1319,7 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemAdded = false
 	state.TextItemClosed = false
 	state.TextItemHasContent = false
+	state.TextBuffer = strings.Builder{}
 	state.SequenceNumber = 0
 	return state
 }
@@ -1284,6 +1353,7 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemAdded = false
 		state.TextItemClosed = false
 		state.TextItemHasContent = false
+		state.TextBuffer = strings.Builder{}
 		state.SequenceNumber = 0
 		chatToResponsesStreamStatePool.Put(state)
 	}
@@ -1423,6 +1493,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			var contentDelta string
 			if hasContent {
 				contentDelta = *delta.Content
+				state.TextBuffer.WriteString(contentDelta)
 			} else {
 				// For reasoning-only responses, emit empty delta on first chunk
 				contentDelta = ""
@@ -1474,15 +1545,14 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					outputIndex := 0
 					itemID := state.ItemIDs["text"]
 
-					// Emit output_text.done (without accumulated text, just the event)
-					emptyText := ""
+					finalText := state.TextBuffer.String()
 					responses = append(responses, &BifrostResponsesStreamResponse{
 						Type:           ResponsesStreamResponseTypeOutputTextDone,
 						SequenceNumber: state.SequenceNumber,
 						OutputIndex:    Ptr(outputIndex),
 						ContentIndex:   Ptr(0),
 						ItemID:         &itemID,
-						Text:           &emptyText,
+						Text:           &finalText,
 						LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 						ExtraFields:    cr.ExtraFields,
 					})
@@ -1491,7 +1561,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					// Emit content_part.done
 					part := &ResponsesMessageContentBlock{
 						Type: ResponsesOutputMessageContentTypeText,
-						Text: &emptyText,
+						Text: &finalText,
 						ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
 							LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
 							Annotations: []ResponsesOutputMessageContentTextAnnotation{},
@@ -1512,12 +1582,22 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 					statusCompleted := "completed"
 					messageType := ResponsesMessageTypeMessage
 					role := ResponsesInputMessageRoleAssistant
+					textType := ResponsesOutputMessageContentTypeText
 					doneItem := &ResponsesMessage{
 						Type:   &messageType,
 						Role:   &role,
 						Status: &statusCompleted,
 						Content: &ResponsesMessageContent{
-							ContentBlocks: []ResponsesMessageContentBlock{},
+							ContentBlocks: []ResponsesMessageContentBlock{
+								{
+									Type: textType,
+									Text: &finalText,
+									ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+										LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+										Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+									},
+								},
+							},
 						},
 					}
 					if itemID != "" {
@@ -1634,15 +1714,14 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			outputIndex := 0
 			itemID := state.ItemIDs["text"]
 
-			// Emit output_text.done (without accumulated text, just the event)
-			emptyText := ""
+			finalText := state.TextBuffer.String()
 			responses = append(responses, &BifrostResponsesStreamResponse{
 				Type:           ResponsesStreamResponseTypeOutputTextDone,
 				SequenceNumber: state.SequenceNumber,
 				OutputIndex:    Ptr(outputIndex),
 				ContentIndex:   Ptr(0),
 				ItemID:         &itemID,
-				Text:           &emptyText,
+				Text:           &finalText,
 				LogProbs:       []ResponsesOutputMessageContentTextLogProb{},
 				ExtraFields:    cr.ExtraFields,
 			})
@@ -1651,7 +1730,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			// Emit content_part.done
 			part := &ResponsesMessageContentBlock{
 				Type: ResponsesOutputMessageContentTypeText,
-				Text: &emptyText,
+				Text: &finalText,
 				ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
 					LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
 					Annotations: []ResponsesOutputMessageContentTextAnnotation{},
@@ -1672,12 +1751,22 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			statusCompleted := "completed"
 			messageType := ResponsesMessageTypeMessage
 			role := ResponsesInputMessageRoleAssistant
+			textType := ResponsesOutputMessageContentTypeText
 			doneItem := &ResponsesMessage{
 				Type:   &messageType,
 				Role:   &role,
 				Status: &statusCompleted,
 				Content: &ResponsesMessageContent{
-					ContentBlocks: []ResponsesMessageContentBlock{},
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: textType,
+							Text: &finalText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
 				},
 			}
 			if itemID != "" {
@@ -1764,6 +1853,36 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 		if state.Model != nil {
 			response.Model = *state.Model
+		}
+		if state.TextItemAdded {
+			statusCompleted := "completed"
+			messageType := ResponsesMessageTypeMessage
+			role := ResponsesInputMessageRoleAssistant
+			textType := ResponsesOutputMessageContentTypeText
+			finalText := state.TextBuffer.String()
+			itemID := state.ItemIDs["text"]
+
+			msg := ResponsesMessage{
+				Type:   &messageType,
+				Role:   &role,
+				Status: &statusCompleted,
+				Content: &ResponsesMessageContent{
+					ContentBlocks: []ResponsesMessageContentBlock{
+						{
+							Type: textType,
+							Text: &finalText,
+							ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{
+								LogProbs:    []ResponsesOutputMessageContentTextLogProb{},
+								Annotations: []ResponsesOutputMessageContentTextAnnotation{},
+							},
+						},
+					},
+				},
+			}
+			if itemID != "" {
+				msg.ID = &itemID
+			}
+			response.Output = []ResponsesMessage{msg}
 		}
 
 		responses = append(responses, &BifrostResponsesStreamResponse{

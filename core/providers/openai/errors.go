@@ -1,6 +1,9 @@
 package openai
 
 import (
+	"fmt"
+	"strings"
+
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -25,10 +28,23 @@ func ParseOpenAIError(resp *fasthttp.Response, requestType schemas.RequestType, 
 		}
 		bifrostErr.Error.Type = errorResp.Error.Type
 		bifrostErr.Error.Code = errorResp.Error.Code
-		bifrostErr.Error.Message = errorResp.Error.Message
+		if errorResp.Error.Message != "" {
+			bifrostErr.Error.Message = errorResp.Error.Message
+		}
 		bifrostErr.Error.Param = errorResp.Error.Param
 		if errorResp.Error.EventID != nil {
 			bifrostErr.Error.EventID = errorResp.Error.EventID
+		}
+	}
+
+	if bifrostErr.Error == nil {
+		bifrostErr.Error = &schemas.ErrorField{}
+	}
+	if strings.TrimSpace(bifrostErr.Error.Message) == "" {
+		if bifrostErr.StatusCode != nil {
+			bifrostErr.Error.Message = fmt.Sprintf("provider API error (status %d)", *bifrostErr.StatusCode)
+		} else {
+			bifrostErr.Error.Message = "provider API error"
 		}
 	}
 
