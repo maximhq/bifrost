@@ -718,6 +718,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					VertexKeyConfig:    dbKey.VertexKeyConfig,
 					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
 					SAPAICoreKeyConfig: dbKey.SAPAICoreKeyConfig,
 				})
 				if err != nil {
@@ -793,6 +794,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					VertexKeyConfig:    dbKey.VertexKeyConfig,
 					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
+					VLLMKeyConfig:      dbKey.VLLMKeyConfig,
 					SAPAICoreKeyConfig: dbKey.SAPAICoreKeyConfig,
 				})
 				if err != nil {
