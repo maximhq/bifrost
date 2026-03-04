@@ -19,6 +19,7 @@ func ToElevenlabsTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 
 	if bifrostReq.Input != nil && len(bifrostReq.Input.File) > 0 {
 		req.File = bifrostReq.Input.File
+		req.Filename = bifrostReq.Input.Filename
 	}
 
 	if bifrostReq.Params == nil {

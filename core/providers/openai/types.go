@@ -680,8 +680,9 @@ func (r *OpenAISpeechRequest) SetExtraParams(params map[string]interface{}) {
 // OpenAITranscriptionRequest represents an OpenAI transcription request
 // Note: This is used for JSON body parsing, actual form parsing is handled in the router
 type OpenAITranscriptionRequest struct {
-	Model string `json:"model"`
-	File  []byte `json:"file"` // Binary audio data
+	Model    string `json:"model"`
+	File     []byte `json:"file"`     // Binary audio data
+	Filename string `json:"filename"` // Original filename, used to preserve file format extension
 
 	schemas.TranscriptionParameters
 	Stream *bool `json:"stream,omitempty"`

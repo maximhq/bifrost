@@ -1307,7 +1307,8 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTran
 		return nil, false, fmt.Errorf("failed to read uploaded file: %v", err)
 	}
 	transcriptionInput := &schemas.TranscriptionInput{
-		File: fileData,
+		File:     fileData,
+		Filename: fileHeader.Filename,
 	}
 	transcriptionParams := &schemas.TranscriptionParameters{}
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {

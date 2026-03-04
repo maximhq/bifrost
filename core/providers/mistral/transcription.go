@@ -17,8 +17,9 @@ func ToMistralTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReque
 	}
 
 	req := &MistralTranscriptionRequest{
-		Model: bifrostReq.Model,
-		File:  bifrostReq.Input.File,
+		Model:    bifrostReq.Model,
+		File:     bifrostReq.Input.File,
+		Filename: bifrostReq.Input.Filename,
 	}
 
 	if bifrostReq.Params != nil {
@@ -102,7 +103,11 @@ func createMistralTranscriptionMultipartBody(req *MistralTranscriptionRequest, p
 // parseTranscriptionFormDataBodyFromRequest writes the transcription request to a multipart form.
 func parseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, req *MistralTranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add file field - Mistral uses "file" as the form field name
-	fileWriter, err := writer.CreateFormFile("file", "audio.mp3")
+	filename := req.Filename
+	if filename == "" {
+		filename = providerUtils.AudioFilenameFromBytes(req.File)
+	}
+	fileWriter, err := writer.CreateFormFile("file", filename)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("failed to create form file", err, providerName)
 	}

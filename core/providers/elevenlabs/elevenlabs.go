@@ -604,7 +604,11 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.File) > 0 {
-		fileWriter, err := writer.CreateFormFile("file", "audio.wav")
+		filename := reqBody.Filename
+		if filename == "" {
+			filename = providerUtils.AudioFilenameFromBytes(reqBody.File)
+		}
+		fileWriter, err := writer.CreateFormFile("file", filename)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to create file field", err, providerName)
 		}

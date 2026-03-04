@@ -42,6 +42,7 @@ type MistralListModelsResponse struct {
 type MistralTranscriptionRequest struct {
 	Model                  string   `json:"model"`                             // Required: e.g., "mistral-audio-transcribe"
 	File                   []byte   `json:"file"`                              // Required: Binary audio data
+	Filename               string   `json:"filename"`                          // Original filename, used to preserve file format extension
 	Language               *string  `json:"language,omitempty"`                // Optional: ISO 639-1 language code
 	Prompt                 *string  `json:"prompt,omitempty"`                  // Optional: Context hint for transcription
 	ResponseFormat         *string  `json:"response_format,omitempty"`         // Optional: "json", "text", "srt", "verbose_json", "vtt"
