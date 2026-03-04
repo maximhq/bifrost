@@ -318,8 +318,63 @@
                   }
                 }
               }
+            },
+            "enforceAuthOnInference": {
+              "type": "boolean",
+              "description": "Require auth (VK, API key, or user token) on inference endpoints"
+            },
+            "enforceSCIMAuth": {
+              "type": "boolean",
+              "description": "Deprecated: use enforceAuthOnInference"
+            },
+            "allowedHeaders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Additional allowed headers for CORS and WebSocket"
+            },
+            "mcpAgentDepth": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum depth for MCP agent mode tool execution"
+            },
+            "mcpToolExecutionTimeout": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Timeout for individual MCP tool execution in seconds"
+            },
+            "mcpCodeModeBindingLevel": {
+              "type": "string",
+              "enum": ["server", "tool"],
+              "description": "Code mode binding level for MCP tools"
+            },
+            "mcpToolSyncInterval": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Global tool sync interval in minutes (0 = disabled)"
+            },
+            "asyncJobResultTTL": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Default TTL for async job results in seconds"
+            },
+            "requiredHeaders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Headers that must be present on every request"
+            },
+            "loggingHeaders": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Headers to capture in log metadata"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "framework": {
           "type": "object",
@@ -385,10 +440,20 @@
                 "maxAgentDepth": {
                   "type": "integer",
                   "minimum": 1
+                },
+                "codeModeBindingLevel": {
+                  "type": "string",
+                  "enum": ["server", "tool"],
+                  "description": "How tools are exposed in VFS for code execution"
                 }
               }
+            },
+            "toolSyncInterval": {
+              "type": "string",
+              "description": "Global default interval for syncing tools from MCP servers (Go duration, e.g. '10m', '1h')"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "plugins": {
           "type": "object",
@@ -1038,8 +1103,39 @@
             },
             "authConfig": {
               "$ref": "#/$defs/authConfig"
+            },
+            "modelConfigs": {
+              "type": "array",
+              "description": "Per-model rate limit and budget configurations",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string" },
+                  "model_name": { "type": "string" },
+                  "provider": { "type": "string" },
+                  "budget_id": { "type": "string" },
+                  "rate_limit_id": { "type": "string" }
+                },
+                "required": ["id", "model_name"]
+              }
+            },
+            "providers": {
+              "type": "array",
+              "description": "Provider-level governance configurations",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string", "description": "Provider name" },
+                  "budget_id": { "type": "string" },
+                  "rate_limit_id": { "type": "string" },
+                  "send_back_raw_request": { "type": "boolean" },
+                  "send_back_raw_response": { "type": "boolean" }
+                },
+                "required": ["name"]
+              }
             }
-          }
+          },
+          "additionalProperties": false
         },
         "cluster": {
           "type": "object",
@@ -2039,8 +2135,41 @@
         "proxy_config": {
           "$ref": "#/$defs/proxyConfig"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse"
+        },
         "send_back_raw_response": {
           "type": "boolean"
+        },
+        "custom_provider_config": {
+          "type": "object",
+          "description": "Custom provider configuration",
+          "properties": {
+            "is_key_less": { "type": "boolean" },
+            "base_provider_type": { "type": "string" },
+            "allowed_requests": {
+              "type": "object",
+              "additionalProperties": { "type": "boolean" }
+            },
+            "request_path_overrides": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "required": ["base_provider_type"]
+        },
+        "pricing_overrides": {
+          "type": "array",
+          "description": "Provider-level pricing overrides",
+          "items": {
+            "type": "object",
+            "properties": {
+              "model_pattern": { "type": "string" },
+              "match_type": { "type": "string", "enum": ["exact", "wildcard", "regex"] }
+            },
+            "required": ["model_pattern", "match_type"]
+          }
         }
       },
       "required": [
@@ -2320,16 +2449,43 @@
     "mcpClientConfig": {
       "type": "object",
       "properties": {
+        "clientId": {
+          "type": "string",
+          "description": "MCP client identifier"
+        },
         "name": {
           "type": "string"
+        },
+        "isCodeModeClient": {
+          "type": "boolean",
+          "description": "Whether this client is a code mode client"
         },
         "connectionType": {
           "type": "string",
           "enum": [
             "stdio",
             "websocket",
-            "http"
+            "http",
+            "sse"
           ]
+        },
+        "connectionString": {
+          "type": "string",
+          "description": "HTTP or SSE URL (required for HTTP or SSE connections)"
+        },
+        "authType": {
+          "type": "string",
+          "enum": ["none", "headers", "oauth"],
+          "description": "Authentication type for MCP connection"
+        },
+        "oauthConfigId": {
+          "type": "string",
+          "description": "OAuth config ID reference"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Headers for auth"
         },
         "stdioConfig": {
           "type": "object",
@@ -2377,6 +2533,20 @@
           "required": [
             "url"
           ]
+        },
+        "toolsToExecute": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Include-only list of tools to execute"
+        },
+        "toolsToAutoExecute": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Auto-execute list of tools"
+        },
+        "toolSyncInterval": {
+          "type": "string",
+          "description": "Per-client override for tool sync interval"
         }
       },
       "required": [
@@ -2423,6 +2593,20 @@
           "then": {
             "required": [
               "httpConfig"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "connectionType": {
+                "const": "sse"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "connectionString"
             ]
           }
         }
