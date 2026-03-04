@@ -198,21 +198,24 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		var textParts []string
 		for _, msg := range reqInput {
 			// Extract content as string
+			// Content can be nil for messages like assistant tool-call messages
 			var content string
-			if msg.Content.ContentStr != nil {
-				content = *msg.Content.ContentStr
-			} else if msg.Content.ContentBlocks != nil {
-				// For content blocks, extract text parts
-				var blockTexts []string
-				for _, block := range msg.Content.ContentBlocks {
-					if block.Text != nil {
-						blockTexts = append(blockTexts, *block.Text)
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					content = *msg.Content.ContentStr
+				} else if msg.Content.ContentBlocks != nil {
+					// For content blocks, extract text parts
+					var blockTexts []string
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil {
+							blockTexts = append(blockTexts, *block.Text)
+						}
+						if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
+							attachments = append(attachments, block.ImageURLStruct.URL)
+						}
 					}
-					if block.ImageURLStruct != nil && block.ImageURLStruct.URL != "" {
-						attachments = append(attachments, block.ImageURLStruct.URL)
-					}
+					content = strings.Join(blockTexts, " ")
 				}
-				content = strings.Join(blockTexts, " ")
 			}
 
 			if content != "" {
@@ -245,24 +248,27 @@ func (plugin *Plugin) extractTextForEmbedding(req *schemas.BifrostRequest) (stri
 		var textParts []string
 		for _, msg := range reqInput {
 			// Extract content as string
+			// Content can be nil for messages like assistant tool-call messages
 			var content string
-			if msg.Content.ContentStr != nil {
-				content = normalizeText(*msg.Content.ContentStr)
-			} else if msg.Content.ContentBlocks != nil {
-				// For content blocks, extract text parts
-				var blockTexts []string
-				for _, block := range msg.Content.ContentBlocks {
-					if block.Text != nil {
-						blockTexts = append(blockTexts, normalizeText(*block.Text))
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					content = normalizeText(*msg.Content.ContentStr)
+				} else if msg.Content.ContentBlocks != nil {
+					// For content blocks, extract text parts
+					var blockTexts []string
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil {
+							blockTexts = append(blockTexts, normalizeText(*block.Text))
+						}
+						if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
+							attachments = append(attachments, *block.ResponsesInputMessageContentBlockImage.ImageURL)
+						}
+						if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileURL != nil {
+							attachments = append(attachments, *block.ResponsesInputMessageContentBlockFile.FileURL)
+						}
 					}
-					if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-						attachments = append(attachments, *block.ResponsesInputMessageContentBlockImage.ImageURL)
-					}
-					if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileURL != nil {
-						attachments = append(attachments, *block.ResponsesInputMessageContentBlockFile.FileURL)
-					}
+					content = strings.Join(blockTexts, " ")
 				}
-				content = strings.Join(blockTexts, " ")
 			}
 
 			role := ""
@@ -535,20 +541,23 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 			normalizedMsg := schemas.DeepCopyChatMessage(msg)
 
 			// Normalize message content
-			if msg.Content.ContentStr != nil {
-				normalizedContent := normalizeText(*msg.Content.ContentStr)
-				normalizedMsg.Content.ContentStr = &normalizedContent
-			} else if msg.Content.ContentBlocks != nil {
-				// Create a copy of content blocks with normalized text
-				normalizedBlocks := make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
-				for i, block := range msg.Content.ContentBlocks {
-					normalizedBlocks[i] = block
-					if block.Text != nil {
-						normalizedText := normalizeText(*block.Text)
-						normalizedBlocks[i].Text = &normalizedText
+			// Content can be nil for messages like assistant tool-call messages
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil {
+					normalizedContent := normalizeText(*msg.Content.ContentStr)
+					normalizedMsg.Content.ContentStr = &normalizedContent
+				} else if msg.Content.ContentBlocks != nil {
+					// Create a copy of content blocks with normalized text
+					normalizedBlocks := make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
+					for i, block := range msg.Content.ContentBlocks {
+						normalizedBlocks[i] = block
+						if block.Text != nil {
+							normalizedText := normalizeText(*block.Text)
+							normalizedBlocks[i].Text = &normalizedText
+						}
 					}
+					normalizedMsg.Content.ContentBlocks = normalizedBlocks
 				}
-				normalizedMsg.Content.ContentBlocks = normalizedBlocks
 			}
 
 			normalizedMessages = append(normalizedMessages, normalizedMsg)
