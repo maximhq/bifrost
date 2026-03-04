@@ -182,6 +182,8 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 								AzureKeyConfig:     tableKey.AzureKeyConfig,
 								VertexKeyConfig:    tableKey.VertexKeyConfig,
 								BedrockKeyConfig:   tableKey.BedrockKeyConfig,
+								ReplicateKeyConfig: tableKey.ReplicateKeyConfig,
+								VLLMKeyConfig:      tableKey.VLLMKeyConfig,
 								SAPAICoreKeyConfig: tableKey.SAPAICoreKeyConfig,
 								ConfigHash:         tableKey.ConfigHash,
 							})

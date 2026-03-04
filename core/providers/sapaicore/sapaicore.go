@@ -61,6 +61,10 @@ func releaseStreamingResponseNoDrain(resp *fasthttp.Response, logger schemas.Log
 	fasthttp.ReleaseResponse(resp)
 }
 
+// defaultCleanupInterval is the interval at which the background goroutine
+// prunes expired entries from the token and deployment caches.
+const defaultCleanupInterval = 5 * time.Minute
+
 // SAPAICoreProvider implements the Provider interface for SAP AI Core.
 type SAPAICoreProvider struct {
 	logger              schemas.Logger
@@ -70,6 +74,7 @@ type SAPAICoreProvider struct {
 	sendBackRawResponse bool
 	tokenCache          *TokenCache
 	deploymentCache     *DeploymentCache
+	stopCleanup         chan struct{}
 }
 
 // NewSAPAICoreProvider creates a new SAP AI Core provider instance.
@@ -90,8 +95,9 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 	tokenCache := NewTokenCache(client)
 	deploymentCache := NewDeploymentCache(client, tokenCache)
+	stopCleanup := make(chan struct{})
 
-	return &SAPAICoreProvider{
+	provider := &SAPAICoreProvider{
 		logger:              logger,
 		client:              client,
 		networkConfig:       config.NetworkConfig,
@@ -99,7 +105,13 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		sendBackRawResponse: config.SendBackRawResponse,
 		tokenCache:          tokenCache,
 		deploymentCache:     deploymentCache,
-	}, nil
+		stopCleanup:         stopCleanup,
+	}
+
+	// Start background cache cleanup goroutine
+	go provider.periodicCleanup()
+
+	return provider, nil
 }
 
 // GetProviderKey returns the provider identifier for SAP AI Core.
@@ -110,11 +122,35 @@ func (provider *SAPAICoreProvider) GetProviderKey() schemas.ModelProvider {
 // Shutdown cleans up provider resources including cached tokens and deployments.
 // This should be called when the provider is no longer needed.
 func (provider *SAPAICoreProvider) Shutdown() {
+	// Signal the cleanup goroutine to stop
+	close(provider.stopCleanup)
+
 	if provider.tokenCache != nil {
 		provider.tokenCache.Cleanup()
 	}
 	if provider.deploymentCache != nil {
 		provider.deploymentCache.ClearCache("", "")
+	}
+}
+
+// periodicCleanup runs in the background and prunes expired cache entries at a regular interval.
+// It stops when the provider is shut down via the stopCleanup channel.
+func (provider *SAPAICoreProvider) periodicCleanup() {
+	ticker := time.NewTicker(defaultCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if provider.tokenCache != nil {
+				provider.tokenCache.Cleanup()
+			}
+			if provider.deploymentCache != nil {
+				provider.deploymentCache.Cleanup()
+			}
+		case <-provider.stopCleanup:
+			return
+		}
 	}
 }
 
@@ -568,32 +604,34 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 	)
 }
 
-// handleBedrockChatCompletionStream handles streaming chat completion for Bedrock backends
-// Uses the Converse API (/converse-stream) which supports native tool calling
-func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
+// bedrockStreamProcessor is a callback that processes the AWS EventStream body and sends
+// chunks to responseChan. Both processBedrockConverseEventStream and
+// processBedrockConverseResponsesEventStream match this signature.
+type bedrockStreamProcessor func(
+	ctx *schemas.BifrostContext,
+	bodyStream io.Reader,
+	responseChan chan *schemas.BifrostStreamChunk,
+	postHookRunner schemas.PostHookRunner,
+	providerName schemas.ModelProvider,
+	model string,
+	logger schemas.Logger,
+)
+
+// performBedrockStreamRequest is a shared helper that handles the common HTTP request/response
+// lifecycle, error handling, cancellation setup, and goroutine management for Bedrock streaming
+// endpoints (both Chat Completion and Responses API).
+func (provider *SAPAICoreProvider) performBedrockStreamRequest(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
 	token string,
 	config *schemas.SAPAICoreKeyConfig,
-	deploymentID string,
-	request *schemas.BifrostChatRequest,
+	requestURL string,
+	jsonBody []byte,
+	requestType schemas.RequestType,
+	model string,
+	processor bedrockStreamProcessor,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
-
-	// Build Bedrock Converse streaming URL - uses /converse-stream for native tool support
-	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse-stream")
-
-	// Convert request to Bedrock Converse format
-	converseRequest := convertToBedrockConverse(request)
-
-	jsonData, marshalErr := sonic.Marshal(converseRequest)
-	if marshalErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(
-			"failed to marshal Bedrock Converse streaming request",
-			marshalErr,
-			providerName,
-		)
-	}
 
 	// Create HTTP request
 	req := fasthttp.AcquireRequest()
@@ -608,7 +646,7 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 	req.Header.Set("AI-Resource-Group", config.ResourceGroup.GetValue())
 	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetBody(jsonData)
+	req.SetBody(jsonBody)
 
 	// Make the request
 	if err := provider.client.Do(req, resp); err != nil {
@@ -628,7 +666,7 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, ParseSAPAICoreError(resp, schemas.ChatCompletionStreamRequest, providerName, request.Model)
+		return nil, ParseSAPAICoreError(resp, requestType, providerName, model)
 	}
 
 	// Create response channel
@@ -638,9 +676,9 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 	go func() {
 		defer func() {
 			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, model, requestType, provider.logger)
 			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ChatCompletionStreamRequest, provider.logger)
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, model, requestType, provider.logger)
 			}
 			close(responseChan)
 		}()
@@ -651,11 +689,42 @@ func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
-		// Process Bedrock Converse event stream (has native tool support)
-		processBedrockConverseEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
+		processor(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, model, provider.logger)
 	}()
 
 	return responseChan, nil
+}
+
+// handleBedrockChatCompletionStream handles streaming chat completion for Bedrock backends
+// Uses the Converse API (/converse-stream) which supports native tool calling
+func (provider *SAPAICoreProvider) handleBedrockChatCompletionStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	token string,
+	config *schemas.SAPAICoreKeyConfig,
+	deploymentID string,
+	request *schemas.BifrostChatRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	// Build Bedrock Converse streaming URL - uses /converse-stream for native tool support
+	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse-stream")
+
+	// Convert request to Bedrock Converse format
+	converseRequest := convertToBedrockConverse(request)
+
+	jsonData, marshalErr := sonic.Marshal(converseRequest)
+	if marshalErr != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to marshal Bedrock Converse streaming request",
+			marshalErr,
+			provider.GetProviderKey(),
+		)
+	}
+
+	return provider.performBedrockStreamRequest(
+		ctx, postHookRunner, token, config, requestURL, jsonData,
+		schemas.ChatCompletionStreamRequest, request.Model,
+		processBedrockConverseEventStream,
+	)
 }
 
 // handleVertexChatCompletionStream handles streaming chat completion for Vertex backends
@@ -953,8 +1022,6 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 	deploymentID string,
 	request *schemas.BifrostResponsesRequest,
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	providerName := provider.GetProviderKey()
-
 	// Build Bedrock Converse streaming URL - uses /converse-stream for native tool support
 	requestURL := buildRequestURL(config.BaseURL.GetValue(), deploymentID, "/converse-stream")
 
@@ -966,71 +1033,15 @@ func (provider *SAPAICoreProvider) handleBedrockResponsesStream(
 		return nil, providerUtils.NewBifrostOperationError(
 			"failed to marshal Bedrock Converse streaming request for Responses API",
 			marshalErr,
-			providerName,
+			provider.GetProviderKey(),
 		)
 	}
 
-	// Create HTTP request
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	resp.StreamBody = true
-	defer fasthttp.ReleaseRequest(req)
-
-	req.SetRequestURI(requestURL)
-	req.Header.SetMethod(fasthttp.MethodPost)
-	req.Header.SetContentType("application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("AI-Resource-Group", config.ResourceGroup.GetValue())
-	req.Header.Set("Accept", "application/vnd.amazon.eventstream")
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetBody(jsonData)
-
-	// Make the request
-	if err := provider.client.Do(req, resp); err != nil {
-		providerUtils.ReleaseStreamingResponse(resp)
-		if errors.Is(err, context.Canceled) {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}
-		}
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName)
-	}
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		defer providerUtils.ReleaseStreamingResponse(resp)
-		return nil, ParseSAPAICoreError(resp, schemas.ResponsesStreamRequest, providerName, request.Model)
-	}
-
-	// Create response channel
-	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
-
-	// Start streaming in a goroutine
-	go func() {
-		defer func() {
-			if ctx.Err() == context.Canceled {
-				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, provider.logger)
-			} else if ctx.Err() == context.DeadlineExceeded {
-				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, providerName, request.Model, schemas.ResponsesStreamRequest, provider.logger)
-			}
-			close(responseChan)
-		}()
-		// Use NoDrain variant for AWS EventStream - the stream is fully consumed at io.EOF
-		// and draining would block indefinitely waiting for data that will never come
-		defer releaseStreamingResponseNoDrain(resp, provider.logger)
-		// Setup cancellation handler to close body stream on ctx cancellation
-		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
-		defer stopCancellation()
-
-		// Process Bedrock Converse event stream for Responses API (has native tool support)
-		processBedrockConverseResponsesEventStream(ctx, resp.BodyStream(), responseChan, postHookRunner, providerName, request.Model, provider.logger)
-	}()
-
-	return responseChan, nil
+	return provider.performBedrockStreamRequest(
+		ctx, postHookRunner, token, config, requestURL, jsonData,
+		schemas.ResponsesStreamRequest, request.Model,
+		processBedrockConverseResponsesEventStream,
+	)
 }
 
 // CountTokens is not supported by the SAP AI Core provider.
