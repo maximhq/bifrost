@@ -149,6 +149,10 @@ cat docker-config.json | base64 -w 0
 
 ### Step 3: Create Bifrost Configuration
 
+<Note>
+If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ```yaml
 apiVersion: v1
 kind: Secret

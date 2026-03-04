@@ -1147,6 +1147,10 @@ http {
 
 Production-ready Kubernetes deployment with StatefulSet:
 
+<Note>
+If you use PostgreSQL for `config_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap

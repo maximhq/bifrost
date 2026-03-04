@@ -200,6 +200,10 @@ volumes:
 
 ### Production (Multi-Node with PostgreSQL)
 
+<Note>
+If you use PostgreSQL for Bifrost storage, ensure the database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ```yaml
 services:
   bifrost-1:

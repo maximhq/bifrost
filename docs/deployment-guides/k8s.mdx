@@ -25,6 +25,10 @@ See the [Terraform module README](https://github.com/maximhq/bifrost/tree/main/t
 If you are using Postgres/MySQL for config and log store, you can skip the Volume configuration and permission changes sections.
 </Note>
 
+<Note>
+If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 <Tabs>
 <Tab title="AWS">
 
