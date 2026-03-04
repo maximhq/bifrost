@@ -274,8 +274,8 @@ export const modelProviderKeySchema = z
 					return true;
 				}
 			}
-			// Otherwise, value is required
-			return data.value?.value && data.value?.value?.length > 0;
+			// Otherwise, value is required (either direct value or env var reference)
+			return hasEnvVarValue(data.value);
 		},
 		{
 			message: "Value is required",

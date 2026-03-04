@@ -172,10 +172,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ```json
 {
-  "providers": [
-    {
-      "name": "sapaicore",
-      "provider": "sapaicore",
+  "providers": {
+    "sapaicore": {
       "keys": [
         {
           "name": "sapaicore-key-1",
@@ -189,7 +187,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
         }
       ]
     }
-  ]
+  }
 }
 ```
 
