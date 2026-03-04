@@ -61,6 +61,17 @@ const TIME_PERIODS = [
 	{ label: "Last 30 days", value: "30d" },
 ];
 
+const CHART_HEADER_ACTIONS_CLASS = "flex min-w-0 w-full flex-col-reverse gap-2";
+const CHART_HEADER_LEGEND_CLASS = "flex min-w-0 flex-wrap items-center gap-2 pl-2 text-xs";
+const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
+const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
+const sanitizeSeriesLabels = (values?: string[]): string[] => {
+	if (!values) return [];
+	return values
+		.map((value) => value.trim())
+		.filter((value) => value.length > 0);
+};
+
 function getTimeRangeFromPeriod(period: string): { start: number; end: number } {
 	const now = Math.floor(Date.now() / 1000);
 	switch (period) {
@@ -145,9 +156,6 @@ export default function DashboardPage() {
 		},
 	);
 
-	// Parse comma-separated URL param into a string array
-	const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
-
 	// Parse filter arrays from URL state
 	const selectedProviders = useMemo(() => parseCsvParam(urlState.providers), [urlState.providers]);
 	const selectedModels = useMemo(() => parseCsvParam(urlState.models), [urlState.models]);
@@ -199,26 +207,26 @@ export default function DashboardPage() {
 	);
 
 	// Model lists for each chart's legend (must match what the chart component actually renders)
-	const costModels = useMemo(() => costData?.models ?? [], [costData?.models]);
-	const usageModels = useMemo(() => modelData?.models ?? [], [modelData?.models]);
+	const costModels = useMemo(() => sanitizeSeriesLabels(costData?.models), [costData?.models]);
+	const usageModels = useMemo(() => sanitizeSeriesLabels(modelData?.models), [modelData?.models]);
 
 	// Available models for filter dropdowns (union of both sources)
 	const availableModels = useMemo(() => {
-		if (costData?.models?.length) return costData.models;
-		return modelData?.models ?? [];
+		if (costData?.models?.length) return sanitizeSeriesLabels(costData.models);
+		return sanitizeSeriesLabels(modelData?.models);
 	}, [costData?.models, modelData?.models]);
 
 	// Available providers for provider chart filter dropdowns
 	const availableProviders = useMemo(() => {
-		if (providerCostData?.providers?.length) return providerCostData.providers;
-		if (providerTokenData?.providers?.length) return providerTokenData.providers;
-		return providerLatencyData?.providers ?? [];
+		if (providerCostData?.providers?.length) return sanitizeSeriesLabels(providerCostData.providers);
+		if (providerTokenData?.providers?.length) return sanitizeSeriesLabels(providerTokenData.providers);
+		return sanitizeSeriesLabels(providerLatencyData?.providers);
 	}, [providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers]);
 
 	// Provider lists for each chart's legend
-	const providerCostProviders = useMemo(() => providerCostData?.providers ?? [], [providerCostData?.providers]);
-	const providerTokenProviders = useMemo(() => providerTokenData?.providers ?? [], [providerTokenData?.providers]);
-	const providerLatencyProviders = useMemo(() => providerLatencyData?.providers ?? [], [providerLatencyData?.providers]);
+	const providerCostProviders = useMemo(() => sanitizeSeriesLabels(providerCostData?.providers), [providerCostData?.providers]);
+	const providerTokenProviders = useMemo(() => sanitizeSeriesLabels(providerTokenData?.providers), [providerTokenData?.providers]);
+	const providerLatencyProviders = useMemo(() => sanitizeSeriesLabels(providerLatencyData?.providers), [providerLatencyData?.providers]);
 
 	// Fetch all data
 	const fetchAllData = useCallback(async () => {
@@ -436,8 +444,8 @@ export default function DashboardPage() {
 					loading={loadingHistogram}
 					testId="chart-log-volume"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.success }} />
 									<span className="text-muted-foreground">Success</span>
@@ -447,11 +455,13 @@ export default function DashboardPage() {
 									<span className="text-muted-foreground">Error</span>
 								</span>
 							</div>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.volume_chart)}
-								onToggle={handleVolumeChartToggle}
-								data-testid="dashboard-volume-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.volume_chart)}
+									onToggle={handleVolumeChartToggle}
+									data-testid="dashboard-volume-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -469,8 +479,8 @@ export default function DashboardPage() {
 					loading={loadingTokens}
 					testId="chart-token-usage"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS.promptTokens }} />
 									<span className="text-muted-foreground">Input</span>
@@ -480,11 +490,13 @@ export default function DashboardPage() {
 									<span className="text-muted-foreground">Output</span>
 								</span>
 							</div>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.token_chart)}
-								onToggle={handleTokenChartToggle}
-								data-testid="dashboard-token-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.token_chart)}
+									onToggle={handleTokenChartToggle}
+									data-testid="dashboard-token-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -502,8 +514,8 @@ export default function DashboardPage() {
 					loading={loadingCost}
 					testId="chart-cost-total"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								{urlState.cost_model === "all" ? (
 									costModels.length > 0 && (
 										<>
@@ -547,17 +559,19 @@ export default function DashboardPage() {
 									</Tooltip>
 								)}
 							</div>
-							<ModelFilterSelect
-								models={availableModels}
-								selectedModel={urlState.cost_model}
-								onModelChange={handleCostModelChange}
-								data-testid="dashboard-cost-model-filter"
-							/>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.cost_chart)}
-								onToggle={handleCostChartToggle}
-								data-testid="dashboard-cost-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ModelFilterSelect
+									models={availableModels}
+									selectedModel={urlState.cost_model}
+									onModelChange={handleCostModelChange}
+									data-testid="dashboard-cost-model-filter"
+								/>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.cost_chart)}
+									onToggle={handleCostChartToggle}
+									data-testid="dashboard-cost-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -576,8 +590,8 @@ export default function DashboardPage() {
 					loading={loadingModels}
 					testId="chart-model-usage"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								{urlState.usage_model === "all" ? (
 									usageModels.length > 0 && (
 										<>
@@ -622,17 +636,19 @@ export default function DashboardPage() {
 									</>
 								)}
 							</div>
-							<ModelFilterSelect
-								models={availableModels}
-								selectedModel={urlState.usage_model}
-								onModelChange={handleUsageModelChange}
-								data-testid="dashboard-usage-model-filter"
-							/>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.model_chart)}
-								onToggle={handleModelChartToggle}
-								data-testid="dashboard-usage-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ModelFilterSelect
+									models={availableModels}
+									selectedModel={urlState.usage_model}
+									onModelChange={handleUsageModelChange}
+									data-testid="dashboard-usage-model-filter"
+								/>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.model_chart)}
+									onToggle={handleModelChartToggle}
+									data-testid="dashboard-usage-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -651,8 +667,8 @@ export default function DashboardPage() {
 					loading={loadingLatency}
 					testId="chart-latency"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								<span className="flex items-center gap-1">
 									<span className="h-2 w-2 rounded-full" style={{ backgroundColor: LATENCY_COLORS.avg }} />
 									<span className="text-muted-foreground">Avg</span>
@@ -670,11 +686,13 @@ export default function DashboardPage() {
 									<span className="text-muted-foreground">P99</span>
 								</span>
 							</div>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.latency_chart)}
-								onToggle={handleLatencyChartToggle}
-								data-testid="dashboard-latency-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.latency_chart)}
+									onToggle={handleLatencyChartToggle}
+									data-testid="dashboard-latency-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -696,8 +714,8 @@ export default function DashboardPage() {
 					loading={loadingProviderCost}
 					testId="chart-provider-cost"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								{urlState.provider_cost_provider === "all" ? (
 									providerCostProviders.length > 0 && (
 										<>
@@ -741,17 +759,19 @@ export default function DashboardPage() {
 									</Tooltip>
 								)}
 							</div>
-							<ProviderFilterSelect
-								providers={availableProviders}
-								selectedProvider={urlState.provider_cost_provider}
-								onProviderChange={handleProviderCostProviderChange}
-								data-testid="dashboard-provider-cost-filter"
-							/>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.provider_cost_chart)}
-								onToggle={handleProviderCostChartToggle}
-								data-testid="dashboard-provider-cost-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ProviderFilterSelect
+									providers={availableProviders}
+									selectedProvider={urlState.provider_cost_provider}
+									onProviderChange={handleProviderCostProviderChange}
+									data-testid="dashboard-provider-cost-filter"
+								/>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.provider_cost_chart)}
+									onToggle={handleProviderCostChartToggle}
+									data-testid="dashboard-provider-cost-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -770,8 +790,8 @@ export default function DashboardPage() {
 					loading={loadingProviderTokens}
 					testId="chart-provider-tokens"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								{urlState.provider_token_provider === "all" ? (
 									providerTokenProviders.length > 0 && (
 										<>
@@ -816,17 +836,19 @@ export default function DashboardPage() {
 									</>
 								)}
 							</div>
-							<ProviderFilterSelect
-								providers={availableProviders}
-								selectedProvider={urlState.provider_token_provider}
-								onProviderChange={handleProviderTokenProviderChange}
-								data-testid="dashboard-provider-token-filter"
-							/>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.provider_token_chart)}
-								onToggle={handleProviderTokenChartToggle}
-								data-testid="dashboard-provider-token-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ProviderFilterSelect
+									providers={availableProviders}
+									selectedProvider={urlState.provider_token_provider}
+									onProviderChange={handleProviderTokenProviderChange}
+									data-testid="dashboard-provider-token-filter"
+								/>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.provider_token_chart)}
+									onToggle={handleProviderTokenChartToggle}
+									data-testid="dashboard-provider-token-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>
@@ -845,8 +867,8 @@ export default function DashboardPage() {
 					loading={loadingProviderLatency}
 					testId="chart-provider-latency"
 					headerActions={
-						<div className="flex items-center gap-3">
-							<div className="flex items-center gap-2 text-xs">
+						<div className={CHART_HEADER_ACTIONS_CLASS}>
+							<div className={CHART_HEADER_LEGEND_CLASS}>
 								{urlState.provider_latency_provider === "all" ? (
 									providerLatencyProviders.length > 0 && (
 										<>
@@ -899,17 +921,19 @@ export default function DashboardPage() {
 									</>
 								)}
 							</div>
-							<ProviderFilterSelect
-								providers={availableProviders}
-								selectedProvider={urlState.provider_latency_provider}
-								onProviderChange={handleProviderLatencyProviderChange}
-								data-testid="dashboard-provider-latency-filter"
-							/>
-							<ChartTypeToggle
-								chartType={toChartType(urlState.provider_latency_chart)}
-								onToggle={handleProviderLatencyChartToggle}
-								data-testid="dashboard-provider-latency-chart-toggle"
-							/>
+							<div className={CHART_HEADER_CONTROLS_CLASS}>
+								<ProviderFilterSelect
+									providers={availableProviders}
+									selectedProvider={urlState.provider_latency_provider}
+									onProviderChange={handleProviderLatencyProviderChange}
+									data-testid="dashboard-provider-latency-filter"
+								/>
+								<ChartTypeToggle
+									chartType={toChartType(urlState.provider_latency_chart)}
+									onToggle={handleProviderLatencyChartToggle}
+									data-testid="dashboard-provider-latency-chart-toggle"
+								/>
+							</div>
 						</div>
 					}
 				>

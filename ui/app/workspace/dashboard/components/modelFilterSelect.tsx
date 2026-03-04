@@ -12,7 +12,7 @@ interface ModelFilterSelectProps {
 export function ModelFilterSelect({ models, selectedModel, onModelChange, "data-testid": testId }: ModelFilterSelectProps) {
 	return (
 		<Select value={selectedModel} onValueChange={onModelChange}>
-			<SelectTrigger className="h-5 w-[130px] text-xs" data-testid={testId}>
+			<SelectTrigger className="h-5 w-[110px] text-xs sm:w-[130px]" data-testid={testId}>
 				<SelectValue placeholder="All Models" />
 			</SelectTrigger>
 			<SelectContent>

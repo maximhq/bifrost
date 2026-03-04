@@ -80,6 +80,7 @@ export function LatencyChart({ data, chartType, startTime, endTime }: LatencyCha
 
 	const commonProps = {
 		data: chartData,
+		margin: { top: 6, right: 4, left: -8, bottom: 0 },
 	};
 
 	return (

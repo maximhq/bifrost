@@ -54,7 +54,7 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 
 	const tabs = useMemo(() => {
 		return availableTabs(provider, hasGovernanceAccess);
-	}, [provider.name, provider.custom_provider_config, hasGovernanceAccess]);
+	}, [provider, hasGovernanceAccess]);
 
 	useEffect(() => {
 		setSelectedTab(tabs[0]?.id);
@@ -80,16 +80,15 @@ export default function ProviderConfigSheet({ show, onCancel, provider }: Props)
 				</SheetHeader>
 				<div className="w-full rounded-sm border">
 					<Tabs defaultValue={tabs[0]?.id} value={selectedTab} onValueChange={setSelectedTab} className="space-y-6">
-						<TabsList
-							style={{ gridTemplateColumns: `repeat(${tabs.length}, 1fr)` }}
-							className="mb-4 grid h-10 w-full rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none"
-						>
-							{tabs.map((tab) => (
-								<TabsTrigger key={tab.id} value={tab.id} data-testid={`provider-tab-${tab.id}`} className="flex items-center gap-2">
-									{tab.label}
-								</TabsTrigger>
-							))}
-						</TabsList>
+						<div className="custom-scrollbar mb-4 w-full overflow-x-auto">
+							<TabsList className="h-10 w-max min-w-full justify-start rounded-tl-sm rounded-tr-sm rounded-br-none rounded-bl-none">
+								{tabs.map((tab) => (
+									<TabsTrigger key={tab.id} value={tab.id} data-testid={`provider-tab-${tab.id}`} className="flex-none px-3 whitespace-nowrap">
+										{tab.label}
+									</TabsTrigger>
+								))}
+							</TabsList>
+						</div>
 						<TabsContent value="api-structure">
 							<ApiStructureFormFragment provider={provider} />
 						</TabsContent>
