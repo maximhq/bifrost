@@ -98,6 +98,9 @@ func (dc *DeploymentCache) resolveDeployment(
 	}
 	dc.mu.RUnlock()
 
+	// Opportunistic cleanup: prune expired entries during cache misses
+	dc.pruneExpired()
+
 	// Short write-lock check, then release before external I/O
 	dc.mu.Lock()
 	if cached, ok := dc.deployments[cacheKey]; ok {
@@ -194,12 +197,8 @@ func (dc *DeploymentCache) fetchDeployments(
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		body := string(resp.Body())
-		if len(body) > 256 {
-			body = body[:256] + "...(truncated)"
-		}
 		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("deployments request failed with status %d: %s", resp.StatusCode(), body),
+			fmt.Sprintf("deployments request failed with status %d", resp.StatusCode()),
 			fmt.Errorf("http %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
@@ -269,12 +268,8 @@ func (dc *DeploymentCache) ListModels(
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		body := string(resp.Body())
-		if len(body) > 256 {
-			body = body[:256] + "...(truncated)"
-		}
 		return nil, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("model listing request failed with status %d: %s", resp.StatusCode(), body),
+			fmt.Sprintf("model listing request failed with status %d", resp.StatusCode()),
 			fmt.Errorf("http %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
@@ -334,6 +329,35 @@ func (dc *DeploymentCache) ClearCache(baseURL, resourceGroup string) {
 
 	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
 	delete(dc.deployments, cacheKey)
+}
+
+// Cleanup removes all expired entries from the deployment cache.
+func (dc *DeploymentCache) Cleanup() {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	now := time.Now()
+	for key, cached := range dc.deployments {
+		if now.Sub(cached.fetchedAt) >= dc.ttl {
+			delete(dc.deployments, key)
+		}
+	}
+}
+
+// pruneExpired is a non-blocking opportunistic cleanup that removes expired entries
+// if the write lock can be acquired without contention.
+func (dc *DeploymentCache) pruneExpired() {
+	if !dc.mu.TryLock() {
+		return
+	}
+	defer dc.mu.Unlock()
+
+	now := time.Now()
+	for key, cached := range dc.deployments {
+		if now.Sub(cached.fetchedAt) >= dc.ttl {
+			delete(dc.deployments, key)
+		}
+	}
 }
 
 // DetermineBackend determines the backend type based on model name prefix

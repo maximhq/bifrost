@@ -66,6 +66,9 @@ func (tc *TokenCache) GetToken(clientID, clientSecret, authURL string) (string, 
 	}
 	tc.mu.RUnlock()
 
+	// Opportunistic cleanup: prune expired tokens during cache misses
+	tc.pruneExpired()
+
 	// Use singleflight to coalesce concurrent fetches for the same key.
 	// BifrostError is passed through tokenResult (not the error return) since
 	// BifrostError doesn't implement the error interface.
@@ -138,12 +141,8 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 	}
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		body := string(resp.Body())
-		if len(body) > 256 {
-			body = body[:256] + "...(truncated)"
-		}
 		return "", 0, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("OAuth2 token request failed with status %d: %s", resp.StatusCode(), body),
+			fmt.Sprintf("OAuth2 token request failed with status %d", resp.StatusCode()),
 			fmt.Errorf("HTTP %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
@@ -186,6 +185,22 @@ func (tc *TokenCache) ClearToken(clientID, authURL string) {
 // Cleanup removes all expired tokens from the cache
 func (tc *TokenCache) Cleanup() {
 	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	now := time.Now()
+	for key, token := range tc.tokens {
+		if now.After(token.expiresAt) {
+			delete(tc.tokens, key)
+		}
+	}
+}
+
+// pruneExpired is a non-blocking opportunistic cleanup that removes expired tokens
+// if the write lock can be acquired without contention.
+func (tc *TokenCache) pruneExpired() {
+	if !tc.mu.TryLock() {
+		return
+	}
 	defer tc.mu.Unlock()
 
 	now := time.Now()

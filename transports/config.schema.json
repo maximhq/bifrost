@@ -1516,6 +1516,9 @@
                 "required": [
                   "url",
                   "model_name"
+                ],
+                "additionalProperties": false
+              },
               "sapaicore_key_config": {
                 "type": "object",
                 "properties": {
@@ -1564,27 +1567,8 @@
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                    {
-                      "required": [
-                        "azure_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "vertex_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "bedrock_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "sapaicore_key_config"
-                      ]
-                    }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["sapaicore_key_config"] }
                   ]
                 }
               },
@@ -1594,22 +1578,8 @@
                   "anyOf": [
                     { "required": ["vertex_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                    {
-                      "required": [
-                        "vertex_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "bedrock_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "sapaicore_key_config"
-                      ]
-                    }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["sapaicore_key_config"] }
                   ]
                 }
               },
@@ -1619,22 +1589,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                    {
-                      "required": [
-                        "azure_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "bedrock_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "sapaicore_key_config"
-                      ]
-                    }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["sapaicore_key_config"] }
                   ]
                 }
               },
@@ -1644,22 +1600,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                    {
-                      "required": [
-                        "azure_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "vertex_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "sapaicore_key_config"
-                      ]
-                    }
+                    { "required": ["vllm_key_config"] },
+                    { "required": ["sapaicore_key_config"] }
                   ]
                 }
               },
@@ -1669,27 +1611,19 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
-                "required": [
-                  "sapaicore_key_config"
-                ],
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["sapaicore_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["sapaicore_key_config"],
                 "not": {
                   "anyOf": [
-                    {
-                      "required": [
-                        "azure_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "vertex_key_config"
-                      ]
-                    },
-                    {
-                      "required": [
-                        "bedrock_key_config"
-                      ]
-                    }
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               }
