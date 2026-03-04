@@ -117,6 +117,7 @@ type ComprehensiveTestConfig struct {
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
 	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
+	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.

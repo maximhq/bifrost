@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestScenarioFunc defines the function signature for test scenario functions
@@ -111,10 +112,21 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunPassthroughExtraParamsTest,
 	}
 
-	// Execute all test scenarios
+	// Execute all test scenarios without raw request/response (default behavior)
 	for _, scenarioFunc := range testScenarios {
 		scenarioFunc(t, client, ctx, testConfig)
 	}
+
+	// Execute all test scenarios WITH raw request/response enabled
+	t.Run("WithRawRequestResponse", func(t *testing.T) {
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
+		rawConfig := testConfig
+		rawConfig.ExpectRawRequestResponse = true
+		for _, scenarioFunc := range testScenarios {
+			scenarioFunc(t, client, rawCtx, rawConfig)
+		}
+	})
 
 	// Print comprehensive summary based on configuration
 	printTestSummary(t, testConfig)

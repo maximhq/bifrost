@@ -771,11 +771,27 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(decodedBody))
 	if len(trimmed) == 0 {
+		// Provide a more descriptive error message based on HTTP status code
+		var errorMessage string
+		switch statusCode {
+		case 401:
+			errorMessage = "authentication failed: unauthorized (401) - check your API key"
+		case 403:
+			errorMessage = "access forbidden (403) - your API key may not have permission for this operation"
+		case 404:
+			errorMessage = "resource not found (404)"
+		case 429:
+			errorMessage = "rate limit exceeded (429)"
+		case 500, 502, 503, 504:
+			errorMessage = fmt.Sprintf("provider server error (%d)", statusCode)
+		default:
+			errorMessage = fmt.Sprintf("%s (HTTP %d)", schemas.ErrProviderResponseEmpty, statusCode)
+		}
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseEmpty,
+				Message: errorMessage,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
@@ -849,7 +865,7 @@ func EnrichError(
 
 	if ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
 		if len(responseBody) > 0 {
-			bifrostErr.ExtraFields.RawResponse = json.RawMessage(responseBody)
+			bifrostErr.ExtraFields.RawResponse = compactRawJSON(responseBody)
 		}
 	} else {
 		bifrostErr.ExtraFields.RawResponse = nil
@@ -888,7 +904,7 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 	}
 
 	if sendBackRawResponse {
-		rawResponse = json.RawMessage(responseBody)
+		rawResponse = compactRawJSON(responseBody)
 	}
 
 	// Unmarshal the structured response

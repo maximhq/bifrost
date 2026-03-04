@@ -97,7 +97,7 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				}
 
 				// Enhanced validation for speech synthesis
-				expectations := SpeechExpectations(tc.expectMinBytes)
+				expectations := ApplyRawExpectations(SpeechExpectations(tc.expectMinBytes), testConfig, false)
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 				// Create Speech retry config
@@ -203,7 +203,7 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				},
 			}
 
-			expectations := SpeechExpectations(5000) // HD should produce substantial audio
+			expectations := ApplyRawExpectations(SpeechExpectations(5000), testConfig, false) // HD should produce substantial audio
 			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 			// Create Speech retry config
@@ -273,7 +273,7 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
 
-					expectations := SpeechExpectations(500)
+					expectations := ApplyRawExpectations(SpeechExpectations(500), testConfig, false)
 					expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 					// Use retry framework for voice test

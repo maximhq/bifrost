@@ -1611,7 +1611,6 @@
       "additionalProperties": false
     },
     "auth_config": {
-      "deprecated": true,
       "type": "object",
       "description": "Authentication configuration. Deprecated: Use governance.auth_config instead.",
       "properties": {

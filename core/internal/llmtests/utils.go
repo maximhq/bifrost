@@ -638,6 +638,8 @@ func GenerateTTSAudioForTest(ctx context.Context, t *testing.T, client *bifrost.
 			"format":   format,
 		},
 	}
+	// Note: Raw request/response validation is skipped here since this is a utility function
+	// without access to testConfig. The tests that use this audio will validate raw fields.
 	expectations := SpeechExpectations(100) // Minimum expected bytes
 	expectations = ModifyExpectationsForProvider(expectations, provider)
 	speechRetryConfig := SpeechRetryConfig{

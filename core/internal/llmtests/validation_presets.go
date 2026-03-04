@@ -2,6 +2,7 @@ package llmtests
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -270,116 +271,130 @@ func ChatAudioExpectations() ResponseExpectations {
 
 // GetExpectationsForScenario returns appropriate validation expectations for a given scenario
 func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTestConfig, customParams map[string]interface{}) ResponseExpectations {
+	var expectations ResponseExpectations
+
 	switch scenarioName {
 	case "SimpleChat":
-		return BasicChatExpectations()
+		expectations = BasicChatExpectations()
 
 	case "TextCompletion":
-		return TextCompletionExpectations()
+		expectations = TextCompletionExpectations()
 
 	case "ToolCalls":
 		if toolName, ok := customParams["tool_name"].(string); ok {
 			if args, ok := customParams["required_args"].([]string); ok {
-				return ToolCallExpectations(toolName, args)
+				expectations = ToolCallExpectations(toolName, args)
+				break
 			}
 		}
-		return WeatherToolExpectations() // Default to weather tool
+		expectations = WeatherToolExpectations() // Default to weather tool
 
 	case "MultipleToolCalls":
 		if tools, ok := customParams["tool_names"].([]string); ok {
 			if argsPerTool, ok := customParams["required_args_per_tool"].([][]string); ok {
-				return MultipleToolExpectations(tools, argsPerTool)
+				expectations = MultipleToolExpectations(tools, argsPerTool)
+				break
 			}
 		}
 		// Default to weather and calculator
-		return MultipleToolExpectations(
+		expectations = MultipleToolExpectations(
 			[]string{string(SampleToolTypeWeather), string(SampleToolTypeCalculate)},
 			[][]string{{"location"}, {"expression"}},
 		)
 
 	case "End2EndToolCalling":
-		return ConversationExpectations([]string{"weather", "temperature", "result"})
+		expectations = ConversationExpectations([]string{"weather", "temperature", "result"})
 
 	case "AutomaticFunctionCalling":
-		expectations := WeatherToolExpectations()
+		expectations = WeatherToolExpectations()
 		expectations.ShouldHaveContent = true // Should have follow-up text after tool call
-		return expectations
 
 	case "ImageURL", "ImageBase64":
-		return VisionExpectations([]string{"image", "picture", "see"})
+		expectations = VisionExpectations([]string{"image", "picture", "see"})
 
 	case "MultipleImages":
-		return VisionExpectations([]string{"compare", "similar", "different", "images"})
+		expectations = VisionExpectations([]string{"compare", "similar", "different", "images"})
 
 	case "FileInput":
-		return FileInputExpectations()
+		expectations = FileInputExpectations()
 
 	case "ChatCompletionStream":
-		return StreamingExpectations()
+		expectations = StreamingExpectations()
 
 	case "MultiTurnConversation":
 		if keywords, ok := customParams["context_keywords"].([]string); ok {
-			return ConversationExpectations(keywords)
+			expectations = ConversationExpectations(keywords)
+		} else {
+			expectations = ConversationExpectations([]string{"context", "previous", "mentioned"})
 		}
-		return ConversationExpectations([]string{"context", "previous", "mentioned"})
 
 	case "Embedding":
 		if texts, ok := customParams["input_texts"].([]string); ok {
-			return EmbeddingExpectations(texts)
+			expectations = EmbeddingExpectations(texts)
+		} else {
+			expectations = EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
 		}
-		return EmbeddingExpectations([]string{"Hello, world!", "Hi, world!", "Goodnight, moon!"})
 
 	case "CountTokens":
-		return CountTokensExpectations()
+		expectations = CountTokensExpectations()
 
 	case "CompleteEnd2End":
-		return ConversationExpectations([]string{"complete", "comprehensive", "full"})
+		expectations = ConversationExpectations([]string{"complete", "comprehensive", "full"})
 
 	case "SpeechSynthesis":
 		if minBytes, ok := customParams["min_audio_bytes"].(int); ok {
-			return SpeechExpectations(minBytes)
+			expectations = SpeechExpectations(minBytes)
+		} else {
+			expectations = SpeechExpectations(500) // Default minimum 500 bytes
 		}
-		return SpeechExpectations(500) // Default minimum 500 bytes
 
 	case "Transcription":
 		if minLength, ok := customParams["min_transcription_length"].(int); ok {
-			return TranscriptionExpectations(minLength)
+			expectations = TranscriptionExpectations(minLength)
+		} else {
+			expectations = TranscriptionExpectations(10) // Default minimum 10 characters
 		}
-		return TranscriptionExpectations(10) // Default minimum 10 characters
 
 	case "Reasoning":
-		expectations := ReasoningExpectations()
-		return expectations
+		expectations = ReasoningExpectations()
 
 	case "ChatAudio":
-		return ChatAudioExpectations()
+		expectations = ChatAudioExpectations()
 
 	case "ProviderSpecific":
-		expectations := BasicChatExpectations()
+		expectations = BasicChatExpectations()
 		expectations.ShouldContainKeywords = []string{"unique", "specific", "capability"}
-		return expectations
 
 	case "ImageGeneration":
 		if minImages, ok := customParams["min_images"].(int); ok {
 			if expectedSize, ok := customParams["expected_size"].(string); ok {
-				return ImageGenerationExpectations(minImages, expectedSize)
+				expectations = ImageGenerationExpectations(minImages, expectedSize)
+				break
 			}
 		}
-		return ImageGenerationExpectations(1, "1024x1024")
+		expectations = ImageGenerationExpectations(1, "1024x1024")
 
 	case "ImageEdit", "ImageVariation":
 		// Reuse image generation expectations since they use the same response structure
 		if minImages, ok := customParams["min_images"].(int); ok {
 			if expectedSize, ok := customParams["expected_size"].(string); ok {
-				return ImageGenerationExpectations(minImages, expectedSize)
+				expectations = ImageGenerationExpectations(minImages, expectedSize)
+				break
 			}
 		}
-		return ImageGenerationExpectations(1, "1024x1024")
+		expectations = ImageGenerationExpectations(1, "1024x1024")
 
 	default:
 		// Default to basic chat expectations
-		return BasicChatExpectations()
+		expectations = BasicChatExpectations()
 	}
+
+	// Apply raw request/response expectations from test config
+	isStreaming := strings.HasSuffix(scenarioName, "Stream") || strings.HasSuffix(scenarioName, "Streaming")
+	isMultipartRequest := scenarioName == "Transcription" || scenarioName == "TranscriptionStream"
+	expectations = ApplyRawExpectations(expectations, testConfig, isStreaming, isMultipartRequest)
+
+	return expectations
 }
 
 // =============================================================================
@@ -433,6 +448,26 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 		// Keep default expectations
 	}
 
+	return expectations
+}
+
+// ApplyRawExpectations applies raw request/response expectations based on test config.
+// Call this after creating expectations directly (SpeechExpectations, TranscriptionExpectations, etc.)
+// when not using GetExpectationsForScenario.
+// Parameters:
+//   - isStreaming: if true, skips RawResponse expectation (streaming has no single response body)
+//   - isMultipartRequest: if true, skips RawRequest expectation (multipart form data can't return raw JSON request)
+func ApplyRawExpectations(expectations ResponseExpectations, testConfig ComprehensiveTestConfig, isStreaming bool, isMultipartRequest ...bool) ResponseExpectations {
+	if testConfig.ExpectRawRequestResponse {
+		// Skip RawRequest for multipart form data requests (like transcription)
+		skipRawRequest := len(isMultipartRequest) > 0 && isMultipartRequest[0]
+		if !skipRawRequest {
+			expectations.ShouldHaveRawRequest = true
+		}
+		if !isStreaming {
+			expectations.ShouldHaveRawResponse = true
+		}
+	}
 	return expectations
 }
 
