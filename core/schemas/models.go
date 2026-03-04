@@ -26,6 +26,19 @@ type KeyStatus struct {
 	Error    *BifrostError `json:"error,omitempty"`
 }
 
+// MarshalJSON implements custom JSON marshaling for KeyStatus to prevent
+// circular reference: KeyStatus.Error → BifrostError.ExtraFields.KeyStatuses → KeyStatus.
+func (k KeyStatus) MarshalJSON() ([]byte, error) {
+	type Alias KeyStatus
+	alias := Alias(k)
+	if alias.Error != nil {
+		errCopy := *alias.Error
+		errCopy.ExtraFields.KeyStatuses = nil
+		alias.Error = &errCopy
+	}
+	return Marshal(alias)
+}
+
 type BifrostListModelsRequest struct {
 	Provider ModelProvider `json:"provider"`
 

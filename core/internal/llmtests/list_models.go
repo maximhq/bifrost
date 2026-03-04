@@ -108,6 +108,138 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 	})
 }
 
+// RunListModelsResponseMarshalTest verifies that a successful ListModels response
+// (including KeyStatuses) can be marshaled to JSON without cycle errors.
+func RunListModelsResponseMarshalTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ListModels {
+		t.Logf("List models not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("ListModelsResponseMarshal", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		request := &schemas.BifrostListModelsRequest{
+			Provider: testConfig.Provider,
+		}
+
+		retryConfig := GetTestRetryConfigForScenario("ListModels", testConfig)
+		retryContext := TestRetryContext{
+			ScenarioName: "ListModelsResponseMarshal",
+			ExpectedBehavior: map[string]interface{}{
+				"should_marshal_response": true,
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+			},
+		}
+
+		expectations := ResponseExpectations{
+			ShouldHaveLatency: true,
+			ProviderSpecific: map[string]interface{}{
+				"expected_provider": string(testConfig.Provider),
+				"min_model_count":   1,
+			},
+		}
+
+		listModelsRetryConfig := ListModelsRetryConfig{
+			MaxAttempts: retryConfig.MaxAttempts,
+			BaseDelay:   retryConfig.BaseDelay,
+			MaxDelay:    retryConfig.MaxDelay,
+			Conditions:  []ListModelsRetryCondition{},
+			OnRetry:     retryConfig.OnRetry,
+			OnFinalFail: retryConfig.OnFinalFail,
+		}
+
+		response, bifrostErr := WithListModelsTestRetry(t, listModelsRetryConfig, retryContext, expectations, "ListModelsResponseMarshal", func() (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			return client.ListModelsRequest(bfCtx, request)
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("❌ List models request failed after retries: %v", GetErrorMessage(bifrostErr))
+		}
+
+		if response == nil {
+			t.Fatal("❌ List models response is nil after retries")
+		}
+
+		// Marshal the full response — this exercises KeyStatuses serialization
+		data, err := schemas.Marshal(response)
+		if err != nil {
+			t.Fatalf("❌ Failed to marshal ListModels response: %v", err)
+		}
+		t.Logf("✅ ListModels response marshaled successfully (%d bytes)", len(data))
+
+		// If KeyStatuses are present, verify each one also marshals independently
+		if len(response.KeyStatuses) > 0 {
+			for i, ks := range response.KeyStatuses {
+				ksData, err := schemas.Marshal(ks)
+				if err != nil {
+					t.Fatalf("❌ Failed to marshal KeyStatus[%d]: %v", i, err)
+				}
+				t.Logf("✅ KeyStatus[%d] marshaled successfully (%d bytes)", i, len(ksData))
+			}
+		}
+
+		t.Logf("🎉 ListModels response marshal test passed!")
+	})
+}
+
+// RunListModelsErrorMarshalTest verifies that the KeyStatus ↔ BifrostError circular
+// reference pattern used by HandleMultipleListModelsRequests and HandleKeylessListModelsRequest
+// marshals without cycle errors.
+func RunListModelsErrorMarshalTest(t *testing.T, _ *bifrost.Bifrost, _ context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ListModels {
+		t.Logf("List models not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("ListModelsErrorMarshal", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		// Construct the exact circular reference pattern that HandleMultipleListModelsRequests
+		// and HandleKeylessListModelsRequest create in production.
+		statusCode := 500
+		bifrostErr := &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     &statusCode,
+			Error:          &schemas.ErrorField{Message: "simulated list models failure"},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider: testConfig.Provider,
+			},
+		}
+		keyStatus := schemas.KeyStatus{
+			KeyID:    "test-key",
+			Status:   schemas.KeyStatusListModelsFailed,
+			Provider: testConfig.Provider,
+			Error:    bifrostErr,
+		}
+		// Create the cycle: BifrostError → ExtraFields.KeyStatuses → KeyStatus → Error → BifrostError
+		bifrostErr.ExtraFields.KeyStatuses = []schemas.KeyStatus{keyStatus}
+
+		// Marshal the BifrostError (top-level, contains the cycle via KeyStatuses)
+		errData, err := schemas.Marshal(bifrostErr)
+		if err != nil {
+			t.Fatalf("❌ Failed to marshal BifrostError with circular KeyStatuses: %v", err)
+		}
+		t.Logf("✅ BifrostError with circular KeyStatuses marshaled successfully (%d bytes)", len(errData))
+
+		// Marshal the individual KeyStatus (contains the cycle via Error.ExtraFields.KeyStatuses)
+		ksData, err := schemas.Marshal(keyStatus)
+		if err != nil {
+			t.Fatalf("❌ Failed to marshal KeyStatus with circular Error: %v", err)
+		}
+		t.Logf("✅ KeyStatus with circular Error marshaled successfully (%d bytes)", len(ksData))
+
+		t.Logf("🎉 ListModels error marshal test passed for provider %s!", testConfig.Provider)
+	})
+}
+
 // RunListModelsPaginationTest executes pagination test for list models
 func RunListModelsPaginationTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ListModels {
