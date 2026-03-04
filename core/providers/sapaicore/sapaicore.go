@@ -11,6 +11,7 @@ import (
 	"io"
 	"maps"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -75,6 +76,7 @@ type SAPAICoreProvider struct {
 	tokenCache          *TokenCache
 	deploymentCache     *DeploymentCache
 	stopCleanup         chan struct{}
+	shutdownOnce        sync.Once
 }
 
 // NewSAPAICoreProvider creates a new SAP AI Core provider instance.
@@ -120,10 +122,12 @@ func (provider *SAPAICoreProvider) GetProviderKey() schemas.ModelProvider {
 }
 
 // Shutdown cleans up provider resources including cached tokens and deployments.
-// This should be called when the provider is no longer needed.
+// This method is idempotent and safe to call multiple times.
 func (provider *SAPAICoreProvider) Shutdown() {
-	// Signal the cleanup goroutine to stop
-	close(provider.stopCleanup)
+	provider.shutdownOnce.Do(func() {
+		// Signal the cleanup goroutine to stop
+		close(provider.stopCleanup)
+	})
 
 	if provider.tokenCache != nil {
 		provider.tokenCache.Cleanup()
