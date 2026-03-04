@@ -215,9 +215,6 @@ false
 {{- if hasKey .Values.bifrost.client "enableLogging" }}
 {{- $_ := set $client "enable_logging" .Values.bifrost.client.enableLogging }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "enableGovernance" }}
-{{- $_ := set $client "enable_governance" .Values.bifrost.client.enableGovernance }}
-{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
@@ -749,7 +746,7 @@ false
 {{- if hasKey $inputConfig "cleanup_on_shutdown" }}
 {{- $_ := set $scConfig "cleanup_on_shutdown" $inputConfig.cleanup_on_shutdown }}
 {{- end }}
-{{- $plugins = append $plugins (dict "enabled" true "name" "semanticcache" "config" $scConfig) }}
+{{- $plugins = append $plugins (dict "enabled" true "name" "semantic_cache" "config" $scConfig) }}
 {{- end }}
 {{- if .Values.bifrost.plugins.otel.enabled }}
 {{- $otelConfig := dict }}

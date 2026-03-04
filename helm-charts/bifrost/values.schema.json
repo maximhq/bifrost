@@ -283,9 +283,6 @@
               "type": "integer",
               "minimum": 1
             },
-            "enableGovernance": {
-              "type": "boolean"
-            },
             "enforceGovernanceHeader": {
               "type": "boolean"
             },
@@ -630,7 +627,9 @@
                 "properties": {
                   "config": {
                     "required": [
-                      "dimension"
+                      "dimension",
+                      "keys",
+                      "provider"
                     ]
                   }
                 }
@@ -2163,6 +2162,24 @@
             "region"
           ],
           "additionalProperties": false
+        },
+        "vllm_key_config": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "description": "VLLM server base URL (can use env. prefix)"
+            },
+            "model_name": {
+              "type": "string",
+              "description": "Exact model name served on this VLLM instance"
+            }
+          },
+          "required": [
+            "url",
+            "model_name"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -2175,7 +2192,8 @@
             "anyOf": [
               { "required": ["azure_key_config"] },
               { "required": ["vertex_key_config"] },
-              { "required": ["bedrock_key_config"] }
+              { "required": ["bedrock_key_config"] },
+              { "required": ["vllm_key_config"] }
             ]
           }
         },
@@ -2184,7 +2202,8 @@
           "not": {
             "anyOf": [
               { "required": ["vertex_key_config"] },
-              { "required": ["bedrock_key_config"] }
+              { "required": ["bedrock_key_config"] },
+              { "required": ["vllm_key_config"] }
             ]
           }
         },
@@ -2193,7 +2212,8 @@
           "not": {
             "anyOf": [
               { "required": ["azure_key_config"] },
-              { "required": ["bedrock_key_config"] }
+              { "required": ["bedrock_key_config"] },
+              { "required": ["vllm_key_config"] }
             ]
           }
         },
@@ -2202,7 +2222,18 @@
           "not": {
             "anyOf": [
               { "required": ["azure_key_config"] },
-              { "required": ["vertex_key_config"] }
+              { "required": ["vertex_key_config"] },
+              { "required": ["vllm_key_config"] }
+            ]
+          }
+        },
+        {
+          "required": ["vllm_key_config"],
+          "not": {
+            "anyOf": [
+              { "required": ["azure_key_config"] },
+              { "required": ["vertex_key_config"] },
+              { "required": ["bedrock_key_config"] }
             ]
           }
         }
@@ -2487,7 +2518,7 @@
                     "description": "Azure API version"
                   }
                 },
-                "required": ["endpoint", "api_version"],
+                "required": ["endpoint"],
                 "additionalProperties": false
               },
               "vertex_key_config": {
@@ -2552,6 +2583,24 @@
                   }
                 },
                 "additionalProperties": false
+              },
+              "vllm_key_config": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "description": "VLLM server base URL (can use env. prefix)"
+                  },
+                  "model_name": {
+                    "type": "string",
+                    "description": "Exact model name served on this VLLM instance"
+                  }
+                },
+                "required": [
+                  "url",
+                  "model_name"
+                ],
+                "additionalProperties": false
               }
             },
             "oneOf": [
@@ -2560,7 +2609,8 @@
                   "anyOf": [
                     { "required": ["azure_key_config"] },
                     { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               },
@@ -2569,7 +2619,8 @@
                 "not": {
                   "anyOf": [
                     { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               },
@@ -2578,7 +2629,8 @@
                 "not": {
                   "anyOf": [
                     { "required": ["azure_key_config"] },
-                    { "required": ["bedrock_key_config"] }
+                    { "required": ["bedrock_key_config"] },
+                    { "required": ["vllm_key_config"] }
                   ]
                 }
               },
@@ -2587,7 +2639,18 @@
                 "not": {
                   "anyOf": [
                     { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] }
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["vllm_key_config"] }
+                  ]
+                }
+              },
+              {
+                "required": ["vllm_key_config"],
+                "not": {
+                  "anyOf": [
+                    { "required": ["azure_key_config"] },
+                    { "required": ["vertex_key_config"] },
+                    { "required": ["bedrock_key_config"] }
                   ]
                 }
               }

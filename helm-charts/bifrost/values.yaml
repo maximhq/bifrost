@@ -158,7 +158,6 @@ bifrost:
     disableContentLogging: false
     disableDbPingsInHealth: false
     logRetentionDays: 365
-    enableGovernance: true
     enforceGovernanceHeader: false
     allowDirectKeys: false
     maxRequestBodySizeMb: 100
@@ -286,16 +285,30 @@ bifrost:
   plugins:
     telemetry:
       enabled: false
-      config: {}
+      config:
+        custom_labels: []
+        # push_gateway:
+        #   enabled: false
+        #   push_gateway_url: ""
+        #   job_name: "bifrost"
+        #   instance_id: ""
+        #   push_interval: 15
+        #   basic_auth:
+        #     username: ""
+        #     password: ""
 
     logging:
       enabled: false
-      config: {}
+      config:
+        disable_content_logging: false
+        logging_headers: []
 
     governance:
       enabled: false
       config:
         is_vk_mandatory: false
+        required_headers: []
+        is_enterprise: false
 
     maxim:
       enabled: false
@@ -336,6 +349,11 @@ bifrost:
         metrics_enabled: false
         metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         metrics_push_interval: 15     # Push interval in seconds (1-300)
+        # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
+        headers: {}
+        # TLS configuration
+        tls_ca_cert: ""               # Path to TLS CA certificate file
+        insecure: false               # Skip TLS verification (ignored if tls_ca_cert is set)
 
     datadog:
       enabled: false
