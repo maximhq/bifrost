@@ -118,6 +118,31 @@ func (e *AsyncJobExecutor) SubmitJob(virtualKeyValue *string, resultTTL int, ope
 func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation AsyncOperation) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	markFailed := func(msg string) {
+		now := time.Now().UTC()
+		expiresAt := now.Add(time.Duration(resultTTL) * time.Second)
+		errJSON, _ := sonic.Marshal(&schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}})
+		if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
+			"status":       schemas.AsyncJobStatusFailed,
+			"status_code":  fasthttp.StatusInternalServerError,
+			"error":        string(errJSON),
+			"completed_at": now,
+			"expires_at":   expiresAt,
+		}); err != nil {
+			e.logger.Warn("failed to update async job to failed: %v", err)
+		}
+	}
+
+	// The bifrost execution flow is very stable and panics are not expected.
+	// This recover is purely defensive to ensure the job always reaches a terminal
+	// state rather than being stuck in "processing" if an unexpected panic occurs.
+	defer func() {
+		if r := recover(); r != nil {
+			e.logger.Warn("async job %s panicked: %v", jobID, r)
+			markFailed(fmt.Sprintf("internal error: %v", r))
+		}
+	}()
+
 	// Mark as processing
 	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
 		"status": schemas.AsyncJobStatusProcessing,
@@ -137,6 +162,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 		errJSON, err := sonic.Marshal(bifrostErr)
 		if err != nil {
 			e.logger.Warn("failed to marshal bifrost error: %v", err)
+			markFailed(fmt.Sprintf("failed to serialize error response: %v", err))
 			return
 		}
 		statusCode := fasthttp.StatusInternalServerError
@@ -158,6 +184,7 @@ func (e *AsyncJobExecutor) executeJob(jobID string, resultTTL int, operation Asy
 	respJSON, err := sonic.Marshal(resp)
 	if err != nil {
 		e.logger.Warn("failed to marshal result: %v", err)
+		markFailed(fmt.Sprintf("failed to serialize result: %v", err))
 		return
 	}
 	if err := e.logstore.UpdateAsyncJob(ctx, jobID, map[string]interface{}{
