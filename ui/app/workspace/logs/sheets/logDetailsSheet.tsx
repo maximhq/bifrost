@@ -26,7 +26,7 @@ import {
 	StatusColors,
 } from "@/lib/constants/logs";
 import { LogEntry } from "@/lib/types/logs";
-import { Clipboard, DollarSign, FileText, MoreVertical, Timer, Trash2 } from "lucide-react";
+import { Clipboard, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";

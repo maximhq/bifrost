@@ -48,6 +48,7 @@ type ConfigManager interface {
 	ForceReloadPricing(ctx context.Context) error
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
+	UpdateMCPDisableAutoToolInject(ctx context.Context, val bool) error
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
 	RemovePlugin(ctx context.Context, name string) error
 	ReloadProxyConfig(ctx context.Context, config *configstoreTables.GlobalProxyConfig) error
@@ -284,6 +285,16 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+
+	// Handle MCPDisableAutoToolInject toggle (bool — always sync regardless of value)
+	if payload.ClientConfig.MCPDisableAutoToolInject != currentConfig.MCPDisableAutoToolInject && h.store.MCPConfig != nil {
+		if err := h.configManager.UpdateMCPDisableAutoToolInject(ctx, payload.ClientConfig.MCPDisableAutoToolInject); err != nil {
+			logger.Warn(fmt.Sprintf("failed to update mcp disable auto tool inject: %v", err))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp disable auto tool inject: %v", err))
+			return
+		}
+	}
+	updatedConfig.MCPDisableAutoToolInject = payload.ClientConfig.MCPDisableAutoToolInject
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {
 		updatedConfig.PrometheusLabels = payload.ClientConfig.PrometheusLabels

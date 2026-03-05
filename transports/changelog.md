@@ -2,3 +2,5 @@
 - fix: preserve original audio filename in transcription requests
 - fix: async jobs stuck in "processing" on marshal failure now correctly transition to "failed"
 - feat: adds attachment support in Maxim plugin
+- feat: add option to disable automatic MCP tool injection per request
+- fix: preserve original audio filename in transcription requests

@@ -30,9 +30,10 @@ type PluginPipeline interface {
 
 // ToolsManager manages MCP tool execution and agent mode.
 type ToolsManager struct {
-	toolExecutionTimeout atomic.Value
-	maxAgentDepth        atomic.Int32
-	clientManager        ClientManager
+	toolExecutionTimeout  atomic.Value
+	maxAgentDepth         atomic.Int32
+	disableAutoToolInject atomic.Bool
+	clientManager         ClientManager
 	logger               schemas.Logger
 	agentModeExecutor    *AgentModeExecutor
 
@@ -146,6 +147,7 @@ func NewToolsManagerWithCodeMode(
 	// Initialize atomic values
 	manager.toolExecutionTimeout.Store(config.ToolExecutionTimeout)
 	manager.maxAgentDepth.Store(int32(config.MaxAgentDepth))
+	manager.disableAutoToolInject.Store(config.DisableAutoToolInject)
 
 	manager.logger.Info("%s tool manager initialized with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
 	return manager
@@ -291,6 +293,16 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 	// MCP is only supported for chat and responses requests
 	if req.ChatRequest == nil && req.ResponsesRequest == nil {
 		return req
+	}
+
+	// When auto tool injection is disabled, only inject tools if the request
+	// has explicit context filters set (e.g. via x-bf-mcp-include-tools header).
+	if m.disableAutoToolInject.Load() {
+		includeTools := ctx.Value(MCPContextKeyIncludeTools)
+		includeClients := ctx.Value(MCPContextKeyIncludeClients)
+		if includeTools == nil && includeClients == nil {
+			return req
+		}
 	}
 
 	availableTools := m.GetAvailableTools(ctx)
@@ -659,7 +671,15 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 		})
 	}
 
+	m.disableAutoToolInject.Store(config.DisableAutoToolInject)
+
 	m.logger.Info("%s tool manager configuration updated with tool execution timeout: %v, max agent depth: %d, and code mode binding level: %s", MCPLogPrefix, config.ToolExecutionTimeout, config.MaxAgentDepth, config.CodeModeBindingLevel)
+}
+
+// UpdateDisableAutoToolInject updates the auto tool injection toggle atomically.
+// This method is safe to call concurrently from multiple goroutines.
+func (m *ToolsManager) UpdateDisableAutoToolInject(val bool) {
+	m.disableAutoToolInject.Store(val)
 }
 
 // GetCodeModeBindingLevel returns the current code mode binding level.
