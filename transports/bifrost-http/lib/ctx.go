@@ -151,8 +151,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// prevent auth/key overrides via x-bf-eh-*
 		"x-api-key":      true,
 		"x-goog-api-key": true,
-		"x-bf-api-key":   true,
-		"x-bf-vk":        true,
+		"x-bf-api-key":    true,
+		"x-bf-api-key-id": true,
+		"x-bf-vk":         true,
 	}
 
 	// shouldAllowHeader determines if a header should be forwarded based on
@@ -276,6 +277,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		if keyStr == "x-bf-api-key" {
 			if keyName := strings.TrimSpace(string(value)); keyName != "" {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyName, keyName)
+			}
+			return true
+		}
+		if keyStr == "x-bf-api-key-id" {
+			if keyID := strings.TrimSpace(string(value)); keyID != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
 			}
 			return true
 		}

@@ -211,21 +211,31 @@ For cloud providers with deployment-based routing, Bifrost validates deployment 
 3. Exclude keys without proper deployment mapping
 4. Continue with standard weighted selection
 
-## Custom Key Usage (By Name)
+## Custom Key Usage (By Name or ID)
 
-Bifrost also supports referencing a stored provider key by name instead of sending the raw secret. This can be useful when you want callers to reference logical key names (for example, `openai-key-1`) and let the gateway resolve the actual secret from configured provider keys.
+Bifrost supports referencing a stored provider key by name or by ID instead of sending the raw secret. This can be useful when you want callers to reference logical key names or stable IDs and let the gateway resolve the actual secret from configured provider keys.
 
-How to use:
+**When both are provided, ID takes priority over name.**
+
+### By ID
+
+- Header: send `x-bf-api-key-id: <key-id>` on the request. The gateway will look up the key with that ID.
+- Context (Go SDK):
+
+```go
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+```
+
+### By Name
+
 - Header: send `x-bf-api-key: <key-name>` on the request. The gateway will look up the named key and use its secret for the upstream provider call.
-- Context (server-side / Go): set the API key name in the Bifrost context so internal callers can request the named key. For example:
-
-From a client SDK call you can set the name directly on your request context:
+- Context (Go SDK):
 
 ```go
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "openai-key-1")
 ```
 
-Note: `x-bf-api-key` and the `BifrostContextKeyAPIKeyName` value reference a stored key name (not the raw secret). The gateway will resolve the named key against configured provider keys and apply model filtering, deployment mapping and weighted selection as usual.
+Note: Both mechanisms reference a stored key (not the raw secret). The gateway resolves the key against configured provider keys and applies model filtering and deployment mapping. When an explicit key ID or name is supplied, weighted selection is bypassed and the referenced key is used directly.
 
 ```bash
 # Example: request referencing a stored key name that doesn't exist
