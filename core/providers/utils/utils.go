@@ -120,7 +120,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				IsBifrostError: true,
 				Error: &schemas.ErrorField{
 					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
+					Message: fmt.Sprintf("request cancelled or timed out by context: %v", ctx.Err()),
 					Error:   ctx.Err(),
 				},
 			}
