@@ -1,2 +1,3 @@
 - fix: preserve original audio filename in transcription requests
 - fix: async jobs stuck in "processing" on marshal failure now correctly transition to "failed"
+- feat: shifted to anthropic native API in bedrock provider for claude models
