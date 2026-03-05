@@ -67,9 +67,11 @@ const CHART_HEADER_CONTROLS_CLASS = "flex items-center justify-end gap-2";
 const parseCsvParam = (value: string): string[] => (value ? value.split(",").filter(Boolean) : []);
 const sanitizeSeriesLabels = (values?: string[]): string[] => {
 	if (!values) return [];
-	return values
+	const trimmedValues = values
 		.map((value) => value.trim())
 		.filter((value) => value.length > 0);
+
+	return [...new Set(trimmedValues)];
 };
 
 function getTimeRangeFromPeriod(period: string): { start: number; end: number } {
