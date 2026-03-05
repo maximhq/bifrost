@@ -15412,7 +15412,8 @@ var excludedGoFields = map[string]map[string]bool{
 		"mcp_agent_depth":             true, // Managed via MCP config
 		"mcp_code_mode_binding_level": true,
 		"mcp_tool_execution_timeout":  true,
-		"mcp_tool_sync_interval":      true,
+		"mcp_tool_sync_interval":        true,
+		"mcp_disable_auto_tool_inject":  true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise

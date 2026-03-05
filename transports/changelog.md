@@ -1,0 +1,1 @@
+- feat: add option to disable automatic MCP tool injection per request
