@@ -449,6 +449,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	config.NetworkConfig = &nc
+	// Merge proxy config - preserve secrets if redacted values were sent back
+	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+		}
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
+		}
+	}
+
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.PricingOverrides = payload.PricingOverrides
