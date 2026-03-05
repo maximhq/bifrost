@@ -3,7 +3,6 @@ package integrations
 import (
 	"bytes"
 	"fmt"
-	"log"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -140,7 +139,9 @@ func extractExactPath(ctx *fasthttp.RequestCtx) string {
 	return string(out)
 }
 
-// sendStreamError sends an error in streaming format using the stream error converter if available
+// sendStreamError sends an error response for a streaming request that failed before streaming started.
+// It propagates the provider's HTTP status code and returns a JSON error body (not SSE format),
+// since no streaming has begun and clients should receive a standard error response.
 func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, bifrostErr *schemas.BifrostError) {
 	// Forward provider response headers from context so streaming error responses include them
 	if bifrostCtx != nil {
@@ -151,27 +152,30 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		}
 	}
 
-	var errorResponse interface{}
-
-	// Use stream error converter if available, otherwise fallback to regular error converter
-	if config.StreamConfig != nil && config.StreamConfig.ErrorConverter != nil {
-		errorResponse = config.StreamConfig.ErrorConverter(bifrostCtx, bifrostErr)
+	// Set the HTTP status code from the provider error
+	if bifrostErr.StatusCode != nil {
+		ctx.SetStatusCode(*bifrostErr.StatusCode)
 	} else {
-		errorResponse = config.ErrorConverter(bifrostCtx, bifrostErr)
-	}
-
-	errorJSON, err := sonic.Marshal(map[string]interface{}{
-		"error": errorResponse,
-	})
-	if err != nil {
-		log.Printf("Failed to marshal error for SSE: %v", err)
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+	}
+	ctx.SetContentType("application/json")
+
+	// Always use the route-level ErrorConverter (not StreamConfig.ErrorConverter) because
+	// sendStreamError returns JSON, not SSE. StreamConfig.ErrorConverter is designed for
+	// in-stream SSE errors (e.g., Anthropic's returns a raw SSE string that would be
+	// double-escaped by JSON marshaling).
+	errorResponse := config.ErrorConverter(bifrostCtx, bifrostErr)
+
+	errorJSON, err := sonic.Marshal(errorResponse)
+	if err != nil {
+		g.logger.Error("failed to marshal error response", "err", err, "path", extractExactPath(ctx))
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetContentType("text/plain; charset=utf-8")
+		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", err))
 		return
 	}
 
-	if _, err := fmt.Fprintf(ctx, "data: %s\n\n", errorJSON); err != nil {
-		log.Printf("Failed to write SSE error: %v", err)
-	}
+	ctx.SetBody(errorJSON)
 }
 
 // sendError sends an error response with the appropriate status code and JSON body.
@@ -200,6 +204,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 		// Log the marshal failure and return a plain text error
 		g.logger.Error("failed to marshal error response", "err", err, "path", extractExactPath(ctx))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		ctx.SetContentType("text/plain; charset=utf-8")
 		ctx.SetBodyString(fmt.Sprintf("failed to encode error response: %v", err))
 		return
 	}
