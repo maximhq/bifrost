@@ -1,2 +1,3 @@
 - feat: add BifrostContextKeyAPIKeyID for explicit key selection by ID, with priority over key name selection
 - feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
+- feat: add BifrostContextKeyMCPAddedTools to context to track MCP tools added to the request

@@ -24,6 +24,7 @@ const (
 	DecisionRequestLimited     Decision = "request_limited"
 	DecisionModelBlocked       Decision = "model_blocked"
 	DecisionProviderBlocked    Decision = "provider_blocked"
+	DecisionMCPToolBlocked     Decision = "mcp_tool_blocked"
 )
 
 // EvaluationRequest contains the context for evaluating a request

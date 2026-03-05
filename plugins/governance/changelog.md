@@ -1,0 +1,1 @@
+- feat: enforce VK MCPConfigs as an execution-time allow-list — empty MCPConfigs denies all MCP tools, non-empty validates each tool in both PreMCPHook and evaluateGovernanceRequest; respects disable_auto_tool_inject toggle (transport config key: mcp_disable_auto_tool_inject) and skips auto-injection header when caller already set it

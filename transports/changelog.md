@@ -1,1 +1,2 @@
 - feat: add option to disable automatic MCP tool injection per request
+- feat: virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
