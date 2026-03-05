@@ -297,30 +297,15 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Empty 'name' parameter not allowed")
 		return
 	}
-	var plugin *configstoreTables.TablePlugin
-	var err error
 	// Check if plugin exists
-	_, err = h.configStore.GetPlugin(ctx, name)
-	if err != nil {
-		// If doesn't exist, create it
+	if _, err := h.configStore.GetPlugin(ctx, name); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
-			plugin = &configstoreTables.TablePlugin{
-				Name:     name,
-				Enabled:  false,
-				Config:   map[string]any{},
-				Path:     nil,
-				IsCustom: false,
-			}
-			if err := h.configStore.CreatePlugin(ctx, plugin); err != nil {
-				logger.Error("failed to create plugin: %v", err)
-				SendError(ctx, 500, "Failed to create plugin")
-				return
-			}
-		} else {
-			logger.Error("failed to get plugin: %v", err)
-			SendError(ctx, 500, "Failed to update plugin")
+			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
 			return
 		}
+		logger.Error("failed to get plugin: %v", err)
+		SendError(ctx, 500, "Failed to update plugin")
+		return
 	}
 
 	// Unmarshalling the request body
@@ -352,7 +337,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "Failed to update plugin")
 		return
 	}
-	plugin, err = h.configStore.GetPlugin(ctx, name)
+	plugin, err := h.configStore.GetPlugin(ctx, name)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
@@ -364,7 +349,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config); err != nil {			
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config); err != nil {
 			logger.Error("failed to load plugin: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
 			return
@@ -374,7 +359,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 			if !errors.Is(err, plugins.ErrPluginNotFound) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
-				return	
+				return
 			}
 			// If not found then we don't need to do anything
 		}
