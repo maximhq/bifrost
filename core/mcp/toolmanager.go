@@ -34,8 +34,8 @@ type ToolsManager struct {
 	maxAgentDepth         atomic.Int32
 	disableAutoToolInject atomic.Bool
 	clientManager         ClientManager
-	logger               schemas.Logger
-	agentModeExecutor    *AgentModeExecutor
+	logger                schemas.Logger
+	agentModeExecutor     *AgentModeExecutor
 
 	// CodeMode implementation for code execution (Starlark by default)
 	codeMode CodeMode
@@ -176,7 +176,7 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 }
 
 // GetAvailableTools returns the available tools for the given context.
-func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -192,14 +192,14 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 		}
 		if client.ExecutionConfig.IsCodeModeClient {
 			includeCodeModeTools = true
-		} else {
-			// Add tools from this client, checking for duplicates
-			for _, tool := range clientTools {
-				if tool.Function != nil && tool.Function.Name != "" {
-					if !seenToolNames[tool.Function.Name] {
-						availableTools = append(availableTools, tool)
-						seenToolNames[tool.Function.Name] = true
-					}
+		}
+		// Add tools from this client, checking for duplicates
+		for _, tool := range clientTools {
+			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
+				if !includeCodeModeTools {
+					availableTools = append(availableTools, tool)
+					seenToolNames[tool.Function.Name] = true
 				}
 			}
 		}
@@ -289,7 +289,7 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 //
 // Returns:
 //   - *schemas.BifrostRequest: Bifrost request with MCP tools added
-func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	// MCP is only supported for chat and responses requests
 	if req.ChatRequest == nil && req.ResponsesRequest == nil {
 		return req
@@ -298,8 +298,8 @@ func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schem
 	// When auto tool injection is disabled, only inject tools if the request
 	// has explicit context filters set (e.g. via x-bf-mcp-include-tools header).
 	if m.disableAutoToolInject.Load() {
-		includeTools := ctx.Value(MCPContextKeyIncludeTools)
-		includeClients := ctx.Value(MCPContextKeyIncludeClients)
+		includeTools := ctx.Value(schemas.MCPContextKeyIncludeTools)
+		includeClients := ctx.Value(schemas.MCPContextKeyIncludeClients)
 		if includeTools == nil && includeClients == nil {
 			return req
 		}

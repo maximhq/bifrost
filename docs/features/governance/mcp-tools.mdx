@@ -20,8 +20,8 @@ The filtering logic is determined by the Virtual Key's configuration:
 
 2.  **With MCP Configuration on Virtual Key**
     - When you configure MCP clients on a Virtual Key, its settings take full precedence.
-    - Bifrost automatically generates an `x-bf-mcp-include-tools` header based on your VK configuration. This acts as a strict allow-list for the request.
-    - This generated header **overrides** any `x-bf-mcp-include-tools` header that might have been sent manually with the request.
+    - Bifrost automatically generates an `x-bf-mcp-include-tools` header based on your VK configuration (unless `mcp_disable_auto_tool_inject` is enabled or the caller already sent the header). This acts as a strict allow-list for the request.
+    - If the caller already includes an `x-bf-mcp-include-tools` header, auto-injection is skipped — but the VK's allow-list is still enforced at execution time.
 
 For each MCP client associated with a Virtual Key, you can specify the allowed tools:
 - **Select specific tools**: Only the chosen tools from that client will be available.
@@ -40,7 +40,7 @@ You can configure which tools a Virtual Key has access to via the UI.
 2.  Create/Edit virtual key
 ![Virtual Key MCP Tool Restrictions](../../media/ui-virtual-key-mcp-filter.png)
 3.  In **MCP Client Configurations** section, add the MCP client you want to restrict the VK to
-4.  Add the tools you want to restrict the VK to, or leave it blank to allow all tools for this client
+4.  Select the specific tools to allow, or choose **Allow All Tools** to permit all current and future tools from that client (stored as `*`). Leaving the list empty blocks all tools for that client.
 5.  Click on the **Save** button
 
 </Tab>
@@ -156,5 +156,5 @@ A request with this Virtual Key cannot access any tools. All tools from all clie
 </Tabs>
 
 <Note>
-When a Virtual Key has MCP configurations, it dynamically generates the `x-bf-mcp-include-tools` header. This ensures that the VK's rules are always enforced and will override any manual header sent by the user. Though you can still use `x-bf-mcp-include-clients` header to filter the MCP clients per request.
+When a Virtual Key has MCP configurations, Bifrost enforces the allow-list at both inference time and MCP tool execution time. Auto-injection of the `x-bf-mcp-include-tools` header is skipped if the caller already provides it or if `mcp_disable_auto_tool_inject` is enabled — but the VK's restrictions are always applied regardless. You can still use the `x-bf-mcp-include-clients` header to filter MCP clients per request.
 </Note>

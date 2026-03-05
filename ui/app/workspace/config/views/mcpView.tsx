@@ -182,7 +182,7 @@ export default function MCPView() {
 							Disable Auto Tool Injection
 						</label>
 						<p className="text-muted-foreground text-sm">
-							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) or virtual key configuration.
+							When enabled, MCP tools are not automatically included in every request. Tools are only injected when explicitly specified via request headers (<code className="text-xs">x-bf-mcp-include-tools</code>) and still must be allowed by the virtual key MCP configuration.
 						</p>
 					</div>
 					<Switch

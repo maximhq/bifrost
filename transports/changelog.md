@@ -3,4 +3,4 @@
 - fix: async jobs stuck in "processing" on marshal failure now correctly transition to "failed"
 - feat: adds attachment support in Maxim plugin
 - feat: add option to disable automatic MCP tool injection per request
-- fix: preserve original audio filename in transcription requests
+- feat: virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution

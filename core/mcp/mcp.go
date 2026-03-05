@@ -140,11 +140,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 //
 // Returns:
 //   - *schemas.BifrostRequest: The request with tools added
-func (m *MCPManager) AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *MCPManager) AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	return m.toolsManager.ParseAndAddToolsToRequest(ctx, req)
 }
 
-func (m *MCPManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *MCPManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	return m.toolsManager.GetAvailableTools(ctx)
 }
 
