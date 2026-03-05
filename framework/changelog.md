@@ -1,0 +1,4 @@
+- fix: improve Valkey Search compatibility and correctness in Redis vector store
+- fix: async jobs stuck in processing on marshal failure
+- perf: replace encoding/json with sonic in logstore serialization (thanks [@davidrudduck](https://github.com/davidrudduck)!)
+- chore: upgraded core to v1.4.7

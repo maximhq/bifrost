@@ -88,7 +88,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
 				// Don't send Allow-Credentials when wildcard origin is configured — it's a
 				// CORS spec violation and signals an overly permissive configuration.
-				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") {
+				if origin != "" {
 					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 				}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
