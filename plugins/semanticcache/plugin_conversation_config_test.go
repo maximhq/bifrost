@@ -290,7 +290,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache(setup.Plugin)
+	WaitForCache(setup1.Plugin)
 
 	response2, err2 := setup1.Client.ChatCompletionRequest(ctx1, request2)
 	if err2 != nil {
@@ -324,7 +324,7 @@ func TestExcludeSystemPromptComparison(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response3})
 
-	WaitForCache(setup.Plugin)
+	WaitForCache(setup2.Plugin)
 
 	response4, err4 := setup2.Client.ChatCompletionRequest(ctx2, request2)
 	if err4 != nil {
