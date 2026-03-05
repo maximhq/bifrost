@@ -950,18 +950,6 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-// getRequestBodyForResponses serializes a BifrostResponsesRequest into the Anthropic wire format.
-// It delegates to BuildAnthropicResponsesRequestBody with the appropriate provider and streaming config.
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, isStreaming bool, excludeFields []string, shouldSendBackRawRequest bool, shouldSendBackRawResponse bool) ([]byte, *schemas.BifrostError) {
-	return BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
-		Provider:                  schemas.Anthropic,
-		IsStreaming:               isStreaming,
-		ExcludeFields:             excludeFields,
-		ShouldSendBackRawRequest:  shouldSendBackRawRequest,
-		ShouldSendBackRawResponse: shouldSendBackRawResponse,
-	})
-}
-
 // AddMissingBetaHeadersToContext analyzes the Anthropic request and adds missing beta headers to the context.
 // The provider parameter controls which headers are included — unsupported headers for the given provider are skipped.
 func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicMessageRequest, provider schemas.ModelProvider) error {

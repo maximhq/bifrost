@@ -422,42 +422,14 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
-	// Convert to Anthropic format and get required beta headers
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-			if convErr != nil {
-				return nil, convErr
-			}
-			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
-			return anthropicReq, nil
-		})
+	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               false,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
-	}
-
-	// On the raw-body passthrough path, the typed-struct StripUnsupportedAnthropicFields
-	// was not invoked. Apply the JSON-level sanitizer for behavioural parity so
-	// unsupported request-level and tool-level fields don't leak to providers that
-	// would reject them.
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
-		// so custom Anthropic aliases get the same feature lookup as the typed
-		// path above (line 445), keeping raw and typed behavior in lockstep.
-		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
-		if rawErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
-		}
-		jsonData = sanitized
-		// Auto-inject matching anthropic-beta headers for fields the sanitizer
-		// preserved. Probe-unmarshal reuses the typed path's header walker so
-		// the two paths stay in lockstep.
-		var probe AnthropicMessageRequest
-		if err := schemas.Unmarshal(jsonData, &probe); err == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
-		}
 	}
 
 	// Use struct directly for JSON marshaling
@@ -516,40 +488,14 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		return nil, err
 	}
 
-	// Convert to Anthropic format and get required beta headers
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			anthropicReq, convErr := ToAnthropicChatRequest(ctx, request)
-			if convErr != nil {
-				return nil, convErr
-			}
-			anthropicReq.Stream = schemas.Ptr(true)
-			AddMissingBetaHeadersToContext(ctx, anthropicReq, schemas.Anthropic)
-			return anthropicReq, nil
-		})
+	jsonData, bifrostErr := BuildAnthropicChatRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               true,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
-	}
-
-	// On the raw-body passthrough path, the typed-struct StripUnsupportedAnthropicFields
-	// was not invoked. Apply the JSON-level sanitizer for behavioural parity.
-	if useRawBody, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && useRawBody {
-		// Feature gating keyed to schemas.Anthropic (not provider.GetProviderKey())
-		// to keep raw and typed paths in lockstep on custom aliases — mirrors
-		// the typed path's hardcoded schemas.Anthropic at line 548.
-		sanitized, rawErr := StripUnsupportedFieldsFromRawBody(jsonData, schemas.Anthropic, request.Model)
-		if rawErr != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, rawErr)
-		}
-		jsonData = sanitized
-		// Auto-inject matching anthropic-beta headers for fields the sanitizer
-		// preserved. Probe-unmarshal reuses the typed path's header walker.
-		var probe AnthropicMessageRequest
-		if err := schemas.Unmarshal(jsonData, &probe); err == nil {
-			AddMissingBetaHeadersToContext(ctx, &probe, schemas.Anthropic)
-		}
 	}
 
 	// Prepare Anthropic headers
@@ -957,7 +903,12 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := getRequestBodyForResponses(ctx, request, false, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               false,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1021,8 +972,12 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		return nil, err
 	}
 
-	// Convert to Anthropic format using the centralized converter
-	jsonBody, err := getRequestBodyForResponses(ctx, request, true, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               true,
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1197,8 +1152,8 @@ func HandleAnthropicResponsesStream(
 		usage := &schemas.ResponsesResponseUsage{}
 
 		// Create stream state for stateful conversions
-		streamState := acquireAnthropicResponsesStreamState()
-		defer releaseAnthropicResponsesStreamState(streamState)
+		streamState := AcquireAnthropicResponsesStreamState()
+		defer ReleaseAnthropicResponsesStreamState(streamState)
 
 		// Set structured output tool name if present
 		if toolName, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
@@ -2438,7 +2393,13 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := getRequestBodyForResponses(ctx, request, false, []string{"max_tokens", "temperature"}, provider.sendBackRawRequest, provider.sendBackRawResponse)
+	jsonBody, err := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{
+		Provider:                  schemas.Anthropic,
+		IsStreaming:               false,
+		ExcludeFields:             []string{"max_tokens", "temperature"},
+		ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+		ShouldSendBackRawResponse: provider.sendBackRawResponse,
+	})
 	if err != nil {
 		return nil, err
 	}

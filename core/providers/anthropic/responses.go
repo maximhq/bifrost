@@ -105,8 +105,8 @@ func getOrCreateAnthropicToResponsesStreamState(ctx *schemas.BifrostContext) *an
 	return state
 }
 
-// acquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
-func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
+// AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
+func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	state := anthropicResponsesStreamStatePool.Get().(*AnthropicResponsesStreamState)
 	// Clear maps (they're already initialized from New or previous flush)
 	// Only initialize if nil (shouldn't happen, but defensive)
@@ -189,8 +189,8 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	return state
 }
 
-// releaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
-func releaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
+// ReleaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
+func ReleaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
 	if state != nil {
 		state.flush() // Clean before returning to pool
 		anthropicResponsesStreamStatePool.Put(state)

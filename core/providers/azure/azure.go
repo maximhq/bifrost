@@ -500,24 +500,24 @@ func (provider *AzureProvider) TextCompletionStream(ctx *schemas.BifrostContext,
 // It formats the request, sends it to Azure, and processes the response.
 // Returns a BifrostResponse containing the completion results or an error if the request fails.
 func (provider *AzureProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if schemas.ResolveFamily(ctx, request.Model) == schemas.ModelFamilyAnthropic {
-				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					// Add provider-aware beta headers for Azure
-					anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
-				}
-				return reqBody, nil
-			} else {
-				return openai.ToOpenAIChatRequest(ctx, request), nil
-			}
+	var jsonData []byte
+	var bifrostErr *schemas.BifrostError
+	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
+		jsonData, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Azure,
+			Model:                     request.Model,
+			IsStreaming:               false,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
 		})
+	} else {
+		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (providerUtils.RequestBodyWithExtraParams, error) {
+				return openai.ToOpenAIChatRequest(ctx, request), nil
+			})
+	}
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -607,21 +607,13 @@ func (provider *AzureProvider) ChatCompletionStream(ctx *schemas.BifrostContext,
 		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
 		url = fmt.Sprintf("%s/anthropic/v1/messages", endpoint)
 
-		jsonData, err := providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
-				if err != nil {
-					return nil, err
-				}
-				if reqBody != nil {
-					reqBody.Stream = schemas.Ptr(true)
-					// Add provider-aware beta headers for Azure
-					anthropic.AddMissingBetaHeadersToContext(ctx, reqBody, schemas.Azure)
-				}
-				return reqBody, nil
-			})
+		jsonData, err := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Azure,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -682,7 +674,14 @@ func (provider *AzureProvider) Responses(ctx *schemas.BifrostContext, key schema
 	var jsonData []byte
 	var bifrostErr *schemas.BifrostError
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
-		jsonData, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, request.Model, false, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		jsonData, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Azure,
+			Model:                     request.Model,
+			IsStreaming:               false,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 	} else {
 		jsonData, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
@@ -778,7 +777,14 @@ func (provider *AzureProvider) ResponsesStream(ctx *schemas.BifrostContext, post
 		authHeader["anthropic-version"] = resolveAnthropicVersion(ctx)
 		url = fmt.Sprintf("%s/anthropic/v1/messages", endpoint)
 
-		jsonData, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, request.Model, true, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
+			Provider:                  schemas.Azure,
+			Model:                     request.Model,
+			IsStreaming:               true,
+			ValidateTools:             true,
+			ShouldSendBackRawRequest:  provider.sendBackRawRequest,
+			ShouldSendBackRawResponse: provider.sendBackRawResponse,
+		})
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
