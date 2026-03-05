@@ -25,6 +25,9 @@ type MCPManagerInterface interface {
 	// UpdateToolManagerConfig updates the configuration for the tool manager
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
 
+	// UpdateDisableAutoToolInject updates the global auto tool injection toggle at runtime
+	UpdateDisableAutoToolInject(val bool)
+
 	// Agent Mode Operations
 	// CheckAndExecuteAgentForChatRequest handles agent mode for Chat Completions API
 	CheckAndExecuteAgentForChatRequest(

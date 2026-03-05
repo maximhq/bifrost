@@ -56,7 +56,8 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPAgentDepth:           config.MCPAgentDepth,
 		MCPToolExecutionTimeout: config.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:     config.MCPToolSyncInterval,
+		MCPToolSyncInterval:        config.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:   config.MCPDisableAutoToolInject,
 		AsyncJobResultTTL:       config.AsyncJobResultTTL,
 		RequiredHeaders:         config.RequiredHeaders,
 		LoggingHeaders:          config.LoggingHeaders,
@@ -221,8 +222,9 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPAgentDepth:           dbConfig.MCPAgentDepth,
 		MCPToolExecutionTimeout: dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:     dbConfig.MCPToolSyncInterval,
-		AsyncJobResultTTL:       dbConfig.AsyncJobResultTTL,
+		MCPToolSyncInterval:        dbConfig.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:   dbConfig.MCPDisableAutoToolInject,
+		AsyncJobResultTTL:          dbConfig.AsyncJobResultTTL,
 		RequiredHeaders:         dbConfig.RequiredHeaders,
 		LoggingHeaders:          dbConfig.LoggingHeaders,
 		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
@@ -894,9 +896,10 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		return nil, err
 	}
 	toolManagerConfig := schemas.MCPToolManagerConfig{
-		ToolExecutionTimeout: time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
-		MaxAgentDepth:        clientConfig.MCPAgentDepth,
-		CodeModeBindingLevel: schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		ToolExecutionTimeout:    time.Duration(clientConfig.MCPToolExecutionTimeout) * time.Second,
+		MaxAgentDepth:           clientConfig.MCPAgentDepth,
+		CodeModeBindingLevel:    schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
+		DisableAutoToolInject:   clientConfig.MCPDisableAutoToolInject,
 	}
 	clientConfigs := make([]*schemas.MCPClientConfig, len(dbMCPClients))
 	for i, dbClient := range dbMCPClients {

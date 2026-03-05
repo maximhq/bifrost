@@ -174,6 +174,13 @@ func (m *MCPManager) UpdateToolManagerConfig(config *schemas.MCPToolManagerConfi
 	m.toolsManager.UpdateConfig(config)
 }
 
+// UpdateDisableAutoToolInject updates the global auto tool injection toggle at runtime.
+// When val is true, MCP tools are not injected into requests unless an explicit
+// context filter (MCPContextKeyIncludeTools or MCPContextKeyIncludeClients) is set.
+func (m *MCPManager) UpdateDisableAutoToolInject(val bool) {
+	m.toolsManager.UpdateDisableAutoToolInject(val)
+}
+
 // CheckAndExecuteAgentForChatRequest checks if the chat response contains tool calls,
 // and if so, executes agent mode to handle the tool calls iteratively. If no tool calls
 // are present, it returns the original response unchanged.

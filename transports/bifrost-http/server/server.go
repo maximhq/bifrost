@@ -87,6 +87,7 @@ type ServerCallbacks interface {
 	RemoveMCPClient(ctx context.Context, id string) error
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
+	UpdateMCPDisableAutoToolInject(ctx context.Context, val bool) error
 	ReconnectMCPClient(ctx context.Context, id string) error
 	// Logging related callbacks
 	NewLogEntryAdded(ctx context.Context, logEntry *logstore.Log) error
@@ -699,6 +700,14 @@ func (s *BifrostHTTPServer) UpdateMCPToolManagerConfig(ctx context.Context, maxA
 		return fmt.Errorf("config not found")
 	}
 	return s.Client.UpdateToolManagerConfig(maxAgentDepth, toolExecutionTimeoutInSeconds, codeModeBindingLevel)
+}
+
+// UpdateMCPDisableAutoToolInject updates the auto tool injection toggle
+func (s *BifrostHTTPServer) UpdateMCPDisableAutoToolInject(ctx context.Context, val bool) error {
+	if s.Config == nil {
+		return fmt.Errorf("config not found")
+	}
+	return s.Client.UpdateMCPDisableAutoToolInject(val)
 }
 
 // reloadObservabilityPlugins reloads all observability plugins in the tracing middleware
