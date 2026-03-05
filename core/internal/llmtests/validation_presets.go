@@ -391,7 +391,9 @@ func GetExpectationsForScenario(scenarioName string, testConfig ComprehensiveTes
 
 	// Apply raw request/response expectations from test config
 	isStreaming := strings.HasSuffix(scenarioName, "Stream") || strings.HasSuffix(scenarioName, "Streaming")
-	isMultipartRequest := scenarioName == "Transcription" || scenarioName == "TranscriptionStream"
+	isMultipartRequest := scenarioName == "Transcription" || scenarioName == "TranscriptionStream" ||
+		scenarioName == "ImageEdit" || scenarioName == "ImageEditStream" ||
+		scenarioName == "ImageVariation"
 	expectations = ApplyRawExpectations(expectations, testConfig, isStreaming, isMultipartRequest)
 
 	return expectations

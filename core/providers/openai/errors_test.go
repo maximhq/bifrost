@@ -47,9 +47,10 @@ func TestParseOpenAIError_FallbackMessageWhenBodyIsEmpty(t *testing.T) {
 	if errResp == nil || errResp.Error == nil {
 		t.Fatal("expected non-nil error response")
 	}
-	// HandleProviderAPIError returns ErrProviderResponseEmpty for empty bodies.
-	if errResp.Error.Message != schemas.ErrProviderResponseEmpty {
-		t.Fatalf("expected empty-response message, got %q", errResp.Error.Message)
+	// HandleProviderAPIError returns ErrProviderResponseEmpty with HTTP status for empty bodies.
+	expectedMsg := schemas.ErrProviderResponseEmpty + " (HTTP 400)"
+	if errResp.Error.Message != expectedMsg {
+		t.Fatalf("expected %q, got %q", expectedMsg, errResp.Error.Message)
 	}
 }
 
