@@ -238,7 +238,8 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 }
 
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
-	return s.Client.GetAvailableMCPTools(ctx)
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	return s.Client.GetAvailableMCPTools(bifrostCtx)
 }
 
 // markPluginDisabled marks a plugin as disabled in the plugin status
@@ -707,7 +708,10 @@ func (s *BifrostHTTPServer) UpdateMCPDisableAutoToolInject(ctx context.Context, 
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	return s.Client.UpdateMCPDisableAutoToolInject(val)
+	if err := s.Client.UpdateMCPDisableAutoToolInject(val); err != nil {
+		return err
+	}
+	return nil
 }
 
 // reloadObservabilityPlugins reloads all observability plugins in the tracing middleware

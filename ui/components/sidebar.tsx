@@ -241,15 +241,14 @@ const SidebarItemView = ({
 			<SidebarMenuButton
 				tooltip={item.title}
 				data-nav-url={!hasSubItems ? item.url : undefined}
-				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
-					isHighlighted
+				className={`relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${isHighlighted
 						? "bg-sidebar-accent text-accent-foreground border-primary/20"
 						: isActive || isAnySubItemActive
 							? "bg-sidebar-accent text-primary border-primary/20"
 							: item.hasAccess
 								? "hover:bg-sidebar-accent hover:text-accent-foreground border-transparent text-slate-500 dark:text-zinc-400"
 								: "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
-				} `}
+					} `}
 				onClick={hasSubItems ? handleClick : item.hasAccess ? (e) => handleNavigation(item.url, e) : undefined}
 			>
 				<div className="flex w-full items-center justify-between">
@@ -288,15 +287,14 @@ const SidebarItemView = ({
 							<SidebarMenuSubItem key={subItem.title}>
 								<SidebarMenuSubButton
 									data-nav-url={subItem.url}
-									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${
-										isSubItemHighlighted
+									className={`h-7 cursor-pointer rounded-sm px-2 transition-all duration-200 ${isSubItemHighlighted
 											? "bg-sidebar-accent text-accent-foreground"
 											: isSubItemActive
 												? "bg-sidebar-accent text-primary font-medium"
 												: subItem.hasAccess === false
 													? "hover:bg-destructive/5 hover:text-muted-foreground text-muted-foreground cursor-not-allowed border-transparent"
 													: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-500 dark:text-zinc-400"
-									}`}
+										}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 								>
 									<div className="flex items-center gap-2">
@@ -463,7 +461,7 @@ export default function AppSidebar() {
 						hasAccess: hasRoutingRulesAccess,
 					},
 					{
-						title: "Pricing config",
+						title: "Pricing Settings",
 						url: "/workspace/custom-pricing",
 						icon: CircleDollarSign,
 						description: "Pricing configuration",
@@ -656,14 +654,14 @@ export default function AppSidebar() {
 					},
 					...(IS_ENTERPRISE
 						? [
-								{
-									title: "Proxy",
-									url: "/workspace/config/proxy",
-									icon: Globe,
-									description: "Proxy configuration",
-									hasAccess: hasSettingsAccess,
-								},
-							]
+							{
+								title: "Proxy",
+								url: "/workspace/config/proxy",
+								icon: Globe,
+								description: "Proxy configuration",
+								hasAccess: hasSettingsAccess,
+							},
+						]
 						: []),
 					{
 						title: "API Keys",
