@@ -235,7 +235,8 @@ ctx.WithValue(key, value)    // Chainable variant
 
 **User-settable keys** (plugins and handlers can set these):
 - `BifrostContextKeyVirtualKey` (`x-bf-vk`) — Virtual key for governance
-- `BifrostContextKeyAPIKeyName` (`x-bf-api-key`) — Explicit key selection
+- `BifrostContextKeyAPIKeyName` (`x-bf-api-key`) — Explicit key selection by name
+- `BifrostContextKeyAPIKeyID` (`x-bf-api-key-id`) — Explicit key selection by ID (takes priority over name)
 - `BifrostContextKeyRequestID` — Request ID
 - `BifrostContextKeyExtraHeaders` — Extra headers to forward to provider
 - `BifrostContextKeyURLPath` — Custom URL path for provider

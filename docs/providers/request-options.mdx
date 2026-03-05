@@ -12,6 +12,7 @@ Bifrost provides request options that control behavior, enable features, and pas
 |-------------|--------|------|-------------|
 | `BifrostContextKeyVirtualKey` | `x-bf-vk` | `string` | Virtual key identifier for governance |
 | `BifrostContextKeyAPIKeyName` | `x-bf-api-key` | `string` | Explicit API key name selection |
+| `BifrostContextKeyAPIKeyID` | `x-bf-api-key-id` | `string` | Explicit API key ID selection (takes priority over name) |
 | `BifrostContextKeyRequestID` | `x-request-id` | `string` | Custom request ID for tracking |
 | `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response |
 | `BifrostContextKeyPassthroughExtraParams` | `x-bf-passthrough-extra-params` | `bool` | Enable passthrough for extra parameters |
@@ -76,11 +77,50 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk-*`, or `x-goog-api-key: vk-*` headers when the value starts with the virtual key prefix.
 </Note>
 
-### API Key Name Selection
+### API Key Selection
 
-**Context Key:** `BifrostContextKeyAPIKeyName`  
-**Header:** `x-bf-api-key`  
-**Type:** `string`  
+Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
+
+#### By ID
+
+**Context Key:** `BifrostContextKeyAPIKeyID`
+**Header:** `x-bf-api-key-id`
+**Type:** `string`
+**Required:** No
+
+Explicitly select a key by its unique ID. Takes priority over name selection when both are provided.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-api-key-id: key-uuid-1234' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+#### By Name
+
+**Context Key:** `BifrostContextKeyAPIKeyName`
+**Header:** `x-bf-api-key`
+**Type:** `string`
 **Required:** No
 
 Explicitly select a named API key from your configured keys.

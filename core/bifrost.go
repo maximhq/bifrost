@@ -5931,20 +5931,28 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 	}
 
-	var requestedKeyName string
+	// Key ID takes priority over key name when both are present
 	if ctx != nil {
-		if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
-			requestedKeyName = strings.TrimSpace(keyName)
-		}
-	}
-
-	if requestedKeyName != "" {
-		for _, key := range supportedKeys {
-			if key.Name == requestedKeyName {
-				return key, nil
+		if keyID, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok {
+			if keyID = strings.TrimSpace(keyID); keyID != "" {
+				for _, key := range supportedKeys {
+					if key.ID == keyID {
+						return key, nil
+					}
+				}
+				return schemas.Key{}, fmt.Errorf("no key found with id %q for provider: %v", keyID, providerKey)
 			}
 		}
-		return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", requestedKeyName, providerKey)
+		if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+			if keyName = strings.TrimSpace(keyName); keyName != "" {
+				for _, key := range supportedKeys {
+					if key.Name == keyName {
+						return key, nil
+					}
+				}
+				return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", keyName, providerKey)
+			}
+		}
 	}
 
 	if len(supportedKeys) == 1 {
