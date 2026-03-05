@@ -1,0 +1,1 @@
+- feat: add MCPDisableAutoToolInject column to TableClientConfig
