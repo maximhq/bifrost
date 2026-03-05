@@ -22,3 +22,7 @@
 - **Prevent panic** in key selection when all keys have zero weight
 - **Preserve original** audio filename in transcription requests
 - **Async jobs** stuck in "processing" on marshal failure now correctly transition to "failed"
+- **Prevent panic** in key selection when all keys have zero weight
+- **Preserve original** audio filename in transcription requests
+- **Async jobs** stuck in "processing" on marshal failure now correctly transition to "failed"
+- **Adds attachment** support in Maxim plugin
