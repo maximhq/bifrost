@@ -100,7 +100,7 @@ func TestSemanticCacheBasicFlow(t *testing.T) {
 	}
 
 	// Wait for async caching to complete
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ Response cached successfully")
 
 	// Second request - should be a cache hit
@@ -225,7 +225,7 @@ func TestSemanticCacheStrictFiltering(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ First response cached")
 
 	// Second request with different temperature - should be cache miss
@@ -389,7 +389,7 @@ func TestSemanticCacheStreamingFlow(t *testing.T) {
 		}
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 	t.Log("✅ Streaming response chunks cached")
 
 	// Test cache retrieval for streaming
@@ -536,7 +536,7 @@ func TestSemanticCache_CustomTTLHandling(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("✅ Custom TTL configuration test passed!")
 }
@@ -647,7 +647,7 @@ func TestSemanticCache_ProviderModelCachingFlags(t *testing.T) {
 		t.Fatalf("PostLLMHook failed: %v", err)
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request with different provider - should potentially hit cache since provider is not considered
 	request2 := &schemas.BifrostRequest{

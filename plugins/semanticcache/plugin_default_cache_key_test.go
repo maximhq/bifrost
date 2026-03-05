@@ -34,7 +34,7 @@ func TestDefaultCacheKey_CachesWithoutPerRequestKey(t *testing.T) {
 	// First request should NOT be a cache hit
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request without per-request cache key (should hit cache)...")
 	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -68,7 +68,7 @@ func TestDefaultCacheKey_PerRequestKeyOverridesDefault(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Verify the cache was actually populated with the default key
 	ctxDefault2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -116,7 +116,7 @@ func TestDefaultCacheKey_EmptyDefault_NoCaching(t *testing.T) {
 
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request (should still not cache)...")
 	ctx2 := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

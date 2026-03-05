@@ -147,7 +147,7 @@ func TestSemanticCache_AllVectorStores_BasicFlow(t *testing.T) {
 			}
 
 			// Wait for async caching to complete
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 			t.Logf("[%s] Response cached successfully", tc.Name)
 
 			// Second request - should be a cache hit
@@ -200,7 +200,7 @@ func TestSemanticCache_AllVectorStores_DirectHashMatch(t *testing.T) {
 			}
 			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Second request with direct-only cache type
 			ctx2 := CreateContextWithCacheKeyAndType(cacheKey, CacheTypeDirect)
@@ -243,7 +243,7 @@ func TestSemanticCache_AllVectorStores_NamespaceIsolation(t *testing.T) {
 			}
 			AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Try with different cache key - should miss
 			ctx2 := CreateContextWithCacheKey(cacheKey2)
@@ -343,7 +343,7 @@ func TestSemanticCache_AllVectorStores_ParameterFiltering(t *testing.T) {
 				t.Fatalf("[%s] PostHook failed: %v", tc.Name, err)
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 			t.Logf("[%s] First response cached", tc.Name)
 
 			// Second request with different temperature - should be cache miss
@@ -411,7 +411,7 @@ func TestSemanticCache_AllVectorStores_EmbeddingRequest(t *testing.T) {
 			}
 			AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			// Second request - should be cache hit
 			ctx2 := CreateContextWithCacheKey(cacheKey)

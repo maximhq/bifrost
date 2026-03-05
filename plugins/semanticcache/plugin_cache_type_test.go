@@ -23,7 +23,7 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Now test with CacheTypeKey set to direct only
 	ctx2 := CreateContextWithCacheKeyAndType("test-cache-type-direct", CacheTypeDirect)
@@ -56,7 +56,7 @@ func TestCacheTypeSemanticOnly(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test with slightly different wording that should match semantically but not directly
 	similarRequest := CreateBasicChatRequest("Can you explain concepts in machine learning", 0.7, 50)
@@ -103,7 +103,7 @@ func TestCacheTypeDirectWithSemanticFallback(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test exact match (should hit direct cache)
 	ctx2 := CreateContextWithCacheKey("test-cache-type-fallback")
@@ -179,7 +179,7 @@ func TestCacheTypeWithEmbeddingRequests(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test with direct-only cache type
 	ctx2 := CreateContextWithCacheKeyAndType("test-embedding-cache-type", CacheTypeDirect)
@@ -223,7 +223,7 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{ChatResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Test direct-only performance
 	ctx2 := CreateContextWithCacheKeyAndType("test-cache-performance", CacheTypeDirect)
