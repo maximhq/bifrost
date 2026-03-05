@@ -23,6 +23,22 @@ func RunStreamErrorStatusCodeTest(t *testing.T, client *bifrost.Bifrost, ctx con
 		return
 	}
 
+	// Skip providers that perform deployment-based key selection.
+	// These providers validate model→deployment mapping during key selection,
+	// which means invalid models fail BEFORE reaching the provider API.
+	// Since no HTTP request is made, there's no provider status code to propagate.
+	deploymentBasedProviders := map[schemas.ModelProvider]bool{
+		schemas.Azure:     true,
+		schemas.Bedrock:   true,
+		schemas.Vertex:    true,
+		schemas.Replicate: true,
+		schemas.VLLM:      true,
+	}
+	if deploymentBasedProviders[testConfig.Provider] {
+		t.Logf("Skipping StreamErrorStatusCode for %s (deployment-based key selection validates models before API call)", testConfig.Provider)
+		return
+	}
+
 	t.Run("StreamErrorStatusCode", func(t *testing.T) {
 		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
 			t.Parallel()
