@@ -456,15 +456,19 @@ func ModifyExpectationsForProvider(expectations ResponseExpectations, provider s
 // when not using GetExpectationsForScenario.
 // Parameters:
 //   - isStreaming: if true, skips RawResponse expectation (streaming has no single response body)
-//   - isMultipartRequest: if true, skips RawRequest expectation (multipart form data can't return raw JSON request)
-func ApplyRawExpectations(expectations ResponseExpectations, testConfig ComprehensiveTestConfig, isStreaming bool, isMultipartRequest ...bool) ResponseExpectations {
+//   - options: variadic bool options:
+//   - options[0] = isMultipartRequest: if true, skips RawRequest expectation (multipart form data can't return raw JSON request)
+//   - options[1] = isBinaryResponse: if true, skips RawResponse expectation (binary responses like audio don't have JSON raw response)
+func ApplyRawExpectations(expectations ResponseExpectations, testConfig ComprehensiveTestConfig, isStreaming bool, options ...bool) ResponseExpectations {
 	if testConfig.ExpectRawRequestResponse {
-		// Skip RawRequest for multipart form data requests (like transcription)
-		skipRawRequest := len(isMultipartRequest) > 0 && isMultipartRequest[0]
+		// options[0] = isMultipartRequest (skip RawRequest for multipart form data requests like transcription)
+		// options[1] = isBinaryResponse (skip RawResponse for binary responses like speech synthesis audio)
+		skipRawRequest := len(options) > 0 && options[0]
+		skipRawResponse := len(options) > 1 && options[1]
 		if !skipRawRequest {
 			expectations.ShouldHaveRawRequest = true
 		}
-		if !isStreaming {
+		if !isStreaming && !skipRawResponse {
 			expectations.ShouldHaveRawResponse = true
 		}
 	}

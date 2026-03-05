@@ -29,3 +29,10 @@ func Unmarshal(data []byte, v interface{}) error {
 func Compact(dst *bytes.Buffer, src []byte) error {
 	return json.Compact(dst, src)
 }
+
+// MarshalSorted encodes v to JSON with map keys sorted alphabetically.
+// Use this when deterministic output is needed (e.g., hashing, caching keys).
+// Uses sonic.ConfigStd which has SortMapKeys enabled.
+func MarshalSorted(v interface{}) ([]byte, error) {
+	return sonic.ConfigStd.Marshal(v)
+}

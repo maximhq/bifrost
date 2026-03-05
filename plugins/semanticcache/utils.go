@@ -114,8 +114,8 @@ func (plugin *Plugin) generateRequestHash(req *schemas.BifrostRequest) (string, 
 		hashInput.Params = req.ImageGenerationRequest.Params
 	}
 
-	// Marshal to JSON for consistent hashing
-	jsonData, err := json.Marshal(hashInput)
+	// Marshal to JSON with sorted keys for deterministic hashing
+	jsonData, err := schemas.MarshalSorted(hashInput)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal request for hashing: %w", err)
 	}

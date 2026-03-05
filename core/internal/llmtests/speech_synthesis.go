@@ -97,7 +97,8 @@ func RunSpeechSynthesisTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				}
 
 				// Enhanced validation for speech synthesis
-				expectations := ApplyRawExpectations(SpeechExpectations(tc.expectMinBytes), testConfig, false)
+				// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+				expectations := ApplyRawExpectations(SpeechExpectations(tc.expectMinBytes), testConfig, false, false, true)
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 				// Create Speech retry config
@@ -203,7 +204,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				},
 			}
 
-			expectations := ApplyRawExpectations(SpeechExpectations(5000), testConfig, false) // HD should produce substantial audio
+			// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+			expectations := ApplyRawExpectations(SpeechExpectations(5000), testConfig, false, false, true) // HD should produce substantial audio
 			expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 			// Create Speech retry config
@@ -273,7 +275,8 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 						Fallbacks: testConfig.SpeechSynthesisFallbacks,
 					}
 
-					expectations := ApplyRawExpectations(SpeechExpectations(500), testConfig, false)
+					// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+					expectations := ApplyRawExpectations(SpeechExpectations(500), testConfig, false, false, true)
 					expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 					// Use retry framework for voice test
