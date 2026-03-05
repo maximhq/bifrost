@@ -3298,7 +3298,7 @@ func (bifrost *Bifrost) getProviderMutex(providerKey schemas.ModelProvider) *syn
 //	    }, toolSchema)
 func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(args any) (string, error), toolSchema schemas.ChatTool) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.RegisterTool(name, description, handler, toolSchema)
@@ -3316,7 +3316,7 @@ func (bifrost *Bifrost) RegisterMCPTool(name, description string, handler func(a
 //   - error: Any retrieval error
 func (bifrost *Bifrost) GetMCPClients() ([]schemas.MCPClient, error) {
 	if bifrost.MCPManager == nil {
-		return nil, fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return nil, fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	clients := bifrost.MCPManager.GetClients()
@@ -3427,7 +3427,7 @@ func (bifrost *Bifrost) AddMCPClient(config *schemas.MCPClientConfig) error {
 //	}
 func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.RemoveClient(id)
@@ -3460,7 +3460,7 @@ func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 //	})
 func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPClientConfig) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
@@ -3475,7 +3475,7 @@ func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPCli
 //   - error: Any reconnection error
 func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	return bifrost.MCPManager.ReconnectClient(id)
@@ -3483,15 +3483,18 @@ func (bifrost *Bifrost) ReconnectMCPClient(id string) error {
 
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error {
+// Pass the current value of disableAutoToolInject whenever only other fields
+// change so the flag is never silently reset to its zero value.
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
 	if bifrost.MCPManager == nil {
-		return fmt.Errorf("MCP is not configured in this Bifrost instance")
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		MaxAgentDepth:        maxAgentDepth,
-		ToolExecutionTimeout: time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
-		CodeModeBindingLevel: schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		MaxAgentDepth:         maxAgentDepth,
+		ToolExecutionTimeout:  time.Duration(toolExecutionTimeoutInSeconds) * time.Second,
+		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		DisableAutoToolInject: disableAutoToolInject,
 	})
 	return nil
 }
@@ -5346,7 +5349,7 @@ func (bifrost *Bifrost) handleMCPToolExecution(ctx *schemas.BifrostContext, mcpR
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
-				Message: "MCP is not configured in this Bifrost instance",
+				Message: "mcp is not configured in this bifrost instance",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RequestType: requestType,
