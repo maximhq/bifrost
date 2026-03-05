@@ -98,7 +98,9 @@ func TestChatCompletionStream_StreamsIncrementally_NotBuffered(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	req := testChatRequest()
+	req.Model = testConverseStreamModel // Converse eventstream path (Anthropic models now stream via Mantle)
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 	require.Nil(t, bifrostErr, "stream setup should not error")
 	require.NotNil(t, streamChan)
 
@@ -147,7 +149,9 @@ func TestMakeStreamingRequest_SendsIdentityAcceptEncoding(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	req := testChatRequest()
+	req.Model = testConverseStreamModel // Converse eventstream path (Anthropic models now stream via Mantle)
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, streamChan)
 	for range streamChan { // drain so the request fully completes

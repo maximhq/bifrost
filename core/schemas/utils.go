@@ -1565,6 +1565,11 @@ func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")
 }
 
+// IsOpenAIModel checks if the model is an OpenAI model.
+func IsOpenAIModel(model string) bool {
+	return strings.Contains(model, "gpt-") || strings.Contains(model, "text-embedding-")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {

@@ -352,6 +352,7 @@ func shouldUsePassthrough(ctx *schemas.BifrostContext, provider schemas.ModelPro
 func isClaudeModel(model, alias, provider string) bool {
 	return (provider == string(schemas.Anthropic) ||
 		(provider == "" && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))) ||
+		(provider == string(schemas.Bedrock) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
 		(provider == string(schemas.Vertex) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias))) ||
 		(provider == string(schemas.Azure) && (schemas.IsAnthropicModel(model) || schemas.IsAnthropicModel(alias)))
 }

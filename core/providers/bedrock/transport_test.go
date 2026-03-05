@@ -108,6 +108,12 @@ func noopPostHookRunner(_ *schemas.BifrostContext, result *schemas.BifrostRespon
 	return result, err
 }
 
+// testConverseStreamModel is a non-Anthropic, non-OpenAI Bedrock model that routes through
+// the Converse streaming path (and thus the AWS EventStream decoder). Anthropic and
+// OpenAI-family models stream via the Mantle endpoint instead, so EventStream-exception
+// tests use this model to exercise the decoder.
+const testConverseStreamModel = "amazon.nova-lite-v1:0"
+
 // testChatRequest returns a minimal BifrostChatRequest for streaming tests.
 func testChatRequest() *schemas.BifrostChatRequest {
 	content := "hello"
@@ -331,7 +337,9 @@ func TestChatCompletionStream_RetryableException_ChunkIsRetryable(t *testing.T) 
 			ctx := testBedrockCtx()
 			key := testBedrockKey()
 
-			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+			req := testChatRequest()
+			req.Model = testConverseStreamModel
+			streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 			require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 			require.NotNil(t, streamChan)
@@ -378,7 +386,9 @@ func TestChatCompletionStream_NonRetryableException_IsTerminal(t *testing.T) {
 	ctx := testBedrockCtx()
 	key := testBedrockKey()
 
-	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, testChatRequest())
+	req := testChatRequest()
+	req.Model = testConverseStreamModel
+	streamChan, bifrostErr := provider.ChatCompletionStream(ctx, noopPostHookRunner, nil, key, req)
 	require.Nil(t, bifrostErr, "expected EventStream exception to surface as a stream chunk")
 
 	require.NotNil(t, streamChan)
@@ -517,7 +527,9 @@ func TestResponsesStream_RetryableException_ChunkIsRetryable(t *testing.T) {
 			defer ts.Close()
 
 			provider := newTestProviderWithServer(t, ts)
-			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), testResponsesRequest())
+			req := testResponsesRequest()
+			req.Model = testConverseStreamModel
+			streamChan, bifrostErr := provider.ResponsesStream(testBedrockCtx(), noopPostHookRunner, nil, testBedrockKey(), req)
 			assertRetryableExceptionChunk(t, streamChan, bifrostErr, tc.excType, tc.expectedStatus)
 		})
 	}
