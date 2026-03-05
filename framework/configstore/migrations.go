@@ -265,6 +265,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddLoggingHeadersJSONColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddEnforceSCIMAuthColumn(ctx, db); err != nil {
 		return err
 	}
@@ -3705,6 +3708,41 @@ func migrationAddLoggingHeadersJSONColumn(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running logging_headers_json migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddHideDeletedVirtualKeysInFiltersColumn adds the hide_deleted_virtual_keys_in_filters column to config_client.
+func migrationAddHideDeletedVirtualKeysInFiltersColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_hide_deleted_virtual_keys_in_filters_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters") {
+				if err := migrator.AddColumn(&tables.TableClientConfig{}, "HideDeletedVirtualKeysInFilters"); err != nil {
+					return fmt.Errorf("failed to add hide_deleted_virtual_keys_in_filters column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters") {
+				if err := migrator.DropColumn(&tables.TableClientConfig{}, "hide_deleted_virtual_keys_in_filters"); err != nil {
+					return fmt.Errorf("failed to drop hide_deleted_virtual_keys_in_filters column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running hide_deleted_virtual_keys_in_filters migration: %s", err.Error())
 	}
 	return nil
 }

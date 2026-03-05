@@ -320,6 +320,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	MCPToolExecutionTimeout: 30,
 	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
 	EnableLiteLLMFallbacks:  false,
+	HideDeletedVirtualKeysInFilters: false,
 }
 
 // LoadConfig loads initial configuration from a JSON config file into memory

@@ -22,6 +22,7 @@ export class ConfigSettingsPage extends BasePage {
   // Logging Settings
   readonly enableLoggingSwitch: Locator
   readonly disableContentLoggingSwitch: Locator
+  readonly hideDeletedVirtualKeysInFiltersSwitch: Locator
   readonly logRetentionDaysInput: Locator
 
   // Security Settings
@@ -46,6 +47,7 @@ export class ConfigSettingsPage extends BasePage {
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
     this.disableContentLoggingSwitch = page.locator('#disable-content-logging')
+    this.hideDeletedVirtualKeysInFiltersSwitch = page.locator('#hide-deleted-virtual-keys-in-filters')
     this.logRetentionDaysInput = page.getByLabel(/Log Retention Days/i).or(
       page.locator('#log-n-days')
     )
@@ -238,6 +240,10 @@ export class ConfigSettingsPage extends BasePage {
 
   async toggleDisableContentLogging(): Promise<void> {
     await this.disableContentLoggingSwitch.click()
+  }
+
+  async toggleHideDeletedVirtualKeysInFilters(): Promise<void> {
+    await this.hideDeletedVirtualKeysInFiltersSwitch.click()
   }
 
   async setLogRetentionDays(days: number): Promise<void> {
