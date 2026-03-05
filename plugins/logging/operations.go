@@ -652,6 +652,11 @@ func (p *LoggerPlugin) SearchLogs(ctx context.Context, filters logstore.SearchFi
 	return p.store.SearchLogs(ctx, filters, pagination)
 }
 
+// GetLog retrieves a single log entry by ID including all fields (raw_request, raw_response).
+func (p *LoggerPlugin) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	return p.store.FindByID(ctx, id)
+}
+
 // GetStats calculates statistics for logs matching the given filters
 func (p *LoggerPlugin) GetStats(ctx context.Context, filters logstore.SearchFilters) (*logstore.SearchStats, error) {
 	return p.store.GetStats(ctx, filters)

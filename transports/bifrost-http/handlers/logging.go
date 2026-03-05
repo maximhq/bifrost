@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager Redact
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
+	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
 	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
@@ -239,6 +241,27 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+// getLogByID handles GET /api/logs/{id} - Get a single log entry by ID including raw_request and raw_response
+func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || id == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "log id is required")
+		return
+	}
+
+	log, err := h.logManager.GetLog(ctx, id)
+	if err != nil {
+		if errors.Is(err, logstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "log not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get log: %v", err))
+		return
+	}
+
+	SendJSON(ctx, log)
 }
 
 // getLogsStats handles GET /api/logs/stats - Get statistics for logs with filtering

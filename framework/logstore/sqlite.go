@@ -36,6 +36,7 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 		return nil, err
 	}
 	logger.Debug("db opened for logstore")
+
 	s := &RDBLogStore{db: db, logger: logger}
 	// Run migrations
 	if err := triggerMigrations(ctx, db); err != nil {

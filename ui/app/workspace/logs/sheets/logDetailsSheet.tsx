@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -64,7 +66,19 @@ const isContainerOperation = (object: string) => {
 };
 
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
+	const [fetchLog, { data: fullLog }] = useLazyGetLogByIdQuery();
+
+	useEffect(() => {
+		if (open && log?.id) {
+			fetchLog(log.id);
+		}
+	}, [open, log?.id, fetchLog]);
+
 	if (!log) return null;
+
+	// Merge raw fields from the dedicated single-log fetch (list query omits them for performance)
+	const rawRequest = fullLog?.raw_request ?? log.raw_request;
+	const rawResponse = fullLog?.raw_response ?? log.raw_response;
 
 	const isContainer = isContainerOperation(log.object);
 
@@ -611,7 +625,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
-						{log.raw_request && (
+						{rawRequest && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Request sent to <span className="font-medium capitalize">{log.provider}</span>
@@ -620,9 +634,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									title="Raw Request"
 									onCopy={() => {
 										try {
-											return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
+											return JSON.stringify(JSON.parse(rawRequest || ""), null, 2);
 										} catch {
-											return log.raw_request || "";
+											return rawRequest || "";
 										}
 									}}
 								>
@@ -633,9 +647,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 										wrap={true}
 										code={(() => {
 											try {
-												return JSON.stringify(JSON.parse(log.raw_request || ""), null, 2);
+												return JSON.stringify(JSON.parse(rawRequest || ""), null, 2);
 											} catch {
-												return log.raw_request || "";
+												return rawRequest || "";
 											}
 										})()}
 										lang="json"
@@ -645,7 +659,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
-						{log.raw_response && (
+						{rawResponse && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">
 									Raw Response from <span className="font-medium capitalize">{log.provider}</span>
@@ -654,9 +668,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									title="Raw Response"
 									onCopy={() => {
 										try {
-											return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
+											return JSON.stringify(JSON.parse(rawResponse || ""), null, 2);
 										} catch {
-											return log.raw_response || "";
+											return rawResponse || "";
 										}
 									}}
 								>
@@ -667,9 +681,9 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 										wrap={true}
 										code={(() => {
 											try {
-												return JSON.stringify(JSON.parse(log.raw_response || ""), null, 2);
+												return JSON.stringify(JSON.parse(rawResponse || ""), null, 2);
 											} catch {
-												return log.raw_response || "";
+												return rawResponse || "";
 											}
 										})()}
 										lang="json"

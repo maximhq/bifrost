@@ -21,6 +21,9 @@ type KeyPair struct {
 
 // LogManager defines the main interface that combines all logging functionality
 type LogManager interface {
+	// GetLog retrieves a single log entry by ID (includes all fields, including raw_request/raw_response)
+	GetLog(ctx context.Context, id string) (*logstore.Log, error)
+
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 
@@ -101,6 +104,10 @@ type LogManager interface {
 // PluginLogManager implements LogManager interface wrapping the plugin
 type PluginLogManager struct {
 	plugin *LoggerPlugin
+}
+
+func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	return p.plugin.GetLog(ctx, id)
 }
 
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
