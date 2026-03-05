@@ -47,7 +47,7 @@ export class ConfigSettingsPage extends BasePage {
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
     this.disableContentLoggingSwitch = page.locator('#disable-content-logging')
-    this.hideDeletedVirtualKeysInFiltersSwitch = page.locator('#hide-deleted-virtual-keys-in-filters')
+    this.hideDeletedVirtualKeysInFiltersSwitch = page.getByTestId('hide-deleted-virtual-keys-in-filters-switch')
     this.logRetentionDaysInput = page.getByLabel(/Log Retention Days/i).or(
       page.locator('#log-n-days')
     )

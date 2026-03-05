@@ -111,10 +111,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("enableLiteLLMFallbacks:false"))
 	}
 
+	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
-	} else {
-		hash.Write([]byte("hideDeletedVirtualKeysInFilters:false"))
 	}
 
 	if c.MCPAgentDepth > 0 {
