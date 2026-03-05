@@ -167,6 +167,18 @@ func releaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) 
 	}
 }
 
+// AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
+// Exported for use by providers that wrap Anthropic-compatible endpoints (e.g. Bedrock).
+func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
+	return acquireAnthropicResponsesStreamState()
+}
+
+// ReleaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
+// Exported for use by providers that wrap Anthropic-compatible endpoints (e.g. Bedrock).
+func ReleaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
+	releaseAnthropicResponsesStreamState(state)
+}
+
 // flush resets the state of the stream state to its initial values
 func (state *AnthropicResponsesStreamState) flush() {
 	state.ChunkIndex = nil
@@ -191,7 +203,7 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.StopReason = nil
 	state.Model = nil
-	state.CreatedAt = int(time.Now().Unix())
+	state.CreatedAt = 0
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
 	state.StructuredOutputToolName = ""
@@ -4050,7 +4062,6 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 			}
 		}
 	}
-
 
 	return &anthropicMsg
 }
