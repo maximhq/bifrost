@@ -15,9 +15,9 @@ interface Props {
 	provider: ModelProvider;
 }
 
-const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) => {
+const availableTabs = (hasCustomProviderConfig: boolean, hasGovernanceAccess: boolean) => {
 	const tabs = [];
-	if (provider?.custom_provider_config) {
+	if (hasCustomProviderConfig) {
 		tabs.push({
 			id: "api-structure",
 			label: "API Structure",
@@ -51,13 +51,20 @@ const availableTabs = (provider: ModelProvider, hasGovernanceAccess: boolean) =>
 export default function ProviderConfigSheet({ show, onCancel, provider }: Props) {
 	const [selectedTab, setSelectedTab] = useState<string | undefined>(undefined);
 	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
+	const hasCustomProviderConfig = Boolean(provider.custom_provider_config);
 
 	const tabs = useMemo(() => {
-		return availableTabs(provider, hasGovernanceAccess);
-	}, [provider, hasGovernanceAccess]);
+		return availableTabs(hasCustomProviderConfig, hasGovernanceAccess);
+	}, [hasCustomProviderConfig, hasGovernanceAccess]);
 
 	useEffect(() => {
-		setSelectedTab(tabs[0]?.id);
+		setSelectedTab((previousTab) => {
+			if (previousTab && tabs.some((tab) => tab.id === previousTab)) {
+				return previousTab;
+			}
+
+			return tabs[0]?.id;
+		});
 	}, [tabs]);
 
 	return (

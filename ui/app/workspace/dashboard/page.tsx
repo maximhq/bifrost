@@ -212,14 +212,17 @@ export default function DashboardPage() {
 
 	// Available models for filter dropdowns (union of both sources)
 	const availableModels = useMemo(() => {
-		if (costData?.models?.length) return sanitizeSeriesLabels(costData.models);
+		const costModelLabels = sanitizeSeriesLabels(costData?.models);
+		if (costModelLabels.length) return costModelLabels;
 		return sanitizeSeriesLabels(modelData?.models);
 	}, [costData?.models, modelData?.models]);
 
 	// Available providers for provider chart filter dropdowns
 	const availableProviders = useMemo(() => {
-		if (providerCostData?.providers?.length) return sanitizeSeriesLabels(providerCostData.providers);
-		if (providerTokenData?.providers?.length) return sanitizeSeriesLabels(providerTokenData.providers);
+		const providerCostLabels = sanitizeSeriesLabels(providerCostData?.providers);
+		if (providerCostLabels.length) return providerCostLabels;
+		const providerTokenLabels = sanitizeSeriesLabels(providerTokenData?.providers);
+		if (providerTokenLabels.length) return providerTokenLabels;
 		return sanitizeSeriesLabels(providerLatencyData?.providers);
 	}, [providerCostData?.providers, providerTokenData?.providers, providerLatencyData?.providers]);
 
