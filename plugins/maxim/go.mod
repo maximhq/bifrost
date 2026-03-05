@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/maximhq/bifrost/core v1.4.6
 	github.com/maximhq/bifrost/framework v1.2.25
-	github.com/maximhq/maxim-go v0.1.14
+	github.com/maximhq/maxim-go v0.1.16
 )
 
 require github.com/google/uuid v1.6.0

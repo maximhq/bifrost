@@ -233,8 +233,7 @@ github.com/maximhq/bifrost/plugins/semanticcache v1.4.24 h1:oS1QNyMPt/418JSys/j9
 github.com/maximhq/bifrost/plugins/semanticcache v1.4.24/go.mod h1:6XnVUg2y2FKlQuvAukMvTqVjhlyTpsUpOXef0G7Z16k=
 github.com/maximhq/bifrost/plugins/telemetry v1.4.26 h1:+4EyCAlJ+rK8hGXDx5QwXmBDGZ5JBD38wdG1T2WuW/g=
 github.com/maximhq/bifrost/plugins/telemetry v1.4.26/go.mod h1:PAUk/49dXCga3J5t/ipm56SDkl3Rm6glP2oJ166Wy98=
-github.com/maximhq/maxim-go v0.1.14 h1:NQgpf3aRoD2Kq1GAqeSrLn3rQresn1H6mPP3JJ85qhA=
-github.com/maximhq/maxim-go v0.1.14/go.mod h1:0+UTWM7UZwNNE5VnljLtr/vpRGtYP8r/2q9WDwlLWFw=
+github.com/maximhq/maxim-go v0.1.16 h1:07yuTQIatwOCjd9cfM3b6hOBgD6Q8ixu17VA22o0XY0=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/oapi-codegen/runtime v1.1.1 h1:EXLHh0DXIJnWhdRPN2w4MXAzFyE4CskzhNLUmtpMYro=

@@ -1,0 +1,1 @@
+- feat: Adds attachment support [@Rohan](https://github.com/roroghost17)

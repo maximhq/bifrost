@@ -112,7 +112,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/maximhq/bifrost/plugins/mocker v1.4.25 // indirect
-	github.com/maximhq/maxim-go v0.1.14 // indirect
+	github.com/maximhq/maxim-go v0.1.16 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
