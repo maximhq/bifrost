@@ -1225,12 +1225,12 @@
                   "properties": {
                     "service_name": {
                       "type": "string",
-                      "description": "Service name to be used for tracing",
+                      "description": "Service name to be used for tracing and metrics if enabled",
                       "default": "bifrost"
                     },
                     "collector_url": {
                       "type": "string",
-                      "description": "URL of the OpenTelemetry collector",
+                      "description": "URL of the OpenTelemetry trace collector",
                       "oneOf": [
                         {
                           "format": "uri"
@@ -1242,18 +1242,33 @@
                     },
                     "trace_type": {
                       "type": "string",
-                      "description": "Type of trace to use for the OTEL collector",
+                      "description": "Type of trace to use for the OTEL trace collector",
                       "enum": [
                         "otel"
                       ]
                     },
                     "protocol": {
                       "type": "string",
-                      "description": "Protocol to use for the OTEL collector",
+                      "description": "Protocol to use for the OTEL trace collector",
                       "enum": [
                         "http",
                         "grpc"
                       ]
+                    },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Custom headers for the trace collector. Supports env.VAR_NAME prefix for environment variable substitution."
+                    },
+                    "tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to TLS CA certificate file for traces"
+                    },
+                    "insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification for traces (ignored if tls_ca_cert is set)"
                     },
                     "metrics_enabled": {
                       "type": "boolean",
@@ -1272,6 +1287,20 @@
                         }
                       ]
                     },
+                    "metrics_protocol": {
+                      "type": "string",
+                      "description": "Protocol for the metrics exporter (http or grpc). Required when metrics_enabled is true.",
+                      "enum": ["http", "grpc"]
+                    },
+                    "metrics_tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to a CA certificate file for TLS verification of the metrics endpoint. Leave empty to use system root CAs."
+                    },
+                    "metrics_insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification for the metrics endpoint. Ignored if metrics_tls_ca_cert is set.",
+                      "default": false
+                    },
                     "metrics_push_interval": {
                       "type": "integer",
                       "description": "Metrics push interval in seconds",
@@ -1279,20 +1308,26 @@
                       "minimum": 1,
                       "maximum": 300
                     },
-                    "headers": {
+                    "metrics_exporter_timeout": {
+                      "type": "integer",
+                      "description": "Timeout in seconds for each metrics export request",
+                      "default": 10,
+                      "minimum": 1,
+                      "maximum": 60
+                    },
+                    "metrics_extra_labels": {
                       "type": "object",
+                      "description": "Additional key-value labels attached to all exported metrics as OTEL resource attributes",
                       "additionalProperties": {
                         "type": "string"
-                      },
-                      "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+                      }
                     },
-                    "tls_ca_cert": {
-                      "type": "string",
-                      "description": "Path to TLS CA certificate file"
-                    },
-                    "insecure": {
-                      "type": "boolean",
-                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
+                    "metrics_headers": {
+                      "type": "object",
+                      "description": "Custom HTTP headers to include in metrics export requests",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
                     }
                   },
                   "required": [
