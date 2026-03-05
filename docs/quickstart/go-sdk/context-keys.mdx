@@ -34,7 +34,19 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 See [Custom Headers Per Request](./provider-configuration#custom-headers-per-request) for detailed information on header handling and security restrictions.
 </Note>
 
-### API Key Name Selection
+### API Key Selection
+
+Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
+
+#### By ID
+
+Explicitly select a key by its unique ID.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+```
+
+#### By Name
 
 Explicitly select a named API key from your configured keys.
 
@@ -279,6 +291,7 @@ func makeRequest(client *bifrost.Bifrost) {
 |-----|------|-----------|-------------|
 | `BifrostContextKeyVirtualKey` | `string` | Set | Virtual key identifier |
 | `BifrostContextKeyAPIKeyName` | `string` | Set | Explicit API key name selection |
+| `BifrostContextKeyAPIKeyID` | `string` | Set | Explicit API key ID selection (priority over name) |
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID when using fallback |
 | `BifrostContextKeyDirectKey` | `schemas.Key` | Set | Direct key credentials |
