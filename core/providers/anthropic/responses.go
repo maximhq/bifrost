@@ -149,6 +149,18 @@ func releaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) 
 	}
 }
 
+// AcquireAnthropicResponsesStreamState gets an Anthropic responses stream state from the pool.
+// Exported for use by providers that wrap Anthropic-compatible endpoints (e.g. Bedrock).
+func AcquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
+	return acquireAnthropicResponsesStreamState()
+}
+
+// ReleaseAnthropicResponsesStreamState returns an Anthropic responses stream state to the pool.
+// Exported for use by providers that wrap Anthropic-compatible endpoints (e.g. Bedrock).
+func ReleaseAnthropicResponsesStreamState(state *AnthropicResponsesStreamState) {
+	releaseAnthropicResponsesStreamState(state)
+}
+
 // flush resets the state of the stream state to its initial values
 func (state *AnthropicResponsesStreamState) flush() {
 	state.ChunkIndex = nil
