@@ -76,9 +76,10 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	if (!log) return null;
 
-	// Merge raw fields from the dedicated single-log fetch (list query omits them for performance)
-	const rawRequest = fullLog?.raw_request ?? log.raw_request;
-	const rawResponse = fullLog?.raw_response ?? log.raw_response;
+	// Merge raw fields from the dedicated single-log fetch (list query omits them for performance).
+	// Guard against stale data: only use fullLog if it belongs to the currently opened log entry.
+	const rawRequest = fullLog?.id === log.id ? fullLog.raw_request : log.raw_request;
+	const rawResponse = fullLog?.id === log.id ? fullLog.raw_response : log.raw_response;
 
 	const isContainer = isContainerOperation(log.object);
 

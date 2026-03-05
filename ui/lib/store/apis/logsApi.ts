@@ -328,7 +328,7 @@ export const logsApi = baseApi.injectEndpoints({
 
 		// Get a single log entry by ID (includes raw_request and raw_response)
 		getLogById: builder.query<LogEntry, string>({
-			query: (id) => `/logs/${id}`,
+			query: (id) => `/logs/${encodeURIComponent(id)}`,
 			providesTags: (result, error, id) => [{ type: "Logs", id }],
 		}),
 	}),
