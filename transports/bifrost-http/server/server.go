@@ -242,7 +242,8 @@ func (s *BifrostHTTPServer) ExecuteResponsesMCPTool(ctx context.Context, toolCal
 }
 
 func (s *BifrostHTTPServer) GetAvailableMCPTools(ctx context.Context) []schemas.ChatTool {
-	return s.Client.GetAvailableMCPTools(ctx)
+	bifrostCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	return s.Client.GetAvailableMCPTools(bifrostCtx)
 }
 
 // markPluginDisabled marks a plugin as disabled in the plugin status

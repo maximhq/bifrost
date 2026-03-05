@@ -38,9 +38,10 @@ const (
 
 // Config is the configuration for the governance plugin
 type Config struct {
-	IsVkMandatory   *bool     `json:"is_vk_mandatory"`
-	RequiredHeaders *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
-	IsEnterprise    bool      `json:"is_enterprise"`
+	IsVkMandatory         *bool     `json:"is_vk_mandatory"`
+	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
+	IsEnterprise          bool      `json:"is_enterprise"`
+	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 }
 
 type InMemoryStore interface {
@@ -83,9 +84,10 @@ type GovernancePlugin struct {
 
 	cfgMutex sync.RWMutex
 
-	isVkMandatory   *bool
-	requiredHeaders *[]string // pointer to live config slice; lowercased at check time
-	isEnterprise    bool
+	isVkMandatory         *bool
+	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
+	isEnterprise          bool
+	disableAutoToolInject *bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -150,9 +152,11 @@ func Init(
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
+	var disableAutoToolInject *bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
+		disableAutoToolInject = config.DisableAutoToolInject
 	}
 
 	governanceStore, err := NewLocalGovernanceStore(ctx, logger, configStore, governanceConfig, modelCatalog)
@@ -203,21 +207,22 @@ func Init(
 
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:             ctx,
-		cancelFunc:      cancelFunc,
-		store:           governanceStore,
-		resolver:        resolver,
-		tracker:         tracker,
-		engine:          engine,
-		configStore:     configStore,
-		modelCatalog:    modelCatalog,
-		mcpCatalog:      mcpCatalog,
-		logger:          logger,
-		isVkMandatory:   isVkMandatory,
-		cfgMutex:        sync.RWMutex{},
-		requiredHeaders: requiredHeaders,
-		isEnterprise:    config != nil && config.IsEnterprise,
-		inMemoryStore:   inMemoryStore,
+		ctx:                   ctx,
+		cancelFunc:            cancelFunc,
+		store:                 governanceStore,
+		resolver:              resolver,
+		tracker:               tracker,
+		engine:                engine,
+		configStore:           configStore,
+		modelCatalog:          modelCatalog,
+		mcpCatalog:            mcpCatalog,
+		logger:                logger,
+		isVkMandatory:         isVkMandatory,
+		cfgMutex:              sync.RWMutex{},
+		requiredHeaders:       requiredHeaders,
+		isEnterprise:          config != nil && config.IsEnterprise,
+		disableAutoToolInject: disableAutoToolInject,
+		inMemoryStore:         inMemoryStore,
 	}
 	return plugin, nil
 }
@@ -259,9 +264,11 @@ func InitFromStore(
 	// Handle nil config - use safe defaults
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
+	var disableAutoToolInject *bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
+		disableAutoToolInject = config.DisableAutoToolInject
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -288,21 +295,22 @@ func InitFromStore(
 	}
 	ctx, cancelFunc := context.WithCancel(ctx)
 	plugin := &GovernancePlugin{
-		ctx:             ctx,
-		cancelFunc:      cancelFunc,
-		store:           governanceStore,
-		resolver:        resolver,
-		tracker:         tracker,
-		engine:          engine,
-		configStore:     configStore,
-		modelCatalog:    modelCatalog,
-		mcpCatalog:      mcpCatalog,
-		logger:          logger,
-		inMemoryStore:   inMemoryStore,
-		isVkMandatory:   isVkMandatory,
-		cfgMutex:        sync.RWMutex{},
-		requiredHeaders: requiredHeaders,
-		isEnterprise:    config != nil && config.IsEnterprise,
+		ctx:                   ctx,
+		cancelFunc:            cancelFunc,
+		store:                 governanceStore,
+		resolver:              resolver,
+		tracker:               tracker,
+		engine:                engine,
+		configStore:           configStore,
+		modelCatalog:          modelCatalog,
+		mcpCatalog:            mcpCatalog,
+		logger:                logger,
+		inMemoryStore:         inMemoryStore,
+		isVkMandatory:         isVkMandatory,
+		cfgMutex:              sync.RWMutex{},
+		requiredHeaders:       requiredHeaders,
+		isEnterprise:          config != nil && config.IsEnterprise,
+		disableAutoToolInject: disableAutoToolInject,
 	}
 	return plugin, nil
 }
@@ -393,14 +401,27 @@ func (p *GovernancePlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 		if err != nil {
 			return nil, err
 		}
-		//3. Add MCP tools
-		headers, err := p.addMCPIncludeTools(nil, virtualKey)
-		if err != nil {
-			p.logger.Error("failed to add MCP include tools: %v", err)
-			return nil, nil
-		}
-		for header, value := range headers {
-			req.Headers[header] = value
+		//3. Add MCP tools only when auto-inject is enabled and header not already set by the caller
+		p.cfgMutex.RLock()
+		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
+		p.cfgMutex.RUnlock()
+		if !autoInjectDisabled {
+			// Treat an explicitly-present (even empty) x-bf-mcp-include-tools header as "present"
+			// so that callers can block auto-injection by sending an empty header value.
+			headerPresent := false
+			for k := range req.Headers {
+				if strings.EqualFold(k, "x-bf-mcp-include-tools") {
+					headerPresent = true
+					break
+				}
+			}
+			if !headerPresent {
+				req.Headers, err = p.addMCPIncludeTools(req.Headers, virtualKey)
+				if err != nil {
+					p.logger.Error("failed to add MCP include tools: %v", err)
+					return nil, nil
+				}
+			}
 		}
 		needsMarshal = true
 	}
@@ -458,14 +479,26 @@ func (p *GovernancePlugin) governLargePayload(ctx *schemas.BifrostContext, req *
 		if err != nil {
 			return nil, err
 		}
-		// MCP tool headers — header-only, no body needed
-		headers, err := p.addMCPIncludeTools(nil, virtualKey)
-		if err != nil {
-			p.logger.Error("failed to add MCP include tools: %v", err)
-			return nil, nil
-		}
-		for header, value := range headers {
-			req.Headers[header] = value
+		// MCP tool headers — apply the same auto-inject guard as the normal path:
+		// skip when DisableAutoToolInject is set or the caller already sent the header.
+		p.cfgMutex.RLock()
+		autoInjectDisabled := p.disableAutoToolInject != nil && *p.disableAutoToolInject
+		p.cfgMutex.RUnlock()
+		if !autoInjectDisabled {
+			headerPresent := false
+			for k := range req.Headers {
+				if strings.EqualFold(k, "x-bf-mcp-include-tools") {
+					headerPresent = true
+					break
+				}
+			}
+			if !headerPresent {
+				req.Headers, err = p.addMCPIncludeTools(req.Headers, virtualKey)
+				if err != nil {
+					p.logger.Error("failed to add MCP include tools: %v", err)
+					return nil, nil
+				}
+			}
 		}
 	}
 
@@ -985,6 +1018,36 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 		}
 	}
 
+	// Check the actual MCP tools injected into the request against the VK MCPConfigs.
+	// BifrostContextKeyMCPAddedTools is populated by AddToolsToRequest (which runs before
+	// PreLLMHook), so it contains the real expanded tool names (e.g. "youtube-search") rather
+	// than raw header patterns (e.g. "youtube-*"), giving us exact per-tool validation.
+	if result.Decision == DecisionAllow && result.VirtualKey != nil {
+		if addedTools, ok := ctx.Value(schemas.BifrostContextKeyMCPAddedTools).([]string); ok && len(addedTools) > 0 {
+			if len(result.VirtualKey.MCPConfigs) == 0 {
+				result = &EvaluationResult{
+					Decision:   DecisionMCPToolBlocked,
+					Reason:     fmt.Sprintf("no MCP tools are configured for virtual key '%s'", result.VirtualKey.Name),
+					VirtualKey: result.VirtualKey,
+				}
+			} else {
+				var disallowed []string
+				for _, tool := range addedTools {
+					if !isMCPToolAllowedByVK(result.VirtualKey, tool) {
+						disallowed = append(disallowed, tool)
+					}
+				}
+				if len(disallowed) > 0 {
+					result = &EvaluationResult{
+						Decision:   DecisionMCPToolBlocked,
+						Reason:     fmt.Sprintf("MCP tools not allowed for virtual key '%s': %s", result.VirtualKey.Name, strings.Join(disallowed, ", ")),
+						VirtualKey: result.VirtualKey,
+					}
+				}
+			}
+		}
+	}
+
 	// Mark request as rejected in context if not allowed
 	if result.Decision != DecisionAllow {
 		if ctx != nil {
@@ -1026,6 +1089,15 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 			},
 		}
 
+	case DecisionMCPToolBlocked:
+		return result, &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(result.Decision)),
+			StatusCode: bifrost.Ptr(403),
+			Error: &schemas.ErrorField{
+				Message: result.Reason,
+			},
+		}
+
 	default:
 		// Fallback to deny for unknown decisions
 		return result, &schemas.BifrostError{
@@ -1035,6 +1107,36 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 			},
 		}
 	}
+}
+
+// isMCPToolAllowedByVK checks whether a tool pattern (in "clientName-toolName" or "clientName-*"
+// format) is permitted by the virtual key's MCPConfigs.
+//
+// For wildcard patterns ("clientName-*"): allowed if VK has the client configured with any tools.
+// Specific tool enforcement happens at execution time via checkVKMCPToolAllowance.
+// For specific tools ("clientName-toolName"): allowed if VK has "*" or the exact tool name.
+func isMCPToolAllowedByVK(vk *configstoreTables.TableVirtualKey, toolPattern string) bool {
+	for _, mcpConfig := range vk.MCPConfigs {
+		clientName := mcpConfig.MCPClient.Name
+		// Wildcard pattern "clientName-*": VK just needs to have this client configured at all.
+		if toolPattern == clientName+"-*" {
+			if len(mcpConfig.ToolsToExecute) > 0 {
+				return true
+			}
+			continue
+		}
+		// Specific tool "clientName-toolName"
+		if strings.HasPrefix(toolPattern, clientName+"-") {
+			if slices.Contains(mcpConfig.ToolsToExecute, "*") {
+				return true
+			}
+			toolSuffix := strings.TrimPrefix(toolPattern, clientName+"-")
+			if slices.Contains(mcpConfig.ToolsToExecute, toolSuffix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // PreLLMHook intercepts requests before they are processed (governance decision point)
@@ -1185,6 +1287,41 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		return req, &schemas.MCPPluginShortCircuit{
 			Error: bifrostError,
 		}, nil
+	}
+
+	// Blind single-tool check: validate the specific tool being executed against VK MCPConfigs.
+	// This runs independently of evaluateGovernanceRequest to enforce execution-time allow-list.
+	if virtualKeyValue != "" {
+		vk, ok := p.store.GetVirtualKey(virtualKeyValue)
+		if !ok || vk == nil || !vk.IsActive {
+			// VK became invalid after initial check - fail closed for security
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionVirtualKeyNotFound)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: "Virtual key not found",
+				},
+			}}, nil
+		}
+		if len(vk.MCPConfigs) == 0 {
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("no MCP tools are configured for virtual key '%s'", vk.Name),
+				},
+			}}, nil
+		}
+		if !isMCPToolAllowedByVK(vk, toolName) {
+			return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
+				Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
+				StatusCode: bifrost.Ptr(403),
+				Error: &schemas.ErrorField{
+					Message: fmt.Sprintf("MCP tool '%s' is not allowed for virtual key '%s'", toolName, vk.Name),
+				},
+			}}, nil
+		}
+		return req, nil, nil
 	}
 
 	return req, nil, nil
