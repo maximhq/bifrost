@@ -108,6 +108,14 @@ for plugin in "${PLUGINS[@]}"; do
   
   cd "$PLUGIN_DIR"
   
+  # For semanticcache plugin, always use the latest mocker version from source
+  if [ "$plugin" = "semanticcache" ] && [ -f "../mocker/version" ]; then
+    MOCKER_VERSION=$(cat ../mocker/version)
+    echo "📦 Updating mocker dependency to latest version v$MOCKER_VERSION..."
+    go mod edit -require="github.com/maximhq/bifrost/plugins/mocker@v$MOCKER_VERSION"
+    go mod tidy
+  fi
+  
   # Validate build
   echo "🔨 Validating plugin build..."
   if ! go build ./...; then

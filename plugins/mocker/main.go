@@ -506,7 +506,10 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	if req.RequestType != schemas.ChatCompletionRequest && req.RequestType != schemas.ResponsesRequest {
+	if req.RequestType != schemas.ChatCompletionRequest &&
+		req.RequestType != schemas.ChatCompletionStreamRequest &&
+		req.RequestType != schemas.ResponsesRequest &&
+		req.RequestType != schemas.ResponsesStreamRequest {
 		return req, nil, nil
 	}
 
@@ -550,15 +553,27 @@ func (p *MockerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	p.ruleHitsMu.Unlock()
 
 	// Generate appropriate mock response based on type
+	var modifiedReq *schemas.BifrostRequest
+	var shortCircuit *schemas.LLMPluginShortCircuit
+	var err error
+
 	switch response.Type {
 	case ResponseTypeSuccess:
-		return p.generateSuccessShortCircuit(req, response, startTime)
+		modifiedReq, shortCircuit, err = p.generateSuccessShortCircuit(req, response, startTime)
 	case ResponseTypeError:
-		return p.generateErrorShortCircuit(req, response)
+		modifiedReq, shortCircuit, err = p.generateErrorShortCircuit(req, response)
+	default:
+		// Fallback: continue with normal flow if response type is unrecognized
+		return req, nil, nil
 	}
 
-	// Fallback: continue with normal flow if response type is unrecognized
-	return req, nil, nil
+	// For streaming requests with a short-circuit response, mark the stream as complete
+	// This is required for plugins like semantic cache that need to know when the stream ends
+	if shortCircuit != nil && shortCircuit.Response != nil && bifrost.IsStreamRequestType(req.RequestType) {
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	}
+
+	return modifiedReq, shortCircuit, err
 }
 
 // PostLLMHook processes responses after provider calls
@@ -817,7 +832,7 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 	// Create mock response with proper structure
 	mockResponse := &schemas.BifrostResponse{}
 
-	if req.RequestType == schemas.ChatCompletionRequest {
+	if req.RequestType == schemas.ChatCompletionRequest || req.RequestType == schemas.ChatCompletionStreamRequest {
 		mockResponse.ChatResponse = &schemas.BifrostChatResponse{
 			Model: model,
 			Usage: &usage,
@@ -836,7 +851,7 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 				},
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ChatCompletionRequest,
+				RequestType:    req.RequestType,
 				Provider:       provider,
 				ModelRequested: model,
 				Latency:        int64(time.Since(startTime).Milliseconds()),
@@ -861,6 +876,34 @@ func (p *MockerPlugin) generateSuccessShortCircuit(req *schemas.BifrostRequest, 
 			},
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				RequestType:    schemas.ResponsesRequest,
+				Provider:       provider,
+				ModelRequested: model,
+				Latency:        int64(time.Since(startTime).Milliseconds()),
+			},
+		}
+	} else if req.RequestType == schemas.ResponsesStreamRequest {
+		mockResponse.ResponsesStreamResponse = &schemas.BifrostResponsesStreamResponse{
+			Type:           schemas.ResponsesStreamResponseTypeCompleted,
+			SequenceNumber: 0,
+			Response: &schemas.BifrostResponsesResponse{
+				CreatedAt: int(time.Now().Unix()),
+				Output: []schemas.ResponsesMessage{
+					{
+						Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: &message,
+						},
+						Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+					},
+				},
+				Usage: &schemas.ResponsesResponseUsage{
+					InputTokens:  usage.PromptTokens,
+					OutputTokens: usage.CompletionTokens,
+					TotalTokens:  usage.TotalTokens,
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:    schemas.ResponsesStreamRequest,
 				Provider:       provider,
 				ModelRequested: model,
 				Latency:        int64(time.Since(startTime).Milliseconds()),

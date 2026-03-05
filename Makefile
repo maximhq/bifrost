@@ -578,7 +578,11 @@ cleanup-junit-xml: ## Internal: Clean up JUnit XML to remove parent test cases w
 test-plugins: install-gotestsum ## Run plugin tests
 	@echo "$(GREEN)Running plugin tests...$(NC)"
 	@mkdir -p $(TEST_REPORTS_DIR)
-	@cd plugins && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
+	@if [ -f .env ]; then \
+		echo "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	cd plugins && find . -name "*.go" -path "*/tests/*" -o -name "*_test.go" | head -1 > /dev/null && \
 		for dir in $$(find . -name "*_test.go" -exec dirname {} \; | sort -u); do \
 			plugin_name=$$(echo $$dir | sed 's|^\./||' | sed 's|/|-|g'); \
 			echo "Testing $$dir..."; \

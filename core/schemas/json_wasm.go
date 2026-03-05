@@ -40,7 +40,16 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 	return json.Marshal(normalized)
 }
 
-// normalizeForSortedMarshal recursively converts OrderedMaps to plain maps
+// MarshalDeeplySorted encodes v to JSON with all map keys sorted alphabetically,
+// including nested maps inside OrderedMap and other custom types with MarshalJSON.
+// This ensures fully deterministic output for hashing/caching purposes.
+// In WASM builds, this is equivalent to MarshalSorted since both normalize recursively.
+func MarshalDeeplySorted(v interface{}) ([]byte, error) {
+	normalized := normalizeForSortedMarshal(v)
+	return json.Marshal(normalized)
+}
+
+// normalizeForSortedMarshal recursively converts OrderedMaps and structs to plain maps
 // so that json.Marshal will sort their keys (Go 1.12+ sorts map keys).
 func normalizeForSortedMarshal(v interface{}) interface{} {
 	if v == nil {
