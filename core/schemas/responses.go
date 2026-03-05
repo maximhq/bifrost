@@ -544,6 +544,8 @@ type ResponsesMessage struct {
 
 	*ResponsesToolMessage // For Tool calls and outputs
 
+	CacheControl *CacheControl `json:"cache_control,omitempty"` // Carries cache_control for function_call and function_call_output message types
+
 	// Reasoning
 	// gpt-oss models include only reasoning_text content blocks in a message, while other openai models include summaries+encrypted_content
 	*ResponsesReasoning

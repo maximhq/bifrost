@@ -3180,8 +3180,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			if block.ToolUseID != nil {
 				if block.Content != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ToolUseID,
 						},
@@ -3272,8 +3273,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 	if len(pendingToolUseBlocks) > 0 {
 		for _, toolBlock := range pendingToolUseBlocks {
 			bifrostMsg := schemas.ResponsesMessage{
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: schemas.Ptr("completed"),
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status:       schemas.Ptr("completed"),
+				CacheControl: toolBlock.CacheControl,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					CallID: toolBlock.ID,
 					Name:   toolBlock.Name,
@@ -3495,8 +3497,9 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				// Convert tool use to function call message
 				if block.ID != nil && block.Name != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ID,
 							Name:   block.Name,
@@ -3526,8 +3529,9 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			if block.ToolUseID != nil {
 				if block.Content != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ToolUseID,
 						},
@@ -3816,7 +3820,8 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolUseBlock := AnthropicContentBlock{
-			Type: AnthropicContentBlockTypeToolUse,
+			Type:         AnthropicContentBlockTypeToolUse,
+			CacheControl: msg.CacheControl,
 		}
 
 		if msg.ResponsesToolMessage.CallID != nil {
@@ -3853,8 +3858,9 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolResultBlock := AnthropicContentBlock{
-			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
+			Type:         AnthropicContentBlockTypeToolResult,
+			ToolUseID:    msg.ResponsesToolMessage.CallID,
+			CacheControl: msg.CacheControl,
 		}
 
 		if msg.ResponsesToolMessage.Output != nil {
