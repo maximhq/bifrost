@@ -1,0 +1,2 @@
+- fix: nil check on message Content before accessing fields (thanks [@Javtor](https://github.com/Javtor)!)
+- chore: upgraded core to v1.4.7 and framework to v1.2.26

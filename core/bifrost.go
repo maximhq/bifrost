@@ -5945,6 +5945,11 @@ func WeightedRandomKeySelector(ctx *schemas.BifrostContext, keys []schemas.Key, 
 		totalWeight += int(key.Weight * 100) // Convert float to int for better performance
 	}
 
+	// If all keys have zero weight, fall back to uniform random selection
+	if totalWeight == 0 {
+		return keys[rand.Intn(len(keys))], nil
+	}
+
 	// Use global thread-safe random (Go 1.20+) - no allocation, no syscall
 	randomValue := rand.Intn(totalWeight)
 
