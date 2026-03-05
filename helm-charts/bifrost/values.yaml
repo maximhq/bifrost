@@ -109,6 +109,20 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: 80
+  # HPA scaling behavior configuration
+  # Controls how quickly the HPA scales up/down to prevent connection disruption
+  behavior:
+    scaleDown:
+      # Stabilization window prevents rapid scale-down oscillation.
+      # The HPA will wait this long after the last scale event before scaling down again.
+      # Important for long-lived streaming connections (e.g. SSE for LLM inference).
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
 
 # Additional volumes on the output Deployment definition.
 volumes: []
@@ -121,6 +135,19 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Graceful shutdown configuration for long-lived connections (SSE streaming)
+# When a pod is terminated (e.g. during HPA scale-down), active streaming connections
+# are severed abruptly. This causes clients to lose their SSE stream mid-response.
+# The preStop hook and termination grace period give in-flight requests time to complete.
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      # Sleep allows the pod to be removed from the Service endpoints and load balancer
+      # before the process starts shutting down, preventing new connections from arriving
+      # while existing ones drain.
+      command: ["sh", "-c", "sleep 15"]
 
 # Bifrost specific configuration
 # You can find entire schema at https://getbifrost.ai/schema
