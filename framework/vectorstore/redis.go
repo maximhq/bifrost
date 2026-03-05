@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	// defaultLimit is the default limit used for pagination and batch operations
+	// BatchLimit is the default limit used for pagination and batch operations
 	BatchLimit = 100
+	// RedisMaxSearchResults is the maximum number of results Redis Search returns in a single query.
+	// This is the default MAXSEARCHRESULTS configuration in Redis Search.
+	RedisMaxSearchResults = 10000
 )
 
 type RedisConfig struct {
@@ -232,24 +235,15 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 	// Build Redis query from the provided queries
 	redisQuery := buildRedisQuery(queries, s.getNamespaceFieldTypes(namespace))
 
-	// Build FT.SEARCH command
-	args := []interface{}{
-		"FT.SEARCH", namespace,
-		redisQuery,
-	}
-
-	// Add RETURN only if specific fields were requested
-	if len(selectFields) > 0 {
-		args = append(args, "RETURN", len(selectFields))
-		for _, field := range selectFields {
-			args = append(args, field)
-		}
-	}
-
-	// Add LIMIT clause - use large limit for "all" (limit=0)
-	searchLimit := limit
+	// When limit=0 (get all), use internal pagination to avoid exceeding Redis MAXSEARCHRESULTS
 	if limit == 0 {
-		searchLimit = math.MaxInt32 // Use large limit to get all results
+		return s.getAllWithPagination(ctx, namespace, redisQuery, queries, selectFields)
+	}
+
+	// For explicit limit, cap to Redis maximum and use single query with cursor support
+	searchLimit := limit
+	if searchLimit > RedisMaxSearchResults {
+		searchLimit = RedisMaxSearchResults
 	}
 
 	// Add OFFSET for pagination if cursor is provided
@@ -258,49 +252,15 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 		return nil, nil, err
 	}
 
-	args = append(args, "LIMIT", offset, int(searchLimit), "DIALECT", "2")
-
-	// Execute search. Some Valkey builds are stricter about query parsing.
-	result := s.client.Do(ctx, args...)
-	if result.Err() != nil {
-		errMsg := strings.ToLower(result.Err().Error())
-		// Fallback 1: retry without explicit DIALECT for compatibility.
-		if isQuerySyntaxError(errMsg) {
-			s.logger.Debug(fmt.Sprintf("FT.SEARCH DIALECT fallback triggered for namespace %s: %s", namespace, result.Err()))
-			compatArgs := make([]interface{}, 0, len(args)-2)
-			for i := 0; i < len(args); i++ {
-				if i+1 < len(args) && args[i] == "DIALECT" {
-					i++ // skip dialect version
-					continue
-				}
-				compatArgs = append(compatArgs, args[i])
-			}
-			result = s.client.Do(ctx, compatArgs...)
-		}
-		// Fallback 2: scan keys and filter in-process if search parser is incompatible.
-		if result.Err() != nil {
-			errMsg = strings.ToLower(result.Err().Error())
-			if isQuerySyntaxError(errMsg) {
-				s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s: %s", namespace, result.Err()))
-				return s.getAllByScan(ctx, namespace, queries, selectFields, cursor, limit)
-			}
-			return nil, nil, fmt.Errorf("failed to search: %w", result.Err())
-		}
-	}
-
-	// Parse search results
-	results, err := s.parseSearchResults(result.Val(), namespace, selectFields)
+	results, err := s.executeSearch(ctx, namespace, redisQuery, queries, selectFields, offset, int(searchLimit))
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse search results: %w", err)
+		return nil, nil, err
 	}
 
 	// Implement cursor-based pagination using OFFSET
 	var nextCursor *string = nil
 	if cursor != nil && *cursor != "" {
-		// If we have a cursor, we've already applied pagination
-		// Check if there might be more results
 		if len(results) == int(limit) && limit > 0 {
-			// There might be more results, create next cursor
 			offset, err := strconv.ParseInt(*cursor, 10, 64)
 			if err == nil {
 				nextOffset := offset + limit
@@ -309,12 +269,91 @@ func (s *RedisStore) GetAll(ctx context.Context, namespace string, queries []Que
 			}
 		}
 	} else if len(results) == int(limit) && limit > 0 {
-		// First page and we got exactly the limit, there might be more
 		nextCursorStr := strconv.FormatInt(limit, 10)
 		nextCursor = &nextCursorStr
 	}
 
 	return results, nextCursor, nil
+}
+
+// getAllWithPagination fetches all matching results using internal pagination to avoid
+// exceeding Redis Search's MAXSEARCHRESULTS limit (default 10,000).
+func (s *RedisStore) getAllWithPagination(ctx context.Context, namespace string, redisQuery string, queries []Query, selectFields []string) ([]SearchResult, *string, error) {
+	var allResults []SearchResult
+	offset := 0
+
+	for {
+		pageResults, err := s.executeSearch(ctx, namespace, redisQuery, queries, selectFields, offset, RedisMaxSearchResults)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if len(pageResults) == 0 {
+			break
+		}
+
+		allResults = append(allResults, pageResults...)
+
+		if len(pageResults) < RedisMaxSearchResults {
+			break
+		}
+		offset += len(pageResults)
+	}
+
+	return allResults, nil, nil
+}
+
+// executeSearch performs a single FT.SEARCH query with the given offset and limit.
+func (s *RedisStore) executeSearch(ctx context.Context, namespace string, redisQuery string, queries []Query, selectFields []string, offset int, searchLimit int) ([]SearchResult, error) {
+	args := []interface{}{
+		"FT.SEARCH", namespace,
+		redisQuery,
+	}
+
+	if len(selectFields) > 0 {
+		args = append(args, "RETURN", len(selectFields))
+		for _, field := range selectFields {
+			args = append(args, field)
+		}
+	}
+
+	args = append(args, "LIMIT", offset, searchLimit, "DIALECT", "2")
+
+	result := s.client.Do(ctx, args...)
+	if result.Err() != nil {
+		errMsg := strings.ToLower(result.Err().Error())
+		if isQuerySyntaxError(errMsg) {
+			s.logger.Debug(fmt.Sprintf("FT.SEARCH DIALECT fallback triggered for namespace %s: %s", namespace, result.Err()))
+			compatArgs := make([]interface{}, 0, len(args)-2)
+			for i := 0; i < len(args); i++ {
+				if i+1 < len(args) && args[i] == "DIALECT" {
+					i++
+					continue
+				}
+				compatArgs = append(compatArgs, args[i])
+			}
+			result = s.client.Do(ctx, compatArgs...)
+		}
+		if result.Err() != nil {
+			errMsg = strings.ToLower(result.Err().Error())
+			if isQuerySyntaxError(errMsg) {
+				s.logger.Debug(fmt.Sprintf("FT.SEARCH scan fallback triggered for namespace %s: %s", namespace, result.Err()))
+				scanResults, _, scanErr := s.getAllByScan(ctx, namespace, queries, selectFields, nil, int64(searchLimit))
+				if scanErr != nil {
+					return nil, scanErr
+				}
+				return scanResults, nil
+			}
+			return nil, fmt.Errorf("failed to search: %w", result.Err())
+		}
+	}
+
+	results, err := s.parseSearchResults(result.Val(), namespace, selectFields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse search results: %w", err)
+	}
+
+	return results, nil
 }
 
 func (s *RedisStore) getAllByScan(ctx context.Context, namespace string, queries []Query, selectFields []string, cursor *string, limit int64) ([]SearchResult, *string, error) {

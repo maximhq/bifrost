@@ -941,6 +941,24 @@ append_dynamic_columns_postgres() {
     echo "UPDATE mcp_tool_logs SET metadata = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
     echo "UPDATE mcp_tool_logs SET metadata = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.10 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_keys Bedrock assume-role columns (added in v1.4.10)
+  if column_exists_postgres "config_keys" "bedrock_role_arn"; then
+    echo "UPDATE config_keys SET bedrock_role_arn = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET bedrock_role_arn = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+  if column_exists_postgres "config_keys" "bedrock_external_id"; then
+    echo "UPDATE config_keys SET bedrock_external_id = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET bedrock_external_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+  if column_exists_postgres "config_keys" "bedrock_role_session_name"; then
+    echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1171,6 +1189,26 @@ append_dynamic_columns_sqlite() {
   # mcp_tool_logs.metadata (added in v1.4.8)
   echo "UPDATE mcp_tool_logs SET metadata = '' WHERE id = 'mcp-log-migration-001';" >> "$output_file"
   echo "UPDATE mcp_tool_logs SET metadata = '' WHERE id = 'mcp-log-migration-002';" >> "$output_file"
+
+  # -------------------------------------------------------------------------
+  # v1.4.10 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_keys Bedrock assume-role columns (added in v1.4.10)
+    if column_exists_sqlite "$config_db" "config_keys" "bedrock_role_arn"; then
+      echo "UPDATE config_keys SET bedrock_role_arn = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET bedrock_role_arn = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "config_keys" "bedrock_external_id"; then
+      echo "UPDATE config_keys SET bedrock_external_id = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET bedrock_external_id = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "config_keys" "bedrock_role_session_name"; then
+      echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  fi
 }
 
 # ============================================================================
