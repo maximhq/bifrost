@@ -96,30 +96,21 @@ func getLogger() schemas.Logger {
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 
-// defaultRequestTimeout is a safety-net fallback used only when the context has no deadline.
-// In normal operation, callers always set a deadline via NetworkConfig.DefaultRequestTimeoutInSeconds
-// (default 30s), so this 5-minute ceiling should rarely be reached.
-const defaultRequestTimeout = 5 * time.Minute
-
 // MakeRequestWithContext makes a request with a context deadline and returns the latency and error.
-// Uses DoDeadline to avoid goroutine leaks and use-after-free on context cancellation.
-// The deadline is derived from the context; if no deadline is set, defaultRequestTimeout is used.
-//
-// Note: DoDeadline does not observe ctx.Done() for cancel-only (no-deadline) contexts.
-// This is an intentional tradeoff — the previous goroutine+select pattern caused goroutine
-// leaks and use-after-free when contexts cancelled before requests completed. In practice,
-// all provider requests have deadlines set by the caller, so this limitation doesn't apply.
+// When the context carries a deadline, DoDeadline is used to avoid goroutine leaks and
+// use-after-free on context cancellation. When no deadline is set (e.g. long-running
+// requests), it falls back to client.Do which respects the client's own timeout settings.
 // Returns the request latency and any error that occurred.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
 	startTime := time.Now()
 
-	// Derive deadline from context, or use a default timeout
+	var err error
 	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(defaultRequestTimeout)
+	if ok {
+		err = client.DoDeadline(req, resp, deadline)
+	} else {
+		err = client.Do(req, resp)
 	}
-
-	err := client.DoDeadline(req, resp, deadline)
 	latency := time.Since(startTime)
 
 	if err != nil {
