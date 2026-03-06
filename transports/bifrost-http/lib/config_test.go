@@ -1026,6 +1026,69 @@ func (m *MockConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx .
 	return nil
 }
 
+// Prompt Repository - Folders
+func (m *MockConfigStore) GetFolders(ctx context.Context) ([]tables.TableFolder, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreateFolder(ctx context.Context, folder *tables.TableFolder) error {
+	return nil
+}
+func (m *MockConfigStore) UpdateFolder(ctx context.Context, folder *tables.TableFolder) error {
+	return nil
+}
+func (m *MockConfigStore) DeleteFolder(ctx context.Context, id string) error { return nil }
+
+// Prompt Repository - Prompts
+func (m *MockConfigStore) GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
+	return nil
+}
+func (m *MockConfigStore) UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error {
+	return nil
+}
+func (m *MockConfigStore) DeletePrompt(ctx context.Context, id string) error { return nil }
+
+// Prompt Repository - Versions
+func (m *MockConfigStore) GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error {
+	return nil
+}
+func (m *MockConfigStore) DeletePromptVersion(ctx context.Context, id uint) error { return nil }
+
+// Prompt Repository - Sessions
+func (m *MockConfigStore) GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error) {
+	return nil, nil
+}
+func (m *MockConfigStore) CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
+	return nil
+}
+func (m *MockConfigStore) UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error {
+	return nil
+}
+func (m *MockConfigStore) RenamePromptSession(ctx context.Context, id uint, name string) error {
+	return nil
+}
+func (m *MockConfigStore) DeletePromptSession(ctx context.Context, id uint) error { return nil }
+
 // Helper functions for tests
 
 // createTempDir creates a temporary directory for test files
