@@ -2887,6 +2887,78 @@ func TestAnthropicReasoningConfigUsesThinkingField(t *testing.T) {
 	}
 }
 
+// TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice ensures
+// Anthropic Bedrock structured output uses native output_config.format and does
+// not synthesize a forced tool choice, while keeping reasoning (thinking) active.
+func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"topic": map[string]any{
+						"type": "string",
+					},
+				},
+				"required": []any{"topic"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
+
+	outputConfig, ok := outputConfigRaw.(map[string]any)
+	require.True(t, ok, "expected output_config to be a map")
+
+	formatRaw, hasFormat := outputConfig["format"]
+	require.True(t, hasFormat, "expected output_config.format")
+
+	format, ok := formatRaw.(map[string]any)
+	require.True(t, ok, "expected output_config.format to be a map")
+	assert.Equal(t, "json_schema", format["type"])
+	_, hasSchema := format["schema"]
+	assert.True(t, hasSchema, "expected output_config.format.schema")
+
+	// reasoning should still be preserved for anthropic
+	thinkingRaw, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+	require.True(t, hasThinking, "expected thinking field for anthropic reasoning")
+	thinking, ok := thinkingRaw.(map[string]any)
+	require.True(t, ok, "expected thinking to be a map")
+	assert.Equal(t, "enabled", thinking["type"])
+
+	// structured output should NOT force tool choice on Bedrock anthropic
+	if result.ToolConfig != nil {
+		assert.Nil(t, result.ToolConfig.ToolChoice, "expected no forced tool choice for anthropic structured output")
+	}
+}
+
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
 // the "reasoningConfig" field (camelCase) and NOT "thinking".
 func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
