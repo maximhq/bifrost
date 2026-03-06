@@ -2,26 +2,13 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { BifrostErrorResponse } from "@/lib/types/config";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
-import { clearOAuthStorage, getAccessToken } from "@enterprise/lib/store/utils/tokenManager";
+import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 
-// Helper function to get token from storage
-// Enterprise: use access_token from enterprise tokenManager for Authorization header
-// Non-enterprise: return null — auth is handled via HTTPOnly cookies (credentials: "include")
+// Auth tokens are now stored in HTTP-only cookies (set by server)
+// No client-side token needed — handled by credentials: "include"
 export const getTokenFromStorage = (): Promise<string | null> => {
-	if (typeof window === "undefined") {
-		return Promise.resolve(null);
-	}
-	try {
-		if (IS_ENTERPRISE) {
-			// Enterprise OAuth login - use tokenManager
-			return getAccessToken();
-		}
-		// Non-enterprise: cookie-based auth, no token needed in header
-		return Promise.resolve(null);
-	} catch (error) {
-		return Promise.resolve(null);
-	}
+	return Promise.resolve(null);
 };
 
 // Helper function to set auth token
