@@ -293,6 +293,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4077,6 +4080,90 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPromptRepoTables adds the prompt repository tables (folders, prompts, versions, sessions)
+func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_repo_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+
+			// Create folders table
+			if !m.HasTable(&tables.TableFolder{}) {
+				if err := m.CreateTable(&tables.TableFolder{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompts table
+			if !m.HasTable(&tables.TablePrompt{}) {
+				if err := m.CreateTable(&tables.TablePrompt{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_versions table
+			if !m.HasTable(&tables.TablePromptVersion{}) {
+				if err := m.CreateTable(&tables.TablePromptVersion{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_version_messages table
+			if !m.HasTable(&tables.TablePromptVersionMessage{}) {
+				if err := m.CreateTable(&tables.TablePromptVersionMessage{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_sessions table
+			if !m.HasTable(&tables.TablePromptSession{}) {
+				if err := m.CreateTable(&tables.TablePromptSession{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_session_messages table
+			if !m.HasTable(&tables.TablePromptSessionMessage{}) {
+				if err := m.CreateTable(&tables.TablePromptSessionMessage{}); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			m := tx.Migrator()
+
+			// Drop tables in reverse order (respecting foreign key constraints)
+			if err := m.DropTable(&tables.TablePromptSessionMessage{}); err != nil {
+				return err
+			}
+			if err := m.DropTable(&tables.TablePromptSession{}); err != nil {
+				return err
+			}
+			if err := m.DropTable(&tables.TablePromptVersionMessage{}); err != nil {
+				return err
+			}
+			if err := m.DropTable(&tables.TablePromptVersion{}); err != nil {
+				return err
+			}
+			if err := m.DropTable(&tables.TablePrompt{}); err != nil {
+				return err
+			}
+			if err := m.DropTable(&tables.TableFolder{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running prompt repo tables migration: %s", err.Error())
 	}
 	return nil
 }
