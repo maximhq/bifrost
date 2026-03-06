@@ -1,14 +1,21 @@
 package handlers
 
 import (
+	"bytes"
+	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -111,7 +118,7 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 }
 
 // RequestDecompressionMiddleware transparently decompresses compressed request bodies.
-// fasthttp supports gzip/deflate/br/zstd via BodyUncompressed().
+// Request bodies are decompressed with streaming readers before entering handler pipelines.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
@@ -121,17 +128,13 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 					maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
 				}
 
-				body, err := ctx.Request.BodyUncompressed()
-				if err != nil {
-					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
+				body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+				if errors.Is(err, errRequestBodyTooLarge) {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
 					return
 				}
-				if maxRequestBodyBytes > 0 && len(body) > maxRequestBodyBytes {
-					SendError(
-						ctx,
-						fasthttp.StatusRequestEntityTooLarge,
-						fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes),
-					)
+				if err != nil {
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
 				}
 
@@ -141,6 +144,60 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			next(ctx)
 		}
+	}
+}
+
+var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
+
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+	reader, cleanup, err := requestBodyDecoder(req)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
+	}
+
+	limitedReader := &io.LimitedReader{R: reader, N: int64(maxRequestBodyBytes + 1)}
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxRequestBodyBytes {
+		return nil, errRequestBodyTooLarge
+	}
+	return body, nil
+}
+
+func requestBodyDecoder(req *fasthttp.Request) (io.Reader, func(), error) {
+	bodyReader := bytes.NewReader(req.Body())
+	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
+	if encoding == "" {
+		return bodyReader, func() {}, nil
+	}
+
+	switch encoding {
+	case "gzip":
+		gz, err := gzip.NewReader(bodyReader)
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return gz, func() { _ = gz.Close() }, nil
+	case "deflate":
+		zr := flate.NewReader(bodyReader)
+		return zr, func() { _ = zr.Close() }, nil
+	case "br":
+		return brotli.NewReader(bodyReader), func() {}, nil
+	case "zstd":
+		decoder, err := zstd.NewReader(bodyReader, zstd.WithDecoderConcurrency(1))
+		if err != nil {
+			return nil, func() {}, err
+		}
+		return decoder, func() { decoder.Close() }, nil
+	default:
+		return nil, func() {}, fmt.Errorf("%w: %q", fasthttp.ErrContentEncodingUnsupported, encoding)
 	}
 }
 
