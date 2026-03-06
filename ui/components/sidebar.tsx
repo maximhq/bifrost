@@ -24,6 +24,7 @@ import {
 	Network,
 	PanelLeftClose,
 	Puzzle,
+	Router,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -32,6 +33,7 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -300,9 +302,14 @@ const SidebarItemView = ({
 									}`}
 									onClick={(e) => (subItem.hasAccess === false ? undefined : handleSubItemClick(subItem, e))}
 								>
-									<div className="flex items-center gap-2">
+									<div className="flex w-full items-center gap-2">
 										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
 										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+										{subItem.tag && (
+											<Badge variant="secondary" className="text-muted-foreground leading-normal text-[10px] py-0 font-medium">
+												{subItem.tag}
+											</Badge>
+										)}
 									</div>
 								</SidebarMenuSubButton>
 							</SidebarMenuSubItem>
@@ -616,8 +623,24 @@ export default function AppSidebar() {
 				url: "/workspace/prompt-repo",
 				icon: FolderGit,
 				description: "Prompt repository",
-				// Public access intentional — feature is "coming soon" with no sensitive data; RBAC will be added at GA
 				hasAccess: true,
+				subItems: [
+					{
+						title: "Prompts",
+						url: "/workspace/prompt-repo/prompts",
+						icon: SquareTerminal,
+						description: "Manage prompts",
+						hasAccess: true,
+						tag: "Beta",
+					},
+					{
+						title: "Deployments",
+						url: "/workspace/prompt-repo/deployments",
+						icon: Router,
+						description: "Manage deployment",
+						hasAccess: true,
+					},
+				],
 			},
 			{
 				title: "Evals",
