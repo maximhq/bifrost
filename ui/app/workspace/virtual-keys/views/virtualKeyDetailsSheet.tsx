@@ -85,7 +85,7 @@ export default function VirtualKeyDetailSheet({ virtualKey, onClose }: VirtualKe
 					</div>
 
 					<DottedSeparator />
-					
+
 					{/* Provider Configurations */}
 					<div className="space-y-4">
 						<h3 className="font-semibold">Provider Configurations</h3>
