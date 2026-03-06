@@ -242,6 +242,51 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 		attrs[schemas.AttrPromptTokens] = resp.Usage.PromptTokens
 		attrs[schemas.AttrCompletionTokens] = resp.Usage.CompletionTokens
 		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+
+		if resp.Usage.PromptTokensDetails != nil {
+			if resp.Usage.PromptTokensDetails.TextTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsText] = resp.Usage.PromptTokensDetails.TextTokens
+			}
+			if resp.Usage.PromptTokensDetails.AudioTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsAudio] = resp.Usage.PromptTokensDetails.AudioTokens
+			}
+			if resp.Usage.PromptTokensDetails.ImageTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsImage] = resp.Usage.PromptTokensDetails.ImageTokens
+			}
+			if resp.Usage.PromptTokensDetails.CachedReadTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsCachedRead] = resp.Usage.PromptTokensDetails.CachedReadTokens
+			}
+			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
+				attrs[schemas.AttrPromptTokenDetailsCachedWrite] = resp.Usage.PromptTokensDetails.CachedWriteTokens
+			}
+		}
+
+		if resp.Usage.CompletionTokensDetails != nil {
+			if resp.Usage.CompletionTokensDetails.TextTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsText] = resp.Usage.CompletionTokensDetails.TextTokens
+			}
+			if resp.Usage.CompletionTokensDetails.AudioTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsAudio] = resp.Usage.CompletionTokensDetails.AudioTokens
+			}
+			if resp.Usage.CompletionTokensDetails.ImageTokens != nil && *resp.Usage.CompletionTokensDetails.ImageTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsImage] = *resp.Usage.CompletionTokensDetails.ImageTokens
+			}
+			if resp.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsReason] = resp.Usage.CompletionTokensDetails.ReasoningTokens
+			}
+			if resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsAccept] = resp.Usage.CompletionTokensDetails.AcceptedPredictionTokens
+			}
+			if resp.Usage.CompletionTokensDetails.RejectedPredictionTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsReject] = resp.Usage.CompletionTokensDetails.RejectedPredictionTokens
+			}
+			if resp.Usage.CompletionTokensDetails.CitationTokens != nil && *resp.Usage.CompletionTokensDetails.CitationTokens > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsCite] = *resp.Usage.CompletionTokensDetails.CitationTokens
+			}
+			if resp.Usage.CompletionTokensDetails.NumSearchQueries != nil && *resp.Usage.CompletionTokensDetails.NumSearchQueries > 0 {
+				attrs[schemas.AttrCompletionTokenDetailsSearch] = *resp.Usage.CompletionTokensDetails.NumSearchQueries
+			}
+		}
 	}
 }
 
