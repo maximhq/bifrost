@@ -168,6 +168,7 @@ export const baseApi = createApi({
 		"MCPToolGroups",
 		"AuditLogs",
 		"UserGovernance",
+		"LargePayloadConfig",
 	],
 	endpoints: () => ({}),
 });
