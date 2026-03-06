@@ -2,10 +2,10 @@
 package vllm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -290,7 +290,9 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.VLLM) {
+		req.SetBody(jsonData)
+	}
 
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	if bifrostErr != nil {
@@ -484,6 +486,13 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			return nil, openai.ParseOpenAIError(resp, schemas.TranscriptionStreamRequest, providerName, request.Model)
 		}
 
+		// Large payload streaming passthrough — pipe raw upstream SSE to client
+		if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+			responseChan := make(chan *schemas.BifrostStreamChunk)
+			close(responseChan)
+			return responseChan, nil
+		}
+
 		// Create response channel
 		responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -507,39 +516,34 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 			stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 			defer stopCancellation()
 
-			scanner := bufio.NewScanner(reader)
+			sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 			chunkIndex := -1
 
 			startTime := time.Now()
 			lastChunkTime := startTime
 			var fullTranscriptionText strings.Builder
 
-			for scanner.Scan() {
+			for {
 				// If context was cancelled/timed out, let defer handle it
 				if ctx.Err() != nil {
 					return
 				}
 
-				line := scanner.Text()
-
-				// Skip empty lines and comments
-				if line == "" {
-					continue
-				}
-
-				// Check for end of stream
-				if line == "data: [DONE]" {
+				dataBytes, readErr := sseReader.ReadDataLine()
+				if readErr != nil {
+					if readErr != io.EOF {
+						// If context was cancelled/timed out, let defer handle it
+						if ctx.Err() != nil {
+							return
+						}
+						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+						logger.Warn("Error reading stream: %v", readErr)
+						providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
+					}
 					break
 				}
 
-				var jsonData string
-				// Parse SSE data
-				if strings.HasPrefix(line, "data: ") {
-					jsonData = strings.TrimPrefix(line, "data: ")
-				} else {
-					// Handle raw JSON errors (without "data: " prefix)
-					jsonData = line
-				}
+				jsonData := string(dataBytes)
 
 				// Skip empty data
 				if strings.TrimSpace(jsonData) == "" {
@@ -549,7 +553,7 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				var response schemas.BifrostTranscriptionStreamResponse
 				var bifrostErr *schemas.BifrostError
 
-				_, _, bifrostErr = HandleVLLMResponse([]byte(jsonData), &response, nil, false, false)
+				_, _, bifrostErr = HandleVLLMResponse(dataBytes, &response, nil, false, false)
 				if bifrostErr != nil {
 					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 						Provider:       providerName,
@@ -557,11 +561,11 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 						RequestType:    schemas.TranscriptionStreamRequest,
 					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), []byte(jsonData), false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)), responseChan, logger)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, body.Bytes(), dataBytes, false, providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)), responseChan, logger)
 					return
 				}
 
-				customChunk, ok := parseVLLMTranscriptionStreamChunk([]byte(jsonData))
+				customChunk, ok := parseVLLMTranscriptionStreamChunk(dataBytes)
 				if !ok || customChunk == nil {
 					logger.Warn("customChunkParser returned no chunk")
 					continue
@@ -594,17 +598,6 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, &response, nil), responseChan)
-			}
-
-			// Handle scanner errors
-			if err := scanner.Err(); err != nil {
-				// If context was cancelled/timed out, let defer handle it
-				if ctx.Err() != nil {
-					return
-				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				logger.Warn("Error reading stream: %v", err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.TranscriptionStreamRequest, providerName, request.Model, logger)
 			}
 		}()
 
