@@ -32,7 +32,6 @@ import { Clipboard, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
-import { CodeEditor } from "../views/codeEditor";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView from "../views/logChatMessageView";
@@ -41,6 +40,7 @@ import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {

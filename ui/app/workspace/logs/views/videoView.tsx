@@ -9,8 +9,8 @@ import {
 	BifrostVideoListOutput,
 } from "@/lib/types/logs";
 
-import { CodeEditor } from "./codeEditor";
 import CollapsibleBox from "./collapsibleBox";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface VideoGenerationInput {
 	prompt: string;

@@ -211,6 +211,7 @@ export function CodeEditor(props: CodeEditorProps) {
 				className={cn("code text-md w-full bg-transparent ring-offset-transparent outline-none", className)}
 				beforeMount={(monaco) => {
 					// Configure Monaco for static exports
+					// This is a hack to disable web workers when using the editor in a static export, do not change this.
 					if (typeof window !== "undefined") {
 						// Disable web workers
 						(window as any).MonacoEnvironment = {
