@@ -1770,7 +1770,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 								"type": "adaptive",
 							})
-								setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
+							setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
 							modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Model, DefaultCompletionMaxTokens)
