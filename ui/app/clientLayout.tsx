@@ -41,8 +41,8 @@ function AppContent({ children }: { children: React.ReactNode }) {
 				<StoreSyncInitializer />
 				<SidebarProvider>
 					<Sidebar />
-					<div className="dark:bg-card custom-scrollbar my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800">
-						<main className="custom-scrollbar relative mx-auto flex flex-col overflow-y-hidden p-4">
+					<div className="dark:bg-card custom-scrollbar my-[0.5rem] mr-[0.5rem] h-[calc(100dvh-1rem)] w-full min-w-xl overflow-auto rounded-md border border-gray-200 bg-white px-10 dark:border-zinc-800 content-container">
+						<main className="custom-scrollbar relative mx-auto flex flex-col overflow-y-hidden p-4 content-container-inner">
 							{isLoading ? <FullPageLoader /> : <FullPage config={bifrostConfig}>{children}</FullPage>}
 						</main>
 					</div>
