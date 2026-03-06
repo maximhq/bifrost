@@ -223,6 +223,11 @@ echo ""
 # Add dbverify reporter if requested
 if [ -n "$DB_VERIFY" ]; then
     REPORTERS="$REPORTERS,dbverify"
+    # Install dependencies for the dbverify reporter if not already present
+    if [ ! -d "$SCRIPT_DIR/node_modules" ]; then
+        echo "Installing DB verify reporter dependencies..."
+        (cd "$SCRIPT_DIR" && npm install --silent)
+    fi
     # Newman (global) resolves reporters via Node's module search. Prepend the
     # local node_modules so it can find newman-reporter-dbverify without a
     # global install.
