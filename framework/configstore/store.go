@@ -225,6 +225,35 @@ type ConfigStore interface {
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
 
+	// Prompt Repository - Folders
+	GetFolders(ctx context.Context) ([]tables.TableFolder, error)
+	GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error)
+	CreateFolder(ctx context.Context, folder *tables.TableFolder) error
+	UpdateFolder(ctx context.Context, folder *tables.TableFolder) error
+	DeleteFolder(ctx context.Context, id string) error
+
+	// Prompt Repository - Prompts
+	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
+	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	DeletePrompt(ctx context.Context, id string) error
+
+	// Prompt Repository - Versions
+	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
+	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
+	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
+	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
+	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Prompt Repository - Sessions
+	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)
+	GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error)
+	CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	RenamePromptSession(ctx context.Context, id uint, name string) error
+	DeletePromptSession(ctx context.Context, id uint) error
+
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
 
