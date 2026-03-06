@@ -74,8 +74,21 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Check for response_format and convert to tool
-	responseFormatTool := convertResponseFormatToTool(ctx, bifrostReq.Params)
+	// Handle structured output conversion:
+	// - Anthropic models on Bedrock support native output_config.format.
+	// - Other models keep the existing response_format->tool conversion.
+	var responseFormatTool *BedrockTool
+	if schemas.IsAnthropicModel(bifrostReq.Model) {
+		if outputFormat := convertResponseFormatToAnthropicOutputConfigFormat(bifrostReq.Params); outputFormat != nil {
+			if bedrockReq.AdditionalModelRequestFields == nil {
+				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+			}
+			setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+		}
+	} else {
+		// Check for response_format and convert to tool
+		responseFormatTool = convertResponseFormatToTool(ctx, bifrostReq.Params)
+	}
 
 	// Convert tool config
 	if toolConfig := convertToolConfig(bifrostReq.Model, bifrostReq.Params); toolConfig != nil {
@@ -188,9 +201,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
-					bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-						"effort": effort,
-					})
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
@@ -337,6 +348,62 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 	return nil
+}
+
+// setOutputConfigField upserts a single key in additionalModelRequestFields.output_config
+// while preserving any existing output_config keys (e.g. keep "format" when adding "effort").
+func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
+	if fields == nil {
+		return
+	}
+	current := map[string]any{}
+	if existing, ok := fields.Get("output_config"); ok {
+		if m, ok := existing.(map[string]any); ok && m != nil {
+			current = m
+		}
+	}
+	current[key] = value
+	fields.Set("output_config", current)
+}
+
+// convertResponseFormatToAnthropicOutputConfigFormat converts OpenAI-style response_format
+// (json_schema) into Anthropic Bedrock's native output_config.format structure.
+//
+// Input:
+// {
+//   "type": "json_schema",
+//   "json_schema": { "schema": { ... } }
+// }
+//
+// Output:
+// {
+//   "type": "json_schema",
+//   "schema": { ... }
+// }
+func convertResponseFormatToAnthropicOutputConfigFormat(params *schemas.ChatParameters) any {
+	if params == nil || params.ResponseFormat == nil {
+		return nil
+	}
+	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	formatType, ok := responseFormatMap["type"].(string)
+	if !ok || formatType != "json_schema" {
+		return nil
+	}
+	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return map[string]any{
+		"type":   "json_schema",
+		"schema": schemaObj,
+	}
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
