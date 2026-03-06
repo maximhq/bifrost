@@ -24,6 +24,10 @@ description: "v1.4.11 changelog - 2026-03-06"
 - **Helm Graceful Shutdown** — Added graceful shutdown and HPA stabilization for streaming connections (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
 - **Logstore Sonic Serialization** — Replaced encoding/json with sonic for logstore serialization (thanks [@davidrudduck](https://github.com/davidrudduck)!)
 
+<Danger>
+**Breaking change**: If authentication is enabled, the `/metrics` endpoint now requires bearer authentication in the request header. This change was made based on recent pentest feedback.
+</Danger>
+
 ## 🐞 Fixed
 
 - **Codex Compatibility** — Fixed fallback handling and request decompression for Codex compatibility
