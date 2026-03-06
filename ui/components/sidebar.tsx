@@ -23,6 +23,7 @@ import {
 	Network,
 	PanelLeftClose,
 	Puzzle,
+	Router,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -31,6 +32,7 @@ import {
 	ShieldCheck,
 	ShieldUser,
 	Shuffle,
+	SquareTerminal,
 	Telescope,
 	ToolCase,
 	TrendingUp,
@@ -615,8 +617,23 @@ export default function AppSidebar() {
 				url: "/workspace/prompt-repo",
 				icon: FolderGit,
 				description: "Prompt repository",
-				// Public access intentional — feature is "coming soon" with no sensitive data; RBAC will be added at GA
 				hasAccess: true,
+				subItems: [
+					{
+						title: "Prompts",
+						url: "/workspace/prompt-repo/prompts",
+						icon: SquareTerminal,
+						description: "Manage prompts",
+						hasAccess: true,
+					},
+					{
+						title: "Deployments",
+						url: "/workspace/prompt-repo/deployments",
+						icon: Router,
+						description: "Manage deployment",
+						hasAccess: true,
+					},
+				],
 			},
 			{
 				title: "Evals",
