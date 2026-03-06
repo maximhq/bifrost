@@ -1,0 +1,1 @@
+- fix: adds metadata back to the new log writer flow

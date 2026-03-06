@@ -552,6 +552,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		latency = result.GetExtraFields().Latency
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, numberOfRetries, latency)
+	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Branch based on response type to populate output-specific fields

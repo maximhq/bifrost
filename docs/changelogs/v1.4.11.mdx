@@ -28,6 +28,10 @@ description: "v1.4.11 changelog - 2026-03-06"
 **Breaking change**: If authentication is enabled, the `/metrics` endpoint now requires bearer authentication in the request header. This change was made based on recent pentest feedback.
 </Danger>
 
+<Danger>
+**Breaking change**: We have enforced all security headers to Bifrost based on recent pentest feedback. If you face any issues please create an issue on Github or reach out to us on Discord.
+</Danger>
+
 ## 🐞 Fixed
 
 - **Codex Compatibility** — Fixed fallback handling and request decompression for Codex compatibility
