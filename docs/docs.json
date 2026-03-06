@@ -178,7 +178,8 @@
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
-              "integrations/pydanticai-sdk"
+              "integrations/pydanticai-sdk",
+              "integrations/passthrough"
             ]
           },
           {

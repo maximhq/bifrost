@@ -5,9 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +39,19 @@ type VertexError struct {
 // This avoids creating and authenticating clients for every request.
 // Uses sync.Map for atomic operations without explicit locking.
 var vertexClientPool sync.Map
+
+// vertexLocationsPathRe matches /locations/{region} in Vertex API paths for region replacement.
+var vertexLocationsPathRe = regexp.MustCompile(`/locations/[^/]+`)
+
+var vertexProjectsPathRe = regexp.MustCompile(`/projects/[^/]+`)
+
+// vertexBodyProjectsRe matches projects/{project} in body JSON values,
+// where the path may appear as "projects/X (after a JSON quote) or /projects/X (mid-path).
+var vertexBodyProjectsRe = regexp.MustCompile(`(["/])projects/[^/"]+`)
+
+// vertexShortModelRe matches short-form model names like "models/X" in JSON bodies
+// that need expanding to the full Vertex resource path.
+var vertexShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
 
 // getClientKey generates a unique key for caching authenticated clients.
 // It uses a hash of the auth credentials for security.
@@ -2493,6 +2509,11 @@ func (provider *VertexProvider) BatchCancel(_ *schemas.BifrostContext, _ []schem
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchCancelRequest, provider.GetProviderKey())
 }
 
+// BatchDelete is not supported by Vertex AI provider.
+func (provider *VertexProvider) BatchDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
+}
+
 // BatchResults is not supported by Vertex AI provider.
 func (provider *VertexProvider) BatchResults(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchResultsRequest, provider.GetProviderKey())
@@ -2781,4 +2802,364 @@ func (provider *VertexProvider) ContainerFileContent(_ *schemas.BifrostContext, 
 // ContainerFileDelete is not supported by the Vertex provider.
 func (provider *VertexProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []schemas.Key, _ *schemas.BifrostContainerFileDeleteRequest) (*schemas.BifrostContainerFileDeleteResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
+}
+
+func (provider *VertexProvider) Passthrough(
+	ctx *schemas.BifrostContext,
+	key schemas.Key,
+	req *schemas.BifrostPassthroughRequest,
+) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+
+	if key.VertexKeyConfig == nil {
+		return nil, providerUtils.NewBifrostOperationError("vertex key config is not set", nil, schemas.Vertex)
+	}
+
+	keyRegion := key.VertexKeyConfig.Region.GetValue()
+	if keyRegion == "" {
+		keyRegion = "global"
+	}
+
+	var baseURL string
+	if keyRegion == "global" {
+		baseURL = "https://aiplatform.googleapis.com/v1"
+	} else {
+		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", keyRegion)
+	}
+
+	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
+	path := req.Path
+	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
+		path = strings.TrimPrefix(path, "/v1/")
+		path = strings.TrimPrefix(path, "/v1")
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+	}
+
+	// Replace region in path with key's configured region (client path may have different region)
+	if strings.Contains(path, "/locations/") {
+		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
+		if strings.Contains(path, "/projects/") {
+			path = vertexProjectsPathRe.ReplaceAllString(path, "/projects/"+key.VertexKeyConfig.ProjectID.GetValue())
+		}
+	} else {
+		// add projects/%s/locations/%s/publishers/google to path
+		path = fmt.Sprintf("/projects/%s/locations/%s%s", key.VertexKeyConfig.ProjectID.GetValue(), keyRegion, path)
+	}
+
+	requestURL := baseURL + path
+	if req.RawQuery != "" {
+		requestURL += "?" + req.RawQuery
+	}
+
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	}
+
+	// Prepare fasthttp request
+	fasthttpReq := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	defer fasthttp.ReleaseRequest(fasthttpReq)
+
+	fasthttpReq.Header.SetMethod(req.Method)
+
+	// If auth query is set, add it to the URL; otherwise use OAuth2
+	if authQuery != "" {
+		if strings.Contains(requestURL, "?") {
+			requestURL += "&" + authQuery
+		} else {
+			requestURL += "?" + authQuery
+		}
+	} else {
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	fasthttpReq.SetRequestURI(requestURL)
+
+	// Set extra headers from provider network config
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+
+	// Set safe headers from client request
+	for k, v := range req.SafeHeaders {
+		if strings.EqualFold(k, "authorization") || strings.EqualFold(k, "proxy-authorization") {
+			continue
+		}
+		fasthttpReq.Header.Set(k, v)
+	}
+
+	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		region := keyRegion
+		// Replace fully-qualified model paths that have placeholder project/location
+		// e.g. "projects/None/locations/None/publishers/..." -> "projects/real-id/locations/real-region/..."
+		body := req.Body
+		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(body), "${1}projects/"+projectID)
+		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+region)
+		// Expand short-form model names: "models/X" -> "projects/P/locations/L/publishers/google/models/X"
+		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
+			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
+		fasthttpReq.SetBodyString(bodyStr)
+	} else if len(req.Body) > 0 {
+		fasthttpReq.SetBody(req.Body)
+	}
+
+	// Execute request
+	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, fasthttpReq, resp)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	// Remove client from pool for authentication/authorization errors
+	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+	}
+
+	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to decode response body", err, schemas.Vertex)
+	}
+	bifrostResponse := &schemas.BifrostPassthroughResponse{
+		StatusCode: resp.StatusCode(),
+		Headers:    headers,
+		Body:       body,
+	}
+
+	bifrostResponse.ExtraFields.Provider = provider.GetProviderKey()
+	bifrostResponse.ExtraFields.RequestType = schemas.PassthroughRequest
+	bifrostResponse.ExtraFields.ModelRequested = req.Model
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &bifrostResponse.ExtraFields)
+	}
+
+	return bifrostResponse, nil
+}
+
+func (provider *VertexProvider) PassthroughStream(
+	ctx *schemas.BifrostContext,
+	postHookRunner schemas.PostHookRunner,
+	key schemas.Key,
+	req *schemas.BifrostPassthroughRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if key.VertexKeyConfig == nil {
+		return nil, providerUtils.NewBifrostOperationError("vertex key config is not set", nil, schemas.Vertex)
+	}
+
+	keyRegion := key.VertexKeyConfig.Region.GetValue()
+	if keyRegion == "" {
+		keyRegion = "global"
+	}
+
+	var baseURL string
+	if keyRegion == "global" {
+		baseURL = "https://aiplatform.googleapis.com/v1"
+	} else {
+		baseURL = fmt.Sprintf("https://%s-aiplatform.googleapis.com/v1", keyRegion)
+	}
+
+	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
+	path := req.Path
+	for strings.HasPrefix(path, "/v1/") || path == "/v1" {
+		path = strings.TrimPrefix(path, "/v1/")
+		path = strings.TrimPrefix(path, "/v1")
+		if path != "" && !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+	}
+
+	// Replace region and project in path with key's configured values.
+	if strings.Contains(path, "/locations/") {
+		path = vertexLocationsPathRe.ReplaceAllString(path, "/locations/"+keyRegion)
+		if strings.Contains(path, "/projects/") {
+			path = vertexProjectsPathRe.ReplaceAllString(path, "/projects/"+key.VertexKeyConfig.ProjectID.GetValue())
+		}
+	} else {
+		path = fmt.Sprintf("/projects/%s/locations/%s%s", key.VertexKeyConfig.ProjectID.GetValue(), keyRegion, path)
+	}
+
+	requestURL := baseURL + path
+	if req.RawQuery != "" {
+		requestURL += "?" + req.RawQuery
+	}
+
+	startTime := time.Now()
+
+	fasthttpReq := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(fasthttpReq)
+
+	fasthttpReq.Header.SetMethod(req.Method)
+
+	authQuery := ""
+	if key.Value.GetValue() != "" {
+		authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+	}
+
+	if authQuery != "" {
+		if strings.Contains(requestURL, "?") {
+			requestURL += "&" + authQuery
+		} else {
+			requestURL += "?" + authQuery
+		}
+	} else {
+		tokenSource, err := getAuthTokenSource(key)
+		if err != nil {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			providerUtils.ReleaseStreamingResponse(resp)
+			return nil, providerUtils.NewBifrostOperationError("error creating auth token source", err, schemas.Vertex)
+		}
+		token, err := tokenSource.Token()
+		if err != nil {
+			removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+			providerUtils.ReleaseStreamingResponse(resp)
+			return nil, providerUtils.NewBifrostOperationError("error getting token", err, schemas.Vertex)
+		}
+		fasthttpReq.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	}
+
+	fasthttpReq.SetRequestURI(requestURL)
+
+	providerUtils.SetExtraHeaders(ctx, fasthttpReq, provider.networkConfig.ExtraHeaders, nil)
+
+	for k, v := range req.SafeHeaders {
+		if strings.EqualFold(k, "authorization") || strings.EqualFold(k, "proxy-authorization") {
+			continue
+		}
+		fasthttpReq.Header.Set(k, v)
+	}
+
+	if len(req.Body) > 0 && strings.Contains(strings.ToLower(string(fasthttpReq.Header.ContentType())), "application/json") {
+		projectID := key.VertexKeyConfig.ProjectID.GetValue()
+		bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(req.Body), "${1}projects/"+projectID)
+		bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+keyRegion)
+		bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
+			fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, keyRegion))
+		fasthttpReq.SetBodyString(bodyStr)
+	} else if len(req.Body) > 0 {
+		fasthttpReq.SetBody(req.Body)
+	}
+
+	if err := provider.client.Do(fasthttpReq, resp); err != nil {
+		providerUtils.ReleaseStreamingResponse(resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, provider.GetProviderKey())
+		}
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
+	}
+
+	if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+		removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+	}
+
+	headers := providerUtils.ExtractProviderResponseHeaders(resp)
+
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		providerUtils.ReleaseStreamingResponse(resp)
+		return nil, providerUtils.NewBifrostOperationError(
+			"provider returned an empty stream body",
+			fmt.Errorf("provider returned an empty stream body"),
+			provider.GetProviderKey(),
+		)
+	}
+
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+
+	extraFields := schemas.BifrostResponseExtraFields{
+		Provider:       provider.GetProviderKey(),
+		ModelRequested: req.Model,
+		RequestType:    schemas.PassthroughStreamRequest,
+	}
+	statusCode := resp.StatusCode()
+
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		providerUtils.ParseAndSetRawRequestIfJSON(fasthttpReq, &extraFields)
+	}
+
+	ch := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	go func() {
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, ch, provider.GetProviderKey(), req.Model, schemas.PassthroughStreamRequest, provider.logger)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, ch, provider.GetProviderKey(), req.Model, schemas.PassthroughStreamRequest, provider.logger)
+			}
+			close(ch)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer stopCancellation()
+
+		buf := make([]byte, 4096)
+		for {
+			n, readErr := bodyStream.Read(buf)
+			if n > 0 {
+				chunk := make([]byte, n)
+				copy(chunk, buf[:n])
+				select {
+				case ch <- &schemas.BifrostStreamChunk{
+					BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{
+						StatusCode:  statusCode,
+						Headers:     headers,
+						Body:        chunk,
+						ExtraFields: extraFields,
+					},
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if readErr == io.EOF {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				extraFields.Latency = time.Since(startTime).Milliseconds()
+				finalResp := &schemas.BifrostResponse{
+					PassthroughResponse: &schemas.BifrostPassthroughResponse{
+						StatusCode:  statusCode,
+						Headers:     headers,
+						ExtraFields: extraFields,
+					},
+				}
+				postHookRunner(ctx, finalResp, nil)
+				if finalizer, ok := ctx.Value(schemas.BifrostContextKeyPostHookSpanFinalizer).(func(context.Context)); ok && finalizer != nil {
+					finalizer(ctx)
+				}
+				return
+			}
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return // let defer handle cancel/timeout
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				extraFields.Latency = time.Since(startTime).Milliseconds()
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, ch, schemas.PassthroughStreamRequest, provider.GetProviderKey(), req.Model, provider.logger)
+				return
+			}
+		}
+	}()
+	return ch, nil
 }

@@ -47,6 +47,10 @@ interface LogDetailSheetProps {
 	handleDelete: (log: LogEntry) => void;
 }
 
+// Helper to detect passthrough operations
+const isPassthroughOperation = (object: string) =>
+	object === "passthrough" || object === "passthrough_stream";
+
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
@@ -67,6 +71,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (!log) return null;
 
 	const isContainer = isContainerOperation(log.object);
+	const isPassthrough = isPassthroughOperation(log.object);
+	const passthroughParams = isPassthrough
+		? (log.params as {
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+		  })
+		: null;
 
 	// Taking out tool call
 	let toolsParameter = null;
@@ -245,15 +258,45 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</>
 							)}
 
+							{/* Display passthrough params (method, path, raw_query, status_code) */}
+							{passthroughParams && (
+								<>
+									{passthroughParams.method && (
+										<LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />
+									)}
+									{passthroughParams.path && (
+										<LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />
+									)}
+									{passthroughParams.raw_query && (
+										<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
+									)}
+									{(passthroughParams.status_code ?? 0) !== 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Status Code"
+											value={passthroughParams.status_code}
+										/>
+									)}
+								</>
+							)}
+
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
 								Object.entries(log.params)
-									.filter(([key]) => key !== "tools" && key !== "instructions" && key !== "audio")
+									.filter(([key]) => {
+										const passthroughKeys = ["method", "path", "raw_query", "status_code"];
+										return (
+											key !== "tools" &&
+											key !== "instructions" &&
+											key !== "audio" &&
+											!(isPassthrough && passthroughKeys.includes(key))
+										);
+									})
 									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
 					</div>
-					{log.status === "success" && !isContainer && (
+					{log.status === "success" && !isContainer && !isPassthrough && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
@@ -535,6 +578,36 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					</CollapsibleBox>
 				)}
 
+				{/* Passthrough request body */}
+				{isPassthrough && log.passthrough_request_body && (() => {
+					return (
+						<CollapsibleBox title="Request Body" 									onCopy={() => {
+							try {
+								return JSON.stringify(JSON.parse(log.passthrough_request_body || ""), null, 2);
+							} catch {
+								return log.passthrough_request_body || "";
+							}
+						}}>
+							<CodeEditor
+								className="z-0 w-full"
+								shouldAdjustInitialHeight={true}
+								maxHeight={450}
+								wrap={true}
+								code={(() => {
+									try {
+										return JSON.stringify(JSON.parse(log.passthrough_request_body || ""), null, 2);
+									} catch {
+										return log.passthrough_request_body || "";
+									}
+								})()}
+								lang="json"
+								readonly={true}
+								options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							/>
+						</CollapsibleBox>
+					);
+				})()}
+
 				{/* Show conversation history for chat/text completions */}
 				{log.input_history && log.input_history.length > 1 && (
 					<>
@@ -611,6 +684,38 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</CollapsibleBox>
 							</>
 						)}
+						{/* Passthrough response body */}
+						{isPassthrough && log.passthrough_response_body && (() => {
+							return (
+								<>
+									<div className="mt-4 w-full text-left text-sm font-medium">Response Body</div>
+									<CollapsibleBox title="Response Body" 									onCopy={() => {
+										try {
+											return JSON.stringify(JSON.parse(log.passthrough_response_body || ""), null, 2);
+										} catch {
+											return log.passthrough_response_body || "";
+										}
+									}}>
+										<CodeEditor
+											className="z-0 w-full"
+											shouldAdjustInitialHeight={true}
+											maxHeight={450}
+											wrap={true}
+											code={(() => {
+												try {
+													return JSON.stringify(JSON.parse(log.passthrough_response_body || ""), null, 2);
+												} catch {
+													return log.passthrough_response_body || "";
+												}
+											})()}
+											lang="json"
+											readonly={true}
+											options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+										/>
+									</CollapsibleBox>
+								</>
+							);
+						})()}
 						{log.raw_request && (
 							<>
 								<div className="mt-4 w-full text-left text-sm font-medium">

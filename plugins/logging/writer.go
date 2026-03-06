@@ -202,6 +202,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
+		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
 		entry.ParentRequestID = &pending.ParentRequestID
@@ -232,6 +233,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		SpeechInputParsed:           pending.InitialData.SpeechInput,
 		TranscriptionInputParsed:    pending.InitialData.TranscriptionInput,
 		ImageGenerationInputParsed:  pending.InitialData.ImageGenerationInput,
+		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
 		entry.ParentRequestID = &pending.ParentRequestID

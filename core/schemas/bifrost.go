@@ -127,6 +127,7 @@ const (
 	BatchRetrieveRequest         RequestType = "batch_retrieve"
 	BatchCancelRequest           RequestType = "batch_cancel"
 	BatchResultsRequest          RequestType = "batch_results"
+	BatchDeleteRequest           RequestType = "batch_delete"
 	FileUploadRequest            RequestType = "file_upload"
 	FileListRequest              RequestType = "file_list"
 	FileRetrieveRequest          RequestType = "file_retrieve"
@@ -144,6 +145,8 @@ const (
 	RerankRequest                RequestType = "rerank"
 	CountTokensRequest           RequestType = "count_tokens"
 	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
+	PassthroughRequest           RequestType = "passthrough"
+	PassthroughStreamRequest     RequestType = "passthrough_stream"
 	UnknownRequest               RequestType = "unknown"
 )
 
@@ -212,9 +215,9 @@ const (
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
 	BifrostContextKeyUserID                              BifrostContextKey = "user_id"
 	BifrostContextKeyTargetUserID                        BifrostContextKey = "target_user_id"
-	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent"     // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
+	BifrostContextKeyIsAzureUserAgent                    BifrostContextKey = "bifrost-is-azure-user-agent" // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an Azure user agent (only used in gateway)
 	BifrostContextKeyVideoOutputRequested                BifrostContextKey = "bifrost-video-output-requested"
-	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"           // bool (triggers additional key validation during provider add/update)
+	BifrostContextKeyValidateKeys                        BifrostContextKey = "bifrost-validate-keys"             // bool (triggers additional key validation during provider add/update)
 	BifrostContextKeyProviderResponseHeaders             BifrostContextKey = "bifrost-provider-response-headers" // map[string]string (set by provider handlers for response header forwarding)
 )
 
@@ -288,6 +291,7 @@ type BifrostRequest struct {
 	BatchRetrieveRequest         *BifrostBatchRetrieveRequest
 	BatchCancelRequest           *BifrostBatchCancelRequest
 	BatchResultsRequest          *BifrostBatchResultsRequest
+	BatchDeleteRequest           *BifrostBatchDeleteRequest
 	ContainerCreateRequest       *BifrostContainerCreateRequest
 	ContainerListRequest         *BifrostContainerListRequest
 	ContainerRetrieveRequest     *BifrostContainerRetrieveRequest
@@ -297,6 +301,7 @@ type BifrostRequest struct {
 	ContainerFileRetrieveRequest *BifrostContainerFileRetrieveRequest
 	ContainerFileContentRequest  *BifrostContainerFileContentRequest
 	ContainerFileDeleteRequest   *BifrostContainerFileDeleteRequest
+	PassthroughRequest           *BifrostPassthroughRequest
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -388,6 +393,11 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.BatchResultsRequest.Provider, *br.BatchResultsRequest.Model, nil
 		}
 		return br.BatchResultsRequest.Provider, "", nil
+	case br.BatchDeleteRequest != nil:
+		if br.BatchDeleteRequest.Model != nil {
+			return br.BatchDeleteRequest.Provider, *br.BatchDeleteRequest.Model, nil
+		}
+		return br.BatchDeleteRequest.Provider, "", nil
 	case br.ContainerCreateRequest != nil:
 		return br.ContainerCreateRequest.Provider, "", nil
 	case br.ContainerListRequest != nil:
@@ -406,6 +416,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.ContainerFileContentRequest.Provider, "", nil
 	case br.ContainerFileDeleteRequest != nil:
 		return br.ContainerFileDeleteRequest.Provider, "", nil
+	case br.PassthroughRequest != nil:
+		return br.PassthroughRequest.Provider, br.PassthroughRequest.Model, nil
 	}
 	return "", "", nil
 }
@@ -614,6 +626,7 @@ type BifrostResponse struct {
 	BatchRetrieveResponse         *BifrostBatchRetrieveResponse
 	BatchCancelResponse           *BifrostBatchCancelResponse
 	BatchResultsResponse          *BifrostBatchResultsResponse
+	BatchDeleteResponse           *BifrostBatchDeleteResponse
 	ContainerCreateResponse       *BifrostContainerCreateResponse
 	ContainerListResponse         *BifrostContainerListResponse
 	ContainerRetrieveResponse     *BifrostContainerRetrieveResponse
@@ -623,6 +636,7 @@ type BifrostResponse struct {
 	ContainerFileRetrieveResponse *BifrostContainerFileRetrieveResponse
 	ContainerFileContentResponse  *BifrostContainerFileContentResponse
 	ContainerFileDeleteResponse   *BifrostContainerFileDeleteResponse
+	PassthroughResponse           *BifrostPassthroughResponse
 }
 
 func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
@@ -681,6 +695,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.BatchRetrieveResponse.ExtraFields
 	case r.BatchCancelResponse != nil:
 		return &r.BatchCancelResponse.ExtraFields
+	case r.BatchDeleteResponse != nil:
+		return &r.BatchDeleteResponse.ExtraFields
 	case r.BatchResultsResponse != nil:
 		return &r.BatchResultsResponse.ExtraFields
 	case r.ContainerCreateResponse != nil:
@@ -701,6 +717,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.ContainerFileContentResponse.ExtraFields
 	case r.ContainerFileDeleteResponse != nil:
 		return &r.ContainerFileDeleteResponse.ExtraFields
+	case r.PassthroughResponse != nil:
+		return &r.PassthroughResponse.ExtraFields
 	}
 
 	return &BifrostResponseExtraFields{}
@@ -769,6 +787,7 @@ type BifrostStreamChunk struct {
 	*BifrostSpeechStreamResponse
 	*BifrostTranscriptionStreamResponse
 	*BifrostImageGenerationStreamResponse
+	*BifrostPassthroughResponse
 	*BifrostError
 }
 
@@ -787,6 +806,8 @@ func (bs BifrostStreamChunk) MarshalJSON() ([]byte, error) {
 		return Marshal(bs.BifrostTranscriptionStreamResponse)
 	} else if bs.BifrostImageGenerationStreamResponse != nil {
 		return Marshal(bs.BifrostImageGenerationStreamResponse)
+	} else if bs.BifrostPassthroughResponse != nil {
+		return Marshal(bs.BifrostPassthroughResponse)
 	} else if bs.BifrostError != nil {
 		return Marshal(bs.BifrostError)
 	}
@@ -892,4 +913,3 @@ type BifrostErrorExtraFields struct {
 	LiteLLMCompat  bool          `json:"litellm_compat,omitempty"`
 	KeyStatuses    []KeyStatus   `json:"key_statuses,omitempty"`
 }
-
