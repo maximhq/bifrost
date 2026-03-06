@@ -382,12 +382,14 @@ func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
 	})
 }
 
+// middleware is the core authentication middleware that checks if the request should be authenticated or not.
 func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, string) bool) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			authConfig := m.authConfig.Load()
 			if authConfig == nil || !authConfig.IsEnabled {
 				logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				next(ctx)
 				return
 			}
@@ -408,6 +410,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					if ticket != "" && m.wsTicketStore != nil {
 						sessionToken := m.wsTicketStore.Consume(ticket)
 						if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
+							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
 							next(ctx)
 							return
 						}
@@ -418,6 +421,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					token := string(ctx.Request.URI().QueryArgs().Peek("token"))
 					if token != "" {
 						if validateSession(ctx, m.store, token) {
+							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
 							next(ctx)
 							return
 						}
@@ -427,6 +431,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					// Fallback: cookie-based WS auth
 					cookieToken := string(ctx.Request.Header.Cookie("token"))
 					if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+						ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
 						next(ctx)
 						return
 					}
@@ -437,6 +442,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// This supports the dashboard which relies on cookies instead of localStorage tokens.
 				cookieToken := string(ctx.Request.Header.Cookie("token"))
 				if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+					ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
 					next(ctx)
 					return
 				}
@@ -523,6 +529,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					next(ctx)
 					return
 				}
+				// setting up session in the request
+				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
 				// Continue with the next handler
 				next(ctx)
 				return

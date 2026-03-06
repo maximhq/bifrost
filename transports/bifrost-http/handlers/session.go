@@ -209,23 +209,14 @@ func (h *SessionHandler) issueWSTicket(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "WebSocket tickets are not available")
 		return
 	}
-	// Resolve the session token from Authorization header or cookie
-	sessionToken := ""
-	if authHeader := string(ctx.Request.Header.Peek("Authorization")); strings.HasPrefix(authHeader, "Bearer ") {
-		sessionToken = strings.TrimPrefix(authHeader, "Bearer ")
-	}
-	if sessionToken == "" {
-		sessionToken = string(ctx.Request.Header.Cookie("token"))
-	}
-	if sessionToken == "" {
+	sessionToken,ok := ctx.UserValue(schemas.BifrostContextKeySessionToken).(string)
+	if !ok {
 		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 		return
 	}
-	// Validate session exists and is not expired (defense-in-depth)
-	session, err := h.configStore.GetSession(ctx, sessionToken)
-	if err != nil || session == nil || session.ExpiresAt.Before(time.Now()) {
-		SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-		return
+	if sessionToken == "" {
+		// This is the case where auth is not configured or not enabled
+		sessionToken = "dummy-session"
 	}
 	ticket, err := h.wsTicketStore.Issue(sessionToken)
 	if err != nil {
