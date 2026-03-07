@@ -154,3 +154,65 @@ variable "volume_size_gb" {
   description = "Persistent volume size in GB for SQLite storage."
   type        = number
 }
+
+# --- PostgreSQL ---
+variable "create_postgresql" {
+  description = "Create a managed PostgreSQL RDS instance."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_engine_version" {
+  description = "PostgreSQL engine version."
+  type        = string
+  default     = "16"
+}
+
+variable "postgresql_instance_class" {
+  description = "RDS instance class."
+  type        = string
+  default     = null
+}
+
+variable "postgresql_storage_gb" {
+  description = "Allocated storage in GB."
+  type        = number
+  default     = 20
+}
+
+variable "postgresql_database_name" {
+  description = "Name of the initial database."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_username" {
+  description = "Master username."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_password" {
+  description = "Master password. If null, a random password is generated."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "postgresql_backup_retention_days" {
+  description = "Backup retention period in days."
+  type        = number
+  default     = 7
+}
+
+variable "postgresql_multi_az" {
+  description = "Enable multi-AZ deployment."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_publicly_accessible" {
+  description = "Whether the database is publicly accessible."
+  type        = bool
+  default     = false
+}
