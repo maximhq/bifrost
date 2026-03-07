@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAnthropicOAuthConfigIDColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4020,6 +4023,44 @@ func migrationAddVLLMKeyConfigColumns(ctx context.Context, db *gorm.DB) error {
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running vllm key config columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAnthropicOAuthConfigIDColumn adds anthropic_oauth_config_id column to the key table.
+// This column stores the OAuth config ID for Anthropic OAuth (Claude Pro/Max) keys.
+// Uses raw SQL to avoid GORM's LookUpField requirement (which needs an explicit column: gorm tag).
+func migrationAddAnthropicOAuthConfigIDColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_anthropic_oauth_config_id_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			var exists bool
+			switch tx.Dialector.Name() {
+			case "sqlite":
+				var count int64
+				if err := tx.Raw("SELECT COUNT(*) FROM pragma_table_info('config_keys') WHERE name = 'anthropic_oauth_config_id'").Scan(&count).Error; err != nil {
+					return err
+				}
+				exists = count > 0
+			default: // postgres
+				var count int64
+				if err := tx.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'config_keys' AND column_name = 'anthropic_oauth_config_id'").Scan(&count).Error; err != nil {
+					return err
+				}
+				exists = count > 0
+			}
+			if !exists {
+				return tx.Exec("ALTER TABLE config_keys ADD COLUMN anthropic_oauth_config_id VARCHAR(255)").Error
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running anthropic oauth config id column migration: %s", err.Error())
 	}
 	return nil
 }

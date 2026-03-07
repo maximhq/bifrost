@@ -29,6 +29,7 @@ type AnthropicProvider struct {
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
+	oauth2Provider       schemas.OAuth2Provider        // OAuth2 provider for resolving OAuth tokens (may be nil)
 }
 
 // anthropicMessageResponsePool provides a pool for Anthropic chat response objects.
@@ -110,6 +111,7 @@ func NewAnthropicProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
+		oauth2Provider:       config.OAuth2Provider,
 	}
 }
 
@@ -127,10 +129,60 @@ func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, 
 	return provider.networkConfig.BaseURL + path
 }
 
+// resolveKeyValue resolves the API key value for a request.
+// If the key has an Anthropic OAuth config, it retrieves the access token from the OAuth2 provider.
+// Otherwise, it returns the key's static value.
+func (provider *AnthropicProvider) resolveKeyValue(ctx context.Context, key schemas.Key) (string, error) {
+	if key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != "" {
+		if provider.oauth2Provider == nil {
+			return "", fmt.Errorf("anthropic OAuth key configured but OAuth2Provider not available")
+		}
+		return provider.oauth2Provider.GetAccessToken(ctx, key.AnthropicOAuthKeyConfig.OAuthConfigID)
+	}
+	return key.Value.GetValue(), nil
+}
+
+// isOAuthKey reports whether a key uses Anthropic OAuth rather than a static API key.
+func isOAuthKey(key schemas.Key) bool {
+	return key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != ""
+}
+
+// setAnthropicAuthHeader sets the appropriate authentication header on a fasthttp request.
+// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
+func setAnthropicAuthHeader(req *fasthttp.Request, keyValue string, key schemas.Key) {
+	if keyValue == "" {
+		return
+	}
+	if isOAuthKey(key) {
+		req.Header.Set("Authorization", "Bearer "+keyValue)
+		appendBetaHeader(req, AnthropicOAuthBetaHeader)
+	} else {
+		req.Header.Set("x-api-key", keyValue)
+	}
+}
+
+// setAnthropicAuthHeaderMap sets the appropriate authentication header in a headers map.
+// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
+func setAnthropicAuthHeaderMap(headers map[string]string, keyValue string, key schemas.Key) {
+	if keyValue == "" {
+		return
+	}
+	if isOAuthKey(key) {
+		headers["Authorization"] = "Bearer " + keyValue
+		if existing := headers["anthropic-beta"]; existing != "" {
+			headers["anthropic-beta"] = existing + "," + AnthropicOAuthBetaHeader
+		} else {
+			headers["anthropic-beta"] = AnthropicOAuthBetaHeader
+		}
+	} else {
+		headers["x-api-key"] = keyValue
+	}
+}
+
 // completeRequest sends a request to Anthropic's API and handles the response.
 // It constructs the API URL, sets up authentication, and processes the response.
 // Returns the response body or an error if the request fails.
-func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, meta *providerUtils.RequestMetadata) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
+func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, jsonData []byte, url string, key string, isOAuth bool, meta *providerUtils.RequestMetadata) ([]byte, time.Duration, map[string]string, *schemas.BifrostError) {
 	// Create the request with the JSON body
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -146,7 +198,12 @@ func (provider *AnthropicProvider) completeRequest(ctx *schemas.BifrostContext, 
 	// Can be empty in case of passthrough or keyless custom provider
 	// Here we can avoid this - in case of passthrough completely
 	if key != "" && !IsClaudeCodeMaxMode(ctx) {
-		req.Header.Set("x-api-key", key)
+		if isOAuth {
+			req.Header.Set("Authorization", "Bearer "+key)
+			appendBetaHeader(req, AnthropicOAuthBetaHeader)
+		} else {
+			req.Header.Set("x-api-key", key)
+		}
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -191,12 +248,18 @@ func (provider *AnthropicProvider) listModelsByKey(ctx *schemas.BifrostContext, 
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Build URL using centralized URL construction
 	req.SetRequestURI(provider.buildRequestURL(ctx, fmt.Sprintf("/v1/models?limit=%d", schemas.DefaultPageSize), schemas.ListModelsRequest))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-api-key", key.Value.GetValue())
+	if keyValue != "" {
+		setAnthropicAuthHeader(req, keyValue, key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -254,9 +317,20 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 			return provider.listModelsByKey(ctx, schemas.Key{}, request)
 		})
 	}
+	// Anthropic's /v1/models endpoint does not support OAuth tokens — filter them out.
+	// OAuth-only setups will fall back to the static model catalog automatically.
+	apiKeys := make([]schemas.Key, 0, len(keys))
+	for _, k := range keys {
+		if !isOAuthKey(k) {
+			apiKeys = append(apiKeys, k)
+		}
+	}
+	if len(apiKeys) == 0 {
+		return nil, providerUtils.NewBifrostOperationError("no API keys available for model listing (OAuth keys cannot list models)", nil, provider.GetProviderKey())
+	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
-		keys,
+		apiKeys,
 		request,
 		provider.listModelsByKey,
 	)
@@ -282,8 +356,14 @@ func (provider *AnthropicProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		return nil, err
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Use struct directly for JSON marshaling (no beta headers for text completion)
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/complete", schemas.TextCompletionRequest), keyValue, isOAuthKey(key), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.TextCompletionRequest,
@@ -357,8 +437,14 @@ func (provider *AnthropicProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		return nil, bifrostErr
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Use struct directly for JSON marshaling
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages", schemas.ChatCompletionRequest), keyValue, isOAuthKey(key), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ChatCompletionRequest,
@@ -427,6 +513,12 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		return nil, bifrostErr
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Prepare Anthropic headers
 	headers := map[string]string{
 		"Content-Type":      "application/json",
@@ -435,8 +527,8 @@ func (provider *AnthropicProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		"Cache-Control":     "no-cache",
 	}
 
-	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
-		headers["x-api-key"] = key.Value.GetValue()
+	if keyValue != "" && !IsClaudeCodeMaxMode(ctx) {
+		setAnthropicAuthHeaderMap(headers, keyValue, key)
 	}
 
 	// Use shared Anthropic streaming logic
@@ -488,8 +580,16 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
+	// Set headers, using append for anthropic-beta to preserve values from SetExtraHeaders
+	betaFromMap := headers["anthropic-beta"]
 	for key, value := range headers {
+		if key == "anthropic-beta" {
+			continue
+		}
 		req.Header.Set(key, value)
+	}
+	if betaFromMap != "" {
+		appendBetaHeader(req, betaFromMap)
 	}
 
 	req.SetBody(jsonBody)
@@ -826,8 +926,14 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 		return nil, err
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Use struct directly for JSON marshaling
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages", schemas.ResponsesRequest), keyValue, isOAuthKey(key), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.ResponsesRequest,
@@ -883,6 +989,12 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		return nil, err
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
 	// Prepare Anthropic headers
 	headers := map[string]string{
 		"Content-Type":      "application/json",
@@ -891,8 +1003,8 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		"Cache-Control":     "no-cache",
 	}
 
-	if key.Value.GetValue() != "" && !IsClaudeCodeMaxMode(ctx) {
-		headers["x-api-key"] = key.Value.GetValue()
+	if keyValue != "" && !IsClaudeCodeMaxMode(ctx) {
+		setAnthropicAuthHeaderMap(headers, keyValue, key)
 	}
 
 	return HandleAnthropicResponsesStream(
@@ -943,9 +1055,16 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
-	// Set headers, merging anthropic-beta with any user-supplied values
+	// Set headers, using append for anthropic-beta to preserve values from SetExtraHeaders
+	betaFromMap := headers["anthropic-beta"]
 	for key, value := range headers {
+		if key == "anthropic-beta" {
+			continue
+		}
 		req.Header.Set(key, value)
+	}
+	if betaFromMap != "" {
+		appendBetaHeader(req, betaFromMap)
 	}
 
 	// Set body
@@ -1220,14 +1339,20 @@ func (provider *AnthropicProvider) BatchCreate(ctx *schemas.BifrostContext, key 
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+	}
+
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/messages/batches", schemas.BatchCreateRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-api-key", key.Value.GetValue())
+	if keyValue != "" {
+		setAnthropicAuthHeader(req, keyValue, key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1337,14 +1462,20 @@ func (provider *AnthropicProvider) BatchList(ctx *schemas.BifrostContext, keys [
 		requestURL += "?" + encodedValues
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+	}
+
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-api-key", key.Value.GetValue())
+	if keyValue != "" {
+		setAnthropicAuthHeader(req, keyValue, key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1418,6 +1549,13 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -1432,8 +1570,8 @@ func (provider *AnthropicProvider) BatchRetrieve(ctx *schemas.BifrostContext, ke
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1500,6 +1638,13 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -1510,8 +1655,8 @@ func (provider *AnthropicProvider) BatchCancel(ctx *schemas.BifrostContext, keys
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1605,6 +1750,13 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -1614,8 +1766,8 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/messages/batches/" + request.BatchID + "/results")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 
@@ -1810,14 +1962,20 @@ func (provider *AnthropicProvider) FileUpload(ctx *schemas.BifrostContext, key s
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+	}
+
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.buildRequestURL(ctx, "/v1/files", schemas.FileUploadRequest))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType(writer.FormDataContentType())
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-api-key", key.Value.GetValue())
+	if keyValue != "" {
+		setAnthropicAuthHeader(req, keyValue, key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 	appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
@@ -1904,14 +2062,20 @@ func (provider *AnthropicProvider) FileList(ctx *schemas.BifrostContext, keys []
 		requestURL += "?" + encodedValues
 	}
 
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+	}
+
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-api-key", key.Value.GetValue())
+	if keyValue != "" {
+		setAnthropicAuthHeader(req, keyValue, key)
 	}
 	req.Header.Set("anthropic-version", provider.apiVersion)
 	appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
@@ -1994,6 +2158,13 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2008,8 +2179,8 @@ func (provider *AnthropicProvider) FileRetrieve(ctx *schemas.BifrostContext, key
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
@@ -2075,6 +2246,13 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2085,8 +2263,8 @@ func (provider *AnthropicProvider) FileDelete(ctx *schemas.BifrostContext, keys 
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
@@ -2185,6 +2363,13 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Resolve the key value (may be an OAuth token)
+		keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+		if resolveErr != nil {
+			lastErr = providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, providerName)
+			continue
+		}
+
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -2194,8 +2379,8 @@ func (provider *AnthropicProvider) FileContent(ctx *schemas.BifrostContext, keys
 		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + request.FileID + "/content")
 		req.Header.SetMethod(http.MethodGet)
 
-		if key.Value.GetValue() != "" {
-			req.Header.Set("x-api-key", key.Value.GetValue())
+		if keyValue != "" {
+			setAnthropicAuthHeader(req, keyValue, key)
 		}
 		req.Header.Set("anthropic-version", provider.apiVersion)
 		appendBetaHeader(req, AnthropicFilesAPIBetaHeader)
@@ -2285,7 +2470,13 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		jsonData = newData
 	}
 
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
+	}
+
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), keyValue, isOAuthKey(key), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.CountTokensRequest,

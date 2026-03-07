@@ -390,6 +390,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		// Pass through Anthropic OAuth config (contains only oauth_config_id, not sensitive)
+		if key.AnthropicOAuthKeyConfig != nil {
+			redactedConfig.Keys[i].AnthropicOAuthKeyConfig = key.AnthropicOAuthKeyConfig
+		}
 	}
 	return &redactedConfig
 }
@@ -526,6 +531,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
 		data, err := sonic.Marshal(key.VLLMKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash AnthropicOAuthKeyConfig
+	if key.AnthropicOAuthKeyConfig != nil {
+		data, err := sonic.Marshal(key.AnthropicOAuthKeyConfig)
 		if err != nil {
 			return "", err
 		}

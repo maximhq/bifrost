@@ -22,7 +22,9 @@ var PluginDisabledKey pluginDisabledKey
 // SendJSON sends a JSON response with 200 OK status
 func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetContentType("application/json")
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	encoder := json.NewEncoder(ctx)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(data); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 	}
@@ -32,7 +34,9 @@ func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode int) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(statusCode)
-	if err := json.NewEncoder(ctx).Encode(data); err != nil {
+	encoder := json.NewEncoder(ctx)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(data); err != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 	}

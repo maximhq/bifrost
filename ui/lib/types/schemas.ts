@@ -164,6 +164,11 @@ export const vllmKeyConfigSchema = z.object({
 	model_name: z.string().trim().min(1, "Model name is required"),
 });
 
+// Anthropic OAuth key config schema
+export const anthropicOAuthKeyConfigSchema = z.object({
+	oauth_config_id: z.string().min(1, "OAuth config ID is required"),
+});
+
 // Model provider key schema
 export const modelProviderKeySchema = z
 	.object({
@@ -196,12 +201,13 @@ export const modelProviderKeySchema = z
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
 		replicate_key_config: replicateKeyConfigSchema.optional(),
 		vllm_key_config: vllmKeyConfigSchema.optional(),
+		anthropic_oauth_key_config: anthropicOAuthKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
 	})
 	.refine(
 		(data) => {
-			// If bedrock_key_config, azure_key_config, vertex_key_config, or vllm_key_config is present, value is not required
-			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config) {
+			// If bedrock_key_config, azure_key_config, vertex_key_config, vllm_key_config, or anthropic_oauth_key_config is present, value is not required
+			if (data.bedrock_key_config || data.azure_key_config || data.vertex_key_config || data.vllm_key_config || data.anthropic_oauth_key_config) {
 				return true;
 			}
 			// Otherwise, value is required
