@@ -99,24 +99,23 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 		}
 
 		if message.ResponsesReasoning != nil {
-			// According to OpenAI's Responses API format specification, for non-gpt-oss models, a message
-			// with ResponsesReasoning != nil and non-empty Content.ContentBlocks but empty Summary and
-			// nil EncryptedContent represents a reasoning-only message that should be skipped, as these
-			// models do not support reasoning content blocks in the output. This constraint ensures
-			// compatibility with OpenAI's intended responses format behavior where reasoning-only messages
-			// without summaries are not included in the request payload for non-gpt-oss models.
+			isGptOss := strings.Contains(bifrostReq.Model, "gpt-oss")
+			isReasoning := isOpenAIReasoningModel(bifrostReq.Model)
+
+			// For non-gpt-oss models, skip reasoning-only messages that have content blocks but no summaries.
+			// For non-reasoning models (e.g., gpt-4o), also skip when EncryptedContent is present since
+			// these models don't produce encrypted reasoning — any encrypted content is cross-provider
+			// (e.g., Gemini ThoughtSignatures) and cannot be decrypted by OpenAI.
 			if len(message.ResponsesReasoning.Summary) == 0 &&
 				message.Content != nil &&
 				len(message.Content.ContentBlocks) > 0 &&
-				!strings.Contains(bifrostReq.Model, "gpt-oss") &&
-				message.ResponsesReasoning.EncryptedContent == nil {
+				!isGptOss &&
+				(message.ResponsesReasoning.EncryptedContent == nil || !isReasoning) {
 				continue
 			}
 
 			// If the message has summaries but no content blocks and the model is gpt-oss, then convert the summaries to content blocks
-			if len(message.ResponsesReasoning.Summary) > 0 &&
-				strings.Contains(bifrostReq.Model, "gpt-oss") &&
-				message.Content == nil {
+			if len(message.ResponsesReasoning.Summary) > 0 && isGptOss && message.Content == nil {
 				var newMessage schemas.ResponsesMessage
 				newMessage.ID = message.ID
 				newMessage.Type = message.Type
@@ -136,6 +135,13 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				}
 				messages = append(messages, newMessage)
 			} else {
+				// OpenAI's Responses API does not accept 'role' on reasoning items
+				message.Role = nil
+				// Strip cross-provider encrypted content that non-reasoning models cannot decrypt.
+				// Reasoning models (o1/o3/o4/GPT-5) may use EncryptedContent for multi-turn state.
+				if !isReasoning {
+					message.ResponsesReasoning.EncryptedContent = nil
+				}
 				messages = append(messages, message)
 			}
 		} else if message.ResponsesToolMessage != nil &&
@@ -215,6 +221,19 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 				// Clear reasoning_effort for non-grok-3-mini xAI reasoning models
 				req.ResponsesParameters.Reasoning.Effort = nil
 			}
+
+			// Handle OpenAI-specific parameter filtering
+			// Only o1/o3 series models support reasoning.effort
+			// Regular models like gpt-4o, gpt-4, gpt-3.5-turbo don't support it
+			if bifrostReq.Provider == schemas.OpenAI && !isOpenAIReasoningModel(bifrostReq.Model) {
+				// Clear reasoning for non-reasoning OpenAI models to avoid API errors
+				req.ResponsesParameters.Reasoning = nil
+			}
+		}
+
+		// Strip top_p for OpenAI reasoning models (o1/o3 series) which reject it
+		if isOpenAIReasoningModel(bifrostReq.Model) {
+			req.ResponsesParameters.TopP = nil
 		}
 
 		// Filter out tools that OpenAI doesn't support
@@ -299,4 +318,42 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools() {
 		}
 	}
 	resp.Tools = filteredTools
+}
+
+// isOpenAIReasoningModel checks if the given model is an OpenAI reasoning model
+// that supports the reasoning.effort parameter.
+// OpenAI reasoning models include o1, o3 series (o1, o1-mini, o1-preview, o3, o3-mini, etc.)
+// TODO we need to find a better way to check if a model is an OpenAI reasoning model
+func isOpenAIReasoningModel(model string) bool {
+	modelLower := strings.ToLower(model)
+	// Check for o1 or o3 series models
+	// Match patterns like: o1, o1-mini, o1-preview, o3, o3-mini, etc.
+	// Also match gpt-oss models which support reasoning
+	if strings.Contains(modelLower, "gpt-oss") {
+		return true
+	}
+	// Check for o1/o3/o4 series - these are reasoning models
+	// The pattern matches "o1", "o3", or "o4" followed by end of string, hyphen, or underscore
+	for _, prefix := range []string{"o1", "o3", "o4"} {
+		if strings.HasPrefix(modelLower, prefix) {
+			// Check if it's exactly the prefix or followed by a separator
+			if len(modelLower) == len(prefix) ||
+				modelLower[len(prefix)] == '-' ||
+				modelLower[len(prefix)] == '_' {
+				return true
+			}
+		}
+		// Also check for models like "openai-o1-mini" where prefix is not at start
+		if strings.Contains(modelLower, "-"+prefix+"-") ||
+			strings.Contains(modelLower, "_"+prefix+"_") ||
+			strings.HasSuffix(modelLower, "-"+prefix) ||
+			strings.HasSuffix(modelLower, "_"+prefix) {
+			return true
+		}
+	}
+	// Check for GPT-5 series models which support reasoning.effort
+	if strings.HasPrefix(modelLower, "gpt-5") {
+		return true
+	}
+	return false
 }

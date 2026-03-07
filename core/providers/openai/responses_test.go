@@ -64,7 +64,7 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 			description:      "Message with non-empty Summary should be preserved even if it has ContentBlocks",
 		},
 		{
-			name:  "message with EncryptedContent preserved for non-gpt-oss model",
+			name:  "message with EncryptedContent skipped for non-reasoning model",
 			model: "gpt-4o",
 			message: schemas.ResponsesMessage{
 				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
@@ -81,8 +81,29 @@ func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 					},
 				},
 			},
+			expectedIncluded: false,
+			description:      "Non-reasoning models don't produce encrypted reasoning; cross-provider content should be skipped",
+		},
+		{
+			name:  "message with EncryptedContent preserved for reasoning model",
+			model: "o3",
+			message: schemas.ResponsesMessage{
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				ResponsesReasoning: &schemas.ResponsesReasoning{
+					Summary:          []schemas.ResponsesReasoningSummary{}, // empty Summary
+					EncryptedContent: schemas.Ptr("encrypted"),              // non-nil EncryptedContent
+				},
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{
+							Type: schemas.ResponsesOutputMessageContentTypeReasoning,
+							Text: schemas.Ptr("reasoning text"),
+						},
+					},
+				},
+			},
 			expectedIncluded: true,
-			description:      "Message with non-nil EncryptedContent should be preserved even if Summary is empty",
+			description:      "Reasoning models (o1/o3) produce encrypted content; should be preserved for multi-turn",
 		},
 		{
 			name:  "message with empty ContentBlocks preserved for non-gpt-oss model",

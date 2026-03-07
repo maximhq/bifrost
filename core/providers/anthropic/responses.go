@@ -33,6 +33,7 @@ type AnthropicResponsesStreamState struct {
 	ToolArgumentBuffers       map[int]string                    // Maps output_index to accumulated tool argument JSON
 	MCPCallOutputIndices      map[int]bool                      // Tracks which output indices are MCP calls
 	ItemIDs                   map[int]string                    // Maps output_index to item ID for stable IDs
+	OutputItems               map[int]*schemas.ResponsesMessage // Maps output_index to accumulated output item for response.completed
 	ReasoningSignatures       map[int]string                    // Maps output_index to reasoning signature
 	TextContentIndices        map[int]bool                      // Tracks which content indices are text blocks
 	ReasoningContentIndices   map[int]bool                      // Tracks which content indices are reasoning blocks
@@ -60,6 +61,7 @@ var anthropicResponsesStreamStatePool = sync.Pool{
 			TextContentIndices:        make(map[int]bool),
 			ReasoningContentIndices:   make(map[int]bool),
 			CompactionContentIndices:  make(map[int]*schemas.CacheControl),
+			OutputItems:               make(map[int]*schemas.ResponsesMessage),
 			CurrentOutputIndex:        0,
 			CreatedAt:                 int(time.Now().Unix()),
 			HasEmittedCreated:         false,
@@ -122,6 +124,11 @@ func acquireAnthropicResponsesStreamState() *AnthropicResponsesStreamState {
 	} else {
 		clear(state.CompactionContentIndices)
 	}
+	if state.OutputItems == nil {
+		state.OutputItems = make(map[int]*schemas.ResponsesMessage)
+	} else {
+		clear(state.OutputItems)
+	}
 	// Reset other fields
 	state.ChunkIndex = nil
 	state.AccumulatedJSON = ""
@@ -157,15 +164,16 @@ func (state *AnthropicResponsesStreamState) flush() {
 	state.WebSearchToolID = nil
 	state.WebSearchOutputIndex = nil
 	state.WebSearchResult = nil
-	state.ContentIndexToOutputIndex = make(map[int]int)
-	state.ContentIndexToBlockType = make(map[int]AnthropicContentBlockType)
-	state.ToolArgumentBuffers = make(map[int]string)
-	state.MCPCallOutputIndices = make(map[int]bool)
-	state.ItemIDs = make(map[int]string)
-	state.ReasoningSignatures = make(map[int]string)
-	state.TextContentIndices = make(map[int]bool)
-	state.ReasoningContentIndices = make(map[int]bool)
-	state.CompactionContentIndices = make(map[int]*schemas.CacheControl)
+	state.ContentIndexToOutputIndex = nil
+	state.ContentIndexToBlockType = nil
+	state.ToolArgumentBuffers = nil
+	state.MCPCallOutputIndices = nil
+	state.ItemIDs = nil
+	state.ReasoningSignatures = nil
+	state.TextContentIndices = nil
+	state.ReasoningContentIndices = nil
+	state.CompactionContentIndices = nil
+	state.OutputItems = nil
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
 	state.StopReason = nil
@@ -494,6 +502,13 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 				// Initialize argument buffer for this tool call
 				state.ToolArgumentBuffers[outputIndex] = ""
+
+				// Store a cloned copy so later mutations (e.g. setting Arguments/Status
+				// to "completed") don't affect the already-emitted output_item.added event.
+				clonedItem := *item
+				clonedToolMsg := *item.ResponsesToolMessage
+				clonedItem.ResponsesToolMessage = &clonedToolMsg
+				state.OutputItems[outputIndex] = &clonedItem
 
 				// Mark tool use blocks to prevent synthetic content_part.added events
 				// This prevents extra content_block_stop events for tools like web_search
@@ -1086,7 +1101,14 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 			// Check if this is a tool call (function_call or MCP call)
 			// If we have accumulated arguments, emit appropriate arguments.done first
-			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs && accumulatedArgs != "" {
+			// Note: we check hasArgs only (not accumulatedArgs != "") to handle zero-arg tool calls
+			if accumulatedArgs, hasArgs := state.ToolArgumentBuffers[outputIndex]; hasArgs {
+				// Update the stored output item with the final arguments
+				if storedItem, exists := state.OutputItems[outputIndex]; exists && storedItem.ResponsesToolMessage != nil {
+					storedItem.ResponsesToolMessage.Arguments = &accumulatedArgs
+					storedItem.Status = schemas.Ptr("completed")
+				}
+
 				// Emit appropriate arguments.done based on whether this is an MCP call
 				var doneType schemas.ResponsesStreamResponseType
 				if state.MCPCallOutputIndices[outputIndex] {
@@ -1193,6 +1215,18 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 		}
 		if state.StopReason != nil {
 			response.StopReason = state.StopReason
+		}
+
+		// Populate the Output array from accumulated items for response.completed
+		// This is needed for clients that check Output for function_call items
+		if len(state.OutputItems) > 0 {
+			// Sort by output index to maintain order
+			response.Output = make([]schemas.ResponsesMessage, 0, len(state.OutputItems))
+			for i := 0; i < state.CurrentOutputIndex; i++ {
+				if item, exists := state.OutputItems[i]; exists {
+					response.Output = append(response.Output, *item)
+				}
+			}
 		}
 
 		return []*schemas.BifrostResponsesStreamResponse{{
@@ -2061,10 +2095,11 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 		if bifrostReq.Params.MaxOutputTokens != nil {
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxOutputTokens
 		}
+		// Anthropic doesn't allow both temperature and top_p to be specified
+		// If both are present, prefer temperature (more commonly used)
 		if bifrostReq.Params.Temperature != nil {
 			anthropicReq.Temperature = bifrostReq.Params.Temperature
-		}
-		if bifrostReq.Params.TopP != nil {
+		} else if bifrostReq.Params.TopP != nil {
 			anthropicReq.TopP = bifrostReq.Params.TopP
 		}
 		if bifrostReq.Params.User != nil {
@@ -3764,7 +3799,10 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
 				anthropicMsg.Content = AnthropicContent{
-					ContentStr: msg.Content.ContentStr,
+					ContentBlocks: []AnthropicContentBlock{{
+						Type: AnthropicContentBlockTypeText,
+						Text: msg.Content.ContentStr,
+					}},
 				}
 			} else if msg.Content.ContentBlocks != nil {
 				contentBlocks := convertBifrostContentBlocksToAnthropic(msg.Content.ContentBlocks)
@@ -3776,6 +3814,7 @@ func convertBifrostMessageToAnthropicMessage(msg *schemas.ResponsesMessage, pend
 			}
 		}
 	}
+
 
 	return &anthropicMsg
 }
@@ -3957,7 +3996,10 @@ func convertBifrostItemReferenceToAnthropicMessage(msg *schemas.ResponsesMessage
 		}
 
 		referenceMsg.Content = AnthropicContent{
-			ContentStr: msg.Content.ContentStr,
+			ContentBlocks: []AnthropicContentBlock{{
+				Type: AnthropicContentBlockTypeText,
+				Text: msg.Content.ContentStr,
+			}},
 		}
 
 		return &referenceMsg
@@ -4141,7 +4183,10 @@ func convertBifrostUnsupportedToolCallToAnthropicMessage(msg *schemas.ResponsesM
 		return &AnthropicMessage{
 			Role: AnthropicMessageRoleAssistant,
 			Content: AnthropicContent{
-				ContentStr: &description,
+				ContentBlocks: []AnthropicContentBlock{{
+					Type: AnthropicContentBlockTypeText,
+					Text: &description,
+				}},
 			},
 		}
 	}
@@ -4183,7 +4228,10 @@ func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *
 			return &AnthropicMessage{
 				Role: AnthropicMessageRoleUser,
 				Content: AnthropicContent{
-					ContentStr: &outputText,
+					ContentBlocks: []AnthropicContentBlock{{
+						Type: AnthropicContentBlockTypeText,
+						Text: &outputText,
+					}},
 				},
 			}
 		}
@@ -4455,7 +4503,9 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 	}
 
-	anthropicTool := &AnthropicTool{}
+	anthropicTool := &AnthropicTool{
+		Type: schemas.Ptr(AnthropicToolTypeCustom), // Custom tools require type: "custom"
+	}
 
 	if tool.Name != nil {
 		anthropicTool.Name = *tool.Name
@@ -4467,8 +4517,15 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 
 	// Convert parameters and strict from ToolFunction
 	if tool.ResponsesToolFunction != nil {
-		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
 		anthropicTool.Strict = tool.ResponsesToolFunction.Strict
+	}
+	if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
+		anthropicTool.InputSchema = tool.ResponsesToolFunction.Parameters
+	} else {
+		// Anthropic requires input_schema for custom tools, provide empty object schema if missing
+		anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
+			Type: "object",
+		}
 	}
 
 	if tool.CacheControl != nil {

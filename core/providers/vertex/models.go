@@ -241,3 +241,69 @@ func (response *VertexListModelsResponse) ToBifrostListModelsResponse(allowedMod
 
 	return bifrostResponse
 }
+
+// ToBifrostListModelsResponse converts a Vertex AI publisher models response to Bifrost's format.
+// This is for foundation models from the Model Garden (publishers.models.list endpoint).
+func (response *VertexListPublisherModelsResponse) ToBifrostListModelsResponse(allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+	if response == nil {
+		return nil
+	}
+
+	bifrostResponse := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0, len(response.PublisherModels)),
+	}
+
+	// Track which model IDs have been added to avoid duplicates
+	addedModelIDs := make(map[string]bool)
+
+	for _, model := range response.PublisherModels {
+		// Extract model ID from name (format: "publishers/google/models/gemini-1.5-pro")
+		modelID := extractModelIDFromName(model.Name)
+		if modelID == "" {
+			continue
+		}
+
+		// Filter based on allowedModels if specified
+		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, modelID) {
+			continue
+		}
+
+		// Skip if already added (shouldn't happen, but safety check)
+		fullModelID := string(schemas.Vertex) + "/" + modelID
+		if addedModelIDs[fullModelID] {
+			continue
+		}
+
+		// Extract display name from supported actions if available
+		displayName := modelID
+		if model.SupportedActions != nil && model.SupportedActions.Deploy != nil && model.SupportedActions.Deploy.ModelDisplayName != "" {
+			displayName = model.SupportedActions.Deploy.ModelDisplayName
+		}
+
+		modelEntry := schemas.Model{
+			ID:   fullModelID,
+			Name: schemas.Ptr(displayName),
+		}
+
+		bifrostResponse.Data = append(bifrostResponse.Data, modelEntry)
+		addedModelIDs[fullModelID] = true
+	}
+
+	bifrostResponse.NextPageToken = response.NextPageToken
+
+	return bifrostResponse
+}
+
+// extractModelIDFromName extracts the model ID from a full resource name.
+// Format: "publishers/google/models/gemini-1.5-pro" -> "gemini-1.5-pro"
+func extractModelIDFromName(name string) string {
+	parts := strings.Split(name, "/")
+	if len(parts) >= 4 && parts[2] == "models" {
+		return parts[3]
+	}
+	// Fallback: return last segment
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
+}

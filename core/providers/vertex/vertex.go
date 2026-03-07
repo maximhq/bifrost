@@ -151,7 +151,10 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
-// Handles pagination automatically by following nextPageToken until all models are retrieved.
+//
+// The logic is:
+// 1. If deployments or allowedModels are configured, return those (no API call needed)
+// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
@@ -159,16 +162,21 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
-	if projectID.GetValue() == "" {
-		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
-	}
-
 	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
 
+	deployments := key.VertexKeyConfig.Deployments
+	allowedModels := key.Models
+
+	// If deployments or allowedModels are configured, return those directly without API call
+	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
+	if !request.Unfiltered && (len(deployments) > 0 || len(allowedModels) > 0) {
+		return buildResponseFromConfig(deployments, allowedModels), nil
+	}
+
+	// No deployments configured - fetch from Model Garden API
 	var host string
 	if region == "global" {
 		host = "aiplatform.googleapis.com"
@@ -176,8 +184,8 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		host = fmt.Sprintf("%s-aiplatform.googleapis.com", region)
 	}
 
-	// Accumulate all models from paginated requests
-	var allModels []VertexModel
+	// Accumulate all publisher models from paginated requests
+	var allPublisherModels []VertexPublisherModel
 	var rawRequests []interface{}
 	var rawResponses []interface{}
 	pageToken := ""
@@ -192,10 +200,15 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err, schemas.Vertex)
 	}
 
+	// Iterate over all supported Vertex publishers to include Google, Anthropic, and Mistral models
+	publishers := []string{"google", "anthropic", "mistralai"}
+	for _, publisher := range publishers {
+		pageToken = ""
 	// Loop through all pages until no nextPageToken is returned
 	for {
-		// Build URL with pagination parameters
-		requestURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/models?pageSize=%d", host, projectID.GetValue(), region, MaxPageSize)
+		// Build URL for publishers.models.list endpoint (Model Garden)
+		// Format: https://{region}-aiplatform.googleapis.com/v1beta1/publishers/{publisher}/models
+		requestURL := fmt.Sprintf("https://%s/v1beta1/publishers/%s/models?pageSize=%d", host, publisher, MaxPageSize)
 		if pageToken != "" {
 			requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
 		}
@@ -214,6 +227,10 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 
 		_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 		if bifrostErr != nil {
+			// Non-Google publishers may not be available in all regions; skip on error
+			if publisher != "google" {
+				break
+			}
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
@@ -224,6 +241,11 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
 			}
 
+			// Non-Google publishers may not be available; skip on error
+			if publisher != "google" {
+				break
+			}
+
 			var errorResp VertexError
 			if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
 				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -231,8 +253,8 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
 		}
 
-		// Parse Vertex's response
-		var vertexResponse VertexListModelsResponse
+		// Parse Vertex's publisher models response
+		var vertexResponse VertexListPublisherModelsResponse
 		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 		if bifrostErr != nil {
 			return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
@@ -245,7 +267,7 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		}
 
 		// Accumulate models from this page
-		allModels = append(allModels, vertexResponse.Models...)
+		allPublisherModels = append(allPublisherModels, vertexResponse.PublisherModels...)
 
 		// Check if there are more pages
 		if vertexResponse.NextPageToken == "" {
@@ -253,12 +275,14 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		}
 		pageToken = vertexResponse.NextPageToken
 	}
+	} // end publisher loop
 
 	// Create aggregated response from all pages
-	aggregatedResponse := &VertexListModelsResponse{
-		Models: allModels,
+	aggregatedResponse := &VertexListPublisherModelsResponse{
+		PublisherModels: allPublisherModels,
 	}
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.VertexKeyConfig.Deployments, request.Unfiltered)
+
+	response := aggregatedResponse.ToBifrostListModelsResponse(nil, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests
@@ -269,6 +293,62 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	}
 
 	return response, nil
+}
+
+// buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
+// This is used when the user has explicitly configured which models they want to use.
+func buildResponseFromConfig(deployments map[string]string, allowedModels []string) *schemas.BifrostListModelsResponse {
+	response := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0),
+	}
+
+	addedModelIDs := make(map[string]bool)
+
+	// Build allowlist set for O(1) lookup
+	allowedSet := make(map[string]bool, len(allowedModels))
+	for _, m := range allowedModels {
+		allowedSet[m] = true
+	}
+
+	// First add models from deployments (filtered by allowedModels when set)
+	for alias, deploymentValue := range deployments {
+		if len(allowedSet) > 0 && !allowedSet[alias] {
+			continue
+		}
+		modelID := string(schemas.Vertex) + "/" + alias
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(alias)
+		modelEntry := schemas.Model{
+			ID:         modelID,
+			Name:       schemas.Ptr(modelName),
+			Deployment: schemas.Ptr(deploymentValue),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	// Then add models from allowedModels that aren't already in deployments
+	for _, allowedModel := range allowedModels {
+		modelID := string(schemas.Vertex) + "/" + allowedModel
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(allowedModel)
+		modelEntry := schemas.Model{
+			ID:   modelID,
+			Name: schemas.Ptr(modelName),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	return response
 }
 
 // ListModels performs a list models request to Vertex's API.

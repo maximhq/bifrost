@@ -5,10 +5,10 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"

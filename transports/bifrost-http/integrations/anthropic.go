@@ -76,8 +76,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
+						ResponsesRequest: bifrostReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
