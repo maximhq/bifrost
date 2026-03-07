@@ -838,15 +838,18 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 	}
 
 	// Parse code#state format and validate state for CSRF protection
-	code := rawCode
-	if parts := strings.SplitN(rawCode, "#", 2); len(parts) == 2 {
-		code = parts[0]
-		returnedState := parts[1]
-		if returnedState != oauthConfig.State {
-			oauthConfig.Status = "failed"
-			p.configStore.UpdateOauthConfig(ctx, oauthConfig)
-			return fmt.Errorf("invalid state token")
-		}
+	parts := strings.SplitN(rawCode, "#", 2)
+	if len(parts) != 2 {
+		oauthConfig.Status = "failed"
+		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+		return fmt.Errorf("authorization code must include state (expected code#state format)")
+	}
+	code := parts[0]
+	returnedState := parts[1]
+	if returnedState != oauthConfig.State {
+		oauthConfig.Status = "failed"
+		p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+		return fmt.Errorf("invalid state token")
 	}
 
 	// Exchange code for tokens via JSON POST

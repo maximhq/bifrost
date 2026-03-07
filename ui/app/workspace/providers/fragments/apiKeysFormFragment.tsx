@@ -21,7 +21,7 @@ import {
 } from "@/lib/store";
 import { isRedacted } from "@/lib/utils/validation";
 import { CheckCircle2, ExternalLink, Info, Loader2, Plus, RefreshCw, Trash2, Unplug } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -823,11 +823,17 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 	const [oauthConfigId, setOauthConfigId] = useState<string>('')
 	const [authCode, setAuthCode] = useState('')
 	const [errorMessage, setErrorMessage] = useState('')
+	const oauthConfigIdRef = useRef<string>('')
 
 	const [initiateOAuth, { isLoading: isInitiating }] = useInitiateAnthropicOAuthMutation()
 	const [exchangeCode, { isLoading: isExchanging }] = useExchangeAnthropicOAuthCodeMutation()
 	const [refreshToken, { isLoading: isRefreshing }] = useRefreshAnthropicOAuthTokenMutation()
 	const [logoutOAuth, { isLoading: isLoggingOut }] = useLogoutAnthropicOAuthMutation()
+
+	// Keep ref in sync with state
+	useEffect(() => {
+		oauthConfigIdRef.current = oauthConfigId
+	}, [oauthConfigId])
 
 	// Detect existing OAuth config on mount
 	useEffect(() => {
@@ -837,6 +843,17 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 			setFlowState('connected')
 		}
 	}, [form])
+
+	// Cleanup pending OAuth flows on unmount (e.g. tab switch)
+	useEffect(() => {
+		return () => {
+			const pendingConfigId = oauthConfigIdRef.current
+			if (pendingConfigId && !form.getValues('key.anthropic_oauth_key_config.oauth_config_id')) {
+				// Fire-and-forget: revoke the pending config that was never completed
+				logoutOAuth({ oauth_config_id: pendingConfigId })
+			}
+		}
+	}, [logoutOAuth, form])
 
 	const handleInitiate = useCallback(async () => {
 		// Open blank tab synchronously to avoid popup blockers
@@ -850,8 +867,11 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 			if (authWindow && !authWindow.closed) {
 				authWindow.location.href = result.authorize_url
 			} else {
-				// Fallback: navigate in same tab if popup was blocked
-				window.location.href = result.authorize_url
+				// Popup was blocked — clean up the initiated config and show error
+				logoutOAuth({ oauth_config_id: result.oauth_config_id })
+				setErrorMessage('Popup was blocked by your browser. Please allow popups for this site and try again.')
+				setFlowState('error')
+				return
 			}
 			setFlowState('initiated')
 		} catch (err) {
