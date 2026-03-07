@@ -139,6 +139,11 @@
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         },
+        "hide_deleted_virtual_keys_in_filters": {
+          "type": "boolean",
+          "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
+          "default": false
+        },
         "allowed_headers": {
           "type": "array",
           "items": {

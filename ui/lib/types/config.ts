@@ -467,6 +467,7 @@ export interface CoreConfig {
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
+	hide_deleted_virtual_keys_in_filters: boolean;
 	header_filter_config?: GlobalHeaderFilterConfig;
 }
 
@@ -491,6 +492,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	allowed_headers: [],
 	required_headers: [],
 	logging_headers: [],
+	hide_deleted_virtual_keys_in_filters: false,
 };
 
 // Semantic cache configuration types

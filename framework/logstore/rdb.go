@@ -226,9 +226,12 @@ func (s *RDBLogStore) SearchLogs(ctx context.Context, filters SearchFilters, pag
 		orderClause = "timestamp " + direction
 	}
 
-	// Execute main query with sorting and pagination
+	// Execute main query with sorting and pagination.
+	// Omit large raw_request/raw_response blobs from the list — they are only
+	// needed when a user opens the detail view for a single log entry, where
+	// they are fetched via the dedicated GET /api/logs/:id endpoint.
 	var logs []Log
-	mainQuery := baseQuery.Order(orderClause)
+	mainQuery := baseQuery.Order(orderClause).Omit("raw_request", "raw_response")
 
 	if pagination.Limit > 0 {
 		mainQuery = mainQuery.Limit(pagination.Limit)
@@ -865,7 +868,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency        float64 `gorm:"column:latency"`
+		Latency         float64 `gorm:"column:latency"`
 	}
 
 	var selectClause string
@@ -1207,7 +1210,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 	var results []struct {
 		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
 		Provider        string  `gorm:"column:provider"`
-		Latency        float64 `gorm:"column:latency"`
+		Latency         float64 `gorm:"column:latency"`
 	}
 
 	var selectClause string

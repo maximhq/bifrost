@@ -216,6 +216,20 @@ const (
 	AttrInputTokens      = "gen_ai.usage.input_tokens"
 	AttrOutputTokens     = "gen_ai.usage.output_tokens"
 	AttrUsageCost        = "gen_ai.usage.cost"
+	// Chat completion usage detail attributes
+	AttrPromptTokenDetailsText        = "gen_ai.usage.prompt_token_details.text_tokens"
+	AttrPromptTokenDetailsAudio       = "gen_ai.usage.prompt_token_details.audio_tokens"
+	AttrPromptTokenDetailsImage       = "gen_ai.usage.prompt_token_details.image_tokens"
+	AttrPromptTokenDetailsCachedRead  = "gen_ai.usage.prompt_token_details.cached_read_tokens"
+	AttrPromptTokenDetailsCachedWrite = "gen_ai.usage.prompt_token_details.cached_write_tokens"
+	AttrCompletionTokenDetailsText    = "gen_ai.usage.completion_token_details.text_tokens"
+	AttrCompletionTokenDetailsAudio   = "gen_ai.usage.completion_token_details.audio_tokens"
+	AttrCompletionTokenDetailsImage   = "gen_ai.usage.completion_token_details.image_tokens"
+	AttrCompletionTokenDetailsReason  = "gen_ai.usage.completion_token_details.reasoning_tokens"
+	AttrCompletionTokenDetailsAccept  = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
+	AttrCompletionTokenDetailsReject  = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
+	AttrCompletionTokenDetailsCite    = "gen_ai.usage.completion_token_details.citation_tokens"
+	AttrCompletionTokenDetailsSearch  = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
 	AttrError     = "gen_ai.error"

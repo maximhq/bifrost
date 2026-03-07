@@ -162,6 +162,33 @@ test.describe('Config Settings', () => {
       // Check for main logging controls
       await expect(configSettingsPage.page.getByText(/Enable Logs/i)).toBeVisible()
       await expect(configSettingsPage.page.getByText(/Log Retention/i)).toBeVisible()
+      await expect(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch).toBeVisible()
+    })
+
+    test('should toggle hide deleted virtual keys in filters', async ({ configSettingsPage }) => {
+      const initialState = await configSettingsPage.getSwitchState(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch)
+
+      await configSettingsPage.toggleHideDeletedVirtualKeysInFilters()
+
+      const newState = await configSettingsPage.getSwitchState(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch)
+      expect(newState).toBe(!initialState)
+
+      const hasChanges = await configSettingsPage.hasPendingChanges()
+      expect(hasChanges).toBe(true)
+    })
+
+    test('should save and persist hide deleted virtual keys in filters toggle', async ({ configSettingsPage }) => {
+      const initialState = await configSettingsPage.getSwitchState(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch)
+
+      await configSettingsPage.toggleHideDeletedVirtualKeysInFilters()
+      await configSettingsPage.saveSettings()
+      await configSettingsPage.goto('logging')
+
+      const expectedState = !initialState
+      await expect(configSettingsPage.hideDeletedVirtualKeysInFiltersSwitch).toHaveAttribute(
+        'data-state',
+        expectedState ? 'checked' : 'unchecked'
+      )
     })
 
     test('should toggle content logging when available', async ({ configSettingsPage }) => {

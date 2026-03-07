@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 type LoggingHandler struct {
 	logManager          logging.LogManager
 	redactedKeysManager RedactedKeysManager
+	config              *lib.Config
 }
 
 type RedactedKeysManager interface {
@@ -34,17 +36,26 @@ type RedactedKeysManager interface {
 }
 
 // NewLoggingHandler creates a new logging handler instance
-func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager) *LoggingHandler {
+func NewLoggingHandler(logManager logging.LogManager, redactedKeysManager RedactedKeysManager, config *lib.Config) *LoggingHandler {
 	return &LoggingHandler{
 		logManager:          logManager,
 		redactedKeysManager: redactedKeysManager,
+		config:              config,
 	}
+}
+
+func (h *LoggingHandler) shouldHideDeletedVirtualKeysInFilters() bool {
+	if h == nil || h.config == nil {
+		return false
+	}
+	return h.config.ClientConfig.HideDeletedVirtualKeysInFilters
 }
 
 // RegisterRoutes registers all logging-related routes
 func (h *LoggingHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// LLM Log retrieval with filtering, search, and pagination
 	r.GET("/api/logs", lib.ChainMiddlewares(h.getLogs, middlewares...))
+	r.GET("/api/logs/{id}", lib.ChainMiddlewares(h.getLogByID, middlewares...))
 	r.GET("/api/logs/stats", lib.ChainMiddlewares(h.getLogsStats, middlewares...))
 	r.GET("/api/logs/histogram", lib.ChainMiddlewares(h.getLogsHistogram, middlewares...))
 	r.GET("/api/logs/histogram/tokens", lib.ChainMiddlewares(h.getLogsTokenHistogram, middlewares...))
@@ -239,6 +250,27 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, result)
+}
+
+// getLogByID handles GET /api/logs/{id} - Get a single log entry by ID including raw_request and raw_response
+func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
+	id, ok := ctx.UserValue("id").(string)
+	if !ok || id == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "log id is required")
+		return
+	}
+
+	log, err := h.logManager.GetLog(ctx, id)
+	if err != nil {
+		if errors.Is(err, logstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, "log not found")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get log: %v", err))
+		return
+	}
+
+	SendJSON(ctx, log)
 }
 
 // getLogsStats handles GET /api/logs/stats - Get statistics for logs with filtering
@@ -564,6 +596,8 @@ func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
 
 // getAvailableFilterData handles GET /api/logs/filterdata - Get all unique filter data from logs
 func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
+	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
+
 	var (
 		models         []string
 		selectedKeys   []logging.KeyPair
@@ -658,6 +692,9 @@ func (h *LoggingHandler) getAvailableFilterData(ctx *fasthttp.RequestCtx) {
 	// Check if all virtual key ids are present in the redacted virtual keys (will not be present in case a virtual key is deleted, but we still need to show its filter)
 	for _, virtualKey := range virtualKeys {
 		if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
+			if hideDeletedVirtualKeys {
+				continue
+			}
 			// Create a new virtual key struct directly since we know it doesn't exist
 			redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
 				ID:   virtualKey.ID,
@@ -1098,6 +1135,8 @@ func (h *LoggingHandler) getMCPLogsStats(ctx *fasthttp.RequestCtx) {
 
 // getMCPLogsFilterData handles GET /api/mcp-logs/filterdata - Get all unique filter data from MCP tool logs
 func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
+	hideDeletedVirtualKeys := h.shouldHideDeletedVirtualKeysInFilters()
+
 	toolNames, err := h.logManager.GetAvailableToolNames(ctx)
 	if err != nil {
 		logger.Error("failed to get available tool names: %v", err)
@@ -1128,6 +1167,9 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 	// Check if all virtual key ids are present in the redacted virtual keys (will not be present in case a virtual key is deleted, but we still need to show its filter)
 	for _, virtualKey := range virtualKeys {
 		if _, ok := redactedVirtualKeys[virtualKey.ID]; !ok {
+			if hideDeletedVirtualKeys {
+				continue
+			}
 			// Create a new virtual key struct directly since we know it doesn't exist
 			redactedVirtualKeys[virtualKey.ID] = tables.TableVirtualKey{
 				ID:   virtualKey.ID,
