@@ -75,19 +75,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	}
 
 	// Handle structured output conversion:
-	// - Anthropic models on Bedrock support native output_config.format.
-	// - Other models keep the existing response_format->tool conversion.
-	var responseFormatTool *BedrockTool
-	if schemas.IsAnthropicModel(bifrostReq.Model) {
-		if outputFormat := convertResponseFormatToAnthropicOutputConfigFormat(bifrostReq.Params); outputFormat != nil {
-			if bedrockReq.AdditionalModelRequestFields == nil {
-				bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
-			}
-			setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", outputFormat)
+	// - Anthropic models on Bedrock use native output_config.format
+	// - Other models keep the response_format->tool conversion.
+	responseFormatTool, anthropicOutputFormat := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	if anthropicOutputFormat != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
 		}
-	} else {
-		// Check for response_format and convert to tool
-		responseFormatTool = convertResponseFormatToTool(ctx, bifrostReq.Params)
+		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
 	}
 
 	// Convert tool config
@@ -364,46 +359,6 @@ func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 	}
 	current[key] = value
 	fields.Set("output_config", current)
-}
-
-// convertResponseFormatToAnthropicOutputConfigFormat converts OpenAI-style response_format
-// (json_schema) into Anthropic Bedrock's native output_config.format structure.
-//
-// Input:
-// {
-//   "type": "json_schema",
-//   "json_schema": { "schema": { ... } }
-// }
-//
-// Output:
-// {
-//   "type": "json_schema",
-//   "schema": { ... }
-// }
-func convertResponseFormatToAnthropicOutputConfigFormat(params *schemas.ChatParameters) any {
-	if params == nil || params.ResponseFormat == nil {
-		return nil
-	}
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	formatType, ok := responseFormatMap["type"].(string)
-	if !ok || formatType != "json_schema" {
-		return nil
-	}
-	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return map[string]any{
-		"type":   "json_schema",
-		"schema": schemaObj,
-	}
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -890,38 +845,51 @@ func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
 // Returns nil if no response_format is present or if it's not a json_schema type
 // Ref: https://aws.amazon.com/blogs/machine-learning/structured-data-response-with-amazon-bedrock-prompt-engineering-and-tool-use/
-func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.ChatParameters) *BedrockTool {
+func convertResponseFormatToTool(
+	ctx *schemas.BifrostContext,
+	model string,
+	params *schemas.ChatParameters,
+) (*BedrockTool, any) {
 	if params == nil || params.ResponseFormat == nil {
-		return nil
+		return nil, nil
 	}
 
 	// ResponseFormat is stored as interface{}, need to parse it
 	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
 	if !ok {
-		return nil
+		return nil, nil
 	}
 
 	// Check if type is "json_schema"
 	formatType, ok := responseFormatMap["type"].(string)
 	if !ok || formatType != "json_schema" {
-		return nil
+		return nil, nil
 	}
 
 	// Extract json_schema object
 	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
 	if !ok {
-		return nil
+		return nil, nil
+	}
+
+	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	// Anthropic Bedrock supports native output_config.format. Keep this provider-specific
+	// conversion encapsulated here, and let caller just apply returned values.
+	if schemas.IsAnthropicModel(model) {
+		return nil, map[string]any{
+			"type":   "json_schema",
+			"schema": schemaObj,
+		}
 	}
 
 	// Extract name and schema
 	toolName, ok := jsonSchemaObj["name"].(string)
 	if !ok || toolName == "" {
 		toolName = "json_response"
-	}
-
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
-	if !ok {
-		return nil
 	}
 
 	// Extract description from schema if available
@@ -947,7 +915,7 @@ func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.Ch
 				JSON: json.RawMessage(schemaObjBytes),
 			},
 		},
-	}
+	}, nil
 }
 
 // convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
