@@ -22,13 +22,35 @@ update_hash() {
   local hash_file="$1"
   local build_target="$2"
   local label="$3"
+  local original_hash=""
+  local build_log=""
+
+  if [ -f "$hash_file" ]; then
+    original_hash="$(cat "$hash_file")"
+  fi
+
+  restore_original_hash() {
+    if [ -n "$original_hash" ]; then
+      printf '%s' "$original_hash" > "$hash_file"
+    else
+      rm -f "$hash_file"
+    fi
+  }
+
+  cleanup_on_exit() {
+    local status=$?
+    if [ "$status" -ne 0 ]; then
+      restore_original_hash
+    fi
+    [ -n "$build_log" ] && rm -f "$build_log"
+  }
 
   echo "==> Updating $label..."
+  trap cleanup_on_exit EXIT INT TERM
 
   # Write a fake hash to trigger a mismatch error from nix
   echo -n "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" > "$hash_file"
 
-  local build_log
   build_log="$(mktemp)"
 
   set +e
@@ -50,6 +72,8 @@ update_hash() {
   fi
 
   echo -n "$got" > "$hash_file"
+  trap - EXIT INT TERM
+  rm -f "$build_log"
   echo "==> $label updated to: $got"
 
   # Return the hash via a variable name
