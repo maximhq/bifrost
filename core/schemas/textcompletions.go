@@ -67,6 +67,7 @@ func (r *BifrostTextCompletionRequest) ToBifrostChatRequest() *BifrostChatReques
 type BifrostTextCompletionResponse struct {
 	ID                string                     `json:"id"`
 	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int64                      `json:"created"`
 	Model             string                     `json:"model"`
 	Object            string                     `json:"object"` // "text_completion" (same for text completion stream)
 	SystemFingerprint string                     `json:"system_fingerprint"`
