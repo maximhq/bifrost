@@ -4007,7 +4007,7 @@ func migrationAddAnthropicOAuthConfigIDColumn(ctx context.Context, db *gorm.DB) 
 				exists = count > 0
 			default: // postgres
 				var count int64
-				if err := tx.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'config_keys' AND column_name = 'anthropic_oauth_config_id'").Scan(&count).Error; err != nil {
+				if err := tx.Raw("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'config_keys' AND column_name = 'anthropic_oauth_config_id'").Scan(&count).Error; err != nil {
 					return err
 				}
 				exists = count > 0
