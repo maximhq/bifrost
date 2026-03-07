@@ -540,6 +540,29 @@ function isValidIPv6(host: string): boolean {
 	return true;
 }
 
+/**
+ * Validates if an EnvVar object has a valid value
+ * @param envVar - The EnvVar object to validate
+ * @returns true if valid (has a non-empty value or is using an env var)
+ */
+export function isValidEnvVar(envVar: { value?: string; env_var?: string; from_env?: boolean } | undefined): boolean {
+	if (!envVar) {
+		return false;
+	}
+
+	// If using environment variable
+	if (envVar.from_env && envVar.env_var) {
+		return envVar.env_var.trim().length > 0;
+	}
+
+	// If using direct value
+	if (envVar.value) {
+		return envVar.value.trim().length > 0;
+	}
+
+	return false;
+}
+
 export const isJson = (text: string) => {
 	try {
 		JSON.parse(text);

@@ -1,0 +1,381 @@
+package sapaicore
+
+import (
+	"fmt"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// DefaultDeploymentCacheTTL is the default TTL for deployment cache entries
+const DefaultDeploymentCacheTTL = 1 * time.Hour
+
+// MinDeploymentCacheTTL is the minimum allowed TTL for deployment cache entries
+const MinDeploymentCacheTTL = 1 * time.Minute
+
+// DeploymentCache manages deployment ID resolution and caching
+type DeploymentCache struct {
+	mu          sync.RWMutex
+	deployments map[string]*cachedDeployments // keyed by resource group + base URL
+	client      *fasthttp.Client
+	tokenCache  *TokenCache
+	ttl         time.Duration
+}
+
+// cachedDeployments holds cached deployment data for a resource group
+type cachedDeployments struct {
+	modelToDeployment map[string]SAPAICoreCachedDeployment // model name -> deployment info
+	fetchedAt         time.Time
+}
+
+// NewDeploymentCache creates a new deployment cache with default TTL
+func NewDeploymentCache(client *fasthttp.Client, tokenCache *TokenCache) *DeploymentCache {
+	return NewDeploymentCacheWithTTL(client, tokenCache, DefaultDeploymentCacheTTL)
+}
+
+// NewDeploymentCacheWithTTL creates a new deployment cache with a custom TTL.
+// TTL values less than MinDeploymentCacheTTL will be clamped to the minimum.
+func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, ttl time.Duration) *DeploymentCache {
+	if ttl <= 0 {
+		ttl = DefaultDeploymentCacheTTL
+	} else if ttl < MinDeploymentCacheTTL {
+		ttl = MinDeploymentCacheTTL
+	}
+	return &DeploymentCache{
+		deployments: make(map[string]*cachedDeployments),
+		client:      client,
+		tokenCache:  tokenCache,
+		ttl:         ttl,
+	}
+}
+
+// deploymentCacheKey generates a unique key for deployment cache.
+// Uses length-prefixed format to avoid collisions when values contain ":"
+func deploymentCacheKey(baseURL, resourceGroup string) string {
+	return fmt.Sprintf("%d:%s:%s", len(baseURL), baseURL, resourceGroup)
+}
+
+// GetDeploymentID resolves a model name to a deployment ID
+// First checks static deployments map from config, then falls back to auto-resolution
+func (dc *DeploymentCache) GetDeploymentID(
+	modelName string,
+	staticDeployments map[string]string,
+	clientID, clientSecret, authURL, baseURL, resourceGroup string,
+) (string, SAPAICoreBackendType, *schemas.BifrostError) {
+	// Check static deployments first
+	if staticDeployments != nil {
+		if deploymentID, ok := staticDeployments[modelName]; ok {
+			backend := DetermineBackend(modelName)
+			return deploymentID, backend, nil
+		}
+	}
+
+	// Auto-resolve from deployments API
+	return dc.resolveDeployment(modelName, clientID, clientSecret, authURL, baseURL, resourceGroup)
+}
+
+// resolveDeployment fetches and caches deployments, then returns the deployment ID for the model
+func (dc *DeploymentCache) resolveDeployment(
+	modelName, clientID, clientSecret, authURL, baseURL, resourceGroup string,
+) (string, SAPAICoreBackendType, *schemas.BifrostError) {
+	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
+
+	// Try cache first (read lock)
+	dc.mu.RLock()
+	if cached, ok := dc.deployments[cacheKey]; ok {
+		if time.Since(cached.fetchedAt) < dc.ttl {
+			if deployment, ok := cached.modelToDeployment[modelName]; ok {
+				dc.mu.RUnlock()
+				return deployment.DeploymentID, deployment.Backend, nil
+			}
+		}
+	}
+	dc.mu.RUnlock()
+
+	// Opportunistic cleanup: prune expired entries during cache misses
+	dc.pruneExpired()
+
+	// Short write-lock check, then release before external I/O
+	dc.mu.Lock()
+	if cached, ok := dc.deployments[cacheKey]; ok {
+		if time.Since(cached.fetchedAt) < dc.ttl {
+			if deployment, ok := cached.modelToDeployment[modelName]; ok {
+				dc.mu.Unlock()
+				return deployment.DeploymentID, deployment.Backend, nil
+			}
+			// Model not found in fresh cache
+			dc.mu.Unlock()
+			return "", "", providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("no running deployment found for model: %s", modelName),
+				fmt.Errorf("model not deployed"),
+				schemas.SAPAICore,
+			)
+		}
+	}
+	dc.mu.Unlock()
+
+	// Fetch deployments from API without holding lock
+	deployments, err := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Re-lock to publish result
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	// Double-check: another goroutine may have refreshed while we were fetching
+	if cached, ok := dc.deployments[cacheKey]; ok {
+		if time.Since(cached.fetchedAt) < dc.ttl {
+			if deployment, ok := cached.modelToDeployment[modelName]; ok {
+				return deployment.DeploymentID, deployment.Backend, nil
+			}
+			return "", "", providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("no running deployment found for model: %s", modelName),
+				fmt.Errorf("model not deployed"),
+				schemas.SAPAICore,
+			)
+		}
+	}
+
+	// Cache the results
+	dc.deployments[cacheKey] = &cachedDeployments{
+		modelToDeployment: deployments,
+		fetchedAt:         time.Now(),
+	}
+
+	// Look up the requested model
+	if deployment, ok := deployments[modelName]; ok {
+		return deployment.DeploymentID, deployment.Backend, nil
+	}
+
+	return "", "", providerUtils.NewBifrostOperationError(
+		fmt.Sprintf("no running deployment found for model: %s", modelName),
+		fmt.Errorf("model not deployed"),
+		schemas.SAPAICore,
+	)
+}
+
+// fetchDeployments retrieves all running deployments from SAP AI Core
+func (dc *DeploymentCache) fetchDeployments(
+	clientID, clientSecret, authURL, baseURL, resourceGroup string,
+) (map[string]SAPAICoreCachedDeployment, *schemas.BifrostError) {
+	// Get auth token
+	token, tokenErr := dc.tokenCache.GetToken(clientID, clientSecret, authURL)
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+
+	// Ensure baseURL has /v2 suffix
+	normalizedURL := normalizeBaseURL(baseURL)
+
+	// Build request URL
+	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, url.QueryEscape(resourceGroup))
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(deploymentsURL)
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("AI-Resource-Group", resourceGroup)
+
+	if err := dc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to fetch deployments from SAP AI Core",
+			err,
+			schemas.SAPAICore,
+		)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("deployments request failed with status %d", resp.StatusCode()),
+			fmt.Errorf("http %d", resp.StatusCode()),
+			schemas.SAPAICore,
+		)
+	}
+
+	var deploymentsResp SAPAICoreDeploymentsResponse
+	if err := sonic.Unmarshal(resp.Body(), &deploymentsResp); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to parse deployments response",
+			err,
+			schemas.SAPAICore,
+		)
+	}
+
+	// Build model -> deployment mapping
+	result := make(map[string]SAPAICoreCachedDeployment)
+	for _, res := range deploymentsResp.Resources {
+		if res.Status != SAPAICoreDeploymentStatusRunning {
+			continue
+		}
+		modelName := res.Details.Resources.SAPAICoreBackendDetails.Model.Name
+		if modelName == "" {
+			continue
+		}
+		result[modelName] = SAPAICoreCachedDeployment{
+			DeploymentID: res.ID,
+			ModelName:    modelName,
+			Backend:      DetermineBackend(modelName),
+		}
+	}
+
+	return result, nil
+}
+
+// ListModels retrieves all available models from running deployments
+func (dc *DeploymentCache) ListModels(
+	clientID, clientSecret, authURL, baseURL, resourceGroup string,
+) ([]SAPAICoreModel, *schemas.BifrostError) {
+	// Get auth token
+	token, tokenErr := dc.tokenCache.GetToken(clientID, clientSecret, authURL)
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+
+	// Ensure baseURL has /v2 suffix
+	normalizedURL := normalizeBaseURL(baseURL)
+
+	// Build request URL
+	deploymentsURL := fmt.Sprintf("%s/lm/deployments?status=RUNNING&resourceGroup=%s", normalizedURL, url.QueryEscape(resourceGroup))
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(deploymentsURL)
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("AI-Resource-Group", resourceGroup)
+
+	if err := dc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to fetch deployments for model listing",
+			err,
+			schemas.SAPAICore,
+		)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.NewBifrostOperationError(
+			fmt.Sprintf("model listing request failed with status %d", resp.StatusCode()),
+			fmt.Errorf("http %d", resp.StatusCode()),
+			schemas.SAPAICore,
+		)
+	}
+
+	var deploymentsResp SAPAICoreDeploymentsResponse
+	if err := sonic.Unmarshal(resp.Body(), &deploymentsResp); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(
+			"failed to parse deployments response for model listing",
+			err,
+			schemas.SAPAICore,
+		)
+	}
+
+	// Build unique models list
+	modelSet := make(map[string]SAPAICoreModel)
+	for _, res := range deploymentsResp.Resources {
+		if res.Status != SAPAICoreDeploymentStatusRunning {
+			continue
+		}
+		modelName := res.Details.Resources.SAPAICoreBackendDetails.Model.Name
+		if modelName == "" {
+			continue
+		}
+		if _, exists := modelSet[modelName]; !exists {
+			config := GetSAPAICoreModelConfig(modelName)
+			modelSet[modelName] = SAPAICoreModel{
+				ID:              modelName,
+				Name:            modelName,
+				DeploymentID:    res.ID,
+				ContextLength:   config.ContextWindow,
+				MaxOutputTokens: config.MaxTokens,
+			}
+		}
+	}
+
+	// Convert to slice
+	models := make([]SAPAICoreModel, 0, len(modelSet))
+	for _, model := range modelSet {
+		models = append(models, model)
+	}
+
+	return models, nil
+}
+
+// ClearCache clears the deployment cache for a specific resource group.
+// If both baseURL and resourceGroup are empty, clears the entire cache.
+func (dc *DeploymentCache) ClearCache(baseURL, resourceGroup string) {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	if baseURL == "" && resourceGroup == "" {
+		// Clear all cache entries
+		dc.deployments = make(map[string]*cachedDeployments)
+		return
+	}
+
+	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
+	delete(dc.deployments, cacheKey)
+}
+
+// Cleanup removes all expired entries from the deployment cache.
+func (dc *DeploymentCache) Cleanup() {
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	now := time.Now()
+	for key, cached := range dc.deployments {
+		if now.Sub(cached.fetchedAt) >= dc.ttl {
+			delete(dc.deployments, key)
+		}
+	}
+}
+
+// pruneExpired is a non-blocking opportunistic cleanup that removes expired entries
+// if the write lock can be acquired without contention.
+func (dc *DeploymentCache) pruneExpired() {
+	if !dc.mu.TryLock() {
+		return
+	}
+	defer dc.mu.Unlock()
+
+	now := time.Now()
+	for key, cached := range dc.deployments {
+		if now.Sub(cached.fetchedAt) >= dc.ttl {
+			delete(dc.deployments, key)
+		}
+	}
+}
+
+// DetermineBackend determines the backend type based on model name prefix
+func DetermineBackend(modelName string) SAPAICoreBackendType {
+	if strings.HasPrefix(modelName, "anthropic--") || strings.HasPrefix(modelName, "amazon--") {
+		return SAPAICoreBackendBedrock
+	}
+	if strings.HasPrefix(modelName, "gemini-") {
+		return SAPAICoreBackendVertex
+	}
+	return SAPAICoreBackendOpenAI
+}
+
+// normalizeBaseURL ensures the base URL has the /v2 suffix
+func normalizeBaseURL(baseURL string) string {
+	trimmed := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(trimmed, "/v2") {
+		return trimmed
+	}
+	return trimmed + "/v2"
+}
