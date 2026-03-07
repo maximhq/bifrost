@@ -15,7 +15,7 @@ func Init(config any) error {
 // This is the system identifier - not editable by users
 // Users can set a custom display_name in the config for the UI
 func GetName() string {
-	return "hello-world"
+	return "hello-world-2"
 }
 
 func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
