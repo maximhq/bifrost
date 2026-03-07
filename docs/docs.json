@@ -109,6 +109,7 @@
               "cli-agents/gemini-cli",
               "cli-agents/qwen-code",
               "cli-agents/opencode",
+              "cli-agents/cursor",
               "cli-agents/zed-editor"
             ]
           },
