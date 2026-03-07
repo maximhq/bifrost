@@ -580,8 +580,16 @@ func HandleAnthropicChatCompletionStreaming(
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
+	// Set headers, using append for anthropic-beta to preserve values from SetExtraHeaders
+	betaFromMap := headers["anthropic-beta"]
 	for key, value := range headers {
+		if key == "anthropic-beta" {
+			continue
+		}
 		req.Header.Set(key, value)
+	}
+	if betaFromMap != "" {
+		appendBetaHeader(req, betaFromMap)
 	}
 
 	req.SetBody(jsonBody)
@@ -1047,9 +1055,16 @@ func HandleAnthropicResponsesStream(
 	req.Header.SetContentType("application/json")
 	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
 
-	// Set headers, merging anthropic-beta with any user-supplied values
+	// Set headers, using append for anthropic-beta to preserve values from SetExtraHeaders
+	betaFromMap := headers["anthropic-beta"]
 	for key, value := range headers {
+		if key == "anthropic-beta" {
+			continue
+		}
 		req.Header.Set(key, value)
+	}
+	if betaFromMap != "" {
+		appendBetaHeader(req, betaFromMap)
 	}
 
 	// Set body
