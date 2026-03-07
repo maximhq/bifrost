@@ -3,6 +3,7 @@
   inputs,
   src,
   version,
+  vendorHash,
   bifrost-ui,
 }:
 let
@@ -37,7 +38,7 @@ buildGoModule {
 
   modRoot = "transports";
   subPackages = [ "bifrost-http" ];
-  vendorHash = "sha256-Ck1cwv/DYI9EXmp7U2ZSNXlU+Qok8BFn5bcN1Pv7Nmc=";
+  inherit vendorHash;
 
   doCheck = false;
 

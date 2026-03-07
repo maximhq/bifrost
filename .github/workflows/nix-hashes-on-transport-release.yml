@@ -1,0 +1,44 @@
+name: Update Nix hashes (transport release)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nix-hashes
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.release.tag_name, 'transports/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v9
+
+      - name: Compute hashes
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: bash nix/packages/update-hashes.sh
+
+      - name: Pull with rebase
+        run: git pull --rebase --autostash
+
+      - uses: stefanzweifel/git-auto-commit-action@v6
+        with:
+          commit_message: "chore(nix): update hashes for ${{ github.event.release.tag_name || 'manual' }}"
+          commit_author: github-actions[bot] <github-actions[bot]@users.noreply.github.com>

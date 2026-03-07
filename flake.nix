@@ -49,11 +49,15 @@
           system,
         }:
         let
-          version = "1.4.9";
+          readTrimmedFile = path: builtins.replaceStrings [ "\n" ] [ "" ] (builtins.readFile path);
+
+          version = readTrimmedFile ./transports/version;
+          vendorHash = readTrimmedFile ./nix/packages/vendorHash;
+          npmDepsHash = readTrimmedFile ./nix/packages/npmDepsHash;
 
           bifrost-ui = pkgs.callPackage ./nix/packages/bifrost-ui.nix {
             src = self;
-            inherit version;
+            inherit version npmDepsHash;
           };
         in
         {
@@ -62,8 +66,7 @@
           bifrost-http = pkgs.callPackage ./nix/packages/bifrost-http.nix {
             inherit inputs;
             src = self;
-            inherit version;
-            inherit bifrost-ui;
+            inherit version vendorHash bifrost-ui;
           };
 
           default = self.packages.${system}.bifrost-http;
