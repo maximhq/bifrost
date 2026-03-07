@@ -6,11 +6,16 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VENDOR_HASH_FILE="$SCRIPT_DIR/vendorHash"
 NPM_DEPS_HASH_FILE="$SCRIPT_DIR/npmDepsHash"
 
+SOURCE_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/transports/version")"
 TAG="${RELEASE_TAG:-}"
 if [ -n "$TAG" ]; then
   VERSION="${TAG#transports/v}"
+  if [ "$VERSION" != "$SOURCE_VERSION" ]; then
+    echo "ERROR: RELEASE_TAG ($VERSION) does not match transports/version ($SOURCE_VERSION)" >&2
+    exit 1
+  fi
 else
-  VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/transports/version")"
+  VERSION="$SOURCE_VERSION"
 fi
 
 update_hash() {
@@ -37,7 +42,7 @@ update_hash() {
   fi
 
   local got
-  got=$(grep -oP 'got:\s+\Ksha256-\S+' "$build_log" | head -1)
+  got=$(sed -n 's/.*got:[[:space:]]*\(sha256-[^[:space:]]*\).*/\1/p' "$build_log" | head -n1)
   if [ -z "${got:-}" ]; then
     echo "ERROR: could not extract $label from build output" >&2
     cat "$build_log" >&2
