@@ -268,14 +268,26 @@ type MCPPlugin interface {
 	PostMCPHook(ctx *BifrostContext, resp *BifrostMCPResponse, bifrostErr *BifrostError) (*BifrostMCPResponse, *BifrostError, error)
 }
 
+// Plugin placement constants control where custom plugins execute relative to built-in plugins.
+type PluginPlacement string
+
+const (
+	PluginPlacementPostBuiltin PluginPlacement = "post_builtin"
+	PluginPlacementPreBuiltin  PluginPlacement = "pre_builtin"
+	PluginPlacementBuiltin     PluginPlacement = "builtin"
+	PluginPlacementDefault     PluginPlacement = PluginPlacementPostBuiltin
+)
+
 // PluginConfig is the configuration for a plugin.
 // It contains the name of the plugin, whether it is enabled, and the configuration for the plugin.
 type PluginConfig struct {
-	Enabled bool    `json:"enabled"`
-	Name    string  `json:"name"`
-	Path    *string `json:"path,omitempty"`
-	Version *int16  `json:"version,omitempty"`
-	Config  any     `json:"config,omitempty"`
+	Enabled   bool             `json:"enabled"`
+	Name      string           `json:"name"`
+	Path      *string          `json:"path,omitempty"`
+	Version   *int16           `json:"version,omitempty"`
+	Config    any              `json:"config,omitempty"`
+	Placement *PluginPlacement `json:"placement,omitempty"` // "pre_builtin" or "post_builtin". Default: "post_builtin"
+	Order     *int             `json:"order,omitempty"`     // Position within placement group. Lower = earlier. Default: 0
 }
 
 // ObservabilityPlugin is an interface for plugins that receive completed traces

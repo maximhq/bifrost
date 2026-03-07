@@ -11918,6 +11918,353 @@ func TestGeneratePluginHash(t *testing.T) {
 }
 
 // ===================================================================================
+// PLUGIN SEQUENCING TESTS
+// ===================================================================================
+
+// mockPlugin is a minimal BasePlugin implementation for ordering tests.
+type mockPlugin struct {
+	name string
+}
+
+func (p *mockPlugin) GetName() string { return p.name }
+func (p *mockPlugin) Cleanup() error  { return nil }
+
+// mockLLMPlugin extends mockPlugin with LLMPlugin interface for cache rebuild tests.
+type mockLLMPlugin struct {
+	mockPlugin
+}
+
+func (p *mockLLMPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *mockLLMPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// newTestConfigForPlugins creates a minimal Config suitable for plugin ordering tests.
+func newTestConfigForPlugins() *Config {
+	initTestLogger()
+	return &Config{}
+}
+
+// TestSetPluginOrderInfo_Defaults verifies that nil placement defaults to "post_builtin" and nil order defaults to 0.
+func TestSetPluginOrderInfo_Defaults(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// nil placement → post_builtin, nil order → 0
+	config.SetPluginOrderInfo("plugin-a", nil, nil)
+	info := config.pluginOrderMap["plugin-a"]
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, info.Placement, "nil placement should default to post_builtin")
+	require.Equal(t, 0, info.Order, "nil order should default to 0")
+
+	// Explicit values are preserved
+	config.SetPluginOrderInfo("plugin-b", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(5))
+	info = config.pluginOrderMap["plugin-b"]
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, info.Placement)
+	require.Equal(t, 5, info.Order)
+
+	// Explicit builtin placement
+	config.SetPluginOrderInfo("plugin-c", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(1))
+	info = config.pluginOrderMap["plugin-c"]
+	require.Equal(t, schemas.PluginPlacementBuiltin, info.Placement)
+	require.Equal(t, 1, info.Order)
+}
+
+// TestSortAndRebuildPlugins_PlacementGroups verifies plugins sort into pre_builtin → builtin → post_builtin.
+func TestSortAndRebuildPlugins_PlacementGroups(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register plugins in deliberately wrong order: post, builtin, pre, post, pre
+	plugins := []struct {
+		name      string
+		placement schemas.PluginPlacement
+		order     int
+	}{
+		{"post-1", schemas.PluginPlacementPostBuiltin, 0},
+		{"builtin-1", schemas.PluginPlacementBuiltin, 1},
+		{"pre-1", schemas.PluginPlacementPreBuiltin, 0},
+		{"post-2", schemas.PluginPlacementPostBuiltin, 1},
+		{"pre-2", schemas.PluginPlacementPreBuiltin, 1},
+	}
+	for _, p := range plugins {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: p.name}))
+		config.SetPluginOrderInfo(p.name, schemas.Ptr(p.placement), schemas.Ptr(p.order))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	expected := []string{"pre-1", "pre-2", "builtin-1", "post-1", "post-2"}
+	require.Equal(t, expected, got, "plugins should be sorted: pre_builtin → builtin → post_builtin")
+}
+
+// TestSortAndRebuildPlugins_OrderWithinGroup verifies that within a group, lower order comes first.
+func TestSortAndRebuildPlugins_OrderWithinGroup(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	names := []string{"plugin-order-2", "plugin-order-0", "plugin-order-1"}
+	orders := []int{2, 0, 1}
+	for i, name := range names {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: name}))
+		config.SetPluginOrderInfo(name, schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(orders[i]))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	expected := []string{"plugin-order-0", "plugin-order-1", "plugin-order-2"}
+	require.Equal(t, expected, got, "within same placement group, plugins should sort by ascending order")
+}
+
+// TestSortAndRebuildPlugins_StableSort verifies that plugins with same placement and order
+// preserve their registration order (stable sort).
+func TestSortAndRebuildPlugins_StableSort(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register 3 plugins with identical placement and order
+	names := []string{"alpha", "beta", "gamma"}
+	for _, name := range names {
+		require.NoError(t, config.ReloadPlugin(&mockPlugin{name: name}))
+		config.SetPluginOrderInfo(name, schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+	}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	require.Equal(t, names, got, "same placement+order should preserve registration order")
+}
+
+// TestSortAndRebuildPlugins_UnknownPlacement verifies that plugins with unknown placement
+// get default rank (treated as post_builtin, not pre_builtin).
+func TestSortAndRebuildPlugins_UnknownPlacement(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register a pre_builtin, a post_builtin, and one with an invalid placement
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "pre"}))
+	config.SetPluginOrderInfo("pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "post"}))
+	config.SetPluginOrderInfo("post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "unknown"}))
+	// Directly manipulate pluginOrderMap to simulate an invalid placement
+	config.pluginOrderMap["unknown"] = pluginOrderInfo{Placement: "invalid_placement", Order: 0}
+
+	config.SortAndRebuildPlugins()
+
+	got := config.GetPluginOrder()
+	require.Equal(t, "pre", got[0], "pre_builtin should be first")
+	// "unknown" should NOT be before "pre" (i.e., unknown placement should not get rank 0)
+	require.Equal(t, "unknown", got[len(got)-1], "unknown placement should sort to the end (default rank)")
+}
+
+// TestLoadDefaultPlugins_PreservesPlacementAndOrder is the primary regression test:
+// verifies that loadDefaultPlugins correctly maps Placement and Order from DB rows.
+func TestLoadDefaultPlugins_PreservesPlacementAndOrder(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	order2 := 2
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order5 := 5
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-pre",
+				Enabled:   true,
+				Placement: &preBuiltin,
+				Order:     &order2,
+			},
+			{
+				Name:      "plugin-post",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order5,
+			},
+			{
+				Name:    "plugin-nil",
+				Enabled: true,
+				// Placement and Order intentionally nil
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	err := loadDefaultPlugins(context.Background(), config)
+	require.NoError(t, err)
+	require.Len(t, config.PluginConfigs, 3)
+
+	// Verify pre_builtin plugin
+	require.NotNil(t, config.PluginConfigs[0].Placement, "Placement should not be nil for plugin-pre")
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, *config.PluginConfigs[0].Placement)
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, 2, *config.PluginConfigs[0].Order)
+
+	// Verify post_builtin plugin
+	require.NotNil(t, config.PluginConfigs[1].Placement, "Placement should not be nil for plugin-post")
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[1].Placement)
+	require.NotNil(t, config.PluginConfigs[1].Order)
+	require.Equal(t, 5, *config.PluginConfigs[1].Order)
+
+	// Verify nil placement/order are preserved as nil (not silently defaulted here)
+	require.Nil(t, config.PluginConfigs[2].Placement, "nil Placement in DB should stay nil in PluginConfig")
+	require.Nil(t, config.PluginConfigs[2].Order, "nil Order in DB should stay nil in PluginConfig")
+}
+
+// TestGetPluginOrder_MatchesSortedOrder verifies GetPluginOrder returns names
+// in the same order as the sorted BasePlugins.
+func TestGetPluginOrder_MatchesSortedOrder(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register in reverse order
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "c-post"}))
+	config.SetPluginOrderInfo("c-post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "a-pre"}))
+	config.SetPluginOrderInfo("a-pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockPlugin{name: "b-builtin"}))
+	config.SetPluginOrderInfo("b-builtin", schemas.Ptr(schemas.PluginPlacementBuiltin), schemas.Ptr(0))
+
+	config.SortAndRebuildPlugins()
+
+	order := config.GetPluginOrder()
+	require.Equal(t, []string{"a-pre", "b-builtin", "c-post"}, order)
+
+	// Also verify BasePlugins directly matches
+	basePlugins := config.BasePlugins.Load()
+	require.NotNil(t, basePlugins)
+	for i, name := range order {
+		require.Equal(t, name, (*basePlugins)[i].GetName(), "BasePlugins[%d] should match GetPluginOrder[%d]", i, i)
+	}
+}
+
+// TestSortAndRebuildPlugins_RebuildsCaches verifies that LLMPlugins interface cache
+// is rebuilt in the correct sorted order after SortAndRebuildPlugins.
+func TestSortAndRebuildPlugins_RebuildsCaches(t *testing.T) {
+	config := newTestConfigForPlugins()
+
+	// Register LLM plugins in reverse order
+	require.NoError(t, config.ReloadPlugin(&mockLLMPlugin{mockPlugin{name: "llm-post"}}))
+	config.SetPluginOrderInfo("llm-post", schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(0))
+
+	require.NoError(t, config.ReloadPlugin(&mockLLMPlugin{mockPlugin{name: "llm-pre"}}))
+	config.SetPluginOrderInfo("llm-pre", schemas.Ptr(schemas.PluginPlacementPreBuiltin), schemas.Ptr(0))
+
+	config.SortAndRebuildPlugins()
+
+	// Verify LLMPlugins cache is sorted
+	llmPlugins := config.LLMPlugins.Load()
+	require.NotNil(t, llmPlugins)
+	require.Len(t, *llmPlugins, 2)
+	require.Equal(t, "llm-pre", (*llmPlugins)[0].GetName(), "LLM cache should have pre_builtin first")
+	require.Equal(t, "llm-post", (*llmPlugins)[1].GetName(), "LLM cache should have post_builtin second")
+}
+
+// TestMergePluginsFromFile_PlacementChange verifies that mergePluginsFromFile
+// replaces a plugin when its placement or order changes, even without a version bump.
+func TestMergePluginsFromFile_PlacementChange(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+	order1 := 1
+	version1 := int16(1)
+
+	// Simulate DB state: plugin-a is post_builtin with order 0
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Version:   1,
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	err := loadDefaultPlugins(context.Background(), config)
+	require.NoError(t, err)
+	require.Len(t, config.PluginConfigs, 1)
+	require.Equal(t, schemas.PluginPlacementPostBuiltin, *config.PluginConfigs[0].Placement)
+
+	// Config file says plugin-a should be pre_builtin with order 1, same version
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Version:   &version1,
+				Placement: &preBuiltin,
+				Order:     &order1,
+			},
+		},
+	}
+
+	mergePluginsFromFile(context.Background(), config, configData)
+
+	// Should have been replaced because placement changed
+	require.Len(t, config.PluginConfigs, 1)
+	require.NotNil(t, config.PluginConfigs[0].Placement)
+	require.Equal(t, schemas.PluginPlacementPreBuiltin, *config.PluginConfigs[0].Placement, "placement should be updated from file")
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, 1, *config.PluginConfigs[0].Order, "order should be updated from file")
+}
+
+// TestMergePluginsFromFile_NoChangeSkipsMerge verifies that mergePluginsFromFile
+// does NOT replace a plugin when version, placement, and order are all unchanged.
+func TestMergePluginsFromFile_NoChangeSkipsMerge(t *testing.T) {
+	initTestLogger()
+
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+	version1 := int16(1)
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Version:   1,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:    map[string]any{"setting": "db-value"},
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	err := loadDefaultPlugins(context.Background(), config)
+	require.NoError(t, err)
+
+	// Config file has same version, placement, order but different config value
+	configData := &ConfigData{
+		Plugins: []*schemas.PluginConfig{
+			{
+				Name:      "plugin-a",
+				Enabled:   true,
+				Version:   &version1,
+				Placement: &postBuiltin,
+				Order:     &order0,
+				Config:    map[string]any{"setting": "file-value"},
+			},
+		},
+	}
+
+	mergePluginsFromFile(context.Background(), config, configData)
+
+	// Should NOT have been replaced (version and placement unchanged)
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when version and placement are unchanged")
+}
+
+// ===================================================================================
 // CLIENT CONFIG HASH TESTS
 // ===================================================================================
 
