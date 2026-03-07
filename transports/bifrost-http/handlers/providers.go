@@ -98,6 +98,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
 	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
+	r.GET("/api/models/details", lib.ChainMiddlewares(h.listModelDetails, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 }
 
@@ -457,7 +458,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
-			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
@@ -587,6 +588,23 @@ type ListModelsResponse struct {
 	Total  int             `json:"total"`
 }
 
+// ModelDetailsResponse represents a model with capability metadata.
+type ModelDetailsResponse struct {
+	Name             string                `json:"name"`
+	Provider         string                `json:"provider"`
+	ContextLength    *int                  `json:"context_length,omitempty"`
+	MaxInputTokens   *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens  *int                  `json:"max_output_tokens,omitempty"`
+	Architecture     *schemas.Architecture `json:"architecture,omitempty"`
+	AccessibleByKeys []string              `json:"accessible_by_keys,omitempty"`
+}
+
+// ListModelDetailsResponse represents the response for listing model details.
+type ListModelDetailsResponse struct {
+	Models []ModelDetailsResponse `json:"models"`
+	Total  int                    `json:"total"`
+}
+
 // listModels handles GET /api/models - List models with filtering
 // Query parameters:
 //   - query: Filter models by name (case-insensitive partial match)
@@ -613,25 +631,31 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 	var allModels []ModelResponse
 
+	var keyIDs []string
+	if keysParam != "" {
+		keyIDs = strings.Split(keysParam, ",")
+	}
+
 	// If provider is specified, get models for that provider only
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
+		validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
 		var models []string
 		if unfiltered {
 			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
 		} else {
 			models = h.modelsManager.GetModelsForProvider(provider)
 			// Filter by keys if specified
-			if keysParam != "" {
-				keyIDs := strings.Split(keysParam, ",")
-				models = h.filterModelsByKeys(provider, models, keyIDs)
+			if len(validKeyIDs) > 0 {
+				models = h.filterModelsByKeys(provider, models, validKeyIDs)
 			}
 		}
 		for _, model := range models {
-			allModels = append(allModels, ModelResponse{
-				Name:     model,
-				Provider: string(provider),
-			})
+			entry := ModelResponse{Name: model, Provider: string(provider)}
+			if len(validKeyIDs) > 0 && !unfiltered {
+				entry.AccessibleByKeys = validKeyIDs
+			}
+			allModels = append(allModels, entry)
 		}
 	} else {
 		// Get all providers
@@ -643,23 +667,23 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 		// Collect models from all providers
 		for _, provider := range providers {
+			validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
 			var models []string
 			if unfiltered {
 				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
 			} else {
 				models = h.modelsManager.GetModelsForProvider(provider)
 				// Filter by keys if specified
-				if keysParam != "" {
-					keyIDs := strings.Split(keysParam, ",")
-					models = h.filterModelsByKeys(provider, models, keyIDs)
+				if len(validKeyIDs) > 0 {
+					models = h.filterModelsByKeys(provider, models, validKeyIDs)
 				}
-
 			}
 			for _, model := range models {
-				allModels = append(allModels, ModelResponse{
-					Name:     model,
-					Provider: string(provider),
-				})
+				entry := ModelResponse{Name: model, Provider: string(provider)}
+				if len(validKeyIDs) > 0 && !unfiltered {
+					entry.AccessibleByKeys = validKeyIDs
+				}
+				allModels = append(allModels, entry)
 			}
 		}
 	}
@@ -728,6 +752,168 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetBody(data)
+}
+
+// listModelDetails handles GET /api/models/details - List models with capability metadata.
+// Query parameters:
+//   - query: Filter models by name (case-insensitive partial match)
+//   - provider: Filter by specific provider name
+//   - keys: Comma-separated list of key IDs to filter models accessible by those keys
+//   - limit: Maximum number of results to return (default: 20)
+func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
+	queryParam := string(ctx.QueryArgs().Peek("query"))
+	providerParam := string(ctx.QueryArgs().Peek("provider"))
+	keysParam := string(ctx.QueryArgs().Peek("keys"))
+	limitParam := string(ctx.QueryArgs().Peek("limit"))
+	unfilteredParam := string(ctx.QueryArgs().Peek("unfiltered"))
+
+	unfiltered := unfilteredParam == "true"
+
+	// Default is 20 (vs 5 for /api/models) because capability metadata is the primary value here;
+	// clients typically need a richer initial page to display meaningful information.
+	limit := 20
+	if limitParam != "" {
+		if n, err := ctx.QueryArgs().GetUint("limit"); err == nil {
+			limit = n
+		}
+	}
+
+	var allModels []ModelDetailsResponse
+	modelCatalog := h.inMemoryStore.ModelCatalog
+
+	var keyIDs []string
+	if keysParam != "" {
+		keyIDs = strings.Split(keysParam, ",")
+	}
+
+	if providerParam != "" {
+		provider := schemas.ModelProvider(providerParam)
+		validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
+		var models []string
+		if unfiltered {
+			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+		} else {
+			models = h.modelsManager.GetModelsForProvider(provider)
+			if len(validKeyIDs) > 0 {
+				models = h.filterModelsByKeys(provider, models, validKeyIDs)
+			}
+		}
+
+		for _, model := range models {
+			details := ModelDetailsResponse{
+				Name:     model,
+				Provider: string(provider),
+			}
+			if len(validKeyIDs) > 0 && !unfiltered {
+				details.AccessibleByKeys = validKeyIDs
+			}
+			if modelCatalog != nil {
+				capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+				if capabilities != nil {
+					details.ContextLength = capabilities.ContextLength
+					details.MaxInputTokens = capabilities.MaxInputTokens
+					details.MaxOutputTokens = capabilities.MaxOutputTokens
+					details.Architecture = capabilities.Architecture
+				}
+			}
+			allModels = append(allModels, details)
+		}
+	} else {
+		providers, err := h.inMemoryStore.GetAllProviders()
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
+			return
+		}
+
+		for _, provider := range providers {
+			validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
+			var models []string
+			if unfiltered {
+				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+			} else {
+				models = h.modelsManager.GetModelsForProvider(provider)
+				if len(validKeyIDs) > 0 {
+					models = h.filterModelsByKeys(provider, models, validKeyIDs)
+				}
+			}
+			for _, model := range models {
+				details := ModelDetailsResponse{
+					Name:     model,
+					Provider: string(provider),
+				}
+				if len(validKeyIDs) > 0 && !unfiltered {
+					details.AccessibleByKeys = validKeyIDs
+				}
+				if modelCatalog != nil {
+					capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+					if capabilities != nil {
+						details.ContextLength = capabilities.ContextLength
+						details.MaxInputTokens = capabilities.MaxInputTokens
+						details.MaxOutputTokens = capabilities.MaxOutputTokens
+						details.Architecture = capabilities.Architecture
+					}
+				}
+				allModels = append(allModels, details)
+			}
+		}
+	}
+
+	if queryParam != "" {
+		filtered := []ModelDetailsResponse{}
+		queryLower := strings.ToLower(queryParam)
+		queryNormalized := strings.ReplaceAll(strings.ReplaceAll(queryLower, "-", ""), "_", "")
+
+		for _, model := range allModels {
+			modelLower := strings.ToLower(model.Name)
+			modelNormalized := strings.ReplaceAll(strings.ReplaceAll(modelLower, "-", ""), "_", "")
+
+			if strings.Contains(modelLower, queryLower) ||
+				strings.Contains(modelNormalized, queryNormalized) ||
+				fuzzyMatch(modelLower, queryLower) {
+				filtered = append(filtered, model)
+			}
+		}
+		allModels = filtered
+	}
+
+	total := len(allModels)
+	if limit > 0 && limit < len(allModels) {
+		allModels = allModels[:limit]
+	}
+
+	SendJSON(ctx, ListModelDetailsResponse{Models: allModels, Total: total})
+}
+
+// getValidKeyIDsForProvider returns key IDs that exist for the provider config.
+// Input IDs are trimmed and deduplicated while preserving request order.
+func (h *ProviderHandler) getValidKeyIDsForProvider(provider schemas.ModelProvider, keyIDs []string) []string {
+	if len(keyIDs) == 0 {
+		return nil
+	}
+
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil || config == nil {
+		return nil
+	}
+
+	existing := make(map[string]bool, len(config.Keys))
+	for _, key := range config.Keys {
+		existing[key.ID] = true
+	}
+
+	valid := make([]string, 0, len(keyIDs))
+	seen := make(map[string]bool, len(keyIDs))
+	for _, keyID := range keyIDs {
+		trimmed := strings.TrimSpace(keyID)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		if existing[trimmed] {
+			valid = append(valid, trimmed)
+		}
+	}
+	return valid
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions
