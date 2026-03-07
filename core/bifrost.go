@@ -81,6 +81,8 @@ type Bifrost struct {
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
+  providerRegistry    *ProviderRegistry                  // Custom provider registry (optional)
+	registryInitOnce    sync.Once                          // Ensures provider registry is initialized only once
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -3059,8 +3061,8 @@ transferComplete:
 	// Step 7: Create new wait group for the updated workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
-	// Step 8: Create provider instance
-	provider, err := bifrost.createBaseProvider(providerKey, providerConfig)
+	// Step 7: Create provider instance
+	provider, err := bifrost.createProvider(providerKey, providerConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create provider instance for %s: %v", providerKey, err)
 	}
@@ -3374,6 +3376,35 @@ func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecution
 
 // PROVIDER MANAGEMENT
 
+// ProviderRegistry returns the provider registry for this Bifrost instance.
+// If no registry exists, it creates one lazily in a thread-safe manner.
+func (bifrost *Bifrost) ProviderRegistry() *ProviderRegistry {
+	bifrost.registryInitOnce.Do(func() {
+		bifrost.providerRegistry = NewProviderRegistry()
+	})
+	return bifrost.providerRegistry
+}
+
+// createProvider attempts to create a provider using createBaseProvider first,
+// then falls back to the registry if that fails.
+func (bifrost *Bifrost) createProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
+	// Try built-in providers first
+	provider, err := bifrost.createBaseProvider(providerKey, config)
+	if err == nil {
+		return provider, nil
+	}
+
+	// Fallback to registry
+	if bifrost.providerRegistry != nil {
+		if constructor := bifrost.providerRegistry.Get(providerKey); constructor != nil {
+			return constructor(config, bifrost.logger)
+		}
+	}
+
+	// Return original error if registry doesn't have the provider
+	return nil, err
+}
+
 // createBaseProvider creates a provider based on the base provider type
 func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, config *schemas.ProviderConfig) (schemas.Provider, error) {
 	// Determine which provider type to create
@@ -3463,7 +3494,7 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 	// Start specified number of workers
 	bifrost.waitGroups.Store(providerKey, &sync.WaitGroup{})
 
-	provider, err := bifrost.createBaseProvider(providerKey, config)
+	provider, err := bifrost.createProvider(providerKey, config)
 	if err != nil {
 		return fmt.Errorf("failed to create provider for the given key: %v", err)
 	}
