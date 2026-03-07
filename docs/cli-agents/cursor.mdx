@@ -1,10 +1,10 @@
 ---
 title: "Cursor"
-description: "Use Cursor IDE with Bifrost to route AI requests through any provider with built-in observability and governance."
+description: "Add Bifrost as a custom model in Cursor, configure MCP tools, and use virtual keys for team access control."
 icon: "arrow-pointer"
 ---
 
-[Cursor](https://cursor.com) is an AI-powered code editor built on VS Code, with integrated chat, inline editing, and agent capabilities.
+[Cursor](https://cursor.com) is an AI-powered IDE that supports OpenAI-compatible APIs and MCP (Model Context Protocol). By connecting Cursor to Bifrost, you get access to any provider/model in your Bifrost configuration, plus MCP tools and governance features like virtual keys.
 
 ![Setting up Bifrost for Cursor](/media/ides/cursor-add-custom-model-1.png)
 
@@ -80,3 +80,7 @@ Non-native models **must support tool use** for Cursor's agent mode and inline e
 <Note>
 Cursor's "Override OpenAI Base URL" is a global setting that applies to all OpenAI-compatible models. This works well with Bifrost since Bifrost handles routing to the correct provider based on the model name.
 </Note>
+
+## Observability
+
+All Cursor requests through Bifrost are logged. Monitor them at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content.

@@ -1,39 +1,126 @@
 ---
 title: "LibreChat"
-description: "Integrate LibreChat with Bifrost to access any AI provider through a modern open-source chat interface."
+description: "Integrate LibreChat with Bifrost to access any AI provider through a modern open-source chat interface with virtual keys and observability."
 icon: "message"
 ---
 
-[LibreChat](https://github.com/danny-avila/LibreChat) is a modern, open-source chat client that supports multiple providers.
+[LibreChat](https://github.com/danny-avila/LibreChat) is a modern, open-source chat client that supports multiple AI providers. By adding Bifrost as a custom provider, you get access to any model configured in Bifrost through a familiar chat interface, plus governance features like virtual keys and built-in observability.
 
 ## Setup
 
-1. **Install LibreChat:** There are multiple ways of local setup, please follow the [LibreChat documentation](https://www.librechat.ai/docs/local) for more details.
+### 1. Install LibreChat
 
-2. **Add Bifrost as a custom provider**: Now that you have LibreChat installed, you can add Bifrost as a custom provider.
+Follow the [LibreChat documentation](https://www.librechat.ai/docs/local) for local setup. There are multiple installation options (Docker, npm, etc.).
 
-   Add the following to your `librechat.yaml` file:
-   ```yaml
-   custom:
-    - name: "Bifrost"
-      apiKey: "dummy" # Add the authentication key if login is enabled, otherwise add a placeholder
-      baseURL: "http://host.docker.internal:8080/v1" # Or localhost:8080 if running locally, or {your-bifrost-container}:8080 if running in the same docker network
-      models:
-        default: ["openai/gpt-4o"] # Replace with the model you want to use
-        fetch: true
-      titleConvo: true
-      titleModel: "openai/gpt-4o" # Replace with the model you want to use for chat title generation
-      summarize: false # Set to true if you want to enable chat summary generation
-      summaryModel: "openai/gpt-4o" # Replace with the model you want to use for chat summary generation
-      forcePrompt: false # Set to true if you want to enable force prompt generation
-      modelDisplayLabel: "Bifrost"
-      iconURL: https://getbifrost.ai/bifrost-logo.png
-   ```
+### 2. Add Bifrost as a Custom Provider
 
-   <Note>
-   If you're running LibreChat in a docker container, LibreChat does not automatically use the `librechat.yaml` file, please check the Step 1 of the [LibreChat documentation](https://www.librechat.ai/docs/quick_start/custom_endpoints#step-1-create-or-edit-a-docker-override-file) for more details.
-   </Note>
+Add the following to your `librechat.yaml` file:
 
-3. **Run LibreChat**
+```yaml
+custom:
+  - name: "Bifrost"
+    apiKey: "dummy"
+    baseURL: "http://localhost:8080/v1"
+    models:
+      default: ["openai/gpt-4o"]
+      fetch: true
+    titleConvo: true
+    titleModel: "openai/gpt-4o"
+    summarize: false
+    summaryModel: "openai/gpt-4o"
+    forcePrompt: false
+    modelDisplayLabel: "Bifrost"
+    iconURL: https://getbifrost.ai/bifrost-logo.png
+```
 
-   Now you can start using Bifrost as a provider in LibreChat, with all the features of Bifrost.
+| Field | Description |
+|-------|-------------|
+| `apiKey` | Bifrost virtual key if authentication is enabled; use `dummy` otherwise |
+| `baseURL` | Bifrost gateway URL + `/v1` (LibreChat uses OpenAI format) |
+| `models.default` | Default models to show. Use Bifrost model IDs (`provider/model`) |
+| `models.fetch` | Set `true` to fetch available models from Bifrost |
+| `titleConvo` | Use AI for conversation title generation |
+| `titleModel` | Model for title generation |
+| `summarize` | Enable chat summary generation |
+| `summaryModel` | Model for summaries |
+
+<Tip>
+Set `models.fetch: true` to automatically discover all models configured in Bifrost. This keeps your LibreChat model list in sync with your Bifrost provider configuration.
+</Tip>
+
+<Note>
+If you're running LibreChat in Docker, it does not automatically use `librechat.yaml`. See [Step 1 of the LibreChat custom endpoints guide](https://www.librechat.ai/docs/quick_start/custom_endpoints#step-1-create-or-edit-a-docker-override-file) for how to mount or override the config.
+</Note>
+
+### 3. Docker Networking
+
+Choose the correct `baseURL` for your setup:
+
+| Setup | baseURL |
+|-------|---------|
+| LibreChat and Bifrost on same host | `http://localhost:8080/v1` |
+| LibreChat in Docker Desktop, Bifrost on host | `http://host.docker.internal:8080/v1` |
+| LibreChat in Docker Engine (Linux), Bifrost on host | Add `--add-host=host.docker.internal:host-gateway` to `docker run`, or `extra_hosts: ["host.docker.internal:host-gateway"]` in Compose, then use `http://host.docker.internal:8080/v1` |
+| Both in same Docker network | `http://bifrost-container-name:8080/v1` |
+
+### 4. Run LibreChat
+
+Start LibreChat. Bifrost will appear as a provider with all configured models available.
+
+## Virtual Keys
+
+When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set `apiKey` to your virtual key:
+
+```yaml
+apiKey: "bf-your-virtual-key-here"
+```
+
+This lets you enforce usage limits, budgets, and access control per user or team. For team deployments, create a separate virtual key for each team or environment — each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+
+## Model Selection
+
+LibreChat displays models from the `models.default` list or fetches them from Bifrost when `models.fetch` is enabled. Use Bifrost model IDs in `provider/model` format to access any configured provider:
+
+```yaml
+models:
+  default:
+    - "openai/gpt-5"
+    - "anthropic/claude-sonnet-4-5-20250929"
+    - "gemini/gemini-2.5-pro"
+    - "groq/llama-3.3-70b-versatile"
+  fetch: true
+```
+
+- Use powerful models like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for complex conversations
+- Use fast models like `groq/llama-3.3-70b-versatile` for quick responses
+- Set `titleModel` and `summaryModel` to lighter models to reduce cost for metadata generation
+
+## Using Multiple Providers
+
+Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format to access any configured provider through the single `/v1` endpoint:
+
+```
+anthropic/claude-sonnet-4-5-20250929
+openai/gpt-5
+gemini/gemini-2.5-pro
+mistral/mistral-large-latest
+```
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Note>
+LibreChat connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed in LibreChat.
+</Note>
+
+## Observability
+
+All LibreChat traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage across your team.
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control

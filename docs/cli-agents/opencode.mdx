@@ -1,14 +1,16 @@
 ---
 title: "Opencode"
-description: "Use Opencode with Bifrost to access any AI provider through a terminal-based coding assistant."
+description: "Use Opencode with Bifrost to access any AI provider through a terminal-based coding assistant with virtual keys and observability."
 icon: "codepen"
 ---
 
-[Opencode](https://github.com/sst/opencode) is a terminal-based coding assistant by SST.
+[Opencode](https://github.com/sst/opencode) is an AI-powered coding application that supports OpenAI-compatible APIs. By pointing it at Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys, built-in observability, and per-model options for reasoning effort, thinking budget, and more.
 
-![opencode with Bifrost](../media/opencode-with-bifrost.png)
+![Opencode with Bifrost](../media/opencode-with-bifrost.png)
 
-## Configuring OpenCode to work with Bifrost
+## Setup
+
+### 1. Configure OpenCode to work with Bifrost
 
 OpenCode uses a JSON config file (`opencode.json`) to configure providers. Point your provider's `baseURL` to Bifrost.
 
@@ -64,6 +66,19 @@ Route Anthropic models through Bifrost's Anthropic endpoint:
 You can also use the `/connect` command in the OpenCode TUI to configure credentials interactively, then update the `baseURL` in your config file.
 </Tip>
 
+## Virtual Keys
+
+When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set `apiKey` in your provider options to your virtual key:
+
+```jsonc
+"options": {
+  "baseURL": "http://localhost:8080/openai",
+  "apiKey": "bf-your-virtual-key-here"
+}
+```
+
+This lets you enforce usage limits, budgets, and access control per user or environment. For team deployments, create a separate virtual key for each team — each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+
 ## Model Selection
 
 Set your default models in `opencode.json`:
@@ -79,9 +94,22 @@ Switch models in the TUI with <key>ctrl</key>+<key>p</key>
 
 ![Opencode model selection](../media/opencode-model-selection.png)
 
+- Use powerful models like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for complex coding tasks
+- Use fast models like `groq/llama-3.3-70b-versatile` for quick completions
+- Set `small_model` to a lighter model for faster, lower-cost operations
+
 ## Using Multiple Providers
 
-Bifrost lets you configure models from different providers in a single endpoint. Use the `provider/model-name` format:
+Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format to access any configured provider through the single OpenAI endpoint:
+
+```
+anthropic/claude-sonnet-4-5-20250929
+openai/gpt-5
+gemini/gemini-2.5-pro
+mistral/mistral-large-latest
+```
+
+You can configure models from different providers with per-model options:
 
 ```jsonc
 {
@@ -129,3 +157,16 @@ Bifrost supports the following providers with the `provider/model-name` format:
 <Warning>
 Non-native models **must support tool use** for OpenCode to work properly. OpenCode relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
 </Warning>
+
+<Note>
+OpenCode connects to Bifrost via a single endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed.
+</Note>
+
+## Observability
+
+All OpenCode traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage.
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control
