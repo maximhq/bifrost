@@ -182,8 +182,12 @@ models:
       - name: keys
         in: query
         description: Comma-separated list of key IDs to filter models accessible by those keys
+        style: form
+        explode: false
         schema:
-          type: string
+          type: array
+          items:
+            type: string
       - name: limit
         in: query
         description: Maximum number of results to return (default 5)
@@ -229,8 +233,12 @@ models-details:
       - name: keys
         in: query
         description: Comma-separated list of key IDs to filter models accessible by those keys
+        style: form
+        explode: false
         schema:
-          type: string
+          type: array
+          items:
+            type: string
       - name: limit
         in: query
         description: Maximum number of results to return (default 20)

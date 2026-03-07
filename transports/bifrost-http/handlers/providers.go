@@ -639,21 +639,11 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// If provider is specified, get models for that provider only
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
-		var models []string
-		if unfiltered {
-			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
-		} else {
-			models = h.modelsManager.GetModelsForProvider(provider)
-			// Filter by keys if specified
-			if len(validKeyIDs) > 0 {
-				models = h.filterModelsByKeys(provider, models, validKeyIDs)
-			}
-		}
+		models, modelAccessibleByKeys := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
 		for _, model := range models {
 			entry := ModelResponse{Name: model, Provider: string(provider)}
-			if len(validKeyIDs) > 0 && !unfiltered {
-				entry.AccessibleByKeys = validKeyIDs
+			if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
+				entry.AccessibleByKeys = keys
 			}
 			allModels = append(allModels, entry)
 		}
@@ -667,21 +657,11 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 		// Collect models from all providers
 		for _, provider := range providers {
-			validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
-			var models []string
-			if unfiltered {
-				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
-			} else {
-				models = h.modelsManager.GetModelsForProvider(provider)
-				// Filter by keys if specified
-				if len(validKeyIDs) > 0 {
-					models = h.filterModelsByKeys(provider, models, validKeyIDs)
-				}
-			}
+			models, modelAccessibleByKeys := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
 			for _, model := range models {
 				entry := ModelResponse{Name: model, Provider: string(provider)}
-				if len(validKeyIDs) > 0 && !unfiltered {
-					entry.AccessibleByKeys = validKeyIDs
+				if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
+					entry.AccessibleByKeys = keys
 				}
 				allModels = append(allModels, entry)
 			}
@@ -788,24 +768,15 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 
 	if providerParam != "" {
 		provider := schemas.ModelProvider(providerParam)
-		validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
-		var models []string
-		if unfiltered {
-			models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
-		} else {
-			models = h.modelsManager.GetModelsForProvider(provider)
-			if len(validKeyIDs) > 0 {
-				models = h.filterModelsByKeys(provider, models, validKeyIDs)
-			}
-		}
+		models, modelAccessibleByKeys := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
 
 		for _, model := range models {
 			details := ModelDetailsResponse{
 				Name:     model,
 				Provider: string(provider),
 			}
-			if len(validKeyIDs) > 0 && !unfiltered {
-				details.AccessibleByKeys = validKeyIDs
+			if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
+				details.AccessibleByKeys = keys
 			}
 			if modelCatalog != nil {
 				capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
@@ -826,23 +797,14 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 		}
 
 		for _, provider := range providers {
-			validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
-			var models []string
-			if unfiltered {
-				models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
-			} else {
-				models = h.modelsManager.GetModelsForProvider(provider)
-				if len(validKeyIDs) > 0 {
-					models = h.filterModelsByKeys(provider, models, validKeyIDs)
-				}
-			}
+			models, modelAccessibleByKeys := h.getFilteredModelsForProvider(provider, keyIDs, unfiltered)
 			for _, model := range models {
 				details := ModelDetailsResponse{
 					Name:     model,
 					Provider: string(provider),
 				}
-				if len(validKeyIDs) > 0 && !unfiltered {
-					details.AccessibleByKeys = validKeyIDs
+				if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
+					details.AccessibleByKeys = keys
 				}
 				if modelCatalog != nil {
 					capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
@@ -916,53 +878,108 @@ func (h *ProviderHandler) getValidKeyIDsForProvider(provider schemas.ModelProvid
 	return valid
 }
 
-// filterModelsByKeys filters models based on key-level model restrictions
-func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, models []string, keyIDs []string) []string {
+// getFilteredModelsForProvider applies provider-level and key-level filters and returns
+// both filtered models and per-model key accessibility.
+func (h *ProviderHandler) getFilteredModelsForProvider(provider schemas.ModelProvider, keyIDs []string, unfiltered bool) ([]string, map[string][]string) {
+	validKeyIDs := h.getValidKeyIDsForProvider(provider, keyIDs)
+
+	var models []string
+	if unfiltered {
+		models = h.modelsManager.GetUnfilteredModelsForProvider(provider)
+	} else {
+		models = h.modelsManager.GetModelsForProvider(provider)
+	}
+
+	// If caller supplied keys but none are valid for this provider, fail closed.
+	if len(keyIDs) > 0 && len(validKeyIDs) == 0 {
+		return []string{}, map[string][]string{}
+	}
+
+	if len(validKeyIDs) == 0 {
+		return models, nil
+	}
+
+	return h.filterModelsByKeysWithAccessMap(provider, models, validKeyIDs)
+}
+
+// filterModelsByKeysWithAccessMap filters models based on key-level model restrictions
+// and returns exact per-model key IDs that grant access.
+func (h *ProviderHandler) filterModelsByKeysWithAccessMap(provider schemas.ModelProvider, models []string, keyIDs []string) ([]string, map[string][]string) {
 	// Get provider config to access keys
 	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
-		return models
+		return []string{}, map[string][]string{}
 	}
-	// Build a set of allowed models from the specified keys
-	// Track whether we have any unrestricted keys (which grant access to all models)
-	// and whether we have any restricted keys (which limit to specific models)
+
+	keysByID := make(map[string]schemas.Key, len(config.Keys))
+	for _, key := range config.Keys {
+		keysByID[key.ID] = key
+	}
+
 	allowedModels := make(map[string]bool)
+	modelToKeys := make(map[string][]string)
+	modelToKeySeen := make(map[string]map[string]bool)
 	hasRestrictedKey := false
-	hasUnrestrictedKey := false
+	unrestrictedKeyIDs := make([]string, 0, len(keyIDs))
+
 	for _, keyID := range keyIDs {
-		for _, key := range config.Keys {
-			if key.ID == keyID {
-				if len(key.Models) > 0 {
-					// Key has model restrictions - add them to allowedModels
-					hasRestrictedKey = true
-					for _, model := range key.Models {
-						allowedModels[model] = true
-					}
-				} else {
-					// Key has no model restrictions - grants access to all models
-					hasUnrestrictedKey = true
+		key, exists := keysByID[keyID]
+		if !exists {
+			continue
+		}
+
+		if len(key.Models) > 0 {
+			hasRestrictedKey = true
+			for _, model := range key.Models {
+				allowedModels[model] = true
+				if _, ok := modelToKeySeen[model]; !ok {
+					modelToKeySeen[model] = make(map[string]bool)
 				}
-				break
+				if !modelToKeySeen[model][keyID] {
+					modelToKeys[model] = append(modelToKeys[model], keyID)
+					modelToKeySeen[model][keyID] = true
+				}
+			}
+			continue
+		}
+
+		unrestrictedKeyIDs = append(unrestrictedKeyIDs, keyID)
+	}
+
+	accessByModel := make(map[string][]string, len(models))
+
+	// If any key is unrestricted, all models remain visible.
+	if len(unrestrictedKeyIDs) > 0 {
+		for _, model := range models {
+			access := make([]string, 0, len(unrestrictedKeyIDs)+len(modelToKeys[model]))
+			access = append(access, unrestrictedKeyIDs...)
+			if restrictedKeys, ok := modelToKeys[model]; ok {
+				access = append(access, restrictedKeys...)
+			}
+			if len(access) > 0 {
+				accessByModel[model] = access
 			}
 		}
+		return models, accessByModel
 	}
-	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
-	if hasUnrestrictedKey {
-		return models
-	}
-	// If no keys have model restrictions (e.g., unknown key IDs), return all models
+
+	// If no keys have model restrictions, return models unchanged.
 	if !hasRestrictedKey {
-		return models
+		return models, accessByModel
 	}
-	// Filter models based on restrictions from restricted keys only
+
+	// Filter models based on restrictions from restricted keys only.
 	filtered := []string{}
 	for _, model := range models {
 		if allowedModels[model] {
 			filtered = append(filtered, model)
+			if keys, ok := modelToKeys[model]; ok && len(keys) > 0 {
+				accessByModel[model] = keys
+			}
 		}
 	}
-	return filtered
+	return filtered, accessByModel
 }
 
 // ListBaseModelsResponse represents the response for listing base models
