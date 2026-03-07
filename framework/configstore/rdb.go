@@ -351,6 +351,10 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+				// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+				if dbKey.AnthropicOAuthKeyConfig == nil {
+					dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+				}
 				if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 					return s.parseGormError(err)
 				}
@@ -366,6 +370,10 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+					// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+					if dbKey.AnthropicOAuthKeyConfig == nil {
+						dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+					}
 					if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 						return s.parseGormError(err)
 					}
@@ -509,6 +517,10 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
+			// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+			if dbKey.AnthropicOAuthKeyConfig == nil {
+				dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
+			}
 			if err := txDB.WithContext(ctx).Save(&dbKey).Error; err != nil {
 				return s.parseGormError(err)
 			}
