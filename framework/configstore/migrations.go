@@ -296,6 +296,63 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddStoreRawRequestResponseColumn(ctx, db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_store_raw_request_response_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableProvider{}, "store_raw_request_response") {
+				if err := migrator.AddColumn(&tables.TableProvider{}, "store_raw_request_response"); err != nil {
+					return err
+				}
+			}
+			// Backfill config_hash for existing providers so they don't appear
+			// dirty after upgrade. StoreRawRequestResponse is now part of the
+			// hash input; rows written before this migration have stale hashes.
+			var providers []tables.TableProvider
+			if err := tx.Find(&providers).Error; err != nil {
+				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
+			}
+			for _, provider := range providers {
+				providerConfig := ProviderConfig{
+					NetworkConfig:            provider.NetworkConfig,
+					ConcurrencyAndBufferSize: provider.ConcurrencyAndBufferSize,
+					ProxyConfig:              provider.ProxyConfig,
+					SendBackRawRequest:       provider.SendBackRawRequest,
+					SendBackRawResponse:      provider.SendBackRawResponse,
+					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
+					CustomProviderConfig:     provider.CustomProviderConfig,
+				}
+				hash, err := providerConfig.GenerateConfigHash(provider.Name)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
+				}
+				if err := tx.Model(&provider).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if err := migrator.DropColumn(&tables.TableProvider{}, "store_raw_request_response"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while running add store raw request response column migration: %s", err.Error())
+	}
 	return nil
 }
 

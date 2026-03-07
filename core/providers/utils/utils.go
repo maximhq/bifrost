@@ -1247,20 +1247,34 @@ type RequestMetadata struct {
 	RequestType schemas.RequestType
 }
 
-// ShouldSendBackRawRequest checks if the raw request should be sent back.
+// ShouldSendBackRawRequest checks if the raw request should be captured.
 // Context overrides are intentionally restricted to asymmetric behavior: a context value can only
 // promote false→true and will not override a true config to false, avoiding accidental suppression.
+// When store_raw_request_response is enabled (logging-only mode), this also returns true so that
+// providers capture the raw payload for PostLLMHook plugins; the payload is stripped before
+// the response is returned to the client.
 func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
 	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
 		return sendBackRawRequest
 	}
+	if loggingOnly, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && loggingOnly {
+		return true
+	}
 	return defaultSendBackRawRequest
 }
 
-// ShouldSendBackRawResponse checks if the raw response should be sent back, and returns it if it exists.
+// ShouldSendBackRawResponse checks if the raw response should be captured.
+// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
+// promote false→true and will not override a true config to false, avoiding accidental suppression.
+// When store_raw_request_response is enabled (logging-only mode), this also returns true so that
+// providers capture the raw payload for PostLLMHook plugins; the payload is stripped before
+// the response is returned to the client.
 func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse bool) bool {
 	if sendBackRawResponse, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok && sendBackRawResponse {
 		return sendBackRawResponse
+	}
+	if loggingOnly, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && loggingOnly {
+		return true
 	}
 	return defaultSendBackRawResponse
 }
@@ -1340,6 +1354,14 @@ func ProcessAndSendResponse(
 
 	streamResponse := &schemas.BifrostStreamChunk{}
 	if processedResponse != nil {
+		// Strip raw data from streaming chunks when only captured for internal logging
+		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
+			extraField := processedResponse.GetExtraFields()
+			if extraField != nil {
+				extraField.RawRequest = nil
+				extraField.RawResponse = nil
+			}
+		}
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
@@ -1348,6 +1370,11 @@ func ProcessAndSendResponse(
 		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
 	}
 	if processedError != nil {
+		// Strip raw data from streaming error chunks when only captured for internal logging
+		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
+			processedError.ExtraFields.RawRequest = nil
+			processedError.ExtraFields.RawResponse = nil
+		}
 		streamResponse.BifrostError = processedError
 	}
 
@@ -1392,6 +1419,14 @@ func ProcessAndSendBifrostError(
 
 	streamResponse := &schemas.BifrostStreamChunk{}
 	if processedResponse != nil {
+		// Strip raw data from streaming chunks when only captured for internal logging
+		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
+			extraField := processedResponse.GetExtraFields()
+			if extraField != nil {
+				extraField.RawRequest = nil
+				extraField.RawResponse = nil
+			}
+		}
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
@@ -1399,6 +1434,11 @@ func ProcessAndSendBifrostError(
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 	}
 	if processedError != nil {
+		// Strip raw data from streaming error chunks when only captured for internal logging
+		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
+			processedError.ExtraFields.RawRequest = nil
+			processedError.ExtraFields.RawResponse = nil
+		}
 		streamResponse.BifrostError = processedError
 	}
 

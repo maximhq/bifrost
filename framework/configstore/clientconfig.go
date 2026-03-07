@@ -254,6 +254,7 @@ type ProviderConfig struct {
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
@@ -269,6 +270,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
+		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
@@ -456,6 +458,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash SendBackRawResponse
 	if p.SendBackRawResponse {
 		hash.Write([]byte("sendBackRawResponse"))
+	}
+
+	// Hash StoreRawRequestResponse
+	if p.StoreRawRequestResponse {
+		hash.Write([]byte("storeRawRequestResponse"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

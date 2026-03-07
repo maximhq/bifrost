@@ -1000,3 +1000,283 @@ func TestParseAndSetRawRequest_SSEStreamingChunks(t *testing.T) {
 		t.Errorf("Expected raw_request.model=gpt-4, got %v", rawParsed["model"])
 	}
 }
+
+// TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk verifies
+// that when BifrostContextKeyRawRequestResponseForLogging is set, ProcessAndSendResponse
+// strips RawRequest and RawResponse from the outgoing stream chunk, while leaving other
+// ExtraFields intact.
+func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk(t *testing.T) {
+	rawReq := json.RawMessage(`{"model":"gpt-4","messages":[]}`)
+	rawResp := json.RawMessage(`{"id":"chatcmpl-001"}`)
+
+	tests := []struct {
+		name           string
+		loggingOnly    bool
+		expectStripped bool
+	}{
+		{
+			name:           "logging-only flag set: raw data stripped from chunk",
+			loggingOnly:    true,
+			expectStripped: true,
+		},
+		{
+			name:           "logging-only flag not set: raw data preserved in chunk",
+			loggingOnly:    false,
+			expectStripped: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.loggingOnly {
+				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+			}
+
+			response := &schemas.BifrostResponse{
+				ChatResponse: &schemas.BifrostChatResponse{
+					ID:    "chatcmpl-001",
+					Model: "gpt-4",
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RawRequest:  rawReq,
+						RawResponse: rawResp,
+					},
+				},
+			}
+
+			passThrough := func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return resp, err
+			}
+
+			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+			ProcessAndSendResponse(ctx, passThrough, response, responseChan)
+
+			chunk := <-responseChan
+			if chunk.BifrostChatResponse == nil {
+				t.Fatal("expected non-nil BifrostChatResponse in stream chunk")
+			}
+
+			hasRawReq := chunk.BifrostChatResponse.ExtraFields.RawRequest != nil
+			hasRawResp := chunk.BifrostChatResponse.ExtraFields.RawResponse != nil
+
+			if tt.expectStripped {
+				if hasRawReq {
+					t.Error("expected RawRequest to be nil (stripped) in chunk, but it was present")
+				}
+				if hasRawResp {
+					t.Error("expected RawResponse to be nil (stripped) in chunk, but it was present")
+				}
+			} else {
+				if !hasRawReq {
+					t.Error("expected RawRequest to be present in chunk, but it was nil")
+				}
+				if !hasRawResp {
+					t.Error("expected RawResponse to be present in chunk, but it was nil")
+				}
+			}
+		})
+	}
+}
+
+// TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk verifies
+// that when BifrostContextKeyRawRequestResponseForLogging is set, raw data is stripped
+// from BifrostError payloads embedded in stream chunks.
+func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(t *testing.T) {
+	rawReq := json.RawMessage(`{"model":"gpt-4"}`)
+	rawResp := json.RawMessage(`{"error":"rate limit exceeded"}`)
+
+	tests := []struct {
+		name           string
+		loggingOnly    bool
+		expectStripped bool
+	}{
+		{
+			name:           "logging-only flag set: raw data stripped from error chunk",
+			loggingOnly:    true,
+			expectStripped: true,
+		},
+		{
+			name:           "logging-only flag not set: raw data preserved in error chunk",
+			loggingOnly:    false,
+			expectStripped: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.loggingOnly {
+				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+			}
+
+			// Use a postHookRunner that converts the response to a BifrostError with raw data
+			bifrostErr := &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     schemas.Ptr(429),
+				Error:          &schemas.ErrorField{Message: "rate limit exceeded"},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RawRequest:  rawReq,
+					RawResponse: rawResp,
+				},
+			}
+
+			errorRunner := func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return nil, bifrostErr
+			}
+
+			responseChan := make(chan *schemas.BifrostStreamChunk, 1)
+			ProcessAndSendResponse(ctx, errorRunner, &schemas.BifrostResponse{
+				ChatResponse: &schemas.BifrostChatResponse{ID: "chatcmpl-001"},
+			}, responseChan)
+
+			chunk := <-responseChan
+			if chunk.BifrostError == nil {
+				t.Fatal("expected non-nil BifrostError in stream chunk")
+			}
+
+			hasRawReq := chunk.BifrostError.ExtraFields.RawRequest != nil
+			hasRawResp := chunk.BifrostError.ExtraFields.RawResponse != nil
+
+			if tt.expectStripped {
+				if hasRawReq {
+					t.Error("expected RawRequest to be nil (stripped) in error chunk, but it was present")
+				}
+				if hasRawResp {
+					t.Error("expected RawResponse to be nil (stripped) in error chunk, but it was present")
+				}
+			} else {
+				if !hasRawReq {
+					t.Error("expected RawRequest to be present in error chunk, but it was nil")
+				}
+				if !hasRawResp {
+					t.Error("expected RawResponse to be present in error chunk, but it was nil")
+				}
+			}
+		})
+	}
+}
+
+// TestShouldSendBackRawRequest verifies that ShouldSendBackRawRequest correctly resolves
+// whether providers should capture the raw request body. It covers:
+//   - Default (no context flags): returns the provider default
+//   - BifrostContextKeySendBackRawRequest=true in context: always returns true
+//   - BifrostContextKeyRawRequestResponseForLogging=true in context: returns true (logging-only mode)
+//   - Both flags set simultaneously: returns true
+func TestShouldSendBackRawRequest(t *testing.T) {
+	tests := []struct {
+		name           string
+		contextSendBack bool
+		contextLogging  bool
+		providerDefault bool
+		want            bool
+	}{
+		{
+			name: "provider default false, no context flags",
+			want: false,
+		},
+		{
+			name:            "provider default true, no context flags",
+			providerDefault: true,
+			want:            true,
+		},
+		{
+			name:            "context SendBack=true overrides provider default false",
+			contextSendBack: true,
+			want:            true,
+		},
+		{
+			name:           "context LoggingOnly=true returns true (capture for plugins)",
+			contextLogging: true,
+			want:           true,
+		},
+		{
+			name:            "context LoggingOnly=true overrides provider default false",
+			contextLogging:  true,
+			providerDefault: false,
+			want:            true,
+		},
+		{
+			name:            "both context flags set returns true",
+			contextSendBack: true,
+			contextLogging:  true,
+			want:            true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.contextSendBack {
+				ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+			}
+			if tt.contextLogging {
+				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+			}
+
+			got := ShouldSendBackRawRequest(ctx, tt.providerDefault)
+			if got != tt.want {
+				t.Errorf("ShouldSendBackRawRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestShouldSendBackRawResponse mirrors TestShouldSendBackRawRequest for the response side.
+func TestShouldSendBackRawResponse(t *testing.T) {
+	tests := []struct {
+		name            string
+		contextSendBack bool
+		contextLogging  bool
+		providerDefault bool
+		want            bool
+	}{
+		{
+			name: "provider default false, no context flags",
+			want: false,
+		},
+		{
+			name:            "provider default true, no context flags",
+			providerDefault: true,
+			want:            true,
+		},
+		{
+			name:            "context SendBack=true overrides provider default false",
+			contextSendBack: true,
+			want:            true,
+		},
+		{
+			name:           "context LoggingOnly=true returns true (capture for plugins)",
+			contextLogging: true,
+			want:           true,
+		},
+		{
+			name:            "context LoggingOnly=true overrides provider default false",
+			contextLogging:  true,
+			providerDefault: false,
+			want:            true,
+		},
+		{
+			name:            "both context flags set returns true",
+			contextSendBack: true,
+			contextLogging:  true,
+			want:            true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tt.contextSendBack {
+				ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+			}
+			if tt.contextLogging {
+				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+			}
+
+			got := ShouldSendBackRawResponse(ctx, tt.providerDefault)
+			if got != tt.want {
+				t.Errorf("ShouldSendBackRawResponse() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
