@@ -1,0 +1,82 @@
+---
+title: "Cursor"
+description: "Use Cursor IDE with Bifrost to route AI requests through any provider with built-in observability and governance."
+icon: "arrow-pointer"
+---
+
+[Cursor](https://cursor.com) is an AI-powered code editor built on VS Code, with integrated chat, inline editing, and agent capabilities.
+
+![Setting up Bifrost for Cursor](/media/ides/cursor-add-custom-model-1.png)
+
+## Setup
+
+1. **Open Cursor Settings**
+
+   Press <key>Cmd</key>+<key>,</key> (macOS) or <key>Ctrl</key>+<key>,</key> (Windows/Linux) and navigate to **Models**.
+
+2. **Enter your API key**
+
+   In the **OpenAI API Key** field, enter your Bifrost virtual key or provider API key.
+
+3. **Override the base URL**
+
+   Toggle **Override OpenAI Base URL** to ON and enter your Bifrost endpoint:
+
+   ```
+   http://localhost:8080/cursor
+   ```
+
+   For deployed instances, use your Bifrost deployment URL (e.g., `https://bifrost.example.com/cursor`).
+
+4. **Add custom models** (optional)
+
+   Type a model name in the **Add or search model** field using the `provider/model-name` format:
+
+   ![Adding a custom model in Cursor](/media/ides/cursor-add-custom-model-4-custom-model.png)
+
+   Examples: `anthropic/claude-sonnet-4-5-20250929`, `openai/gpt-5`, `gemini-2.5-pro`
+
+   | Provider | Format | Example |
+   |----------|--------|---------|
+   | Anthropic | `anthropic/model-name` | `anthropic/claude-sonnet-4-5-20250929` |
+   | Gemini | `model-name` | `gemini-2.5-pro` |
+   | OpenAI | `openai/model-name` | `openai/gpt-5` |
+   | Bedrock | `bedrock/model-name` | `bedrock/anthropic.claude-3` |
+   | Vertex (non-Gemini) | `vertex/model-name` | `vertex/text-bison` |
+   | Other providers | `provider/model-name` | `groq/llama-3.3-70b-versatile` |
+
+## Using Virtual Keys
+
+Bifrost [Virtual Keys](/features/governance/virtual-keys) can be used as the OpenAI API Key in Cursor. Virtual keys let you enforce budgets, rate limits, and provider access controls for each user or team.
+
+## Model Selection
+
+Cursor assigns models to different features — **Chat**, **Agent**, **Inline Edit**, and **Tab Completion**. After configuring Bifrost, you can assign any `provider/model-name` to each feature for optimal cost and performance:
+
+- Use a powerful model like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for Agent mode
+- Use a fast model like `groq/llama-3.3-70b-versatile` for Tab completion
+
+## Using Multiple Providers
+
+Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format to access any configured provider through the single OpenAI-compatible endpoint:
+
+```
+anthropic/claude-sonnet-4-5-20250929
+openai/gpt-5
+gemini/gemini-2.5-pro
+mistral/mistral-large-latest
+```
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `anthropic`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Warning>
+Non-native models **must support tool use** for Cursor's agent mode and inline editing to work properly. Models without tool use support will only work for basic chat.
+</Warning>
+
+<Note>
+Cursor's "Override OpenAI Base URL" is a global setting that applies to all OpenAI-compatible models. This works well with Bifrost since Bifrost handles routing to the correct provider based on the model name.
+</Note>

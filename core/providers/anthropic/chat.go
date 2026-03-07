@@ -30,8 +30,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		anthropicReq.Temperature = bifrostReq.Params.Temperature
-		anthropicReq.TopP = bifrostReq.Params.TopP
+		// Anthropic doesn't allow both temperature and top_p to be specified
+		// If both are present, prefer temperature (more commonly used)
+		if bifrostReq.Params.Temperature != nil {
+			anthropicReq.Temperature = bifrostReq.Params.Temperature
+		} else if bifrostReq.Params.TopP != nil {
+			anthropicReq.TopP = bifrostReq.Params.TopP
+		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
@@ -376,8 +381,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
-				// Single text content can be string
-				anthropicMsg.Content = AnthropicContent{ContentStr: content[0].Text}
+				// Always use ContentBlocks for consistent array serialization
+				anthropicMsg.Content = AnthropicContent{ContentBlocks: content}
 			} else if len(content) > 0 {
 				// Multiple content blocks
 				anthropicMsg.Content = AnthropicContent{ContentBlocks: content}

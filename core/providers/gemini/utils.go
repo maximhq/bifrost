@@ -32,9 +32,34 @@ func isGemini3Plus(model string) bool {
 		return false
 	}
 
-	// Check first character - if it's '3' or higher, it's 3.0+
+	// Check first character - must be a digit, and '3' or higher for 3.0+
 	firstChar := afterPrefix[0]
+	if firstChar < '0' || firstChar > '9' {
+		return false
+	}
 	return firstChar >= '3'
+}
+
+// supportsThinkingConfig returns true if the model supports ThinkingConfig.
+// Only specific Gemini models support thinking:
+// - gemini-*-thinking models (e.g., gemini-2.0-flash-thinking)
+// - gemini-2.5-* models
+// - gemini-3.* and higher models
+func supportsThinkingConfig(model string) bool {
+	modelLower := strings.ToLower(model)
+
+	// Check for explicit "thinking" in model name
+	if strings.Contains(modelLower, "thinking") {
+		return true
+	}
+
+	// Check for gemini-2.5-* models
+	if strings.Contains(modelLower, "gemini-2.5") {
+		return true
+	}
+
+	// Check for Gemini 3.0+ models
+	return isGemini3Plus(model)
 }
 
 // effortToThinkingLevel converts reasoning effort to Gemini ThinkingLevel string
@@ -930,7 +955,8 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 		penalty := float64(*params.FrequencyPenalty)
 		config.FrequencyPenalty = &penalty
 	}
-	if params.Reasoning != nil {
+	// Only set ThinkingConfig if the model actually supports thinking
+	if params.Reasoning != nil && supportsThinkingConfig(model) {
 		config.ThinkingConfig = &GenerationConfigThinkingConfig{
 			IncludeThoughts: true,
 		}

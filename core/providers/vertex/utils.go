@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -107,4 +108,74 @@ func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID
 		}
 	}
 	return url
+}
+
+// buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
+// This is used when the user has explicitly configured which models they want to use.
+func buildResponseFromConfig(deployments map[string]string, allowedModels []string) *schemas.BifrostListModelsResponse {
+	response := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0),
+	}
+
+	addedModelIDs := make(map[string]bool)
+
+	// Build allowlist set for O(1) lookup
+	allowedSet := make(map[string]bool, len(allowedModels))
+	for _, m := range allowedModels {
+		allowedSet[m] = true
+	}
+
+	// First add models from deployments (filtered by allowedModels when set)
+	for alias, deploymentValue := range deployments {
+		if len(allowedSet) > 0 && !allowedSet[alias] {
+			continue
+		}
+		modelID := string(schemas.Vertex) + "/" + alias
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(alias)
+		modelEntry := schemas.Model{
+			ID:         modelID,
+			Name:       schemas.Ptr(modelName),
+			Deployment: schemas.Ptr(deploymentValue),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	// Then add models from allowedModels that aren't already in deployments
+	for _, allowedModel := range allowedModels {
+		modelID := string(schemas.Vertex) + "/" + allowedModel
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(allowedModel)
+		modelEntry := schemas.Model{
+			ID:   modelID,
+			Name: schemas.Ptr(modelName),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	return response
+}
+
+// extractModelIDFromName extracts the model ID from a full resource name.
+// Format: "publishers/google/models/gemini-1.5-pro" -> "gemini-1.5-pro"
+func extractModelIDFromName(name string) string {
+	parts := strings.Split(name, "/")
+	if len(parts) >= 4 && parts[2] == "models" {
+		return parts[3]
+	}
+	// Fallback: return last segment
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }
