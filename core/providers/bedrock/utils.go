@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	koanfmaps "github.com/knadh/koanf/maps"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -363,7 +362,7 @@ func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 			current = m
 		}
 	}
-	koanfmaps.Merge(map[string]interface{}{key: value}, current)
+	mergeMapInto(current, map[string]interface{}{key: value})
 	fields.Set("output_config", current)
 }
 
@@ -388,7 +387,7 @@ func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *
 				}
 			}
 			if incomingMap, ok := toStringInterfaceMap(value); ok && incomingMap != nil {
-				koanfmaps.Merge(incomingMap, current)
+				mergeMapInto(current, incomingMap)
 				merged.Set(key, current)
 			} else {
 				merged.Set(key, value)
@@ -428,6 +427,22 @@ func toStringInterfaceMap(v any) (map[string]interface{}, bool) {
 		return out, true
 	default:
 		return nil, false
+	}
+}
+
+// mergeMapInto deep-merges src into dst. Nested map[string]interface{} values are
+// merged recursively; non-map values from src overwrite dst.
+func mergeMapInto(dst, src map[string]interface{}) {
+	for key, srcVal := range src {
+		if srcMap, ok := srcVal.(map[string]interface{}); ok {
+			if dstVal, exists := dst[key]; exists {
+				if dstMap, ok := dstVal.(map[string]interface{}); ok {
+					mergeMapInto(dstMap, srcMap)
+					continue
+				}
+			}
+		}
+		dst[key] = srcVal
 	}
 }
 
