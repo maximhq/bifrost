@@ -274,9 +274,19 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	return bifrostResp
 }
 
+// GeminiStreamState tracks tool-call index across streaming chunks.
+type GeminiStreamState struct {
+	nextToolCallIndex int
+}
+
+// NewGeminiStreamState returns initialised stream state for one streaming response.
+func NewGeminiStreamState() *GeminiStreamState {
+	return &GeminiStreamState{}
+}
+
 // ToBifrostChatCompletionStream converts a Gemini streaming response to a Bifrost Chat Completion Stream response
 // Returns the response, error (if any), and a boolean indicating if this is the last chunk
-func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+func (response *GenerateContentResponse) ToBifrostChatCompletionStream(state *GeminiStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	if response == nil {
 		return nil, nil, false
 	}
@@ -363,8 +373,11 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 					callID = fmt.Sprintf("%s%s%s", callID, thoughtSignatureSeparator, encoded)
 				}
 
+				toolCallIdx := state.nextToolCallIndex
+				state.nextToolCallIndex++
+
 				toolCall := schemas.ChatAssistantMessageToolCall{
-					Index: uint16(len(toolCalls)),
+					Index: uint16(toolCallIdx),
 					Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
 					ID:    &callID,
 					Function: schemas.ChatAssistantMessageToolCallFunction{

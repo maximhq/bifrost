@@ -1,0 +1,1 @@
+- fix: streaming tool call indices for multiple parallel tool calls in chat completions stream

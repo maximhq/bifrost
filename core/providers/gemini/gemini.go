@@ -437,6 +437,8 @@ func HandleGeminiChatCompletionStream(
 		var responseID string
 		var modelName string
 
+		streamState := NewGeminiStreamState()
+
 		for scanner.Scan() {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -492,7 +494,7 @@ func HandleGeminiChatCompletionStream(
 			}
 
 			// Convert to Bifrost stream response
-			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream()
+			response, bifrostErr, isLastChunk := geminiResponse.ToBifrostChatCompletionStream(streamState)
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 					RequestType:    schemas.ChatCompletionStreamRequest,
