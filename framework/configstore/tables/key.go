@@ -640,6 +640,8 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AnthropicOAuthKeyConfig = &schemas.AnthropicOAuthKeyConfig{
 			OAuthConfigID: *k.AnthropicOAuthConfigID,
 		}
+	} else {
+		k.AnthropicOAuthKeyConfig = nil
 	}
 	return nil
 }
