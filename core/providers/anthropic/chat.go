@@ -95,38 +95,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 				// Convert function parameters to input_schema
 				if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
-					anthropicTool.InputSchema = &schemas.ToolFunctionParameters{
-						Type:                 tool.Function.Parameters.Type,
-						Description:          tool.Function.Parameters.Description,
-						Properties:           tool.Function.Parameters.Properties,
-						Required:             tool.Function.Parameters.Required,
-						Enum:                 tool.Function.Parameters.Enum,
-						AdditionalProperties: tool.Function.Parameters.AdditionalProperties,
-						// JSON Schema definition fields
-						Defs:        tool.Function.Parameters.Defs,
-						Definitions: tool.Function.Parameters.Definitions,
-						Ref:         tool.Function.Parameters.Ref,
-						// Array schema fields
-						Items:    tool.Function.Parameters.Items,
-						MinItems: tool.Function.Parameters.MinItems,
-						MaxItems: tool.Function.Parameters.MaxItems,
-						// Composition fields
-						AnyOf: tool.Function.Parameters.AnyOf,
-						OneOf: tool.Function.Parameters.OneOf,
-						AllOf: tool.Function.Parameters.AllOf,
-						// String validation fields
-						Format:    tool.Function.Parameters.Format,
-						Pattern:   tool.Function.Parameters.Pattern,
-						MinLength: tool.Function.Parameters.MinLength,
-						MaxLength: tool.Function.Parameters.MaxLength,
-						// Number validation fields
-						Minimum: tool.Function.Parameters.Minimum,
-						Maximum: tool.Function.Parameters.Maximum,
-						// Misc fields
-						Title:    tool.Function.Parameters.Title,
-						Default:  tool.Function.Parameters.Default,
-						Nullable: tool.Function.Parameters.Nullable,
-					}
+					anthropicTool.InputSchema = tool.Function.Parameters
 				}
 
 				if tool.CacheControl != nil {
