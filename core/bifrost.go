@@ -4617,13 +4617,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// raw payloads for PostLLMHook plugins without modifying the user's SendBack flags.
 		// The existing stripping logic (non-streaming: bifrost.go; streaming: utils.go)
 		// removes the payloads before the response reaches the client.
-		if config.StoreRawRequestResponse {
-			existingSendBackReq, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool)
-			existingSendBackResp, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
-			if !config.SendBackRawRequest && !existingSendBackReq && !config.SendBackRawResponse && !existingSendBackResp {
-				req.Context.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
-			}
-		}
+		// Always set the flag explicitly (true or false) so stale values from a previous
+		// provider attempt cannot leak into a fallback attempt on a reused context.
+		existingSendBackReq, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool)
+		existingSendBackResp, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+		loggingOnly := config.StoreRawRequestResponse &&
+			!config.SendBackRawRequest && !existingSendBackReq &&
+			!config.SendBackRawResponse && !existingSendBackResp
+		req.Context.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, loggingOnly)
 
 		key := schemas.Key{}
 		var keys []schemas.Key
