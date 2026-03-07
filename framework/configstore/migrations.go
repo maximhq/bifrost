@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4115,6 +4118,51 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
+func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_plugin_order_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Placement"); err != nil {
+					return fmt.Errorf("failed to add placement column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Order"); err != nil {
+					return fmt.Errorf("failed to add exec_order column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "placement"); err != nil {
+					return fmt.Errorf("failed to drop placement column: %w", err)
+				}
+			}
+			if migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "exec_order"); err != nil {
+					return fmt.Errorf("failed to drop exec_order column: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running plugin order columns migration: %s", err.Error())
 	}
 	return nil
 }

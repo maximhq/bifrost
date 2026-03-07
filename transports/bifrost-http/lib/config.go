@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -100,6 +101,12 @@ func IsBuiltinPlugin(name string) bool {
 		name == maxim.PluginName ||
 		name == semanticcache.PluginName ||
 		name == otel.PluginName
+}
+
+// pluginOrderInfo stores ordering metadata for a plugin.
+type pluginOrderInfo struct {
+	Placement string // "pre_builtin", "builtin", or "post_builtin"
+	Order     int
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -277,6 +284,7 @@ type Config struct {
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
 	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
+	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
 	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
 	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
 	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
@@ -1605,10 +1613,12 @@ func loadPluginsFromFile(ctx context.Context, config *Config, configData *Config
 			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
-					Name:    plugin.Name,
-					Enabled: plugin.Enabled,
-					Config:  plugin.Config,
-					Path:    plugin.Path,
+					Name:      plugin.Name,
+					Enabled:   plugin.Enabled,
+					Config:    plugin.Config,
+					Path:      plugin.Path,
+					Placement: plugin.Placement,
+					Order:     plugin.Order,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -1681,11 +1691,13 @@ func mergePluginsFromFile(ctx context.Context, config *Config, configData *Confi
 				plugin.Version = bifrost.Ptr(int16(1))
 			}
 			pluginConfig := &configstoreTables.TablePlugin{
-				Name:    plugin.Name,
-				Enabled: plugin.Enabled,
-				Config:  pluginConfigCopy,
-				Path:    plugin.Path,
-				Version: *plugin.Version,
+				Name:      plugin.Name,
+				Enabled:   plugin.Enabled,
+				Config:    pluginConfigCopy,
+				Path:      plugin.Path,
+				Version:   *plugin.Version,
+				Placement: plugin.Placement,
+				Order:     plugin.Order,
 			}
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
@@ -2815,11 +2827,70 @@ func (c *Config) UnregisterPlugin(name string) error {
 		}
 
 		if c.BasePlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			delete(c.pluginOrderMap, name)
 			c.rebuildInterfaceCaches()
 			return nil
 		}
 		// CAS failed, retry with new snapshot
 	}
+}
+
+// SetPluginOrderInfo stores ordering metadata for a plugin.
+// If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
+func (c *Config) SetPluginOrderInfo(name string, placement *string, order *int) {
+	c.pluginsMu.Lock()
+	defer c.pluginsMu.Unlock()
+
+	if c.pluginOrderMap == nil {
+		c.pluginOrderMap = make(map[string]pluginOrderInfo)
+	}
+
+	p := schemas.PluginPlacementPostBuiltin
+	if placement != nil {
+		p = *placement
+	}
+	o := 0
+	if order != nil {
+		o = *order
+	}
+
+	c.pluginOrderMap[name] = pluginOrderInfo{Placement: p, Order: o}
+}
+
+// SortAndRebuildPlugins sorts BasePlugins by placement group then order, and rebuilds caches.
+// Placement groups execute in order: pre_builtin → builtin → post_builtin.
+// Within each group, plugins are sorted by order (lower = earlier). Ties preserve registration order (stable sort).
+func (c *Config) SortAndRebuildPlugins() {
+	c.pluginsMu.Lock()
+	defer c.pluginsMu.Unlock()
+
+	oldPlugins := c.BasePlugins.Load()
+	if oldPlugins == nil || len(*oldPlugins) == 0 {
+		return
+	}
+
+	sorted := make([]schemas.BasePlugin, len(*oldPlugins))
+	copy(sorted, *oldPlugins)
+
+	groupRank := map[string]int{
+		schemas.PluginPlacementPreBuiltin:  0,
+		"builtin":                          1,
+		schemas.PluginPlacementPostBuiltin: 2,
+	}
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		iInfo := c.pluginOrderMap[sorted[i].GetName()]
+		jInfo := c.pluginOrderMap[sorted[j].GetName()]
+		iRank := groupRank[iInfo.Placement]
+		jRank := groupRank[jInfo.Placement]
+		if iRank != jRank {
+			return iRank < jRank
+		}
+		return iInfo.Order < jInfo.Order
+	})
+
+	c.BasePlugins.Store(&sorted)
+	c.rebuildInterfaceCaches()
 }
 
 // FindPluginAs finds a plugin by name in the given config and returns it as type T
