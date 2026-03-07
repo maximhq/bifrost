@@ -64,6 +64,59 @@ type BifrostImageGenerationResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+// BackfillParams populates response fields from the original request that are needed
+// for cost calculation but may not be returned by the provider.
+// - NumInputImages on ImageUsage (count of input images from the request)
+// - Size on ImageGenerationResponseParameters (from request params if not in response)
+func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
+	if r == nil || req == nil {
+		return
+	}
+
+	var numInputImages int
+	var size string
+
+	switch {
+	case req.ImageGenerationRequest != nil:
+		if req.ImageGenerationRequest.Params != nil {
+			numInputImages = len(req.ImageGenerationRequest.Params.InputImages)
+			if req.ImageGenerationRequest.Params.Size != nil {
+				size = *req.ImageGenerationRequest.Params.Size
+			}
+		}
+	case req.ImageEditRequest != nil:
+		if req.ImageEditRequest.Input != nil {
+			numInputImages = len(req.ImageEditRequest.Input.Images)
+		}
+		if req.ImageEditRequest.Params != nil && req.ImageEditRequest.Params.Size != nil {
+			size = *req.ImageEditRequest.Params.Size
+		}
+	case req.ImageVariationRequest != nil:
+		if req.ImageVariationRequest.Input != nil {
+			numInputImages = 1
+		}
+		if req.ImageVariationRequest.Params != nil && req.ImageVariationRequest.Params.Size != nil {
+			size = *req.ImageVariationRequest.Params.Size
+		}
+	}
+
+	// Backfill NumInputImages
+	if numInputImages > 0 {
+		if r.Usage == nil {
+			r.Usage = &ImageUsage{}
+		}
+		r.Usage.NumInputImages = numInputImages
+	}
+
+	// Backfill Size if not already present from provider response
+	if size != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.Size == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.Size = size
+	}
+}
+
 type ImageGenerationResponseParameters struct {
 	Background   string `json:"background,omitempty"`
 	OutputFormat string `json:"output_format,omitempty"`
@@ -84,6 +137,7 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
+	NumInputImages      int                `json:"num_input_images,omitempty"` // Number of input images from the request (populated by Bifrost)
 }
 
 type ImageTokenDetails struct {
