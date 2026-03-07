@@ -116,6 +116,7 @@ func (p *OAuth2Provider) RefreshAccessToken(ctx context.Context, oauthConfigID s
 	var newTokenResponse *schemas.OAuth2TokenExchangeResponse
 	if isAnthropicOAuthConfig(oauthConfig) {
 		newTokenResponse, err = p.refreshAnthropicToken(
+			ctx,
 			oauthConfig.TokenURL,
 			oauthConfig.ClientID,
 			token.RefreshToken,
@@ -709,13 +710,13 @@ func isAnthropicOAuthConfig(config *tables.TableOauthConfig) bool {
 
 // callTokenEndpointJSON makes a POST request to the OAuth token endpoint using JSON body
 // instead of form-encoded. Required for Anthropic's OAuth endpoints.
-func (p *OAuth2Provider) callTokenEndpointJSON(tokenURL string, data map[string]string) (*schemas.OAuth2TokenExchangeResponse, error) {
+func (p *OAuth2Provider) callTokenEndpointJSON(ctx context.Context, tokenURL string, data map[string]string) (*schemas.OAuth2TokenExchangeResponse, error) {
 	jsonBody, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal token request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", tokenURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -752,7 +753,7 @@ func (p *OAuth2Provider) callTokenEndpointJSON(tokenURL string, data map[string]
 }
 
 // InitiateAnthropicOAuthFlow creates an Anthropic OAuth config and returns the authorization URL.
-// Uses hardcoded Anthropic OAuth constants, PKCE with state=code_verifier, and adds code=true param.
+// Uses hardcoded Anthropic OAuth constants, PKCE, and adds code=true param.
 func (p *OAuth2Provider) InitiateAnthropicOAuthFlow(ctx context.Context) (*schemas.OAuth2FlowInitiation, error) {
 	// Generate PKCE challenge
 	codeVerifier, codeChallenge, err := GeneratePKCEChallenge()
@@ -760,8 +761,11 @@ func (p *OAuth2Provider) InitiateAnthropicOAuthFlow(ctx context.Context) (*schem
 		return nil, fmt.Errorf("failed to generate PKCE challenge: %w", err)
 	}
 
-	// For Anthropic, state = code_verifier
-	state := codeVerifier
+	// Generate separate random state for CSRF protection (never reuse code_verifier)
+	state, err := generateSecureRandomString(32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate state: %w", err)
+	}
 
 	oauthConfigID := uuid.New().String()
 	scopes := strings.Split(AnthropicOAuthScopes, " ")
@@ -814,7 +818,8 @@ func (p *OAuth2Provider) InitiateAnthropicOAuthFlow(ctx context.Context) (*schem
 }
 
 // CompleteAnthropicOAuthFlow exchanges an Anthropic authorization code for tokens.
-// Handles the code#state format (splits on #), uses JSON POST to Anthropic token endpoint.
+// Handles the code#state format (splits on #), validates state for CSRF protection,
+// and uses JSON POST to Anthropic token endpoint.
 func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode string, oauthConfigID string) error {
 	// Load oauth_config by ID
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
@@ -832,14 +837,20 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 		return fmt.Errorf("oauth flow expired")
 	}
 
-	// Parse code#state format
+	// Parse code#state format and validate state for CSRF protection
 	code := rawCode
 	if parts := strings.SplitN(rawCode, "#", 2); len(parts) == 2 {
 		code = parts[0]
+		returnedState := parts[1]
+		if returnedState != oauthConfig.State {
+			oauthConfig.Status = "failed"
+			p.configStore.UpdateOauthConfig(ctx, oauthConfig)
+			return fmt.Errorf("invalid state token")
+		}
 	}
 
 	// Exchange code for tokens via JSON POST
-	tokenResponse, err := p.callTokenEndpointJSON(oauthConfig.TokenURL, map[string]string{
+	tokenResponse, err := p.callTokenEndpointJSON(ctx, oauthConfig.TokenURL, map[string]string{
 		"grant_type":    "authorization_code",
 		"code":          code,
 		"state":         oauthConfig.State,
@@ -888,8 +899,8 @@ func (p *OAuth2Provider) CompleteAnthropicOAuthFlow(ctx context.Context, rawCode
 
 // refreshAnthropicToken refreshes an Anthropic OAuth token using JSON body.
 // Only sends grant_type, refresh_token, client_id (no client_secret).
-func (p *OAuth2Provider) refreshAnthropicToken(tokenURL, clientID, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
-	return p.callTokenEndpointJSON(tokenURL, map[string]string{
+func (p *OAuth2Provider) refreshAnthropicToken(ctx context.Context, tokenURL, clientID, refreshToken string) (*schemas.OAuth2TokenExchangeResponse, error) {
+	return p.callTokenEndpointJSON(ctx, tokenURL, map[string]string{
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 		"client_id":     clientID,
