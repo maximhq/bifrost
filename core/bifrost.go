@@ -4611,6 +4611,20 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 
+		// When store_raw_request_response is enabled and neither send_back_raw_* flag is
+		// active (on the config or pre-set in the request context), set the logging-only
+		// context flag. ShouldSendBackRaw* functions honour this flag so providers capture
+		// raw payloads for PostLLMHook plugins without modifying the user's SendBack flags.
+		// The existing stripping logic (non-streaming: bifrost.go; streaming: utils.go)
+		// removes the payloads before the response reaches the client.
+		if config.StoreRawRequestResponse {
+			existingSendBackReq, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool)
+			existingSendBackResp, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
+			if !config.SendBackRawRequest && !existingSendBackReq && !config.SendBackRawResponse && !existingSendBackResp {
+				req.Context.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+			}
+		}
+
 		key := schemas.Key{}
 		var keys []schemas.Key
 		if providerRequiresKey(baseProvider, config.CustomProviderConfig) {
