@@ -2959,6 +2959,85 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	}
 }
 
+// TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths ensures
+// additionalModelRequestFieldPaths are merged into existing AdditionalModelRequestFields
+// and output_config is deep-merged instead of overwritten.
+func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *testing.T) {
+	responseFormat := any(map[string]any{
+		"type": "json_schema",
+		"json_schema": map[string]any{
+			"name": "classification",
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"topic": map[string]any{
+						"type": "string",
+					},
+				},
+				"required": []any{"topic"},
+			},
+		},
+	})
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+			ExtraParams: map[string]any{
+				"additionalModelRequestFieldPaths": schemas.NewOrderedMapFromPairs(
+					schemas.KV("output_config", map[string]any{
+						"foo": "bar",
+					}),
+					schemas.KV("customField", "customValue"),
+				),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
+	outputConfig, ok := outputConfigRaw.(map[string]any)
+	require.True(t, ok, "expected output_config to be a map")
+
+	// Existing structured output format must be preserved.
+	formatRaw, hasFormat := outputConfig["format"]
+	require.True(t, hasFormat, "expected output_config.format to be preserved")
+	format, ok := formatRaw.(map[string]any)
+	require.True(t, ok, "expected output_config.format to be a map")
+	assert.Equal(t, "json_schema", format["type"])
+	_, hasSchema := format["schema"]
+	assert.True(t, hasSchema, "expected output_config.format.schema")
+
+	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
+	assert.Equal(t, "bar", outputConfig["foo"])
+
+	// Existing top-level field (thinking) must not be lost.
+	_, hasThinking := result.AdditionalModelRequestFields.Get("thinking")
+	assert.True(t, hasThinking, "expected thinking to be preserved")
+
+	// Incoming top-level keys must be merged.
+	customField, hasCustomField := result.AdditionalModelRequestFields.Get("customField")
+	require.True(t, hasCustomField, "expected customField to be merged")
+	assert.Equal(t, "customValue", customField)
+}
+
 // TestNovaReasoningConfigUsesReasoningConfigField verifies that Nova models use
 // the "reasoningConfig" field (camelCase) and NOT "thinking".
 func TestNovaReasoningConfigUsesReasoningConfigField(t *testing.T) {
