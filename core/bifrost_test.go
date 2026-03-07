@@ -1170,3 +1170,4 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 		}
 	})
 }
+
