@@ -139,7 +139,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("This is cached context"),
                         CacheControl: &schemas.CacheControl{
@@ -154,7 +154,7 @@ resp, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas
         {
             Role: schemas.ChatMessageRoleSystem,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("You are a helpful assistant"),
                         CacheControl: &schemas.CacheControl{
@@ -377,7 +377,7 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
         {
             Role: schemas.ChatMessageRoleUser,
             Content: &schemas.ChatMessageContent{
-                ContentBlocks: []schemas.ChatMessageContentBlock{
+                ContentBlocks: []schemas.ChatContentBlock{
                     {
                         Text: schemas.Ptr("Answer this question"),
                         CacheControl: &schemas.CacheControl{
