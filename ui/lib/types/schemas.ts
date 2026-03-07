@@ -512,6 +512,7 @@ export const modelProviderConfigSchema = z.object({
 	proxy_config: proxyConfigSchema.optional(),
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
+	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
@@ -529,6 +530,7 @@ export const formModelProviderConfigSchema = z.object({
 	proxy_config: proxyConfigSchema.optional(),
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
+	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
@@ -547,6 +549,7 @@ export const addProviderRequestSchema = z.object({
 	proxy_config: proxyConfigSchema.optional(),
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
+	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
@@ -559,6 +562,7 @@ export const updateProviderRequestSchema = z.object({
 	proxy_config: proxyConfigSchema,
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
+	store_raw_request_response: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	pricing_overrides: z.array(providerPricingOverrideSchema).optional(),
 });
@@ -642,6 +646,7 @@ export const performanceFormSchema = z.object({
 export const debuggingFormSchema = z.object({
 	send_back_raw_request: z.boolean(),
 	send_back_raw_response: z.boolean(),
+	store_raw_request_response: z.boolean(),
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
