@@ -1,7 +1,6 @@
 package logstore
 
 import (
-	"encoding/json"
 	"strings"
 	"time"
 
@@ -80,9 +79,9 @@ type SearchStats struct {
 type Log struct {
 	ID                    string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
 	ParentRequestID       *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp             time.Time `gorm:"index;not null" json:"timestamp"`
+	Timestamp             time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
 	Object                string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider              string    `gorm:"type:varchar(255);index;not null" json:"provider"`
+	Provider              string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                 string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	NumberOfRetries       int       `gorm:"default:0" json:"number_of_retries"`
 	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
@@ -119,7 +118,7 @@ type Log struct {
 	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
 	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
 	Cost                  *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                string    `gorm:"type:varchar(50);index;not null" json:"status"` // "processing", "success", or "error"
+	Status                string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
 	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
 	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
 	ContentSummary        string    `gorm:"type:text" json:"-"`
@@ -217,7 +216,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.InputHistoryParsed != nil {
-		if data, err := json.Marshal(l.InputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.InputHistoryParsed); err != nil {
 			return err
 		} else {
 			l.InputHistory = string(data)
@@ -225,7 +224,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ResponsesInputHistoryParsed != nil {
-		if data, err := json.Marshal(l.ResponsesInputHistoryParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesInputHistoryParsed); err != nil {
 			return err
 		} else {
 			l.ResponsesInputHistory = string(data)
@@ -233,7 +232,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.OutputMessageParsed != nil {
-		if data, err := json.Marshal(l.OutputMessageParsed); err != nil {
+		if data, err := sonic.Marshal(l.OutputMessageParsed); err != nil {
 			return err
 		} else {
 			l.OutputMessage = string(data)
@@ -241,7 +240,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ResponsesOutputParsed != nil {
-		if data, err := json.Marshal(l.ResponsesOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResponsesOutputParsed); err != nil {
 			return err
 		} else {
 			l.ResponsesOutput = string(data)
@@ -249,7 +248,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.EmbeddingOutputParsed != nil {
-		if data, err := json.Marshal(l.EmbeddingOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.EmbeddingOutputParsed); err != nil {
 			return err
 		} else {
 			l.EmbeddingOutput = string(data)
@@ -257,7 +256,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.RerankOutputParsed != nil {
-		if data, err := json.Marshal(l.RerankOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.RerankOutputParsed); err != nil {
 			return err
 		} else {
 			l.RerankOutput = string(data)
@@ -265,7 +264,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.SpeechInputParsed != nil {
-		if data, err := json.Marshal(l.SpeechInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechInputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechInput = string(data)
@@ -273,7 +272,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionInputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionInputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionInput = string(data)
@@ -281,7 +280,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ImageGenerationInputParsed != nil {
-		if data, err := json.Marshal(l.ImageGenerationInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ImageGenerationInputParsed); err != nil {
 			return err
 		} else {
 			l.ImageGenerationInput = string(data)
@@ -289,7 +288,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoGenerationInputParsed != nil {
-		if data, err := json.Marshal(l.VideoGenerationInputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoGenerationInputParsed); err != nil {
 			return err
 		} else {
 			l.VideoGenerationInput = string(data)
@@ -297,7 +296,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.SpeechOutputParsed != nil {
-		if data, err := json.Marshal(l.SpeechOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.SpeechOutputParsed); err != nil {
 			return err
 		} else {
 			l.SpeechOutput = string(data)
@@ -305,7 +304,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TranscriptionOutputParsed != nil {
-		if data, err := json.Marshal(l.TranscriptionOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.TranscriptionOutputParsed); err != nil {
 			return err
 		} else {
 			l.TranscriptionOutput = string(data)
@@ -313,7 +312,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ImageGenerationOutputParsed != nil {
-		if data, err := json.Marshal(l.ImageGenerationOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ImageGenerationOutputParsed); err != nil {
 			return err
 		} else {
 			l.ImageGenerationOutput = string(data)
@@ -321,7 +320,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoGenerationOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoGenerationOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoGenerationOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoGenerationOutput = string(data)
@@ -329,7 +328,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoRetrieveOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoRetrieveOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoRetrieveOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoRetrieveOutput = string(data)
@@ -337,7 +336,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoDownloadOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoDownloadOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoDownloadOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoDownloadOutput = string(data)
@@ -345,7 +344,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoListOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoListOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoListOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoListOutput = string(data)
@@ -353,7 +352,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.VideoDeleteOutputParsed != nil {
-		if data, err := json.Marshal(l.VideoDeleteOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.VideoDeleteOutputParsed); err != nil {
 			return err
 		} else {
 			l.VideoDeleteOutput = string(data)
@@ -361,7 +360,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ListModelsOutputParsed != nil {
-		if data, err := json.Marshal(l.ListModelsOutputParsed); err != nil {
+		if data, err := sonic.Marshal(l.ListModelsOutputParsed); err != nil {
 			return err
 		} else {
 			l.ListModelsOutput = string(data)
@@ -369,7 +368,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ParamsParsed != nil {
-		if data, err := json.Marshal(l.ParamsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ParamsParsed); err != nil {
 			return err
 		} else {
 			l.Params = string(data)
@@ -377,7 +376,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolsParsed != nil {
-		if data, err := json.Marshal(l.ToolsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolsParsed); err != nil {
 			return err
 		} else {
 			l.Tools = string(data)
@@ -385,7 +384,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ToolCallsParsed != nil {
-		if data, err := json.Marshal(l.ToolCallsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ToolCallsParsed); err != nil {
 			return err
 		} else {
 			l.ToolCalls = string(data)
@@ -393,7 +392,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.TokenUsageParsed != nil {
-		if data, err := json.Marshal(l.TokenUsageParsed); err != nil {
+		if data, err := sonic.Marshal(l.TokenUsageParsed); err != nil {
 			return err
 		} else {
 			l.TokenUsage = string(data)
@@ -405,7 +404,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {
 			l.ErrorDetails = string(data)
@@ -413,7 +412,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.CacheDebugParsed != nil {
-		if data, err := json.Marshal(l.CacheDebugParsed); err != nil {
+		if data, err := sonic.Marshal(l.CacheDebugParsed); err != nil {
 			return err
 		} else {
 			l.CacheDebug = string(data)
@@ -421,7 +420,7 @@ func (l *Log) SerializeFields() error {
 	}
 
 	if l.MetadataParsed != nil {
-		if data, err := json.Marshal(l.MetadataParsed); err != nil {
+		if data, err := sonic.Marshal(l.MetadataParsed); err != nil {
 			return err
 		} else {
 			l.Metadata = string(data)
@@ -437,126 +436,126 @@ func (l *Log) SerializeFields() error {
 // DeserializeFields converts JSON strings back to Go structs
 func (l *Log) DeserializeFields() error {
 	if l.InputHistory != "" {
-		if err := json.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.InputHistory), &l.InputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.InputHistoryParsed = []schemas.ChatMessage{}
 		}
 	}
 
 	if l.ResponsesInputHistory != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesInputHistory), &l.ResponsesInputHistoryParsed); err != nil {
 			// Log error but don't fail the operation - initialize as empty slice
 			l.ResponsesInputHistoryParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.OutputMessage != "" {
-		if err := json.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.OutputMessage), &l.OutputMessageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.OutputMessageParsed = nil
 		}
 	}
 
 	if l.ResponsesOutput != "" {
-		if err := json.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ResponsesOutput), &l.ResponsesOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ResponsesOutputParsed = []schemas.ResponsesMessage{}
 		}
 	}
 
 	if l.EmbeddingOutput != "" {
-		if err := json.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.EmbeddingOutput), &l.EmbeddingOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.EmbeddingOutputParsed = nil
 		}
 	}
 
 	if l.RerankOutput != "" {
-		if err := json.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.RerankOutput), &l.RerankOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.RerankOutputParsed = nil
 		}
 	}
 
 	if l.Params != "" {
-		if err := json.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Params), &l.ParamsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ParamsParsed = nil
 		}
 	}
 
 	if l.Tools != "" {
-		if err := json.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Tools), &l.ToolsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolsParsed = nil
 		}
 	}
 
 	if l.ToolCalls != "" {
-		if err := json.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ToolCalls), &l.ToolCallsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ToolCallsParsed = nil
 		}
 	}
 
 	if l.TokenUsage != "" {
-		if err := json.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TokenUsage), &l.TokenUsageParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TokenUsageParsed = nil
 		}
 	}
 
 	if l.ErrorDetails != "" {
-		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ErrorDetailsParsed = nil
 		}
 	}
 
 	if l.VideoGenerationOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoGenerationOutput), &l.VideoGenerationOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoGenerationOutput), &l.VideoGenerationOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationOutputParsed = nil
 		}
 	}
 
 	if l.VideoRetrieveOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoRetrieveOutput), &l.VideoRetrieveOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoRetrieveOutput), &l.VideoRetrieveOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoRetrieveOutputParsed = nil
 		}
 	}
 
 	if l.VideoDownloadOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoDownloadOutput), &l.VideoDownloadOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoDownloadOutput), &l.VideoDownloadOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoDownloadOutputParsed = nil
 		}
 	}
 
 	if l.VideoListOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoListOutput), &l.VideoListOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoListOutput), &l.VideoListOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoListOutputParsed = nil
 		}
 	}
 
 	if l.VideoDeleteOutput != "" {
-		if err := json.Unmarshal([]byte(l.VideoDeleteOutput), &l.VideoDeleteOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoDeleteOutput), &l.VideoDeleteOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoDeleteOutputParsed = nil
 		}
 	}
 
 	if l.VideoGenerationInput != "" {
-		if err := json.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.VideoGenerationInput), &l.VideoGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.VideoGenerationInputParsed = nil
 		}
 	}
 
 	if l.ListModelsOutput != "" {
-		if err := json.Unmarshal([]byte(l.ListModelsOutput), &l.ListModelsOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ListModelsOutput), &l.ListModelsOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ListModelsOutputParsed = nil
 		}
@@ -564,56 +563,56 @@ func (l *Log) DeserializeFields() error {
 
 	// Deserialize speech and transcription fields
 	if l.SpeechInput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechInput), &l.SpeechInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechInputParsed = nil
 		}
 	}
 
 	if l.TranscriptionInput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionInput), &l.TranscriptionInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionInputParsed = nil
 		}
 	}
 
 	if l.ImageGenerationInput != "" {
-		if err := json.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ImageGenerationInput), &l.ImageGenerationInputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationInputParsed = nil
 		}
 	}
 
 	if l.SpeechOutput != "" {
-		if err := json.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.SpeechOutput), &l.SpeechOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.SpeechOutputParsed = nil
 		}
 	}
 
 	if l.TranscriptionOutput != "" {
-		if err := json.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.TranscriptionOutput), &l.TranscriptionOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.TranscriptionOutputParsed = nil
 		}
 	}
 
 	if l.ImageGenerationOutput != "" {
-		if err := json.Unmarshal([]byte(l.ImageGenerationOutput), &l.ImageGenerationOutputParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ImageGenerationOutput), &l.ImageGenerationOutputParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.ImageGenerationOutputParsed = nil
 		}
 	}
 
 	if l.CacheDebug != "" {
-		if err := json.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.CacheDebug), &l.CacheDebugParsed); err != nil {
 			// Log error but don't fail the operation - initialize as nil
 			l.CacheDebugParsed = nil
 		}
 	}
 
 	if l.Metadata != "" {
-		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
 		}
 	}
@@ -684,7 +683,7 @@ func (l *MCPToolLog) AfterFind(tx *gorm.DB) error {
 // SerializeFields converts Go structs to JSON strings for storage
 func (l *MCPToolLog) SerializeFields() error {
 	if l.ArgumentsParsed != nil {
-		if data, err := json.Marshal(l.ArgumentsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ArgumentsParsed); err != nil {
 			return err
 		} else {
 			l.Arguments = string(data)
@@ -692,7 +691,7 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.ResultParsed != nil {
-		if data, err := json.Marshal(l.ResultParsed); err != nil {
+		if data, err := sonic.Marshal(l.ResultParsed); err != nil {
 			return err
 		} else {
 			l.Result = string(data)
@@ -700,7 +699,7 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.ErrorDetailsParsed != nil {
-		if data, err := json.Marshal(l.ErrorDetailsParsed); err != nil {
+		if data, err := sonic.Marshal(l.ErrorDetailsParsed); err != nil {
 			return err
 		} else {
 			l.ErrorDetails = string(data)
@@ -708,7 +707,7 @@ func (l *MCPToolLog) SerializeFields() error {
 	}
 
 	if l.MetadataParsed != nil {
-		if data, err := json.Marshal(l.MetadataParsed); err != nil {
+		if data, err := sonic.Marshal(l.MetadataParsed); err != nil {
 			return err
 		} else {
 			l.Metadata = string(data)
@@ -721,25 +720,25 @@ func (l *MCPToolLog) SerializeFields() error {
 // DeserializeFields converts JSON strings back to Go structs
 func (l *MCPToolLog) DeserializeFields() error {
 	if l.Arguments != "" {
-		if err := json.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Arguments), &l.ArgumentsParsed); err != nil {
 			l.ArgumentsParsed = nil
 		}
 	}
 
 	if l.Result != "" {
-		if err := json.Unmarshal([]byte(l.Result), &l.ResultParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Result), &l.ResultParsed); err != nil {
 			l.ResultParsed = nil
 		}
 	}
 
 	if l.ErrorDetails != "" {
-		if err := json.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.ErrorDetails), &l.ErrorDetailsParsed); err != nil {
 			l.ErrorDetailsParsed = nil
 		}
 	}
 
 	if l.Metadata != "" {
-		if err := json.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
+		if err := sonic.Unmarshal([]byte(l.Metadata), &l.MetadataParsed); err != nil {
 			l.MetadataParsed = nil
 		}
 	}
@@ -1004,7 +1003,7 @@ func (l *Log) BuildContentSummary() string {
 	}
 
 	// Add error details
-	if l.ErrorDetailsParsed != nil && l.ErrorDetailsParsed.Error.Message != "" {
+	if l.ErrorDetailsParsed != nil && l.ErrorDetailsParsed.Error != nil && l.ErrorDetailsParsed.Error.Message != "" {
 		parts = append(parts, l.ErrorDetailsParsed.Error.Message)
 	}
 
@@ -1077,4 +1076,78 @@ type ModelHistogramResult struct {
 	Buckets           []ModelHistogramBucket `json:"buckets"`
 	BucketSizeSeconds int64                  `json:"bucket_size_seconds"`
 	Models            []string               `json:"models"`
+}
+
+// LatencyHistogramBucket represents a single time bucket for latency data
+type LatencyHistogramBucket struct {
+	Timestamp     time.Time `json:"timestamp"`
+	AvgLatency    float64   `json:"avg_latency"`
+	P90Latency    float64   `json:"p90_latency"`
+	P95Latency    float64   `json:"p95_latency"`
+	P99Latency    float64   `json:"p99_latency"`
+	TotalRequests int64     `json:"total_requests"`
+}
+
+// LatencyHistogramResult represents the latency histogram query result
+type LatencyHistogramResult struct {
+	Buckets           []LatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                    `json:"bucket_size_seconds"`
+}
+
+// Provider-level histogram types
+
+// ProviderCostHistogramBucket represents a single time bucket for provider cost data
+type ProviderCostHistogramBucket struct {
+	Timestamp  time.Time          `json:"timestamp"`
+	TotalCost  float64            `json:"total_cost"`
+	ByProvider map[string]float64 `json:"by_provider"`
+}
+
+// ProviderCostHistogramResult represents the provider cost histogram query result
+type ProviderCostHistogramResult struct {
+	Buckets           []ProviderCostHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                         `json:"bucket_size_seconds"`
+	Providers         []string                      `json:"providers"`
+}
+
+// ProviderTokenStats represents token statistics for a single provider
+type ProviderTokenStats struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+}
+
+// ProviderTokenHistogramBucket represents a single time bucket for provider token data
+type ProviderTokenHistogramBucket struct {
+	Timestamp  time.Time                     `json:"timestamp"`
+	ByProvider map[string]ProviderTokenStats `json:"by_provider"`
+}
+
+// ProviderTokenHistogramResult represents the provider token histogram query result
+type ProviderTokenHistogramResult struct {
+	Buckets           []ProviderTokenHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                          `json:"bucket_size_seconds"`
+	Providers         []string                       `json:"providers"`
+}
+
+// ProviderLatencyStats represents latency statistics for a single provider
+type ProviderLatencyStats struct {
+	AvgLatency    float64 `json:"avg_latency"`
+	P90Latency    float64 `json:"p90_latency"`
+	P95Latency    float64 `json:"p95_latency"`
+	P99Latency    float64 `json:"p99_latency"`
+	TotalRequests int64   `json:"total_requests"`
+}
+
+// ProviderLatencyHistogramBucket represents a single time bucket for provider latency data
+type ProviderLatencyHistogramBucket struct {
+	Timestamp  time.Time                       `json:"timestamp"`
+	ByProvider map[string]ProviderLatencyStats `json:"by_provider"`
+}
+
+// ProviderLatencyHistogramResult represents the provider latency histogram query result
+type ProviderLatencyHistogramResult struct {
+	Buckets           []ProviderLatencyHistogramBucket `json:"buckets"`
+	BucketSizeSeconds int64                            `json:"bucket_size_seconds"`
+	Providers         []string                         `json:"providers"`
 }

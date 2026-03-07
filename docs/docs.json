@@ -349,7 +349,8 @@
             "icon": "book",
             "pages": [
               "deployment-guides/how-to/install-make",
-              "deployment-guides/how-to/multinode"
+              "deployment-guides/how-to/multinode",
+              "deployment-guides/docker-tuning"
             ]
           }
         ]
@@ -406,12 +407,19 @@
         "tab": "Changelogs",
         "icon": "bolt",
         "pages": [
-          "changelogs/v1.4.9",
-          "changelogs/v1.4.8",
-          "changelogs/v1.4.7",
-          "changelogs/v1.4.6",
-          "changelogs/v1.4.5",
-          "changelogs/v1.4.4",
+          "changelogs/v1.4.11",
+          "changelogs/v1.4.10",
+          {
+            "group": "February 2026",
+            "pages": [
+              "changelogs/v1.4.9",
+              "changelogs/v1.4.8",
+              "changelogs/v1.4.7",
+              "changelogs/v1.4.6",
+              "changelogs/v1.4.5",
+              "changelogs/v1.4.4"
+            ]
+          },
           {
             "group": "January 2026",
             "pages": [

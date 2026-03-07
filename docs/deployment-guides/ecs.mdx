@@ -18,6 +18,10 @@ This guide assumes you already have:
 - For load balancer: Allow inbound traffic from the load balancer's security group
 </Note>
 
+<Note>
+If you use PostgreSQL for `config_store` or `logs_store`, ensure the target database is UTF8 encoded. See [PostgreSQL UTF8 Requirement](../quickstart/gateway/setting-up#postgresql-utf8-requirement).
+</Note>
+
 ## Deployment Methods
 
 Choose your preferred deployment method:

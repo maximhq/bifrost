@@ -3,6 +3,7 @@ package streaming
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -515,9 +516,30 @@ func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*Re
 			if resp.Item != nil {
 				messages = append(messages, deepCopyResponsesMessage(*resp.Item))
 			}
-			// Append arguments to the most recent message
+			// Route arguments delta to the correct function call message by ItemID,
+			// falling back to last message only when no ItemID is present.
+			// If ItemID is present but unmatched, create a new stub message to avoid
+			// merging parallel tool call argument deltas into the wrong call.
 			if resp.Delta != nil && len(messages) > 0 {
-				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[len(messages)-1], *resp.Delta)
+				targetIdx := len(messages) - 1
+				if resp.ItemID != nil {
+					targetIdx = -1
+					for i := len(messages) - 1; i >= 0; i-- {
+						if messages[i].ID != nil && *messages[i].ID == *resp.ItemID {
+							targetIdx = i
+							break
+						}
+					}
+					if targetIdx == -1 {
+						// ItemID present but no matching message — create a stub to hold the delta
+						id := *resp.ItemID
+						messages = append(messages, schemas.ResponsesMessage{
+							ID: &id,
+						})
+						targetIdx = len(messages) - 1
+					}
+				}
+				a.appendFunctionArgumentsDeltaToResponsesMessage(&messages[targetIdx], *resp.Delta)
 			}
 
 		case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta:
@@ -828,20 +850,24 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 		data.FinishReason = lastChunk.FinishReason
 	}
 
-	// Accumulate raw response
+	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ResponsesStreamChunks) > 0 {
 		// Sort chunks by chunk index
 		sort.Slice(accumulator.ResponsesStreamChunks, func(i, j int) bool {
 			return accumulator.ResponsesStreamChunks[i].ChunkIndex < accumulator.ResponsesStreamChunks[j].ChunkIndex
 		})
+		var rawBuilder strings.Builder
 		for _, chunk := range accumulator.ResponsesStreamChunks {
 			if chunk.RawResponse != nil {
-				if data.RawResponse == nil {
-					data.RawResponse = bifrost.Ptr(*chunk.RawResponse)
-				} else {
-					*data.RawResponse += "\n\n" + *chunk.RawResponse
+				if rawBuilder.Len() > 0 {
+					rawBuilder.WriteString("\n\n")
 				}
+				rawBuilder.WriteString(*chunk.RawResponse)
 			}
+		}
+		if rawBuilder.Len() > 0 {
+			s := rawBuilder.String()
+			data.RawResponse = &s
 		}
 	}
 

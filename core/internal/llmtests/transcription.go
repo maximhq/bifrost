@@ -125,7 +125,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							"format":   tc.format,
 						},
 					}
-					ttsExpectations := SpeechExpectations(100) // Minimum expected bytes
+					// isStreaming=false, isMultipartRequest=false, isBinaryResponse=true (audio bytes don't have JSON raw response)
+					ttsExpectations := ApplyRawExpectations(SpeechExpectations(100), testConfig, false, false, true) // Minimum expected bytes
 					ttsExpectations = ModifyExpectationsForProvider(ttsExpectations, testConfig.Provider)
 					speechRetryConfig := SpeechRetryConfig{
 						MaxAttempts: ttsRetryConfig.MaxAttempts,
@@ -192,7 +193,8 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				}
 
 				// Enhanced validation for transcription
-				expectations := TranscriptionExpectations(10) // Expect at least some content
+				// Note: isMultipartRequest=true because transcription uses multipart form data, not JSON body
+				expectations := ApplyRawExpectations(TranscriptionExpectations(10), testConfig, false, true) // Expect at least some content
 				expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
 
 				// Create Transcription retry config
@@ -301,7 +303,7 @@ func RunTranscriptionTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 							"model":    testConfig.TranscriptionModel,
 						},
 					}
-					customExpectations := TranscriptionExpectations(5)
+					customExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					customExpectations = ModifyExpectationsForProvider(customExpectations, testConfig.Provider)
 					customTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: customRetryConfig.MaxAttempts,
@@ -409,7 +411,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							"format":   format,
 						},
 					}
-					formatExpectations := TranscriptionExpectations(5)
+					formatExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					formatExpectations = ModifyExpectationsForProvider(formatExpectations, testConfig.Provider)
 					formatTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: formatRetryConfig.MaxAttempts,
@@ -503,7 +505,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 					"model":    testConfig.TranscriptionModel,
 				},
 			}
-			advancedExpectations := TranscriptionExpectations(5)
+			advancedExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 			advancedExpectations = ModifyExpectationsForProvider(advancedExpectations, testConfig.Provider)
 			advancedTranscriptionRetryConfig := TranscriptionRetryConfig{
 				MaxAttempts: advancedRetryConfig.MaxAttempts,
@@ -599,7 +601,7 @@ func RunTranscriptionAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx con
 							"language": lang,
 						},
 					}
-					langExpectations := TranscriptionExpectations(5)
+					langExpectations := ApplyRawExpectations(TranscriptionExpectations(5), testConfig, false, true)
 					langExpectations = ModifyExpectationsForProvider(langExpectations, testConfig.Provider)
 					langTranscriptionRetryConfig := TranscriptionRetryConfig{
 						MaxAttempts: langRetryConfig.MaxAttempts,

@@ -22,9 +22,11 @@ type LogStore interface {
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
 	CreateIfNotExists(ctx context.Context, entry *Log) error
+	BatchCreateIfNotExists(ctx context.Context, entries []*Log) error
 	FindByID(ctx context.Context, id string) (*Log, error)
 	FindFirst(ctx context.Context, query any, fields ...string) (*Log, error)
 	FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error)
+	FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error)
 	HasLogs(ctx context.Context) (bool, error)
 	SearchLogs(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*SearchResult, error)
 	GetStats(ctx context.Context, filters SearchFilters) (*SearchStats, error)
@@ -32,6 +34,10 @@ type LogStore interface {
 	GetTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error)
 	GetCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*CostHistogramResult, error)
 	GetModelHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ModelHistogramResult, error)
+	GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
+	GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error)
+	GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error)
+	GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error)
 	Update(ctx context.Context, id string, entry any) error
 	BulkUpdateCost(ctx context.Context, updates map[string]float64) error
 	Flush(ctx context.Context, since time.Time) error

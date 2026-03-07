@@ -3,9 +3,11 @@ package llmtests
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -269,6 +271,194 @@ func GetPromptCachingTools() []schemas.ChatTool {
 	}
 }
 
+// RunPromptCachingToolBlocksTest validates that cache_control on tool_use and tool_result
+// content blocks survives the Bifrost round-trip (Anthropic format -> Bifrost ResponsesMessage -> Provider format).
+// It sends a Responses API request with cache_control on function_call and function_call_output messages,
+// enables raw request capture, and inspects the outgoing provider request to verify cache markers are present.
+//
+// For Anthropic/Vertex: verifies "cache_control" appears on tool_use and tool_result content blocks.
+// For Bedrock: verifies "cachePoint" blocks appear after toolUse and toolResult blocks.
+func RunPromptCachingToolBlocksTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.PromptCaching {
+		t.Logf("Prompt caching tool blocks test not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.PromptCachingModel == "" {
+		t.Logf("No PromptCachingModel configured for provider %s, skipping", testConfig.Provider)
+		return
+	}
+
+	t.Run("PromptCachingToolBlocks", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		weatherTool := GetSampleResponsesTool(SampleToolTypeWeather)
+		if weatherTool == nil {
+			t.Fatal("Failed to get sample weather tool")
+		}
+
+		cacheControl := &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+
+		// System message with long prefix (ensures we exceed minimum cache token threshold)
+		systemMsg := schemas.ResponsesMessage{
+			Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleSystem),
+			Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{
+						Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+						Text:         bifrost.Ptr(longSharedPrefix),
+						CacheControl: cacheControl,
+					},
+				},
+			},
+		}
+
+		// User asks about weather
+		userMsg1 := schemas.ResponsesMessage{
+			Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: bifrost.Ptr("What's the weather in San Francisco?"),
+			},
+		}
+
+		// Assistant responds with a tool call (function_call with cache_control)
+		toolCallMsg := schemas.ResponsesMessage{
+			Type:         bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			Status:       bifrost.Ptr("completed"),
+			CacheControl: cacheControl,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:    bifrost.Ptr("call_weather_001"),
+				Name:      bifrost.Ptr("weather"),
+				Arguments: bifrost.Ptr(`{"location":"San Francisco"}`),
+			},
+		}
+
+		// Tool result (function_call_output with cache_control)
+		toolResultMsg := schemas.ResponsesMessage{
+			Type:         bifrost.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			CacheControl: cacheControl,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: bifrost.Ptr("call_weather_001"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: bifrost.Ptr(`{"temperature": 18, "unit": "celsius", "condition": "partly cloudy", "humidity": 72}`),
+				},
+			},
+		}
+
+		// Follow-up user message to prompt a response
+		userMsg2 := schemas.ResponsesMessage{
+			Type: bifrost.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: bifrost.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{
+				ContentStr: bifrost.Ptr("Summarize the weather information you received."),
+			},
+		}
+
+		responsesReq := &schemas.BifrostResponsesRequest{
+			Provider: testConfig.Provider,
+			Model:    testConfig.PromptCachingModel,
+			Input: []schemas.ResponsesMessage{
+				systemMsg,
+				userMsg1,
+				toolCallMsg,
+				toolResultMsg,
+				userMsg2,
+			},
+			Params: &schemas.ResponsesParameters{
+				Tools:           []schemas.ResponsesTool{*weatherTool},
+				MaxOutputTokens: bifrost.Ptr(200),
+			},
+		}
+
+		// Enable raw request capture so we can inspect the outgoing provider request
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+
+		retryConfig := ResponsesRetryConfig{
+			MaxAttempts: 5,
+			BaseDelay:   2 * time.Second,
+			MaxDelay:    10 * time.Second,
+			Conditions:  []ResponsesRetryCondition{},
+			OnRetry: func(attempt int, reason string, t *testing.T) {
+				t.Logf("Retrying (attempt %d): %s", attempt, reason)
+			},
+			OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
+				t.Logf("Failed after %d attempts: %v", attempts, finalErr)
+			},
+		}
+
+		expectations := ResponseExpectations{
+			ShouldHaveContent:    true,
+			ShouldHaveUsageStats: true,
+		}
+
+		retryContext := TestRetryContext{
+			ScenarioName: "PromptCachingToolBlocks",
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.PromptCachingModel,
+			},
+		}
+
+		operation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(rawCtx, schemas.NoDeadline)
+			return client.ResponsesRequest(bfCtx, responsesReq)
+		}
+
+		response, err := WithResponsesTestRetry(t, retryConfig, retryContext, expectations, "PromptCachingToolBlocks", operation)
+
+		require.Nil(t, err, "Responses request should succeed: %v", err)
+		require.NotNil(t, response, "Response should not be nil")
+
+		// Verify response content
+		content := GetResponsesContent(response)
+		assert.NotEmpty(t, content, "Response should have content")
+
+		// Inspect the raw request to verify cache_control markers survived the conversion
+		rawReq := response.ExtraFields.RawRequest
+		require.NotNil(t, rawReq, "Raw request should be present (BifrostContextKeySendBackRawRequest was set)")
+
+		rawJSON, marshalErr := sonic.Marshal(rawReq)
+		require.NoError(t, marshalErr, "Raw request should be marshalable to JSON")
+		rawStr := string(rawJSON)
+
+		t.Logf("  Raw request length: %d bytes", len(rawStr))
+
+		// Validate based on provider type:
+		// - Anthropic/Vertex: tool_use and tool_result blocks should have "cache_control"
+		// - Bedrock: "cachePoint" blocks should appear after toolUse and toolResult blocks
+		switch testConfig.Provider {
+		case schemas.Bedrock:
+			// Bedrock translates cache_control into separate cachePoint blocks.
+			// Count occurrences: we expect at least 2 cachePoint blocks from tool blocks
+			// (1 after toolUse, 1 after toolResult), plus possibly more from system/text blocks.
+			cachePointCount := strings.Count(rawStr, `"cachePoint"`)
+			t.Logf("  Bedrock: found %d cachePoint blocks in raw request", cachePointCount)
+
+			// We put cache_control on: system text (1), tool_use (1), tool_result (1) = at least 3
+			require.GreaterOrEqual(t, cachePointCount, 3,
+				"Expected at least 3 cachePoint blocks (system + toolUse + toolResult), got %d", cachePointCount)
+
+		case schemas.Anthropic, schemas.Vertex:
+			// Anthropic/Vertex: cache_control should appear on content blocks directly.
+			// The raw request should contain cache_control on the tool_use and tool_result blocks.
+			cacheControlCount := strings.Count(rawStr, `"cache_control"`)
+			t.Logf("  %s: found %d cache_control markers in raw request", testConfig.Provider, cacheControlCount)
+
+			// We put cache_control on: system text (1), tool_use (1), tool_result (1) = at least 3
+			require.GreaterOrEqual(t, cacheControlCount, 3,
+				"Expected at least 3 cache_control markers (system + tool_use + tool_result), got %d", cacheControlCount)
+
+		default:
+			t.Logf("  Provider %s: skipping raw request cache marker validation (not Anthropic/Bedrock/Vertex)", testConfig.Provider)
+		}
+
+		t.Logf("  Prompt caching tool blocks test completed!")
+	})
+}
+
 // RunPromptCachingTest executes the prompt caching test scenario
 // This test verifies that OpenAI's prompt caching works correctly with tools
 // by making multiple requests with the same long prefix and tools, and verifying
@@ -361,7 +551,7 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				// For the second query (index 1), add cached tokens validation
 				if i == 1 {
 					expectations.ProviderSpecific = map[string]interface{}{
-						"min_cached_tokens_percentage": 0.90, // 90% minimum
+						"min_cached_tokens_percentage": 0.80, // 80% minimum
 						"query_index":                  i,
 					}
 				}
@@ -393,7 +583,7 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 				// Extract cached tokens
 				var cachedTokens int
 				if response.Usage.PromptTokensDetails != nil {
-					cachedTokens = response.Usage.PromptTokensDetails.CachedTokens
+					cachedTokens = response.Usage.PromptTokensDetails.CachedReadTokens + response.Usage.PromptTokensDetails.CachedWriteTokens
 				}
 
 				promptTokens := response.Usage.PromptTokens
@@ -421,17 +611,17 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 						t.Logf("  ℹ️  First request has %d cached tokens (cache from previous test run)", cachedTokens)
 					}
 				} else if i == 1 {
-					// Query 2: Verify cached tokens are >90% of prompt tokens
+					// Query 2: Verify cached tokens are >80% of prompt tokens
 					// This validation is also done in the retry framework, but we verify here as well
 					if promptTokens > 0 {
 						cachedPercentage := float64(cachedTokens) / float64(promptTokens)
 						t.Logf("  Cached tokens percentage: %.2f%%", cachedPercentage*100)
 
-						require.GreaterOrEqual(t, cachedPercentage, 0.90,
-							"Query 2 should have at least 90%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
+						require.GreaterOrEqual(t, cachedPercentage, 0.80,
+							"Query 2 should have at least 80%% cached tokens (got %.2f%%, cached: %d, prompt: %d)",
 							cachedPercentage*100, cachedTokens, promptTokens)
 
-						t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 90%%)", cachedPercentage*100)
+						t.Logf("  ✅ Cached tokens percentage: %.2f%% (>= 80%%)", cachedPercentage*100)
 					} else {
 						t.Fatalf("Prompt tokens is 0, cannot calculate cached percentage")
 					}

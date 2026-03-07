@@ -1,1 +1,1 @@
-- fix: added missing count tokens support for usage field
+- fix: adds metadata back to the new log writer flow

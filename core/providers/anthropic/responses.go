@@ -2313,20 +2313,24 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		TotalTokens:  anthropicUsage.InputTokens + anthropicUsage.OutputTokens,
 	}
 
-	// Handle cache read tokens (input side)
+	// Handle cache read tokens
 	if anthropicUsage.CacheReadInputTokens > 0 {
 		if bifrostUsage.InputTokensDetails == nil {
 			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.InputTokensDetails.CachedTokens = anthropicUsage.CacheReadInputTokens
+		bifrostUsage.InputTokensDetails.CachedReadTokens = anthropicUsage.CacheReadInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + anthropicUsage.CacheReadInputTokens
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + anthropicUsage.CacheReadInputTokens
 	}
 
-	// Handle cache creation tokens (output side)
+	// Handle cache creation tokens
 	if anthropicUsage.CacheCreationInputTokens > 0 {
-		if bifrostUsage.OutputTokensDetails == nil {
-			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+		if bifrostUsage.InputTokensDetails == nil {
+			bifrostUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 		}
-		bifrostUsage.OutputTokensDetails.CachedTokens = anthropicUsage.CacheCreationInputTokens
+		bifrostUsage.InputTokensDetails.CachedWriteTokens = anthropicUsage.CacheCreationInputTokens
+		bifrostUsage.InputTokens = bifrostUsage.InputTokens + anthropicUsage.CacheCreationInputTokens
+		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + anthropicUsage.CacheCreationInputTokens
 	}
 
 	// Propagate server tool use (web search) counts
@@ -2363,14 +2367,16 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		OutputTokens: bifrostUsage.OutputTokens,
 	}
 
-	// Handle cache read tokens (from input side)
-	if bifrostUsage.InputTokensDetails != nil && bifrostUsage.InputTokensDetails.CachedTokens > 0 {
-		anthropicUsage.CacheReadInputTokens = bifrostUsage.InputTokensDetails.CachedTokens
-	}
-
-	// Handle cache creation tokens (from output side)
-	if bifrostUsage.OutputTokensDetails != nil && bifrostUsage.OutputTokensDetails.CachedTokens > 0 {
-		anthropicUsage.CacheCreationInputTokens = bifrostUsage.OutputTokensDetails.CachedTokens
+	// Handle cache read tokens
+	if bifrostUsage.InputTokensDetails != nil {
+		if bifrostUsage.InputTokensDetails.CachedReadTokens > 0 {
+			anthropicUsage.CacheReadInputTokens = bifrostUsage.InputTokensDetails.CachedReadTokens
+			anthropicUsage.InputTokens = anthropicUsage.InputTokens - bifrostUsage.InputTokensDetails.CachedReadTokens
+		}
+		if bifrostUsage.InputTokensDetails.CachedWriteTokens > 0 {
+			anthropicUsage.CacheCreationInputTokens = bifrostUsage.InputTokensDetails.CachedWriteTokens
+			anthropicUsage.InputTokens = anthropicUsage.InputTokens - bifrostUsage.InputTokensDetails.CachedWriteTokens
+		}
 	}
 
 	// Handle server tool use statistics (e.g., web search)
@@ -3174,8 +3180,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 			if block.ToolUseID != nil {
 				if block.Content != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ToolUseID,
 						},
@@ -3266,8 +3273,9 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 	if len(pendingToolUseBlocks) > 0 {
 		for _, toolBlock := range pendingToolUseBlocks {
 			bifrostMsg := schemas.ResponsesMessage{
-				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-				Status: schemas.Ptr("completed"),
+				Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				Status:       schemas.Ptr("completed"),
+				CacheControl: toolBlock.CacheControl,
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
 					CallID: toolBlock.ID,
 					Name:   toolBlock.Name,
@@ -3489,8 +3497,9 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 				// Convert tool use to function call message
 				if block.ID != nil && block.Name != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ID,
 							Name:   block.Name,
@@ -3520,8 +3529,9 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			if block.ToolUseID != nil {
 				if block.Content != nil {
 					bifrostMsg := schemas.ResponsesMessage{
-						Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
-						Status: schemas.Ptr("completed"),
+						Type:         schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						Status:       schemas.Ptr("completed"),
+						CacheControl: block.CacheControl,
 						ResponsesToolMessage: &schemas.ResponsesToolMessage{
 							CallID: block.ToolUseID,
 						},
@@ -3810,7 +3820,8 @@ func convertBifrostReasoningToAnthropicThinking(msg *schemas.ResponsesMessage) [
 func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, msg *schemas.ResponsesMessage) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolUseBlock := AnthropicContentBlock{
-			Type: AnthropicContentBlockTypeToolUse,
+			Type:         AnthropicContentBlockTypeToolUse,
+			CacheControl: msg.CacheControl,
 		}
 
 		if msg.ResponsesToolMessage.CallID != nil {
@@ -3847,8 +3858,9 @@ func convertBifrostFunctionCallToAnthropicToolUse(ctx *schemas.BifrostContext, m
 func convertBifrostFunctionCallOutputToAnthropicToolResultBlock(msg *schemas.ResponsesMessage) *AnthropicContentBlock {
 	if msg.ResponsesToolMessage != nil {
 		toolResultBlock := AnthropicContentBlock{
-			Type:      AnthropicContentBlockTypeToolResult,
-			ToolUseID: msg.ResponsesToolMessage.CallID,
+			Type:         AnthropicContentBlockTypeToolResult,
+			ToolUseID:    msg.ResponsesToolMessage.CallID,
+			CacheControl: msg.CacheControl,
 		}
 
 		if msg.ResponsesToolMessage.Output != nil {

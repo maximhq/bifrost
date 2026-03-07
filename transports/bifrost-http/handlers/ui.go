@@ -56,6 +56,27 @@ func (h *UIHandler) serveDashboard(ctx *fasthttp.RequestCtx) {
 		cleanPath = "ui" + cleanPath
 	}
 
+	// Block hidden directories and files (any path segment starting with .)
+	segments := strings.Split(cleanPath, "/")
+	for _, segment := range segments {
+		if strings.HasPrefix(segment, ".") {
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+			ctx.SetBodyString("404 - Not found")
+			return
+		}
+	}
+
+	// Block sensitive files
+	baseName := filepath.Base(cleanPath)
+	sensitiveFiles := []string{"package.json", "package-lock.json"}
+	for _, sensitive := range sensitiveFiles {
+		if baseName == sensitive {
+			ctx.SetStatusCode(fasthttp.StatusNotFound)
+			ctx.SetBodyString("404 - Not found")
+			return
+		}
+	}
+
 	// Check if this is a static asset request (has file extension)
 	hasExtension := strings.Contains(filepath.Base(cleanPath), ".")
 

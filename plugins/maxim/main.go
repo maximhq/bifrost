@@ -435,6 +435,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Add generation to the effective log repository
 	logger.AddGenerationToTrace(traceID, &generationConfig)
 
+	// Extract and log attachments from message content
+	for _, att := range ExtractAttachmentsFromRequest(req) {
+		if att != nil {
+			logger.GenerationAddAttachment(generationID, att)
+		}
+	}
+
 	if ctx != nil {
 		if _, ok := ctx.Value(TraceIDKey).(string); !ok {
 			ctx.SetValue(TraceIDKey, traceID)
@@ -515,8 +522,9 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 				}
 			}
 
-			// Return if no stream response or it's a delta response
-			if streamResponse == nil || !isFinalChunk {
+			// For streaming: only process on final chunk. Skip intermediate chunks.
+			// When there's an error, streamResponse may be nil but we must still log bifrostErr.
+			if !isFinalChunk {
 				return
 			}
 		}

@@ -950,8 +950,10 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 			if tool.Function.Parameters != nil {
 				// Use the complete parameters object which includes type, properties, required, etc.
 				schemaMap := map[string]interface{}{
-					"type":       tool.Function.Parameters.Type,
-					"properties": tool.Function.Parameters.Properties,
+					"type": tool.Function.Parameters.Type,
+				}
+				if tool.Function.Parameters.Properties != nil {
+					schemaMap["properties"] = tool.Function.Parameters.Properties
 				}
 				// Add required field if present
 				if len(tool.Function.Parameters.Required) > 0 {

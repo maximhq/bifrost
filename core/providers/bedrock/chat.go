@@ -231,14 +231,18 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 		}
 		// Handle cached tokens if present
 		if response.Usage.CacheReadInputTokens > 0 {
-			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+			if usage.PromptTokensDetails == nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
+			usage.PromptTokensDetails.CachedReadTokens = response.Usage.CacheReadInputTokens
+			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheReadInputTokens
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {
-			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-				CachedTokens: response.Usage.CacheWriteInputTokens,
+			if usage.PromptTokensDetails == nil {
+				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
 			}
+			usage.PromptTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			usage.PromptTokens = usage.PromptTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 

@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { getErrorMessage, setAuthToken, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
+import { getErrorMessage, useIsAuthEnabledQuery, useLoginMutation } from "@/lib/store/apis";
 import { BooksIcon, DiscordLogoIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { Eye, EyeOff } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -71,17 +71,9 @@ export default function LoginView() {
 		e.preventDefault();
 		setErrorMessage("");
 		try {
-			const result = await login({ username, password }).unwrap();
-			// Store token immediately before navigation
-			if (result.token) {
-				setAuthToken(result.token);
-				// Small delay to ensure token is persisted
-				await new Promise((resolve) => setTimeout(resolve, 100));
-				// Redirect to workspace on successful login
-				router.push("/workspace");
-			} else {
-				setErrorMessage("Login successful but no token received");
-			}
+			await login({ username, password }).unwrap();
+			// Cookie is set automatically by the server response — just navigate
+			router.push("/workspace");
 		} catch (error) {
 			const message = getErrorMessage(error);
 			setErrorMessage(message);

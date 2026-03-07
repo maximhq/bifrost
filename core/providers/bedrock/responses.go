@@ -1099,6 +1099,10 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 	// Note: Tool calls are already closed in the first loop above.
 	// This section is intentionally left empty to avoid duplicate events.
 
+	if usage.InputTokensDetails != nil {
+		usage.InputTokens = usage.InputTokens + usage.InputTokensDetails.CachedReadTokens + usage.InputTokensDetails.CachedWriteTokens
+	}
+
 	// Emit response.completed
 	response := &schemas.BifrostResponsesResponse{
 		ID:        state.MessageID,
@@ -1721,16 +1725,16 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 						bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 					} else if schemas.IsAnthropicModel(bifrostReq.Model) {
-					if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
-						// Opus 4.6+: adaptive thinking + output_config.effort
-						effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
-						bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
-							"type": "adaptive",
-						})
-						bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-							"effort": effort,
-						})
-					} else {
+						if anthropic.SupportsAdaptiveThinking(bifrostReq.Model) {
+							// Opus 4.6+: adaptive thinking + output_config.effort
+							effort := anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+							bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+								"type": "adaptive",
+							})
+							bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
+								"effort": effort,
+							})
+						} else {
 							// Opus 4.5 and older Anthropic models: budget_tokens thinking
 							defaultMaxTokens := DefaultCompletionMaxTokens
 							if inferenceConfig.MaxTokens != nil {
@@ -1942,14 +1946,18 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 		}
 		// Handle cached tokens if present
 		if response.Usage.CacheReadInputTokens > 0 {
-			bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
-				CachedTokens: response.Usage.CacheReadInputTokens,
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
+			bifrostResp.Usage.InputTokensDetails.CachedReadTokens = response.Usage.CacheReadInputTokens
+			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheReadInputTokens
 		}
 		if response.Usage.CacheWriteInputTokens > 0 {
-			bifrostResp.Usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
-				CachedTokens: response.Usage.CacheWriteInputTokens,
+			if bifrostResp.Usage.InputTokensDetails == nil {
+				bifrostResp.Usage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{}
 			}
+			bifrostResp.Usage.InputTokensDetails.CachedWriteTokens = response.Usage.CacheWriteInputTokens
+			bifrostResp.Usage.InputTokens = bifrostResp.Usage.InputTokens + response.Usage.CacheWriteInputTokens
 		}
 	}
 
@@ -2018,10 +2026,14 @@ func ToBedrockConverseResponse(bifrostResp *schemas.BifrostResponsesResponse) (*
 		bedrockResp.Usage.TotalTokens = bifrostResp.Usage.TotalTokens
 
 		if bifrostResp.Usage.InputTokensDetails != nil {
-			bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedTokens
-		}
-		if bifrostResp.Usage.OutputTokensDetails != nil {
-			bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.OutputTokensDetails.CachedTokens
+			if bifrostResp.Usage.InputTokensDetails.CachedReadTokens > 0 {
+				bedrockResp.Usage.CacheReadInputTokens = bifrostResp.Usage.InputTokensDetails.CachedReadTokens
+				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedReadTokens
+			}
+			if bifrostResp.Usage.InputTokensDetails.CachedWriteTokens > 0 {
+				bedrockResp.Usage.CacheWriteInputTokens = bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+				bedrockResp.Usage.InputTokens = bedrockResp.Usage.InputTokens - bifrostResp.Usage.InputTokensDetails.CachedWriteTokens
+			}
 		}
 	}
 
@@ -2172,14 +2184,16 @@ type ToolCall struct {
 	State             ToolCallState
 	AssistantMsgIndex int // Index in final bedrockMessages where this call was emitted
 	Result            *ToolResult
+	CacheControl      *schemas.CacheControl
 }
 
 // ToolResult represents the result of a tool call
 type ToolResult struct {
-	CallID  string
-	Content []BedrockContentBlock
-	Status  string
-	Emitted bool
+	CallID       string
+	Content      []BedrockContentBlock
+	Status       string
+	Emitted      bool
+	CacheControl *schemas.CacheControl
 }
 
 // ToolCallBatch tracks a group of tool calls that should be emitted together
@@ -2213,7 +2227,7 @@ func NewToolCallStateManager() *ToolCallStateManager {
 }
 
 // RegisterToolCall registers a new tool call in the system
-func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments string) {
+func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments string, cacheControl *schemas.CacheControl) {
 	if m.toolCalls[callID] != nil {
 		// Tool call already registered, skip
 		return
@@ -2225,6 +2239,7 @@ func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments stri
 		Arguments:         arguments,
 		State:             ToolCallStateInitialized,
 		AssistantMsgIndex: -1,
+		CacheControl:      cacheControl,
 	}
 
 	m.toolCalls[callID] = toolCall
@@ -2232,7 +2247,7 @@ func (m *ToolCallStateManager) RegisterToolCall(callID, toolName, arguments stri
 }
 
 // RegisterToolResult registers a tool result
-func (m *ToolCallStateManager) RegisterToolResult(callID string, content []BedrockContentBlock, status string) {
+func (m *ToolCallStateManager) RegisterToolResult(callID string, content []BedrockContentBlock, status string, cacheControl *schemas.CacheControl) {
 	// Attemp to deduplicate the result similar to tool call. Need to check in 2 places, since after moving
 	// on from pendingResults into a completed toolCall, the same ID might come again.
 	if _, ok := m.pendingResults[callID]; ok {
@@ -2245,10 +2260,11 @@ func (m *ToolCallStateManager) RegisterToolResult(callID string, content []Bedro
 	}
 
 	result := &ToolResult{
-		CallID:  callID,
-		Content: content,
-		Status:  status,
-		Emitted: false,
+		CallID:       callID,
+		Content:      content,
+		Status:       status,
+		Emitted:      false,
+		CacheControl: cacheControl,
 	}
 
 	m.pendingResults[callID] = result
@@ -2368,6 +2384,11 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 						Status:    schemas.Ptr(result.Status),
 					},
 				})
+				if result.CacheControl != nil {
+					resultBlocks = append(resultBlocks, BedrockContentBlock{
+						CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+					})
+				}
 				resultIDs = append(resultIDs, callID)
 			}
 
@@ -2410,6 +2431,11 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 					}
 					toolUseBlock.ToolUse.Input = input
 					contentBlocks = append(contentBlocks, *toolUseBlock)
+					if toolCall.CacheControl != nil {
+						contentBlocks = append(contentBlocks, BedrockContentBlock{
+							CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+						})
+					}
 				}
 			}
 
@@ -2454,7 +2480,7 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 					arguments = *msg.ResponsesToolMessage.Arguments
 				}
 
-				stateManager.RegisterToolCall(*msg.ResponsesToolMessage.CallID, toolName, arguments)
+				stateManager.RegisterToolCall(*msg.ResponsesToolMessage.CallID, toolName, arguments, msg.CacheControl)
 			}
 
 		case schemas.ResponsesMessageTypeFunctionCallOutput:
@@ -2487,7 +2513,7 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 					}
 				}
 
-				stateManager.RegisterToolResult(*msg.ResponsesToolMessage.CallID, resultContent, status)
+				stateManager.RegisterToolResult(*msg.ResponsesToolMessage.CallID, resultContent, status, msg.CacheControl)
 			}
 
 			// Check if next message is not a function call output - if so, flush tool calls and results
@@ -2531,6 +2557,11 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 							}
 							toolUseBlock.ToolUse.Input = input
 							contentBlocks = append(contentBlocks, *toolUseBlock)
+							if toolCall.CacheControl != nil {
+								contentBlocks = append(contentBlocks, BedrockContentBlock{
+									CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+								})
+							}
 						}
 					}
 
@@ -2556,6 +2587,11 @@ func ConvertBifrostMessagesToBedrockMessages(bifrostMessages []schemas.Responses
 								Status:    schemas.Ptr(result.Status),
 							},
 						})
+						if result.CacheControl != nil {
+							resultBlocks = append(resultBlocks, BedrockContentBlock{
+								CachePoint: &BedrockCachePoint{Type: BedrockCachePointTypeDefault},
+							})
+						}
 						resultIDs = append(resultIDs, callID)
 					}
 
@@ -3041,11 +3077,17 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			}
 			outputMessages = append(outputMessages, resultMsg)
 		} else if block.CachePoint != nil {
-			// add cache control to last content block of last message
+			// Add cache control to last message
 			if len(outputMessages) > 0 {
 				lastMessage := &outputMessages[len(outputMessages)-1]
+				// First try: set on last content block (for text/image messages)
 				if lastMessage.Content != nil && len(lastMessage.Content.ContentBlocks) > 0 {
 					lastMessage.Content.ContentBlocks[len(lastMessage.Content.ContentBlocks)-1].CacheControl = &schemas.CacheControl{
+						Type: schemas.CacheControlTypeEphemeral,
+					}
+				} else {
+					// Fallback: set on message itself (for function_call/function_call_output)
+					lastMessage.CacheControl = &schemas.CacheControl{
 						Type: schemas.CacheControlTypeEphemeral,
 					}
 				}

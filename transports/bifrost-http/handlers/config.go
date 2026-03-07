@@ -110,27 +110,12 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to fetch framework config from db: %v", err))
 			return
 		}
-		if fc != nil {
-			mapConfig["framework_config"] = *fc
-		} else {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
-			}
-		}
+		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(fc, nil)
+		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	} else {
 		mapConfig["client_config"] = h.store.ClientConfig
-		if h.store.FrameworkConfig == nil {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          bifrost.Ptr(modelcatalog.DefaultPricingURL),
-				PricingSyncInterval: bifrost.Ptr(int64(modelcatalog.DefaultPricingSyncInterval.Seconds())),
-			}
-		} else if h.store.FrameworkConfig.Pricing != nil && h.store.FrameworkConfig.Pricing.PricingURL != nil {
-			mapConfig["framework_config"] = configstoreTables.TableFrameworkConfig{
-				PricingURL:          h.store.FrameworkConfig.Pricing.PricingURL,
-				PricingSyncInterval: bifrost.Ptr(int64((*h.store.FrameworkConfig.Pricing.PricingSyncInterval).Seconds())),
-			}
-		}
+		normalizedFrameworkConfig, _, _ := lib.ResolveFrameworkPricingConfig(nil, h.store.FrameworkConfig)
+		mapConfig["framework_config"] = *normalizedFrameworkConfig
 	}
 	if h.store.ConfigStore != nil {
 		// Fetching governance config
@@ -335,10 +320,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.DisableDBPingsInHealth = payload.ClientConfig.DisableDBPingsInHealth
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 
-	// Handle unified auth on inference toggle
-	if payload.ClientConfig.EnforceAuthOnInference != currentConfig.EnforceAuthOnInference {
-		restartReasons = append(restartReasons, "Enforce auth on inference")
-	}
 	updatedConfig.EnforceAuthOnInference = payload.ClientConfig.EnforceAuthOnInference
 	// Sync deprecated columns to match new field so they stay consistent in the DB
 	updatedConfig.EnforceGovernanceHeader = payload.ClientConfig.EnforceAuthOnInference

@@ -23,6 +23,7 @@ func NewIntegrationHandler(client *bifrost.Bifrost, handlerStore lib.HandlerStor
 		integrations.NewAnthropicRouter(client, handlerStore, logger),
 		integrations.NewGenAIRouter(client, handlerStore, logger),
 		integrations.NewLiteLLMRouter(client, handlerStore, logger),
+		integrations.NewCohereRouter(client, handlerStore, logger),
 		integrations.NewLangChainRouter(client, handlerStore, logger),
 		integrations.NewPydanticAIRouter(client, handlerStore, logger),
 		integrations.NewBedrockRouter(client, handlerStore, logger),

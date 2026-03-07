@@ -266,7 +266,15 @@ scrape_configs:
       - targets: ["bifrost-instance-1:8080", "bifrost-instance-2:8080"]
     scrape_interval: 30s
     metrics_path: /metrics
+    # If Bifrost auth is enabled, add:
+    # basic_auth:
+    #   username: '<admin_username>'
+    #   password: '<admin_password>'
 ```
+
+<Info>
+  If you have Bifrost authentication enabled (`auth_config`), you must include `basic_auth` in the scrape config with your `admin_username` and `admin_password`. See the [Prometheus docs](/features/observability/prometheus#pull-based-scraping) for details.
+</Info>
 
 ### Production Alerting Examples
 

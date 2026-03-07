@@ -3,6 +3,10 @@
 package utils
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -42,6 +46,19 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
+const (
+	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
+	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
+)
+
+// NewSSEScanner creates a bufio.Scanner configured for SSE stream parsing.
+// Uses a small initial buffer (8KB) that auto-grows up to 10MB for rare large tokens.
+func NewSSEScanner(reader io.Reader) *bufio.Scanner {
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, sseInitialBufSize), sseMaxBufSize)
+	return scanner
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -344,6 +361,83 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 	return filtered
 }
 
+// providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
+// These are transport-level headers that don't apply when re-serving the response.
+var providerResponseFilterHeaders = map[string]bool{
+	"content-length":                    true,
+	"content-encoding":                  true,
+	"transfer-encoding":                 true,
+	"connection":                        true,
+	"keep-alive":                        true,
+	"proxy-connection":                  true,
+	"proxy-authenticate":                true,
+	"proxy-authorization":               true,
+	"authorization":                     true,
+	"cookie":                            true,
+	"set-cookie":                        true,
+	"set-cookie2":                       true,
+	"www-authenticate":                  true,
+	"te":                                true,
+	"trailer":                           true,
+	"upgrade":                           true,
+	"host":                              true,
+	"date":                              true,
+	"server":                            true,
+	"alt-svc":                           true,
+	"strict-transport-security":         true,
+	"content-type":                      true,
+	"access-control-allow-origin":       true,
+	"access-control-allow-methods":      true,
+	"access-control-allow-headers":      true,
+	"access-control-expose-headers":     true,
+	"access-control-allow-credentials":  true,
+	"access-control-max-age":            true,
+}
+
+// ExtractProviderResponseHeaders extracts and filters response headers from a
+// fasthttp response. Transport-level headers are excluded.
+func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	resp.Header.VisitAll(func(key, value []byte) {
+		k := string(key)
+		if providerResponseFilterHeaders[strings.ToLower(k)] {
+			return
+		}
+		v := string(value)
+		if existing, ok := headers[k]; ok && existing != "" {
+			headers[k] = existing + ", " + v
+		} else {
+			headers[k] = v
+		}
+	})
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
+// ExtractProviderResponseHeadersFromHTTP extracts and filters response headers
+// from a standard net/http response. Transport-level headers are excluded.
+// Used by providers like Bedrock that use net/http instead of fasthttp.
+func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	if resp == nil {
+		return nil
+	}
+	headers := make(map[string]string)
+	for k, values := range resp.Header {
+		if !providerResponseFilterHeaders[strings.ToLower(k)] && len(values) > 0 {
+			headers[k] = strings.Join(values, ", ")
+		}
+	}
+	if len(headers) == 0 {
+		return nil
+	}
+	return headers
+}
+
 // SetExtraHeaders sets additional headers from NetworkConfig to the fasthttp request.
 // This allows users to configure custom headers for their provider requests.
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
@@ -455,6 +549,116 @@ func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]int
 	}
 }
 
+// MergeExtraParamsIntoJSON merges extra params into serialized JSON while preserving
+// the original key ordering. This avoids the order-destroying roundtrip through
+// map[string]interface{} that would lose key ordering in tool schemas and other
+// order-sensitive JSON structures.
+func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{}) ([]byte, error) {
+	trimmed := bytes.TrimSpace(jsonBody)
+	if len(trimmed) < 2 || trimmed[0] != '{' {
+		return jsonBody, nil // not a JSON object, return as-is
+	}
+
+	// Parse existing JSON into ordered key-value pairs using encoding/json
+	// (not sonic) to preserve document key order via token-by-token parsing.
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
+
+	if _, err := dec.Token(); err != nil { // '{'
+		return jsonBody, nil
+	}
+
+	type kvPair struct {
+		key string
+		val json.RawMessage
+	}
+	var pairs []kvPair
+	seen := make(map[string]int)
+
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return jsonBody, nil
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return jsonBody, nil
+		}
+		var val json.RawMessage
+		if err := dec.Decode(&val); err != nil {
+			return jsonBody, nil
+		}
+		seen[key] = len(pairs)
+		pairs = append(pairs, kvPair{key, val})
+	}
+
+	// Add/merge extra params (deterministic order for new keys)
+	extraKeys := make([]string, 0, len(extraParams))
+	for k := range extraParams {
+		extraKeys = append(extraKeys, k)
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		v := extraParams[k]
+		newValBytes, err := sonic.Marshal(v)
+		if err != nil {
+			continue
+		}
+		if idx, exists := seen[k]; exists {
+			// If both existing and new are JSON objects, merge recursively
+			existingTrimmed := bytes.TrimSpace(pairs[idx].val)
+			newTrimmed := bytes.TrimSpace(newValBytes)
+			if len(existingTrimmed) > 0 && existingTrimmed[0] == '{' &&
+				len(newTrimmed) > 0 && newTrimmed[0] == '{' {
+				var existingMap, newMap map[string]interface{}
+				existingDec := json.NewDecoder(bytes.NewReader(existingTrimmed))
+				existingDec.UseNumber()
+				newDec := json.NewDecoder(bytes.NewReader(newTrimmed))
+				newDec.UseNumber()
+				if existingDec.Decode(&existingMap) == nil {
+					if newDec.Decode(&newMap) == nil {
+						MergeExtraParams(existingMap, newMap)
+						if merged, err := sonic.Marshal(existingMap); err == nil {
+							pairs[idx].val = merged
+							continue
+						}
+					}
+				}
+			}
+			// Non-object or merge failed: overwrite in place (preserving position)
+			pairs[idx].val = newValBytes
+		} else {
+			// New key: append at end
+			pairs = append(pairs, kvPair{k, newValBytes})
+		}
+	}
+
+	// Rebuild compact JSON, then indent for consistent formatting
+	var compact bytes.Buffer
+	compact.WriteByte('{')
+	for i, kv := range pairs {
+		if i > 0 {
+			compact.WriteByte(',')
+		}
+		keyBytes, err := sonic.Marshal(kv.key)
+		if err != nil {
+			return jsonBody, err
+		}
+		compact.Write(keyBytes)
+		compact.WriteByte(':')
+		// Use trimmed value to remove any existing indentation
+		compact.Write(bytes.TrimSpace(kv.val))
+	}
+	compact.WriteByte('}')
+
+	// Re-indent to match the expected formatting
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, compact.Bytes(), "", "  "); err != nil {
+		return compact.Bytes(), nil
+	}
+	return indented.Bytes(), nil
+}
+
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
@@ -475,16 +679,9 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 			extraParams := convertedBody.GetExtraParams()
 			if len(extraParams) > 0 {
-				var jsonMap map[string]interface{}
-				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
-				}
-
-				// Merge ExtraParams recursively (handles nested maps)
-				MergeExtraParams(jsonMap, extraParams)
-
-				// Re-marshal the merged map
-				jsonBody, err = MarshalSortedIndent(jsonMap, "", "  ")
+				// Use order-preserving merge to avoid destroying key ordering in
+				// tool schemas and other order-sensitive JSON structures.
+				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
 				if err != nil {
 					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerType)
 				}
@@ -574,11 +771,27 @@ func HandleProviderAPIError(resp *fasthttp.Response, errorResp any) *schemas.Bif
 	// Check for empty response
 	trimmed := strings.TrimSpace(string(decodedBody))
 	if len(trimmed) == 0 {
+		// Provide a more descriptive error message based on HTTP status code
+		var errorMessage string
+		switch statusCode {
+		case 401:
+			errorMessage = "authentication failed: unauthorized (401) - check your API key"
+		case 403:
+			errorMessage = "access forbidden (403) - your API key may not have permission for this operation"
+		case 404:
+			errorMessage = "resource not found (404)"
+		case 429:
+			errorMessage = "rate limit exceeded (429)"
+		case 500, 502, 503, 504:
+			errorMessage = fmt.Sprintf("provider server error (%d)", statusCode)
+		default:
+			errorMessage = fmt.Sprintf("%s (HTTP %d)", schemas.ErrProviderResponseEmpty, statusCode)
+		}
 		return &schemas.BifrostError{
 			IsBifrostError: false,
 			StatusCode:     &statusCode,
 			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseEmpty,
+				Message: errorMessage,
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
 				RawResponse: rawErrorResponse,
@@ -643,25 +856,16 @@ func EnrichError(
 	}
 
 	if ShouldSendBackRawRequest(ctx, sendBackRawRequest) && len(requestBody) > 0 {
-		var rawRequest interface{}
-		if err := sonic.Unmarshal(requestBody, &rawRequest); err != nil {
-			getLogger().Warn("Failed to parse raw request for error: %v", err)
-			return bifrostErr
-		}
-		bifrostErr.ExtraFields.RawRequest = rawRequest
+		// Store as json.RawMessage to preserve exact JSON bytes (including key ordering).
+		// Compact to remove insignificant whitespace that would break SSE framing.
+		bifrostErr.ExtraFields.RawRequest = compactRawJSON(requestBody)
 	} else {
 		bifrostErr.ExtraFields.RawRequest = nil
 	}
 
 	if ShouldSendBackRawResponse(ctx, sendBackRawResponse) {
 		if len(responseBody) > 0 {
-			// We have a responseBody to set
-			var rawResponse interface{}
-			if err := sonic.Unmarshal(responseBody, &rawResponse); err != nil {
-				getLogger().Warn("Failed to parse raw response for error: %v", err)
-				return bifrostErr
-			}
-			bifrostErr.ExtraFields.RawResponse = rawResponse
+			bifrostErr.ExtraFields.RawResponse = compactRawJSON(responseBody)
 		}
 	} else {
 		bifrostErr.ExtraFields.RawResponse = nil
@@ -688,42 +892,23 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 		}
 	}
 
-	var wg sync.WaitGroup
-	var structuredErr, rawRequestErr, rawResponseErr error
-
 	// Skip raw request capture if requestBody is nil (e.g., for GET requests)
 	shouldCaptureRawRequest := sendBackRawRequest && requestBody != nil
 
-	// Count goroutines to spawn
-	numGoroutines := 1 // Always unmarshal structured response
 	if shouldCaptureRawRequest {
-		numGoroutines++
-	}
-	if sendBackRawResponse {
-		numGoroutines++
-	}
-
-	wg.Add(numGoroutines)
-	go func() {
-		defer wg.Done()
-		structuredErr = sonic.Unmarshal(responseBody, response)
-	}()
-
-	if shouldCaptureRawRequest {
-		go func() {
-			defer wg.Done()
-			rawRequestErr = sonic.Unmarshal(requestBody, &rawRequest)
-		}()
+		// Store as json.RawMessage to preserve the exact JSON bytes (including key ordering).
+		// Previously this used sonic.Unmarshal into interface{} which created map[string]interface{}
+		// and destroyed key ordering in tool schemas and other order-sensitive structures.
+		// Compact to remove insignificant whitespace that would break SSE framing.
+		rawRequest = compactRawJSON(requestBody)
 	}
 
 	if sendBackRawResponse {
-		go func() {
-			defer wg.Done()
-			rawResponseErr = sonic.Unmarshal(responseBody, &rawResponse)
-		}()
+		rawResponse = compactRawJSON(responseBody)
 	}
-	wg.Wait()
 
+	// Unmarshal the structured response
+	structuredErr := sonic.Unmarshal(responseBody, response)
 	if structuredErr != nil {
 		// JSON parsing failed - check if it's an HTML response (expensive operation)
 		if IsHTMLResponse(nil, responseBody) {
@@ -745,51 +930,31 @@ func HandleProviderResponse[T any](responseBody []byte, response *T, requestBody
 		}
 	}
 
-	if shouldCaptureRawRequest {
-		if rawRequestErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawRequestUnmarshal,
-					Error:   rawRequestErr,
-				},
-			}
-		}
-		if sendBackRawResponse && rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
-		}
-		return rawRequest, rawResponse, nil
-	}
-
-	if sendBackRawResponse {
-		if rawResponseErr != nil {
-			return nil, nil, &schemas.BifrostError{
-				IsBifrostError: true,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderRawResponseUnmarshal,
-					Error:   rawResponseErr,
-				},
-			}
-		}
+	if shouldCaptureRawRequest || sendBackRawResponse {
 		return rawRequest, rawResponse, nil
 	}
 
 	return nil, nil, nil
 }
 
-// ParseAndSetRawRequest parses the raw request body and sets it in the extra fields.
+// compactRawJSON removes insignificant whitespace from JSON bytes, returning a
+// json.RawMessage safe for SSE streaming (no literal newlines). Falls back to
+// the original bytes if compaction fails (e.g., invalid JSON).
+func compactRawJSON(data []byte) json.RawMessage {
+	var buf bytes.Buffer
+	if err := schemas.Compact(&buf, data); err == nil {
+		return json.RawMessage(buf.Bytes())
+	}
+	return json.RawMessage(data)
+}
+
+// ParseAndSetRawRequest stores the raw request body in the extra fields.
+// Uses json.RawMessage to preserve the exact JSON bytes (including key ordering).
+// The body is compacted to remove insignificant whitespace, which prevents
+// literal newlines from breaking SSE data-line framing during streaming.
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
-	var rawRequest interface{}
-	if err := sonic.Unmarshal(jsonBody, &rawRequest); err != nil {
-		getLogger().Warn("failed to parse raw request: %v", err)
-	} else {
-		extraFields.RawRequest = rawRequest
+	if len(jsonBody) > 0 {
+		extraFields.RawRequest = compactRawJSON(jsonBody)
 	}
 }
 
@@ -829,20 +994,33 @@ func CheckOperationAllowed(defaultProvider schemas.ModelProvider, config *schema
 
 // CheckAndDecodeBody checks the content encoding and decodes the body accordingly.
 // It returns a copy of the body to avoid race conditions when the response is released
-// back to fasthttp's buffer pool.
+// back to fasthttp's buffer pool. Uses pooled gzip readers to reduce GC pressure.
 func CheckAndDecodeBody(resp *fasthttp.Response) ([]byte, error) {
 	contentEncoding := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	switch contentEncoding {
-	case "gzip":
-		// BodyGunzip already returns a new slice, so it's safe
-		return resp.BodyGunzip()
-	default:
-		// Copy the body to avoid race conditions when response is released back to pool
+	if strings.Contains(contentEncoding, "gzip") {
 		body := resp.Body()
-		result := make([]byte, len(body))
-		copy(result, body)
-		return result, nil
+		if len(body) == 0 {
+			return nil, nil
+		}
+
+		reader := bytes.NewReader(body)
+		gz, err := AcquireGzipReader(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer ReleaseGzipReader(gz)
+
+		decompressed, err := io.ReadAll(gz)
+		if err != nil {
+			return nil, err
+		}
+		return decompressed, nil
 	}
+	// Copy the body to avoid race conditions when response is released back to pool
+	body := resp.Body()
+	result := make([]byte, len(body))
+	copy(result, body)
+	return result, nil
 }
 
 // IsHTMLResponse checks if the response is HTML by examining the Content-Type header
@@ -1244,8 +1422,10 @@ func ProcessAndSendBifrostError(
 // Works with both fasthttp's BodyStream() (io.Reader) and net/http's resp.Body (io.ReadCloser).
 func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger schemas.Logger) (cleanup func()) {
 	done := make(chan struct{})
+	closed := make(chan struct{})
 
 	go func() {
+		defer close(closed)
 		select {
 		case <-ctx.Done():
 			// Context cancelled or deadline exceeded - close the body stream to unblock reads
@@ -1255,11 +1435,22 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 				}
 			}
 		case <-done:
-			// Normal completion - do nothing
+			// If context was also cancelled (race between done and ctx.Done),
+			// still close the body stream to unblock the drain in ReleaseStreamingResponse.
+			if ctx.Err() != nil {
+				if closer, ok := bodyStream.(io.Closer); ok {
+					if err := closer.Close(); err != nil {
+						getLogger().Debug(fmt.Sprintf("Error closing body stream on done with cancelled context: %v", err))
+					}
+				}
+			}
 		}
 	}()
 
-	return func() { close(done) }
+	return func() {
+		close(done)
+		<-closed // Wait for goroutine to finish closing the stream before ReleaseStreamingResponse drains
+	}
 }
 
 // HandleStreamCancellation should be called when a streaming goroutine exits
@@ -1509,6 +1700,13 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(resp *fasthttp.Response) {
+	defer func() {
+		if r := recover(); r != nil {
+			getLogger().Error("recovered panic in ReleaseStreamingResponse: %v", r)
+		}
+		// Always release the response to prevent leaks, even after a panic
+		fasthttp.ReleaseResponse(resp)
+	}()
 	// Drain any remaining data from the body stream before releasing.
 	// This prevents "whitespace in header" errors when the connection is reused
 	// (see: https://github.com/valyala/fasthttp/issues/1743).
@@ -1522,7 +1720,6 @@ func ReleaseStreamingResponse(resp *fasthttp.Response) {
 			}
 		}
 	}
-	fasthttp.ReleaseResponse(resp)
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.
@@ -1894,19 +2091,19 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
 	// This builds a complete BifrostResponse from all the streaming chunks
 	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
+
+	// Set TTFT and chunk count attributes regardless of accumulated response availability
+	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
+	if ttftMs > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+	}
+	if chunkCount > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
+	}
+
 	if accumulatedResp != nil {
 		// Use accumulated response for attributes (includes full content, tool calls, etc.)
 		tracer.PopulateLLMResponseAttributes(handle, accumulatedResp, err)
-
-		// Set Time to First Token (TTFT) attribute
-		if ttftMs > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
-		}
-
-		// Set total chunks attribute
-		if chunkCount > 0 {
-			tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
-		}
 	} else if result != nil {
 		// Fall back to final chunk if no accumulated data (shouldn't happen normally)
 		tracer.PopulateLLMResponseAttributes(handle, result, err)
@@ -1966,4 +2163,78 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 		return defaultProvider
 	}
 	return defaultProvider
+}
+
+// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
+var gzipReaderPool = sync.Pool{
+	New: func() any {
+		return &gzip.Reader{}
+	},
+}
+
+// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
+// or creates a new one if the pool is empty or reset fails.
+func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
+	if v := gzipReaderPool.Get(); v != nil {
+		gz := v.(*gzip.Reader)
+		if err := gz.Reset(r); err == nil {
+			return gz, nil
+		}
+		// Reset failed, return to pool to avoid leaking
+		gzipReaderPool.Put(gz)
+	}
+	return gzip.NewReader(r)
+}
+
+// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
+func ReleaseGzipReader(gz *gzip.Reader) {
+	if gz != nil {
+		gz.Close()
+		gzipReaderPool.Put(gz)
+	}
+}
+
+// decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
+// with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
+// header so downstream consumers don't double-decompress. Returns original reader
+// unchanged if not gzip-encoded or if gzip reader creation fails.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
+	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if !strings.Contains(ce, "gzip") {
+		return nil, stream, false
+	}
+	gz, err := AcquireGzipReader(stream)
+	if err != nil {
+		ReleaseGzipReader(gz)
+		return nil, stream, false
+	}
+	resp.Header.Del("Content-Encoding")
+	return gz, gz, true
+}
+
+// DecompressStreamBody returns a reader for consuming the response body, with
+// on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
+// object is NOT modified (no SetBodyStream call), so the original requestStream
+// remains live for proper cleanup by ReleaseStreamingResponse. Clears the
+// Content-Encoding header to prevent double-decompression.
+//
+// Returns:
+//   - io.Reader: the reader to use for scanning (gzip reader if gzip-encoded,
+//     original body stream otherwise).
+//   - func(): cleanup function that releases the gzip reader back to the pool.
+//     Must be called (typically via defer) after streaming is complete.
+func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		// Return an empty reader instead of nil to prevent panics in callers
+		// that pass the reader to bufio.NewScanner without nil checks.
+		return bytes.NewReader(nil), func() {}
+	}
+	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	if !wasGzip {
+		return bodyStream, func() {}
+	}
+	return decompressed, func() {
+		ReleaseGzipReader(gz)
+	}
 }

@@ -498,11 +498,16 @@ func (provider *VLLMProvider) TranscriptionStream(ctx *schemas.BifrostContext, p
 				close(responseChan)
 			}()
 			defer providerUtils.ReleaseStreamingResponse(resp)
-			// Setup cancellation handler to close body stream on ctx cancellation
+			// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+			reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+			defer releaseGzip()
+
+			// Setup cancellation handler to close the raw network stream on ctx cancellation,
+			// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 			stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), logger)
 			defer stopCancellation()
 
-			scanner := bufio.NewScanner(resp.BodyStream())
+			scanner := bufio.NewScanner(reader)
 			chunkIndex := -1
 
 			startTime := time.Now()

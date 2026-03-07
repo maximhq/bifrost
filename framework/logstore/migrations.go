@@ -154,6 +154,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddVideoColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddProviderHistogramIndex(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1504,6 +1507,58 @@ func migrationAddVideoColumns(ctx context.Context, db *gorm.DB) error {
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding video columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProviderHistogramIndex adds a composite index on (timestamp, provider, status)
+// to accelerate the provider-level histogram GROUP BY queries (cost, token, latency by provider).
+// The existing idx_logs_histogram_cover index has (status, timestamp, ..., provider, ...) which helps
+// but is suboptimal when provider is the primary grouping dimension. This dedicated index puts
+// timestamp first (for range scans), then provider (for grouping), then status (for filtering).
+func migrationAddProviderHistogramIndex(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_provider_histogram_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			if !dbMigrator.HasIndex(&Log{}, "idx_logs_ts_provider_status") {
+				dialect := tx.Dialector.Name()
+
+				var createSQL string
+				switch dialect {
+				case "mysql":
+					createSQL = `CREATE INDEX idx_logs_ts_provider_status ON logs(timestamp, provider(50), status(50))`
+				default:
+					createSQL = `CREATE INDEX IF NOT EXISTS idx_logs_ts_provider_status ON logs(timestamp, provider, status)`
+				}
+
+				if err := tx.Exec(createSQL).Error; err != nil {
+					return fmt.Errorf("failed to create provider histogram index: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_ts_provider_status") {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_ts_provider_status").Error; err != nil {
+					return fmt.Errorf("failed to drop index idx_logs_ts_provider_status: %w", err)
+				}
+			}
+
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding provider histogram index: %s", err.Error())
 	}
 	return nil
 }

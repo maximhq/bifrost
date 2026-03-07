@@ -105,7 +105,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 	handlerStore := &mockHandlerStore{allowDirectKeys: true}
 	routes := CreateBedrockRouteConfigs("/bedrock", handlerStore)
 
-	assert.Len(t, routes, 5, "should have 5 bedrock routes")
+	assert.Len(t, routes, 6, "should have 6 bedrock routes")
 
 	expectedRoutes := []struct {
 		path   string
@@ -116,6 +116,7 @@ func Test_createBedrockRouteConfigs(t *testing.T) {
 		{"/bedrock/model/{modelId}/invoke-with-response-stream", "POST"},
 		{"/bedrock/model/{modelId}/invoke", "POST"},
 		{"/bedrock/rerank", "POST"},
+		{"/bedrock/model/{modelId}/count-tokens", "POST"},
 	}
 
 	for i, expected := range expectedRoutes {
@@ -170,11 +171,12 @@ func Test_createBedrockInvokeRouteConfig(t *testing.T) {
 	assert.Equal(t, "POST", route.Method)
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.TextResponseConverter)
+	assert.NotNil(t, route.ResponsesResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
 func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
@@ -186,11 +188,12 @@ func Test_createBedrockInvokeWithResponseStreamRouteConfig(t *testing.T) {
 	assert.Equal(t, RouteConfigTypeBedrock, route.Type)
 	assert.NotNil(t, route.StreamConfig)
 	assert.NotNil(t, route.StreamConfig.TextStreamResponseConverter)
+	assert.NotNil(t, route.StreamConfig.ResponsesStreamResponseConverter)
 
 	// Verify request instance type
 	reqInstance := route.GetRequestTypeInstance(context.Background())
-	_, ok := reqInstance.(*bedrock.BedrockTextCompletionRequest)
-	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockTextCompletionRequest")
+	_, ok := reqInstance.(*bedrock.BedrockInvokeRequest)
+	assert.True(t, ok, "GetRequestTypeInstance should return *bedrock.BedrockInvokeRequest")
 }
 
 func Test_createBedrockRerankRouteConfig(t *testing.T) {

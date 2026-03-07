@@ -38,6 +38,10 @@ type ResponseExpectations struct {
 	ShouldHaveModel      bool // Should have model field
 	ShouldHaveLatency    bool // Should have latency information in ExtraFields
 
+	// Raw request/response expectations
+	ShouldHaveRawRequest  bool // Should have non-nil, compact JSON rawRequest in ExtraFields
+	ShouldHaveRawResponse bool // Should have non-nil, compact JSON rawResponse in ExtraFields
+
 	// Provider-specific expectations
 	ProviderSpecific map[string]interface{} // Provider-specific validation data
 }
@@ -230,6 +234,9 @@ func ValidateSpeechResponse(t *testing.T, response *schemas.BifrostSpeechRespons
 	// Collect metrics
 	collectSpeechResponseMetrics(response, &result)
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	// Log results
 	logValidationResults(t, result, scenarioName)
 
@@ -268,6 +275,9 @@ func ValidateImageGenerationResponse(t *testing.T, response *schemas.BifrostImag
 	// Collect metrics
 	collectImageGenerationResponseMetrics(response, &result)
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	// Log results
 	logValidationResults(t, result, scenarioName)
 
@@ -304,6 +314,9 @@ func ValidateTranscriptionResponse(t *testing.T, response *schemas.BifrostTransc
 
 	// Collect metrics
 	collectTranscriptionResponseMetrics(response, &result)
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	// Log results
 	logValidationResults(t, result, scenarioName)
@@ -342,6 +355,9 @@ func ValidateListModelsResponse(t *testing.T, response *schemas.BifrostListModel
 	// Collect metrics
 	collectListModelsResponseMetrics(response, &result)
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	// Log results
 	logValidationResults(t, result, scenarioName)
 
@@ -379,6 +395,9 @@ func ValidateEmbeddingResponse(t *testing.T, response *schemas.BifrostEmbeddingR
 	// Collect metrics
 	collectEmbeddingResponseMetrics(response, &result)
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	// Log results
 	logValidationResults(t, result, scenarioName)
 
@@ -412,6 +431,10 @@ func ValidateCountTokensResponse(t *testing.T, response *schemas.BifrostCountTok
 
 	validateCountTokensFields(t, response, expectations, &result)
 	collectCountTokensResponseMetrics(response, &result)
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	logValidationResults(t, result, scenarioName)
 
 	return result
@@ -588,6 +611,9 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 		}
 	}
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, result)
+
 	// Check cached tokens percentage (for prompt caching tests)
 	if expectations.ProviderSpecific != nil {
 		if minPercentage, ok := expectations.ProviderSpecific["min_cached_tokens_percentage"].(float64); ok {
@@ -598,7 +624,7 @@ func validateChatTechnicalFields(t *testing.T, response *schemas.BifrostChatResp
 				result.Passed = false
 				result.Errors = append(result.Errors, "Expected prompt tokens details for cached tokens validation but not present")
 			} else {
-				cachedTokens := response.Usage.PromptTokensDetails.CachedTokens
+				cachedTokens := response.Usage.PromptTokensDetails.CachedReadTokens + response.Usage.PromptTokensDetails.CachedWriteTokens
 				promptTokens := response.Usage.PromptTokens
 				if promptTokens > 0 {
 					cachedPercentage := float64(cachedTokens) / float64(promptTokens)
@@ -774,6 +800,9 @@ func validateTextCompletionTechnicalFields(t *testing.T, response *schemas.Bifro
 			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
 		}
 	}
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, result)
 }
 
 // collectTextCompletionResponseMetrics collects metrics from the text completion response for analysis
@@ -946,6 +975,9 @@ func validateResponsesTechnicalFields(t *testing.T, response *schemas.BifrostRes
 			result.MetricsCollected["latency_ms"] = response.ExtraFields.Latency
 		}
 	}
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, result)
 }
 
 // collectResponsesResponseMetrics collects metrics from the Responses API response for analysis
@@ -1447,6 +1479,9 @@ func ValidateBatchCreateResponse(t *testing.T, response *schemas.BifrostBatchCre
 	result.MetricsCollected["status"] = response.Status
 	result.MetricsCollected["has_endpoint"] = response.Endpoint != ""
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	logValidationResults(t, result, scenarioName)
 	return result
 }
@@ -1487,6 +1522,9 @@ func ValidateBatchListResponse(t *testing.T, response *schemas.BifrostBatchListR
 	// Collect metrics
 	result.MetricsCollected["batch_count"] = len(response.Data)
 	result.MetricsCollected["has_more"] = response.HasMore
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result
@@ -1536,6 +1574,9 @@ func ValidateBatchRetrieveResponse(t *testing.T, response *schemas.BifrostBatchR
 	result.MetricsCollected["status"] = response.Status
 	result.MetricsCollected["has_request_counts"] = response.RequestCounts.Total > 0
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	logValidationResults(t, result, scenarioName)
 	return result
 }
@@ -1582,6 +1623,9 @@ func ValidateBatchCancelResponse(t *testing.T, response *schemas.BifrostBatchCan
 	// Collect metrics
 	result.MetricsCollected["batch_id"] = response.ID
 	result.MetricsCollected["status"] = response.Status
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result
@@ -1630,6 +1674,9 @@ func ValidateBatchResultsResponse(t *testing.T, response *schemas.BifrostBatchRe
 	result.MetricsCollected["batch_id"] = response.BatchID
 	result.MetricsCollected["results_count"] = len(response.Results)
 	result.MetricsCollected["has_more"] = response.HasMore
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result
@@ -1684,6 +1731,9 @@ func ValidateFileUploadResponse(t *testing.T, response *schemas.BifrostFileUploa
 	result.MetricsCollected["bytes"] = response.Bytes
 	result.MetricsCollected["purpose"] = response.Purpose
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	logValidationResults(t, result, scenarioName)
 	return result
 }
@@ -1724,6 +1774,9 @@ func ValidateFileListResponse(t *testing.T, response *schemas.BifrostFileListRes
 	// Collect metrics
 	result.MetricsCollected["file_count"] = len(response.Data)
 	result.MetricsCollected["has_more"] = response.HasMore
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result
@@ -1773,6 +1826,9 @@ func ValidateFileRetrieveResponse(t *testing.T, response *schemas.BifrostFileRet
 	result.MetricsCollected["filename"] = response.Filename
 	result.MetricsCollected["bytes"] = response.Bytes
 	result.MetricsCollected["status"] = response.Status
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result
@@ -1827,6 +1883,9 @@ func ValidateFileDeleteResponse(t *testing.T, response *schemas.BifrostFileDelet
 	result.MetricsCollected["file_id"] = response.ID
 	result.MetricsCollected["deleted"] = response.Deleted
 
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
+
 	logValidationResults(t, result, scenarioName)
 	return result
 }
@@ -1880,6 +1939,9 @@ func ValidateFileContentResponse(t *testing.T, response *schemas.BifrostFileCont
 	result.MetricsCollected["file_id"] = response.FileID
 	result.MetricsCollected["content_length"] = len(response.Content)
 	result.MetricsCollected["content_type"] = response.ContentType
+
+	// Check raw request/response fields
+	validateRawFields(expectations, response.ExtraFields.RawRequest, response.ExtraFields.RawResponse, &result)
 
 	logValidationResults(t, result, scenarioName)
 	return result

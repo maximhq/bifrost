@@ -991,7 +991,11 @@ Enterprise cloud providers require additional configuration beyond API keys. Con
 
 ### Azure
 
-Azure supports two authentication methods:
+Azure supports three authentication methods: **Managed Identity** (DefaultAzureCredential), **Entra ID** (Service Principal), and **Direct** (API Key).
+
+#### Managed Identity / DefaultAzureCredential
+
+Leave API key and Entra ID credentials empty. Bifrost uses `DefaultAzureCredential`, which auto-detects managed identity on Azure VMs, App Service, AKS, and similar environments. Provide only `endpoint`, `deployments`, and optionally `api_version`.
 
 #### Azure Entra ID (Service Principal)
 
@@ -1159,7 +1163,7 @@ curl --location 'http://localhost:8080/api/providers' \
 </Tabs>
 
 <Note>
-If `client_id`, `client_secret`, and `tenant_id` are configured, Service Principal authentication is used. Otherwise, direct authentication with the `value` field is used.
+Authentication precedence: (1) Entra ID if `client_id`, `client_secret`, and `tenant_id` are set; (2) API key if `value` is set; (3) DefaultAzureCredential (managed identity) if neither is provided.
 </Note>
 
 ### AWS Bedrock

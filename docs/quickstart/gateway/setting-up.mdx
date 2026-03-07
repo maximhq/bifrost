@@ -188,6 +188,38 @@ If you want database persistence but prefer not to use the UI, note that modifyi
 - **Logs Store**: Stores request logs shown in UI - Optional, can be disabled  
 - **Vector Store**: Used for semantic caching - Optional, can be disabled
 
+## PostgreSQL UTF8 Requirement
+
+If you use PostgreSQL for `config_store` or `logs_store`, the target database must use `UTF8` encoding.
+
+Use `template0` when creating the database so PostgreSQL applies UTF8 and locale settings explicitly:
+
+```sql
+CREATE DATABASE bifrost
+  WITH TEMPLATE template0
+       ENCODING 'UTF8'
+       LC_COLLATE '<your-locale>'
+       LC_CTYPE '<your-locale>';
+```
+
+Use locale names that exist in your Postgres image/host (for example, `en_US.UTF-8`, `C.UTF-8`, or another installed UTF-8 locale).
+
+Verify the database encoding:
+
+```sql
+SELECT datname, pg_encoding_to_char(encoding) AS encoding
+FROM pg_database
+WHERE datname = 'bifrost';
+```
+
+If the database is not UTF8, Bifrost startup/migrations can fail with:
+
+```text
+simple protocol queries must be run with client_encoding=UTF8
+```
+
+If you already created a SQL_ASCII database, create a new UTF8 database and update your Bifrost DB config to point to it.
+
 ---
 
 ## Next Steps

@@ -400,7 +400,11 @@ Enterprise cloud providers require additional configuration beyond API keys. Con
 
 <Tab title="Azure">
 
-Azure supports two authentication methods:
+Azure supports three authentication methods: **Managed Identity** (DefaultAzureCredential), **Entra ID** (Service Principal), and **Direct** (API Key).
+
+**Managed Identity / DefaultAzureCredential**
+
+Leave `Value` empty and omit `ClientID`, `ClientSecret`, `TenantID`. Bifrost uses `DefaultAzureCredential` to auto-detect managed identity on Azure VMs, App Service, AKS, etc.
 
 **Azure Entra ID (Service Principal)**
 
@@ -460,7 +464,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 ```
 
 <Note>
-If `ClientID`, `ClientSecret`, and `TenantID` are configured, Service Principal authentication is used. Otherwise, direct authentication with the `Value` field is used.
+Authentication precedence: (1) Entra ID if `ClientID`, `ClientSecret`, and `TenantID` are set; (2) API key if `Value` is set; (3) DefaultAzureCredential (managed identity) if neither is provided.
 </Note>
 
 </Tab>

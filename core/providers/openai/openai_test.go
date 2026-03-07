@@ -40,7 +40,7 @@ func TestOpenAI(t *testing.T) {
 		ReasoningModel:       "o4-mini", // o4-mini properly returns both reasoning items and message output
 		ImageGenerationModel: "gpt-image-1",
 		ImageEditModel:       "gpt-image-1",
-		ImageVariationModel:  "dall-e-2",
+		ImageVariationModel:  "", // dall-e-2 is deprecated and no other OpenAI model supports image variations
 		VideoGenerationModel: "sora-2",
 		ChatAudioModel:       "gpt-4o-mini-audio-preview",
 		Scenarios: llmtests.TestScenarios{
@@ -72,7 +72,7 @@ func TestOpenAI(t *testing.T) {
 			ImageGenerationStream: true,
 			ImageEdit:             true,
 			ImageEditStream:       true,
-			ImageVariation:        true,
+			ImageVariation:        false, // dall-e-2 is deprecated and no other OpenAI model supports image variations
 			VideoGeneration:       false, // disabled for now because of long running operations
 			VideoRetrieve:         false,
 			VideoRemix:            false,

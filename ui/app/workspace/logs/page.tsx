@@ -717,9 +717,9 @@ export default function LogsPage() {
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
-										<div>
+										<div className="min-w-0 w-full">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
-											<div className="font-mono text-2xl font-medium">{card.value}</div>
+											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
 										</div>
 									</CardContent>
 								</Card>

@@ -41,7 +41,7 @@
         "allowed_origins": {
           "type": "array",
           "items": {
-            "oneOf": [
+            "anyOf": [
               {
                 "type": "string",
                 "const": "*"
@@ -138,6 +138,36 @@
             "type": "string"
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
+        },
+        "allowed_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional allowed headers for CORS and WebSocket"
+        },
+        "mcp_agent_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum depth for MCP agent mode tool execution",
+          "default": 10
+        },
+        "mcp_tool_execution_timeout": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Timeout for individual MCP tool execution in seconds",
+          "default": 30
+        },
+        "mcp_code_mode_binding_level": {
+          "type": "string",
+          "enum": ["server", "tool"],
+          "description": "Code mode binding level for MCP tools"
+        },
+        "mcp_tool_sync_interval": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Global tool sync interval in minutes (0 = disabled)",
+          "default": 10
         }
       },
       "additionalProperties": false
@@ -459,6 +489,70 @@
         },
         "auth_config": {
           "$ref": "#/$defs/auth_config"
+        },
+        "model_configs": {
+          "type": "array",
+          "description": "Per-model rate limit and budget configurations",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Model config ID"
+              },
+              "model_name": {
+                "type": "string",
+                "description": "Model name to apply the configuration to"
+              },
+              "provider": {
+                "type": "string",
+                "description": "Optional provider name to scope this config"
+              },
+              "budget_id": {
+                "type": "string",
+                "description": "Budget ID to associate with this model"
+              },
+              "rate_limit_id": {
+                "type": "string",
+                "description": "Rate limit ID to associate with this model"
+              }
+            },
+            "required": [
+              "id",
+              "model_name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "providers": {
+          "type": "array",
+          "description": "Provider-level governance configurations",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Provider name"
+              },
+              "budget_id": {
+                "type": "string",
+                "description": "Associated budget ID"
+              },
+              "rate_limit_id": {
+                "type": "string",
+                "description": "Associated rate limit ID"
+              },
+              "send_back_raw_request": {
+                "type": "boolean",
+                "description": "Include raw request in BifrostResponse"
+              },
+              "send_back_raw_response": {
+                "type": "boolean",
+                "description": "Include raw response in BifrostResponse"
+              }
+            },
+            "required": ["name"]
+          }
         }
       },
       "additionalProperties": false
@@ -476,6 +570,10 @@
         },
         "tool_manager_config": {
           "$ref": "#/$defs/mcp_tool_manager_config"
+        },
+        "tool_sync_interval": {
+          "type": "string",
+          "description": "Global default interval for syncing tools from MCP servers (Go duration, e.g. '10m', '1h')"
         }
       },
       "additionalProperties": false
@@ -496,7 +594,7 @@
             "qdrant",
             "pinecone"
           ],
-          "description": "Vector store type"
+          "description": "Vector store type (use \"redis\" for Redis or Valkey-compatible endpoints)"
         },
         "config": {
           "anyOf": [
@@ -788,7 +886,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semanticcache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -825,6 +923,13 @@
                   "type": "object",
                   "description": "Configuration for the telemetry plugin (Prometheus metrics)",
                   "properties": {
+                    "custom_labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Custom labels to add to Prometheus metrics"
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -895,7 +1000,19 @@
                 "config": {
                   "type": "object",
                   "description": "Configuration for the logging plugin",
-                  "properties": {},
+                  "properties": {
+                    "disable_content_logging": {
+                      "type": "boolean",
+                      "description": "Disable logging of request and response content"
+                    },
+                    "logging_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of headers to capture in log metadata"
+                    }
+                  },
                   "additionalProperties": false
                 }
               }
@@ -921,6 +1038,17 @@
                     "is_vk_mandatory": {
                       "type": "boolean",
                       "description": "Whether virtual key (x-bf-vk header) is mandatory for all requests"
+                    },
+                    "required_headers": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "List of headers that must be present in requests"
+                    },
+                    "is_enterprise": {
+                      "type": "boolean",
+                      "description": "Enable enterprise mode features"
                     }
                   },
                   "additionalProperties": false
@@ -966,7 +1094,7 @@
             "if": {
               "properties": {
                 "name": {
-                  "const": "semanticcache"
+                  "const": "semantic_cache"
                 }
               }
             },
@@ -1150,6 +1278,21 @@
                       "default": 15,
                       "minimum": 1,
                       "maximum": 300
+                    },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Custom headers for the collector. Supports env.VAR_NAME prefix for environment variable substitution."
+                    },
+                    "tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to TLS CA certificate file"
+                    },
+                    "insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
                     }
                   },
                   "required": [
@@ -1566,7 +1709,6 @@
       "additionalProperties": false
     },
     "auth_config": {
-      "deprecated": true,
       "type": "object",
       "description": "Authentication configuration. Deprecated: Use governance.auth_config instead.",
       "properties": {
@@ -1682,6 +1824,80 @@
         "model_pattern",
         "match_type"
       ],
+      "additionalProperties": false
+    },
+    "custom_provider_config": {
+      "type": "object",
+      "description": "Custom provider configuration for extending or customizing provider behavior",
+      "properties": {
+        "is_key_less": {
+          "type": "boolean",
+          "description": "Whether the custom provider requires a key"
+        },
+        "base_provider_type": {
+          "type": "string",
+          "description": "Base provider type to extend"
+        },
+        "allowed_requests": {
+          "type": "object",
+          "description": "Allowed request types for the custom provider",
+          "properties": {
+            "list_models": { "type": "boolean" },
+            "text_completion": { "type": "boolean" },
+            "text_completion_stream": { "type": "boolean" },
+            "chat_completion": { "type": "boolean" },
+            "chat_completion_stream": { "type": "boolean" },
+            "responses": { "type": "boolean" },
+            "responses_stream": { "type": "boolean" },
+            "count_tokens": { "type": "boolean" },
+            "embedding": { "type": "boolean" },
+            "rerank": { "type": "boolean" },
+            "speech": { "type": "boolean" },
+            "speech_stream": { "type": "boolean" },
+            "transcription": { "type": "boolean" },
+            "transcription_stream": { "type": "boolean" },
+            "image_generation": { "type": "boolean" },
+            "image_generation_stream": { "type": "boolean" },
+            "image_edit": { "type": "boolean" },
+            "image_edit_stream": { "type": "boolean" },
+            "image_variation": { "type": "boolean" },
+            "video_generation": { "type": "boolean" },
+            "video_retrieve": { "type": "boolean" },
+            "video_download": { "type": "boolean" },
+            "video_delete": { "type": "boolean" },
+            "video_list": { "type": "boolean" },
+            "video_remix": { "type": "boolean" },
+            "batch_create": { "type": "boolean" },
+            "batch_list": { "type": "boolean" },
+            "batch_retrieve": { "type": "boolean" },
+            "batch_cancel": { "type": "boolean" },
+            "batch_results": { "type": "boolean" },
+            "file_upload": { "type": "boolean" },
+            "file_list": { "type": "boolean" },
+            "file_retrieve": { "type": "boolean" },
+            "file_delete": { "type": "boolean" },
+            "file_content": { "type": "boolean" },
+            "container_create": { "type": "boolean" },
+            "container_list": { "type": "boolean" },
+            "container_retrieve": { "type": "boolean" },
+            "container_delete": { "type": "boolean" },
+            "container_file_create": { "type": "boolean" },
+            "container_file_list": { "type": "boolean" },
+            "container_file_retrieve": { "type": "boolean" },
+            "container_file_content": { "type": "boolean" },
+            "container_file_delete": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "request_path_overrides": {
+          "type": "object",
+          "description": "Mapping of request type to custom path overriding the default provider path",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["base_provider_type"],
       "additionalProperties": false
     },
     "network_config": {
@@ -1918,6 +2134,10 @@
                   "type": "string",
                   "description": "Google Cloud project ID (can use env. prefix)"
                 },
+                "project_number": {
+                  "type": "string",
+                  "description": "Google Cloud project number"
+                },
                 "region": {
                   "type": "string",
                   "description": "Google Cloud region"
@@ -1925,6 +2145,13 @@
                 "auth_credentials": {
                   "type": "string",
                   "description": "Authentication credentials (can use env. prefix)"
+                },
+                "deployments": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Model to deployment mappings"
                 }
               },
               "required": [
@@ -1960,9 +2187,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",
@@ -1997,9 +2231,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",
@@ -2034,9 +2275,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",
@@ -2071,9 +2319,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",
@@ -2108,9 +2363,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",
@@ -2128,18 +2390,47 @@
     "mcp_client_config": {
       "type": "object",
       "properties": {
+        "client_id": {
+          "type": "string",
+          "description": "MCP client identifier"
+        },
         "name": {
           "type": "string",
           "description": "Name of the MCP client"
+        },
+        "is_code_mode_client": {
+          "type": "boolean",
+          "description": "Whether this client is a code mode client"
         },
         "connection_type": {
           "type": "string",
           "enum": [
             "stdio",
             "websocket",
-            "http"
+            "http",
+            "sse"
           ],
           "description": "Connection type for MCP client"
+        },
+        "connection_string": {
+          "type": "string",
+          "description": "HTTP or SSE URL (alternative to http_config sub-object, required for HTTP or SSE connections)"
+        },
+        "auth_type": {
+          "type": "string",
+          "enum": ["none", "headers", "oauth"],
+          "description": "Authentication type for MCP connection"
+        },
+        "oauth_config_id": {
+          "type": "string",
+          "description": "OAuth config ID reference (for oauth auth type)"
+        },
+        "headers": {
+          "type": "object",
+          "description": "Headers to send with the request (for headers auth type)",
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "stdio_config": {
           "type": "object",
@@ -2195,6 +2486,24 @@
             "url"
           ],
           "additionalProperties": false
+        },
+        "tools_to_execute": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Include-only list of tools to execute. ['*'] means all, [] means none."
+        },
+        "tools_to_auto_execute": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Auto-execute list of tools. ['*'] means all, [] means none."
+        },
+        "tool_sync_interval": {
+          "type": "string",
+          "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
         }
       },
       "required": [
@@ -2229,8 +2538,19 @@
               "const": "http"
             }
           },
+          "anyOf": [
+            { "required": ["http_config"] },
+            { "required": ["connection_string"] }
+          ]
+        },
+        {
+          "properties": {
+            "connection_type": {
+              "const": "sse"
+            }
+          },
           "required": [
-            "http_config"
+            "connection_string"
           ]
         }
       ]
@@ -2249,6 +2569,11 @@
           "description": "Max agent depth",
           "minimum": 1,
           "default": 10
+        },
+        "code_mode_binding_level": {
+          "type": "string",
+          "enum": ["server", "tool"],
+          "description": "How tools are exposed in VFS for code execution"
         }
       }
     },
@@ -2310,11 +2635,11 @@
     },
     "redis_config": {
       "type": "object",
-      "description": "Redis configuration for vector store",
+      "description": "Redis configuration for vector store (also used for Valkey-compatible endpoints)",
       "properties": {
         "addr": {
           "type": "string",
-          "description": "Redis server address (host:port) - REQUIRED (can use env. prefix)"
+          "description": "Redis/Valkey server address (host:port) - REQUIRED (can use env. prefix)"
         },
         "username": {
           "type": "string",

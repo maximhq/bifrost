@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // TestScenarioFunc defines the function signature for test scenario functions
@@ -29,6 +30,8 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunResponsesStreamTest,
 		RunMultiTurnConversationTest,
 		RunToolCallsTest,
+		RunToolCallsWithEmptyPropertiesTest,
+		RunToolCallsWithNilPropertiesTest,
 		RunToolCallsStreamingTest,
 		RunMultipleToolCallsTest,
 		RunEnd2EndToolCallingTest,
@@ -59,8 +62,11 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunMultiTurnReasoningTest,
 		RunResponsesReasoningTest,
 		RunListModelsTest,
+		RunListModelsResponseMarshalTest,
+		RunListModelsErrorMarshalTest,
 		RunListModelsPaginationTest,
 		RunPromptCachingTest,
+		RunPromptCachingToolBlocksTest,
 		RunImageGenerationTest,
 		RunImageGenerationStreamTest,
 		RunImageEditTest,
@@ -105,12 +111,24 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileDeleteTest,
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
+		RunStreamErrorStatusCodeTest,
 	}
 
-	// Execute all test scenarios
+	// Execute all test scenarios without raw request/response (default behavior)
 	for _, scenarioFunc := range testScenarios {
 		scenarioFunc(t, client, ctx, testConfig)
 	}
+
+	// Execute all test scenarios WITH raw request/response enabled
+	t.Run("WithRawRequestResponse", func(t *testing.T) {
+		rawCtx := context.WithValue(ctx, schemas.BifrostContextKeySendBackRawRequest, true)
+		rawCtx = context.WithValue(rawCtx, schemas.BifrostContextKeySendBackRawResponse, true)
+		rawConfig := testConfig
+		rawConfig.ExpectRawRequestResponse = true
+		for _, scenarioFunc := range testScenarios {
+			scenarioFunc(t, client, rawCtx, rawConfig)
+		}
+	})
 
 	// Print comprehensive summary based on configuration
 	printTestSummary(t, testConfig)
@@ -127,6 +145,8 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"CompletionStream", testConfig.Scenarios.CompletionStream},
 		{"MultiTurnConversation", testConfig.Scenarios.MultiTurnConversation},
 		{"ToolCalls", testConfig.Scenarios.ToolCalls},
+		{"ToolCallsWithEmptyProperties", testConfig.Scenarios.ToolCalls},
+		{"ToolCallsWithNilProperties", testConfig.Scenarios.ToolCalls},
 		{"ToolCallsStreaming", testConfig.Scenarios.ToolCallsStreaming},
 		{"MultipleToolCalls", testConfig.Scenarios.MultipleToolCalls},
 		{"End2EndToolCalling", testConfig.Scenarios.End2EndToolCalling},
@@ -148,7 +168,10 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"MultiTurnReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ResponsesReasoning", testConfig.Scenarios.Reasoning && testConfig.ReasoningModel != ""},
 		{"ListModels", testConfig.Scenarios.ListModels},
+		{"ListModelsResponseMarshal", testConfig.Scenarios.ListModels},
+		{"ListModelsErrorMarshal", testConfig.Scenarios.ListModels},
 		{"PromptCaching", testConfig.Scenarios.SimpleChat && testConfig.PromptCachingModel != ""},
+		{"PromptCachingToolBlocks", testConfig.Scenarios.PromptCaching && testConfig.PromptCachingModel != ""},
 		{"ImageGeneration", testConfig.Scenarios.ImageGeneration && testConfig.ImageGenerationModel != ""},
 		{"ImageGenerationStream", testConfig.Scenarios.ImageGenerationStream && testConfig.ImageGenerationModel != ""},
 		{"ImageEdit", testConfig.Scenarios.ImageEdit && testConfig.ImageEditModel != ""},
@@ -199,6 +222,7 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ContainerFileDelete", testConfig.Scenarios.ContainerFileDelete},
 		{"ContainerFileUnsupported", !testConfig.Scenarios.ContainerFileCreate && !testConfig.Scenarios.ContainerFileList && !testConfig.Scenarios.ContainerFileRetrieve && !testConfig.Scenarios.ContainerFileContent && !testConfig.Scenarios.ContainerFileDelete},
 		{"PassThroughExtraParams", testConfig.Scenarios.PassThroughExtraParams},
+		{"StreamErrorStatusCode", testConfig.Scenarios.CompletionStream},
 	}
 
 	supported := 0

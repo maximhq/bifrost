@@ -1,0 +1,1324 @@
+{
+  "info": {
+    "name": "Bifrost V1 API - Complete",
+    "description": "Complete Postman collection for all Bifrost /v1 endpoints with valid payloads",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var requestName = pm.info.requestName;",
+          "var retryKey = 'retry_' + requestName;",
+          "var ciVal = pm.environment.get('CI');",
+          "var maxRetries = (String(ciVal).toLowerCase() === 'true' || ciVal === '1' || ciVal === 1) ? 10 : 0;",
+          "if (!pm.collectionVariables.has(retryKey)) {",
+          "  pm.collectionVariables.set(retryKey, 0);",
+          "}",
+          "pm.collectionVariables.set('current_request_name', requestName);",
+          "pm.collectionVariables.set('max_retries', maxRetries);"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "var code = pm.response.code;",
+          "var reqName = (pm.info && pm.info.requestName) ? pm.info.requestName : '';",
+          "var operation = null;",
+          "if (/get container file content|container.*file.*content/i.test(reqName)) { operation = 'container_file_content'; }",
+          "else if (/delete container file/i.test(reqName)) { operation = 'container_file_delete'; }",
+          "else if (/retrieve container file/i.test(reqName)) { operation = 'container_file_retrieve'; }",
+          "else if (/list container files/i.test(reqName)) { operation = 'container_file_list'; }",
+          "else if (/create container file|container file.*(upload|reference)/i.test(reqName)) { operation = 'container_file_create'; }",
+          "else if (/delete container/i.test(reqName)) { operation = 'container_delete'; }",
+          "else if (/retrieve container/i.test(reqName)) { operation = 'container_retrieve'; }",
+          "else if (/list containers/i.test(reqName)) { operation = 'container_list'; }",
+          "else if (/create container/i.test(reqName)) { operation = 'container_create'; }",
+          "else if (/upload file/i.test(reqName)) { operation = 'file_upload'; }",
+          "else if (/list files/i.test(reqName)) { operation = 'file_list'; }",
+          "else if (/get file content|file content/i.test(reqName)) { operation = 'file_content'; }",
+          "else if (/retrieve file/i.test(reqName)) { operation = 'file_retrieve'; }",
+          "else if (/delete file/i.test(reqName)) { operation = 'file_delete'; }",
+          "else if (/batch/i.test(reqName)) { operation = 'batch'; }",
+          "else if (/embedding/i.test(reqName)) { operation = 'embedding'; }",
+          "else if (/speech|tts|text.to.speech|audio.*(out|generate)/i.test(reqName)) { operation = 'speech'; }",
+          "else if (/transcription|whisper|stt|speech.to.text|audio.*(in|transcri)/i.test(reqName)) { operation = 'transcription'; }",
+          "else if (/list.*models|models.*list/i.test(reqName)) { operation = 'list_models'; }",
+          "else if (/generate.*image|generate image/i.test(reqName)) { operation = 'image_generation'; }",
+          "else if (/image.*variation|create image variation|variation/i.test(reqName)) { operation = 'image_variation'; }",
+          "else if (/edit.*image|image.*edit|edit image/i.test(reqName)) { operation = 'image_edit'; }",
+          "else if (/chat completion|create chat completion/i.test(reqName)) { operation = 'chat_completions'; }",
+          "else if (/text completion|create text completion/i.test(reqName)) { operation = 'text_completion'; }",
+          "else if (/create response|response with tools/i.test(reqName)) { operation = 'responses'; }",
+          "else if (/count.*token|token.*count/i.test(reqName)) { operation = 'count_tokens'; }",
+          "else if (/video remix|remix.*video/i.test(reqName)) { operation = 'video_remix'; }",
+          "else if (/video list|list.*video/i.test(reqName)) { operation = 'video_list'; }",
+          "else if (/video download|download.*video/i.test(reqName)) { operation = 'video_download'; }",
+          "else if (/video delete|delete.*video/i.test(reqName)) { operation = 'video_delete'; }",
+          "else if (/video retrieve|retrieve.*video/i.test(reqName)) { operation = 'video_retrieve'; }",
+          "else if (/video generation|generate.*video|create.*video/i.test(reqName)) { operation = 'video_generation'; }",
+          "else if (/rerank/i.test(reqName)) { operation = 'rerank'; }",
+          "var provider = ((pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || '').toLowerCase();",
+          "var capsStr = (pm.globals && pm.globals.get('provider_capabilities')) || (pm.collectionVariables && pm.collectionVariables.get('provider_capabilities')) || '{}';",
+          "var isInProviderUnsupported = false;",
+          "try {",
+          "  var caps = JSON.parse(capsStr);",
+          "  var providerCaps = caps.providers && caps.providers[provider];",
+          "  if (operation && providerCaps && providerCaps[operation] === false) { isInProviderUnsupported = true; }",
+          "} catch (e) {}",
+          "var isDocumentedUnsupported = isInProviderUnsupported;",
+          "var requestNameRetry = pm.collectionVariables.get('current_request_name');",
+          "var retryKey = 'retry_' + requestNameRetry;",
+          "var currentRetry = parseInt(pm.collectionVariables.get(retryKey) || '0', 10);",
+          "var maxRetries = parseInt(pm.collectionVariables.get('max_retries') || '0', 10);",
+          "var failedTests = code < 200 || code > 299;",
+          "var hasFailures = failedTests && !isDocumentedUnsupported;",
+          "if (hasFailures && maxRetries > 0 && currentRetry < maxRetries) {",
+          "  pm.collectionVariables.set(retryKey, String(currentRetry + 1));",
+          "  var delayMs = Math.min(1000 * Math.pow(2, currentRetry), 30000);",
+          "  var end = Date.now() + delayMs;",
+          "  while (Date.now() < end) {}",
+          "  console.log('[RETRY] Request \"' + requestNameRetry + '\" failed (attempt ' + (currentRetry + 1) + '/' + maxRetries + '). Retrying after ' + delayMs + 'ms...');",
+          "  if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest(requestNameRetry); }",
+          "} else {",
+          "  pm.collectionVariables.set(retryKey, '0');",
+          "  if (hasFailures && currentRetry >= maxRetries && maxRetries > 0) {",
+          "    console.log('[RETRY] Request \"' + requestNameRetry + '\" failed after ' + maxRetries + ' retries. Moving on.');",
+          "  }",
+          "  if (code >= 200 && code <= 299) {",
+          "    pm.test('Status is 2xx', function() { pm.expect(code >= 200 && code <= 299).to.be.true; });",
+          "  } else {",
+          "    pm.test('Or documented unsupported (allowed request types)', function() {",
+          "      pm.expect(isDocumentedUnsupported, 'Non-2xx response must be a documented unsupported error for this request type (operation must be in provider_capabilities.json for this provider)').to.be.true;",
+          "    });",
+          "  }",
+          "}"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "gpt-4",
+      "type": "string"
+    },
+    {
+      "key": "chat_model",
+      "value": "gpt-4",
+      "type": "string"
+    },
+    {
+      "key": "text_completion_model",
+      "value": "gpt-4",
+      "type": "string"
+    },
+    {
+      "key": "responses_model",
+      "value": "gpt-4",
+      "type": "string"
+    },
+    {
+      "key": "embedding_model",
+      "value": "text-embedding-3-small",
+      "type": "string"
+    },
+    {
+      "key": "speech_model",
+      "value": "tts-1",
+      "type": "string"
+    },
+    {
+      "key": "transcription_model",
+      "value": "whisper-1",
+      "type": "string"
+    },
+    {
+      "key": "image_model",
+      "value": "dall-e-3",
+      "type": "string"
+    },
+    {
+      "key": "image_edit_model",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "image_variation_model",
+      "value": "dall-e-2",
+      "type": "string"
+    },
+    {
+      "key": "image_edit_type",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "batch_file",
+      "value": "fixtures/sample.jsonl",
+      "type": "string"
+    },
+    {
+      "key": "batch_id",
+      "value": "batch_123",
+      "type": "string"
+    },
+    {
+      "key": "file_id",
+      "value": "file_123",
+      "type": "string"
+    },
+    {
+      "key": "file_id_encoded",
+      "value": "file_123",
+      "type": "string"
+    },
+    {
+      "key": "container_id",
+      "value": "container_123",
+      "type": "string"
+    },
+    {
+      "key": "container_file_id",
+      "value": "container_file_123",
+      "type": "string"
+    },
+    {
+      "key": "file_id_ref",
+      "value": "file_123",
+      "type": "string"
+    },
+    {
+      "key": "voice",
+      "value": "alloy",
+      "type": "string"
+    },
+    {
+      "key": "speech_input",
+      "value": "Generate a speech for this text",
+      "type": "string"
+    },
+    {
+      "key": "completions_prompt",
+      "value": "1, 2, 3, 4, ",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "if (provider === 'perplexity') { postman.setNextRequest('Create Chat Completion'); }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/models?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "models"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat Completions",
+      "item": [
+        {
+          "name": "Create Chat Completion",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello, how are you?\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_completion_tokens\": 1000,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          }
+        },
+        {
+          "name": "Create Chat Completion with Tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather like in india? Use the get_weather tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a location\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"location\": {\n              \"type\": \"string\",\n              \"description\": \"City name\"\n            }\n          },\n          \"required\": [\"location\"]\n        }\n      }\n    }\n  ],\n  \"temperature\": 0.7\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "chat", "completions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Text Completions",
+      "item": [
+        {
+          "name": "Create Text Completion",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "if (provider === 'openai' || provider === 'azure') {",
+                  "  postman.setNextRequest('Create Response');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{text_completion_model}}\",\n  \"prompt\": \"{{completions_prompt}}\",\n  \"max_tokens\": 3\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/completions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "completions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Responses",
+      "item": [
+        {
+          "name": "Create Response",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": \"Hey, this is bifrost. can you greet me using the greet tool?\",\n  \"temperature\": 1.0,\n  \"max_output_tokens\": 500\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "responses"]
+            }
+          }
+        },
+        {
+          "name": "Create Response with Tools",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": \"What is 2 + 2? Use the add tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"add\",\n      \"description\": \"Add two numbers and return the sum\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"a\": {\"type\": \"number\", \"description\": \"First number\"},\n          \"b\": {\"type\": \"number\", \"description\": \"Second number\"}\n        },\n        \"required\": [\"a\", \"b\"]\n      }\n    }\n  ],\n  \"temperature\": 0.5\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "responses"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Embeddings",
+      "item": [
+        {
+          "name": "Create Embedding",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": \"Hello world\",\n  \"encoding_format\": \"float\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/embeddings",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "embeddings"]
+            }
+          }
+        },
+        {
+          "name": "Create Embedding (Multiple Inputs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{embedding_model}}\",\n  \"input\": [\n    \"Hello world\",\n    \"Goodbye world\",\n    \"Machine learning is fascinating\"\n  ],\n  \"encoding_format\": \"float\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/embeddings",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "embeddings"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audio",
+      "item": [
+        {
+          "name": "Create Speech",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{speech_model}}\",\n  \"input\": \"{{speech_input}}\",\n  \"voice\": \"{{voice}}\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/audio/speech",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "audio", "speech"]
+            }
+          }
+        },
+        {
+          "name": "Create Transcription",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{transcription_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.mp3"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/audio/transcriptions",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "audio", "transcriptions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Images",
+      "item": [
+        {
+          "name": "Generate Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{image_model}}\",\n  \"prompt\": \"A serene mountain landscape at sunset\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/images/generations",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "images", "generations"]
+            }
+          }
+        },
+        {
+          "name": "Edit Image",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var editModel = (pm.environment && pm.environment.get('image_edit_model')) || pm.collectionVariables.get('image_edit_model') || (pm.environment && pm.environment.get('image_model')) || pm.collectionVariables.get('image_model') || 'dall-e-2';",
+                  "pm.collectionVariables.set('image_model_for_edit', editModel);",
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || pm.variables.get('provider') || '').toLowerCase();",
+                  "pm.collectionVariables.set('image_edit_type', (provider === 'bedrock') ? 'background_removal' : '');",
+                  "var variationModel = (pm.environment && pm.environment.get('image_variation_model')) || pm.collectionVariables.get('image_variation_model') || (pm.environment && pm.environment.get('image_edit_model')) || pm.collectionVariables.get('image_edit_model') || (pm.environment && pm.environment.get('image_model')) || pm.collectionVariables.get('image_model') || 'dall-e-2';",
+                  "pm.collectionVariables.set('image_model_for_variation', variationModel);",
+                  "pm.collectionVariables.set('image_variation_model', variationModel);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_model_for_edit}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image[]",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a sunset to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "type",
+                  "value": "{{image_edit_type}}",
+                  "type": "text",
+                  "disabled": false
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/images/edits",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "images", "edits"]
+            }
+          }
+        },
+        {
+          "name": "Create Image Variation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "{{provider}}/{{image_variation_model}}",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": "fixtures/sample.png"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/images/variations",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "images", "variations"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Count Tokens",
+      "item": [
+        {
+          "name": "Count Tokens",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{responses_model}}\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"How many tokens is this message?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses/input_tokens",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "responses", "input_tokens"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Files",
+      "item": [
+        {
+          "name": "Upload File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || pm.variables.get('provider') || '').toLowerCase();",
+                  "var batchFile = (provider === 'gemini') ? 'fixtures/sample-gemini.jsonl' : 'fixtures/sample.jsonl';",
+                  "pm.collectionVariables.set('batch_file', batchFile);",
+                  "var s3Bucket = (pm.environment && pm.environment.get('s3_bucket')) || pm.collectionVariables.get('s3_bucket') || '';",
+                  "pm.collectionVariables.set('bedrock_s3_bucket', (provider === 'bedrock' && s3Bucket) ? s3Bucket : '');",
+                  "if (provider === 'replicate') {",
+                  "  pm.collectionVariables.set('replicate_owner', (pm.environment && pm.environment.get('replicate_owner')) || pm.collectionVariables.get('replicate_owner') || '');",
+                  "  pm.collectionVariables.set('replicate_expiry', (pm.environment && pm.environment.get('replicate_expiry')) || '1830297599');",
+                  "} else {",
+                  "  pm.collectionVariables.set('replicate_owner', '');",
+                  "  pm.collectionVariables.set('replicate_expiry', '');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  try {",
+                  "    var j = pm.response.json();",
+                  "    var id = (j && (j.id || j.file_id)) || (j && j.data && (j.data.id || j.data.file_id));",
+                  "    if (id) {",
+                  "      pm.collectionVariables.set('file_id', id);",
+                  "      if (pm.environment) { pm.environment.set('file_id', id); }",
+                  "      pm.collectionVariables.set('file_deleted', 'false');",
+                  "      if (pm.environment) { pm.environment.set('file_deleted', 'false'); }",
+                  "    }",
+                  "  } catch (e) {}",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "{{batch_file}}"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "type": "text"
+                },
+                {
+                  "key": "s3_bucket",
+                  "value": "{{bedrock_s3_bucket}}",
+                  "type": "text",
+                  "disabled": false
+                },
+                {
+                  "key": "owner",
+                  "value": "{{replicate_owner}}",
+                  "type": "text",
+                  "disabled": false
+                },
+                {
+                  "key": "expiry",
+                  "value": "{{replicate_expiry}}",
+                  "type": "text",
+                  "disabled": false
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/files",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files"]
+            }
+          }
+        },
+        {
+          "name": "List Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/files?x-model-provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files"],
+              "query": [{"key": "x-model-provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Retrieve File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var fileId = pm.collectionVariables.get('file_id') || pm.variables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "if (provider === 'bedrock' && (!fileId || fileId === 'file_123' || !/^s3:\\/\\//.test(fileId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('Get File Content'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Get File Content'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }",
+                  "var fileIdEnc = (provider === 'bedrock' && fileId && /^s3:\\/\\//.test(fileId)) ? encodeURIComponent(fileId) : fileId;",
+                  "pm.collectionVariables.set('file_id_encoded', fileIdEnc);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_id_encoded}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files", "{{file_id_encoded}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Get File Content",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var fileId = pm.collectionVariables.get('file_id') || pm.variables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "if (provider === 'bedrock' && (!fileId || fileId === 'file_123' || !/^s3:\\/\\//.test(fileId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('Upload File (for container reference)'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Upload File (for container reference)'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }",
+                  "var fileIdEnc = (provider === 'bedrock' && fileId && /^s3:\\/\\//.test(fileId)) ? encodeURIComponent(fileId) : fileId;",
+                  "pm.collectionVariables.set('file_id_encoded', fileIdEnc);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_id_encoded}}/content?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files", "{{file_id_encoded}}", "content"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Upload File (for container reference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.collectionVariables.get('provider') || pm.variables.get('provider') || '').toLowerCase();",
+                  "if (provider === 'replicate') {",
+                  "  pm.collectionVariables.set('replicate_owner', (pm.environment && pm.environment.get('replicate_owner')) || pm.collectionVariables.get('replicate_owner') || '');",
+                  "  pm.collectionVariables.set('replicate_expiry', (pm.environment && pm.environment.get('replicate_expiry')) || '1830297599');",
+                  "} else {",
+                  "  pm.collectionVariables.set('replicate_owner', '');",
+                  "  pm.collectionVariables.set('replicate_expiry', '');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  try {",
+                  "    var j = pm.response.json();",
+                  "    var id = (j && (j.id || j.file_id)) || (j && j.data && (j.data.id || j.data.file_id));",
+                  "    if (id) {",
+                  "      pm.collectionVariables.set('file_id_ref', id);",
+                  "      if (pm.environment) { pm.environment.set('file_id_ref', id); }",
+                  "    }",
+                  "  } catch (e) {}",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.txt"
+                },
+                {
+                  "key": "purpose",
+                  "value": "assistants",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "{{provider}}",
+                  "type": "text"
+                },
+                {
+                  "key": "owner",
+                  "value": "{{replicate_owner}}",
+                  "type": "text",
+                  "disabled": false
+                },
+                {
+                  "key": "expiry",
+                  "value": "{{replicate_expiry}}",
+                  "type": "text",
+                  "disabled": false
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/files",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batches",
+      "item": [
+        {
+          "name": "Create Batch (Inline Requests)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "if (provider === 'bedrock') {",
+                  "  var outputS3Uri = (pm.environment && pm.environment.get('output_s3_uri')) || pm.collectionVariables.get('output_s3_uri') || '';",
+                  "  var roleArn = (pm.environment && pm.environment.get('role_arn')) || pm.collectionVariables.get('role_arn') || '';",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  if (outputS3Uri) body.output_s3_uri = outputS3Uri;",
+                  "  if (roleArn) body.role_arn = roleArn;",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('batch_id', j.id); if (pm.environment) { pm.environment.set('batch_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"test-request-1\",\n      \"body\": {\n        \"model\": \"{{chat_model}}\",\n        \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}]\n      }\n    }\n  ],\n  \"metadata\": {\"batch_type\": \"testing\"}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/batches",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var batchId = pm.collectionVariables.get('batch_id') || pm.variables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (provider === 'bedrock' && (!batchId || batchId === 'batch_123' || !/^arn:aws:bedrock:/.test(batchId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('Create Batch (File-based)'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Create Batch (File-based)'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/batches/{{batch_id}}/cancel?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches", "{{batch_id}}", "cancel"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Create Batch (File-based)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var fileId = pm.collectionVariables.get('file_id') || pm.variables.get('file_id') || (pm.environment && pm.environment.get('file_id')) || '';",
+                  "if (provider === 'bedrock' && (!fileId || fileId === 'file_123' || !/^s3:\\/\\//.test(fileId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('List Batches'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('List Batches'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }",
+                  "if (provider === 'bedrock') {",
+                  "  var outputS3Uri = (pm.environment && pm.environment.get('output_s3_uri')) || pm.collectionVariables.get('output_s3_uri') || '';",
+                  "  var roleArn = (pm.environment && pm.environment.get('role_arn')) || pm.collectionVariables.get('role_arn') || '';",
+                  "  var body = JSON.parse(pm.request.body.raw);",
+                  "  if (outputS3Uri) body.output_s3_uri = outputS3Uri;",
+                  "  if (roleArn) body.role_arn = roleArn;",
+                  "  pm.request.body.raw = JSON.stringify(body);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('batch_id', j.id); if (pm.environment) { pm.environment.set('batch_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{chat_model}}\",\n  \"input_file_id\": \"{{file_id}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"metadata\": {\"batch_type\": \"production\"}\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/batches",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches"]
+            }
+          }
+        },
+        {
+          "name": "List Batches",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/batches?provider={{provider}}&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches"],
+              "query": [
+                {"key": "provider", "value": "{{provider}}"},
+                {"key": "limit", "value": "10"}
+              ]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Batch",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var batchId = pm.collectionVariables.get('batch_id') || pm.variables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (provider === 'bedrock' && (!batchId || batchId === 'batch_123' || !/^arn:aws:bedrock:/.test(batchId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('Get Batch Results'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Get Batch Results'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/batches/{{batch_id}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches", "{{batch_id}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Get Batch Results",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var batchId = pm.collectionVariables.get('batch_id') || pm.variables.get('batch_id') || (pm.environment && pm.environment.get('batch_id')) || '';",
+                  "if (provider === 'bedrock' && (!batchId || batchId === 'batch_123' || !/^arn:aws:bedrock:/.test(batchId))) { if (pm.execution && typeof pm.execution.setNextRequest === 'function') { pm.execution.setNextRequest('Delete File'); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Delete File'); } if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } }"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/batches/{{batch_id}}/results?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "batches", "{{batch_id}}", "results"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Delete File",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Only delete file_id (main file). file_id_ref is used by Create Container File (Reference) and must remain.",
+                  "var provider = ((pm.environment && pm.environment.get('provider')) || pm.variables.get('provider') || pm.collectionVariables.get('provider') || '').toLowerCase();",
+                  "var fid = pm.collectionVariables.get('file_id');",
+                  "if (pm.environment) { var e = pm.environment.get('file_id'); if (e) fid = e; }",
+                  "if (fid === 'file_123' || !fid) { if (pm.execution && typeof pm.execution.skipRequest === 'function') { pm.execution.skipRequest(); } else if (typeof postman !== 'undefined' && postman.setNextRequest) { postman.setNextRequest('Create Container'); } }",
+                  "var fileIdEnc = (provider === 'bedrock' && fid && /^s3:\\/\\//.test(fid)) ? encodeURIComponent(fid) : fid;",
+                  "pm.collectionVariables.set('file_id_encoded', fileIdEnc);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/files/{{file_id_encoded}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "files", "{{file_id_encoded}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Containers",
+      "item": [
+        {
+          "name": "Create Container",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('container_id', j.id); if (pm.environment) { pm.environment.set('container_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{provider}}\",\n  \"name\": \"bifrost-test-container\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/containers",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers"]
+            }
+          }
+        },
+        {
+          "name": "List Containers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Upload)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code >= 200 && code <= 299) {",
+                  "  var j = pm.response.json();",
+                  "  if (j && j.id) { pm.collectionVariables.set('container_file_id', j.id); if (pm.environment) { pm.environment.set('container_file_id', j.id); } }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": "fixtures/sample.txt"
+                },
+                {
+                  "key": "file_path",
+                  "value": "/test-file.txt",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Create Container File (Reference)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"file_id\": \"{{file_id_ref}}\",\n  \"file_path\": \"/data/file.txt\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "List Container Files",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Retrieve Container File",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files/{{container_file_id}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files", "{{container_file_id}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Get Container File Content",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files/{{container_file_id}}/content?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files", "{{container_file_id}}", "content"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Delete Container File",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}/files/{{container_file_id}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}", "files", "{{container_file_id}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        },
+        {
+          "name": "Delete Container",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/v1/containers/{{container_id}}?provider={{provider}}",
+              "host": ["{{base_url}}"],
+              "path": ["v1", "containers", "{{container_id}}"],
+              "query": [{"key": "provider", "value": "{{provider}}"}]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

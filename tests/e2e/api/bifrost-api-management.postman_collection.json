@@ -1,0 +1,1251 @@
+{
+  "info": {
+    "name": "Bifrost API Management & Health",
+    "description": "E2E tests for Bifrost management API endpoints (/api/*) and health endpoint. Uses fixed resource names (e.g. test_provider, hello-world); do not run this collection in parallel against the same server.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Log request details",
+          "function redact(obj) {",
+          "  if (!obj || typeof obj !== 'object') return obj;",
+          "  if (Array.isArray(obj)) return obj.map(redact);",
+          "  var out = {};",
+          "  Object.keys(obj).forEach(function (k) {",
+          "    if (/password|secret|token|api[_-]?key|authorization/i.test(k)) out[k] = '***REDACTED***';",
+          "    else out[k] = redact(obj[k]);",
+          "  });",
+          "  return out;",
+          "}",
+          "var requestName = pm.info && pm.info.requestName ? pm.info.requestName : 'Unknown Request';",
+          "var requestMethod = pm.request && pm.request.method ? pm.request.method : 'UNKNOWN';",
+          "var requestUrl = pm.request && pm.request.url ? pm.request.url.toString() : 'Unknown URL';",
+          "var requestBody = '';",
+          "if (pm.request && pm.request.body && pm.request.body.raw) {",
+          "  try {",
+          "    var parsedBody = JSON.parse(pm.request.body.raw);",
+          "    requestBody = JSON.stringify(redact(parsedBody), null, 2);",
+          "  } catch (e) {",
+          "    requestBody = pm.request.body.raw;",
+          "  }",
+          "}",
+          "",
+          "// Log response details",
+          "var responseBody = '';",
+          "try {",
+          "  var responseJson = pm.response.json();",
+          "  responseBody = JSON.stringify(redact(responseJson), null, 2);",
+          "} catch (e) {",
+          "  responseBody = pm.response.text();",
+          "}",
+          "",
+          "// Output formatted request/response logs",
+          "console.log('\\n' + '='.repeat(80));",
+          "console.log('REQUEST: ' + requestMethod + ' ' + requestName);",
+          "console.log('URL: ' + requestUrl);",
+          "if (requestBody) {",
+          "  console.log('REQUEST BODY:');",
+          "  console.log(requestBody);",
+          "}",
+          "console.log('\\nRESPONSE: ' + pm.response.code + ' ' + pm.response.status);",
+          "if (responseBody) {",
+          "  console.log('RESPONSE BODY:');",
+          "  console.log(responseBody);",
+          "}",
+          "console.log('='.repeat(80) + '\\n');",
+          "",
+          "var code = pm.response.code;",
+          "var pass = (code >= 200 && code <= 299);",
+          "if (!pass && code >= 400) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var errCode = (body && body.error && body.error.code) ? body.error.code : '';",
+          "    if (errCode === 'unsupported_operation' || errCode === 'feature_not_enabled') {",
+          "      pass = true;",
+          "    } else {",
+          "      var msg = (body && body.error && body.error.message) ? body.error.message : (body && body.message) ? body.message : '';",
+          "      if (typeof msg === 'string' && /\\b(not supported|unsupported|not enabled|not configured)\\b/i.test(msg)) {",
+          "        pass = true;",
+          "      }",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
+          "// Handle expected 404 for \"Before Create\" scenarios",
+          "var beforeCreateRequests = ['Get Customer (Before Create)', 'Get Team (Before Create)', 'Get Virtual Key (Before Create)', 'Get Plugin (Before Create)'];",
+          "if (beforeCreateRequests.indexOf(requestName) !== -1 && code === 404) {",
+          "  pass = true;",
+          "}",
+          "",
+          "// Handle 405 for unimplemented cache endpoints",
+          "var unimplementedEndpoints = ['Clear Cache by Request ID', 'Clear Cache by Key'];",
+          "if (unimplementedEndpoints.indexOf(requestName) !== -1 && code === 405) {",
+          "  pass = true;",
+          "}",
+          "",
+          "// Handle 405 for optional governance/logging plugin endpoints (plugin not loaded in test env)",
+          "var governanceAndLogRequests = ['Recalculate Log Costs', 'Delete Logs', 'Create Customer', 'Update Customer', 'Delete Customer', 'Create Team', 'Update Team', 'Delete Team', 'Create Virtual Key', 'Update Virtual Key', 'Delete Virtual Key', 'Delete MCP Logs'];",
+          "if (governanceAndLogRequests.indexOf(requestName) !== -1 && code === 405) {",
+          "  pass = true;",
+          "}",
+          "",
+          "// Handle MCP client errors (no MCP server running, or client not found after Add failed)",
+          "var mcpClientRequests = ['Add MCP Client', 'Update MCP Client', 'Delete MCP Client'];",
+          "if (mcpClientRequests.indexOf(requestName) !== -1) {",
+          "  if (code === 404) {",
+          "    pass = true;",
+          "  } else if (code === 500) {",
+          "    try {",
+          "      var mcpBody = pm.response.json();",
+          "      var mcpErrCode = (mcpBody && mcpBody.error && mcpBody.error.code) ? mcpBody.error.code : '';",
+          "      var mcpMsg = (mcpBody && mcpBody.error && mcpBody.error.message) ? mcpBody.error.message : '';",
+          "      if (mcpErrCode === 'mcp_server_unavailable' || /mcp server.*not running|connection refused/i.test(mcpMsg)) {",
+          "        pass = true;",
+          "      }",
+          "    } catch (e) {}",
+          "  }",
+          "}",
+          "",
+          "// Handle plugin errors (plugin .so file missing)",
+          "var pluginRequests = ['Get Plugin (Before Create)', 'Create Plugin', 'Get Plugin (After Create)', 'Update Plugin'];",
+          "if (pluginRequests.indexOf(requestName) !== -1 && (code === 404 || code === 500)) {",
+          "  try {",
+          "    var body = pm.response.json();",
+          "    var msg = (body && body.error && body.error.message) ? body.error.message : '';",
+          "    if (typeof msg === 'string' && /plugin.*not found|failed to load/i.test(msg)) {",
+          "      pass = true;",
+          "    }",
+          "  } catch (e) {}",
+          "}",
+          "",
+          "pm.test('Status is 2xx or expected error', function() { pm.expect(pass).to.be.true; });"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "customer_id",
+      "value": "test_customer_123",
+      "type": "string"
+    },
+    {
+      "key": "team_id",
+      "value": "test_team_123",
+      "type": "string"
+    },
+    {
+      "key": "vk_id",
+      "value": "test_vk_123",
+      "type": "string"
+    },
+    {
+      "key": "mc_id",
+      "value": "test_mc_123",
+      "type": "string"
+    },
+    {
+      "key": "rule_id",
+      "value": "test_rule_123",
+      "type": "string"
+    },
+    {
+      "key": "mcp_client_id",
+      "value": "test_mcp_123",
+      "type": "string"
+    },
+    {
+      "key": "plugin_name",
+      "value": "hello-world",
+      "type": "string"
+    },
+    {
+      "key": "plugin_path",
+      "value": "./examples/plugins/hello-world/build/hello-world.so",
+      "type": "string"
+    },
+    {
+      "key": "admin_username",
+      "value": "admin",
+      "type": "string"
+    },
+    {
+      "key": "admin_password",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Version & Config",
+      "item": [
+        {
+          "name": "Get Version",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/version",
+              "host": ["{{base_url}}"],
+              "path": ["api", "version"]
+            }
+          }
+        },
+        {
+          "name": "Get Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            }
+          }
+        },
+        {
+          "name": "Update Config",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {\"drop_excess_requests\": false, \"log_retention_days\": 365, \"mcp_agent_depth\": 1, \"mcp_tool_execution_timeout\": 1}, \"framework_config\": {}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "config"]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Explicitly set body so all fields are sent (avoids omission/truncation)",
+                  "var body = {",
+                  "  client_config: {",
+                  "    drop_excess_requests: false,",
+                  "    log_retention_days: 365,",
+                  "    mcp_agent_depth: 1,",
+                  "    mcp_tool_execution_timeout: 1",
+                  "  },",
+                  "  framework_config: {}",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Providers",
+      "item": [
+        {
+          "name": "List Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers"]
+            }
+          }
+        },
+        {
+          "name": "Add Provider",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"test_provider\", \"keys\": [{\"value\": {\"value\": \"test_key\"}}], \"network_config\": {\"base_url\": \"https://api.test_provider.com\"}, \"concurrency_and_buffer_size\": {\"concurrency\": 10, \"buffer_size\": 100}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers"]
+            }
+          }
+        },
+        {
+          "name": "Get Provider (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/test_provider",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "test_provider"]
+            }
+          }
+        },
+        {
+          "name": "Update Provider",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"keys\": [], \"network_config\": {}, \"concurrency_and_buffer_size\": {\"concurrency\": 15, \"buffer_size\": 150}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/providers/test_provider",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "test_provider"]
+            }
+          }
+        },
+        {
+          "name": "Delete Provider",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers/test_provider",
+              "host": ["{{base_url}}"],
+              "path": ["api", "providers", "test_provider"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Models & Keys",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models",
+              "host": ["{{base_url}}"],
+              "path": ["api", "models"]
+            }
+          }
+        },
+        {
+          "name": "List Base Models",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/base",
+              "host": ["{{base_url}}"],
+              "path": ["api", "models", "base"]
+            }
+          }
+        },
+        {
+          "name": "List Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "keys"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Logs",
+      "item": [
+        {
+          "name": "Get Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Capture first log ID for deletion test",
+                  "if (pm.response.code === 200) {",
+                  "  try {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.logs && jsonData.logs.length > 0) {",
+                  "      var firstLogId = jsonData.logs[0].id;",
+                  "      if (firstLogId) {",
+                  "        pm.collectionVariables.set('log_id', firstLogId);",
+                  "      }",
+                  "    }",
+                  "  } catch (e) {",
+                  "    // Ignore errors",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs"]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/stats",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs", "stats"]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Histogram",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/histogram",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs", "histogram"]
+            }
+          }
+        },
+        {
+          "name": "Get Logs Filter Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/filterdata",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs", "filterdata"]
+            }
+          }
+        },
+        {
+          "name": "Get Dropped Requests",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/dropped",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs", "dropped"]
+            }
+          }
+        },
+        {
+          "name": "Recalculate Log Costs",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/logs/recalculate-cost",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs", "recalculate-cost"]
+            }
+          }
+        },
+        {
+          "name": "Delete Logs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Use captured log ID or fallback to empty array",
+                  "var logId = pm.collectionVariables.get('log_id');",
+                  "var ids = [];",
+                  "if (logId) {",
+                  "  ids.push(logId);",
+                  "}",
+                  "pm.request.body.raw = JSON.stringify({ids: ids});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": []}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/logs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "logs"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Customers",
+      "item": [
+        {
+          "name": "List Customers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers"]
+            }
+          }
+        },
+        {
+          "name": "Get Customer (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers", "{{customer_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.customer && jsonData.customer.id) {",
+                  "    pm.collectionVariables.set('customer_id', jsonData.customer.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Test Customer\", \"email\": \"test@example.com\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers"]
+            }
+          }
+        },
+        {
+          "name": "Get Customer (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers", "{{customer_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Customer",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated Customer\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers", "{{customer_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Customer",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/customers/{{customer_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "customers", "{{customer_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Teams",
+      "item": [
+        {
+          "name": "List Teams",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams"]
+            }
+          }
+        },
+        {
+          "name": "Get Team (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams", "{{team_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Team",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "  var jsonData = pm.response.json();",
+                  "  if (jsonData && jsonData.team && jsonData.team.id) {",
+                  "    pm.collectionVariables.set('team_id', jsonData.team.id);",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Test Team\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams"]
+            }
+          }
+        },
+        {
+          "name": "Get Team (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams", "{{team_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Team",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated Team\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams", "{{team_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Team",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/teams/{{team_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "teams", "{{team_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Virtual Keys",
+      "item": [
+        {
+          "name": "List Virtual Keys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys"]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Virtual Key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var code = pm.response.code;",
+                  "if (code === 200 || code === 201) {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.virtual_key && jsonData.virtual_key.id) {",
+                  "        pm.collectionVariables.set('vk_id', jsonData.virtual_key.id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "var timestamp = Date.now();",
+                  "var uniqueName = 'Test VK ' + timestamp;",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Test VK\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys"]
+            }
+          }
+        },
+        {
+          "name": "Get Virtual Key (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Virtual Key",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"Updated VK\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Virtual Key",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{vk_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "virtual-keys", "{{vk_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance - Other",
+      "item": [
+        {
+          "name": "Get Budgets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/budgets",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "budgets"]
+            }
+          }
+        },
+        {
+          "name": "Get Rate Limits",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/rate-limits",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "rate-limits"]
+            }
+          }
+        },
+        {
+          "name": "Get Provider Governance",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/providers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "governance", "providers"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP Clients",
+      "item": [
+        {
+          "name": "Get MCP Clients",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/clients",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp", "clients"]
+            }
+          }
+        },
+        {
+          "name": "Add MCP Client",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_id\": \"{{mcp_client_id}}\", \"name\": \"TestMCPClient\", \"connection_type\": \"http\", \"connection_string\": {\"value\": \"http://localhost:3001/\", \"env_var\": \"\", \"from_env\": false}}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp", "client"]
+            }
+          }
+        },
+        {
+          "name": "Update MCP Client",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"UpdatedMCPClient\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{mcp_client_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp", "client", "{{mcp_client_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Client",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp/client/{{mcp_client_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp", "client", "{{mcp_client_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "MCP Logs",
+      "item": [
+        {
+          "name": "Get MCP Logs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Capture first MCP log ID for deletion test",
+                  "if (pm.response.code === 200) {",
+                  "  try {",
+                  "    var jsonData = pm.response.json();",
+                  "    if (jsonData && jsonData.logs && jsonData.logs.length > 0) {",
+                  "      var firstLogId = jsonData.logs[0].id;",
+                  "      if (firstLogId) {",
+                  "        pm.collectionVariables.set('mcp_log_id', firstLogId);",
+                  "      }",
+                  "    }",
+                  "  } catch (e) {",
+                  "    // Ignore errors",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp-logs"]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Logs Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/stats",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp-logs", "stats"]
+            }
+          }
+        },
+        {
+          "name": "Get MCP Logs Filter Data",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs/filterdata",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp-logs", "filterdata"]
+            }
+          }
+        },
+        {
+          "name": "Delete MCP Logs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Use captured MCP log ID or fallback to empty array",
+                  "var logId = pm.collectionVariables.get('mcp_log_id');",
+                  "var ids = [];",
+                  "if (logId) {",
+                  "  ids.push(logId);",
+                  "}",
+                  "pm.request.body.raw = JSON.stringify({ids: ids});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"ids\": []}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/mcp-logs",
+              "host": ["{{base_url}}"],
+              "path": ["api", "mcp-logs"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Plugins",
+      "item": [
+        {
+          "name": "Get Plugins",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins"]
+            }
+          }
+        },
+        {
+          "name": "Get Plugin (Before Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins", "{{plugin_name}}"]
+            }
+          }
+        },
+        {
+          "name": "Create Plugin",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{plugin_name}}\", \"path\": \"{{plugin_path}}\", \"enabled\": true}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/plugins",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins"]
+            }
+          }
+        },
+        {
+          "name": "Get Plugin (After Create)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins", "{{plugin_name}}"]
+            }
+          }
+        },
+        {
+          "name": "Update Plugin",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins", "{{plugin_name}}"]
+            }
+          }
+        },
+        {
+          "name": "Delete Plugin",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/plugins/{{plugin_name}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "plugins", "{{plugin_name}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache",
+      "item": [
+        {
+          "name": "Clear Cache by Request ID",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cache/clear/test_request_123",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cache", "clear", "test_request_123"]
+            }
+          }
+        },
+        {
+          "name": "Clear Cache by Key",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cache/clear-by-key/test_cache_key",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cache", "clear-by-key", "test_cache_key"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Session",
+      "item": [
+        {
+          "name": "Check If Auth Enabled",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/session/is-auth-enabled",
+              "host": ["{{base_url}}"],
+              "path": ["api", "session", "is-auth-enabled"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"username\": \"{{admin_username}}\", \"password\": \"{{admin_password}}\"}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/session/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "session", "login"]
+            }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/session/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "session", "logout"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Proxy",
+      "item": [
+        {
+          "name": "Get Proxy Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "proxy-config"]
+            }
+          }
+        },
+        {
+          "name": "Update Proxy Config",
+          "request": {
+            "method": "PUT",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"type\": \"http\", \"url\": \"http://proxy.example.com:8080\", \"timeout\": 30, \"enable_for_inference\": true, \"enable_for_api\": true, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": ["{{base_url}}"],
+              "path": ["api", "proxy-config"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pricing",
+      "item": [
+        {
+          "name": "Force Sync Pricing",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/pricing/force-sync",
+              "host": ["{{base_url}}"],
+              "path": ["api", "pricing", "force-sync"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

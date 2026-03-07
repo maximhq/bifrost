@@ -12,7 +12,7 @@ The VectorStore is a core component of Bifrost's framework package that provides
 - **Vector Similarity Search**: Find semantically similar content using embeddings
 - **Namespace Management**: Organize data into separate collections with custom schemas
 - **Flexible Filtering**: Query data with complex filters and pagination
-- **Multiple Backends**: Support for Weaviate, Redis, Qdrant, and Pinecone vector stores
+- **Multiple Backends**: Support for Weaviate, Redis/Valkey-compatible, Qdrant, and Pinecone vector stores
 - **High Performance**: Optimized for production workloads
 - **Scalable Storage**: Handle millions of vectors with efficient indexing
 
@@ -21,7 +21,7 @@ The VectorStore is a core component of Bifrost's framework package that provides
 Bifrost currently supports four vector store implementations:
 
 - **[Weaviate](#weaviate)**: Production-ready vector database with gRPC support and advanced querying
-- **[Redis](#redis)**: High-performance in-memory vector store using RediSearch
+- **[Redis](#redis)**: High-performance in-memory vector store using RediSearch/Valkey Search
 - **[Qdrant](#qdrant)**: Rust-based vector search engine with advanced filtering
 - **[Pinecone](#pinecone)**: Managed vector database service with serverless and pod-based options
 
@@ -276,7 +276,7 @@ vectorConfig := &vectorstore.Config{
 
 ## Redis
 
-Redis provides high-performance in-memory vector storage using RediSearch, ideal for applications requiring sub-millisecond response times and fast semantic search capabilities.
+Redis provides high-performance in-memory vector storage using RediSearch-compatible APIs, ideal for applications requiring sub-millisecond response times and fast semantic search capabilities. Valkey deployments that expose compatible `FT.*` commands are supported through the same configuration.
 
 ### Key Features
 
@@ -301,6 +301,12 @@ Redis provides high-performance in-memory vector storage using RediSearch, ideal
 docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
 ```
 
+**Local Valkey Bundle:**
+```bash
+# Example Valkey bundle with search/vector support
+docker run -d --name valkey-bundle -p 6379:6379 valkey/valkey-bundle:9.0.0
+```
+
 ### Configuration Options
 
 <Tabs group="redis-config">
@@ -308,12 +314,12 @@ docker run -d --name redis-stack -p 6379:6379 redis/redis-stack:latest
 <Tab title="Go SDK">
 
 ```go
-// Configure Redis vector store
+// Configure Redis-compatible vector store (Redis or Valkey endpoint)
 vectorConfig := &vectorstore.Config{
     Enabled: true,
-    Type:    vectorstore.VectorStoreTypeRedis,
+    Type:    vectorstore.VectorStoreTypeRedis, // Keep type as "redis" for Valkey too
     Config: vectorstore.RedisConfig{
-        Addr:     "localhost:6379",        // Redis server address - REQUIRED
+        Addr:     "localhost:6379",        // Redis/Valkey server address - REQUIRED
         Username: "",                      // Optional: Redis username
         Password: "",                      // Optional: Redis password
         DB:       0,                       // Optional: Redis database number (default: 0)
@@ -366,7 +372,7 @@ if err != nil {
 }
 ```
 
-**For Redis Cloud:**
+**For Redis Cloud or Valkey service endpoints:**
 ```json
 {
   "vector_store": {
@@ -454,7 +460,7 @@ deleteResults, err := store.DeleteAll(ctx, namespace, queries)
 ### Production Considerations
 
 <Info>
-**RediSearch Module Required**: Redis integration requires the RediSearch module to be enabled on your Redis instance. This module provides the vector search capabilities needed for semantic caching.
+**Search Module Required**: Redis/Valkey integration requires a search module/API that supports `FT.*` commands (index creation and vector search). If `FT.INFO` or `FT.SEARCH` is unavailable, semantic caching will not work.
 </Info>
 
 <Warning>

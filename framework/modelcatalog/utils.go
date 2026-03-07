@@ -102,9 +102,10 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		CacheReadInputTokenCostAbove200kTokens:     entry.CacheReadInputTokenCostAbove200kTokens,
 
 		// Cache and batch pricing
-		CacheReadInputTokenCost:   entry.CacheReadInputTokenCost,
-		InputCostPerTokenBatches:  entry.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches: entry.OutputCostPerTokenBatches,
+		CacheReadInputTokenCost:     entry.CacheReadInputTokenCost,
+		CacheCreationInputTokenCost: entry.CacheCreationInputTokenCost,
+		InputCostPerTokenBatches:    entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:   entry.OutputCostPerTokenBatches,
 
 		// Image generation pricing
 		InputCostPerImageToken:       entry.InputCostPerImageToken,
@@ -143,6 +144,7 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CacheCreationInputTokenCostAbove200kTokens: pricing.CacheCreationInputTokenCostAbove200kTokens,
 		CacheReadInputTokenCostAbove200kTokens:     pricing.CacheReadInputTokenCostAbove200kTokens,
 		CacheReadInputTokenCost:                    pricing.CacheReadInputTokenCost,
+		CacheCreationInputTokenCost:                pricing.CacheCreationInputTokenCost,
 		InputCostPerTokenBatches:                   pricing.InputCostPerTokenBatches,
 		OutputCostPerTokenBatches:                  pricing.OutputCostPerTokenBatches,
 		InputCostPerImageToken:                     pricing.InputCostPerImageToken,

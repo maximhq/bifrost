@@ -1580,13 +1580,8 @@ func forEachDB(t *testing.T) []namedDB {
 //
 // These tests guard against the SQLSTATE 22001 overflow that occurred when
 // AES-256-GCM encrypted values were stored in varchar columns that were too
-// narrow to hold the base64-encoded ciphertext:
-//   - azure_api_version was varchar(50)  — any API version string overflowed
-//   - vertex_region     was varchar(100) — longer region names overflowed
-//   - bedrock_region    was varchar(100) — same
-//
-// All three are now varchar(255), which can hold up to ~163-char plaintext
-// after encryption overhead.
+// narrow to hold the base64-encoded ciphertext. All three columns are now
+// text type which has no length limit.
 // ============================================================================
 
 func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
@@ -1611,7 +1606,7 @@ func TestEncryptedColumns_AzureAPIVersion_FitsAfterWidening(t *testing.T) {
 			}
 
 			require.NoError(t, ndb.db.Create(key).Error,
-				"expected no overflow error — azure_api_version should be varchar(255)")
+				"expected no overflow error — azure_api_version should be text")
 
 			var found TableKey
 			require.NoError(t, ndb.db.First(&found, key.ID).Error)
@@ -1642,7 +1637,7 @@ func TestEncryptedColumns_VertexRegion_FitsAfterWidening(t *testing.T) {
 			}
 
 			require.NoError(t, ndb.db.Create(key).Error,
-				"expected no overflow error — vertex_region should be varchar(255)")
+				"expected no overflow error — vertex_region should be text")
 
 			var found TableKey
 			require.NoError(t, ndb.db.First(&found, key.ID).Error)
@@ -1675,7 +1670,7 @@ func TestEncryptedColumns_BedrockRegion_FitsAfterWidening(t *testing.T) {
 			}
 
 			require.NoError(t, ndb.db.Create(key).Error,
-				"expected no overflow error — bedrock_region should be varchar(255)")
+				"expected no overflow error — bedrock_region should be text")
 
 			var found TableKey
 			require.NoError(t, ndb.db.First(&found, key.ID).Error)

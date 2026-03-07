@@ -387,35 +387,76 @@ func (a *Accumulator) accumulateToolCallsInMessage(message *schemas.ChatMessage,
 		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
 	}
 	existingToolCalls := message.ChatAssistantMessage.ToolCalls
+	if len(existingToolCalls) == 0 {
+		existingToolCalls = []schemas.ChatAssistantMessageToolCall{}
+	}
+
+	// Build lookup maps for existing tool calls to support interleaved/parallel deltas
+	idToIndex := make(map[string]int, len(existingToolCalls))
+	indexToIndex := make(map[uint16]int, len(existingToolCalls))
+	for i, toolCall := range existingToolCalls {
+		if toolCall.ID != nil && *toolCall.ID != "" {
+			idToIndex[*toolCall.ID] = i
+		}
+		indexToIndex[toolCall.Index] = i
+	}
+
 	for _, deltaToolCall := range deltaToolCalls {
-		var toolCallToModify *schemas.ChatAssistantMessageToolCall
-		// Checking if delta tool name is present,
-		// If present, then it could be different tool call
-		if deltaToolCall.Function.Name != nil {
+		index := -1
+		if deltaToolCall.ID != nil && *deltaToolCall.ID != "" {
+			if existingIndex, ok := idToIndex[*deltaToolCall.ID]; ok {
+				index = existingIndex
+			}
+		}
+		if index == -1 {
+			if existingIndex, ok := indexToIndex[deltaToolCall.Index]; ok {
+				index = existingIndex
+			}
+		}
+
+		if index == -1 {
+			// Cannot place a delta without a tool name or known identifier
+			if deltaToolCall.Function.Name == nil {
+				a.logger.Warn("received tool call delta without name, but no existing tool calls to append to")
+				continue
+			}
 			// Creating a new tool call
 			// Only set arguments if they're not empty or just empty braces
 			args := deltaToolCall.Function.Arguments
 			if args == "{}" {
 				args = "" // Reset empty braces to empty string to avoid duplication
 			}
-			toolCallToModify = &schemas.ChatAssistantMessageToolCall{
-				Index: uint16(len(existingToolCalls)),
+			newToolCall := schemas.ChatAssistantMessageToolCall{
+				Index: deltaToolCall.Index,
+				Type:  deltaToolCall.Type,
 				ID:    deltaToolCall.ID,
 				Function: schemas.ChatAssistantMessageToolCallFunction{
 					Name:      deltaToolCall.Function.Name,
 					Arguments: args,
 				},
 			}
-			existingToolCalls = append(existingToolCalls, *toolCallToModify)
-		} else {
-			// Ensure there's at least one tool call to modify
-			if len(existingToolCalls) == 0 {
-				a.logger.Warn("received tool call delta without name, but no existing tool calls to append to")
-				continue
+			existingToolCalls = append(existingToolCalls, newToolCall)
+			index = len(existingToolCalls) - 1
+			indexToIndex[newToolCall.Index] = index
+			if newToolCall.ID != nil && *newToolCall.ID != "" {
+				idToIndex[*newToolCall.ID] = index
 			}
-			// Otherwise we will modify the last tool call
-			toolCallToModify = &existingToolCalls[len(existingToolCalls)-1]
-			toolCallToModify.Function.Arguments += deltaToolCall.Function.Arguments
+			continue
+		}
+
+		// Update existing tool call
+		if deltaToolCall.Type != nil {
+			existingToolCalls[index].Type = deltaToolCall.Type
+		}
+		if deltaToolCall.ID != nil && *deltaToolCall.ID != "" {
+			existingToolCalls[index].ID = deltaToolCall.ID
+			idToIndex[*deltaToolCall.ID] = index
+		}
+		if deltaToolCall.Function.Name != nil && *deltaToolCall.Function.Name != "" {
+			existingToolCalls[index].Function.Name = deltaToolCall.Function.Name
+		}
+		if deltaToolCall.Function.Arguments != "" {
+			existingToolCalls[index].Function.Arguments += deltaToolCall.Function.Arguments
 		}
 	}
 	message.ChatAssistantMessage.ToolCalls = existingToolCalls

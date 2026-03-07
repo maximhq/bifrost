@@ -83,9 +83,10 @@ type PricingEntry struct {
 	CacheCreationInputTokenCostAbove200kTokens *float64 `json:"cache_creation_input_token_cost_above_200k_tokens,omitempty"`
 	CacheReadInputTokenCostAbove200kTokens     *float64 `json:"cache_read_input_token_cost_above_200k_tokens,omitempty"`
 	// Cache and batch pricing
-	CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
-	InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
-	OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
+	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
+	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+	InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+	OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
 	// Image generation pricing
 	InputCostPerImageToken       *float64 `json:"input_cost_per_image_token,omitempty"`
 	OutputCostPerImageToken      *float64 `json:"output_cost_per_image_token,omitempty"`

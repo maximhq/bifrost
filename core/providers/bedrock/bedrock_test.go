@@ -126,6 +126,7 @@ func TestBedrock(t *testing.T) {
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Bedrock, Model: "claude-4-sonnet"},
 			{Provider: schemas.Bedrock, Model: "claude-4.5-sonnet"},
+			{Provider: schemas.Bedrock, Model: "anthropic.claude-sonnet-4-20250514-v1:0"}, // Used for count tokens
 		},
 		EmbeddingModel:      "cohere.embed-v4:0",
 		RerankModel:         rerankModelARN,
@@ -2589,13 +2590,13 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// tool call and result
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
 		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("First result")}}
-		manager.RegisterToolResult("call-123", content1, "success")
+		manager.RegisterToolResult("call-123", content1, "success", nil)
 
 		// duplicate result with different content
 		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate result")}}
-		manager.RegisterToolResult("call-123", content2, "success")
+		manager.RegisterToolResult("call-123", content2, "success", nil)
 
 		// Deduplicated regardless of content. Practically same ID should not ever has diff content.
 		results := manager.GetPendingResults()
@@ -2608,19 +2609,19 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// Register and emit a tool call
-		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`)
+		manager.RegisterToolCall("call-456", "calculate", `{"x":1,"y":2}`, nil)
 		callIDs := manager.EmitPendingToolCalls()
 		require.Len(t, callIDs, 1)
 		manager.MarkToolCallsEmitted(callIDs, 0)
 
 		// register and emit the result
 		content1 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("3")}}
-		manager.RegisterToolResult("call-456", content1, "success")
+		manager.RegisterToolResult("call-456", content1, "success", nil)
 		manager.MarkResultsEmitted([]string{"call-456"})
 
 		// Register a duplicate
 		content2 := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Duplicate")}}
-		manager.RegisterToolResult("call-456", content2, "success")
+		manager.RegisterToolResult("call-456", content2, "success", nil)
 
 		// Not added due to it being duplicated with the emitted result
 		results := manager.GetPendingResults()
@@ -2631,20 +2632,20 @@ func TestToolResultDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// Register multiple tool calls
-		manager.RegisterToolCall("call-a", "tool_a", `{}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{}`, nil)
 
 		// Register results for both
 		contentA := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
 		contentB := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
-		manager.RegisterToolResult("call-a", contentA, "success")
-		manager.RegisterToolResult("call-b", contentB, "success")
+		manager.RegisterToolResult("call-a", contentA, "success", nil)
+		manager.RegisterToolResult("call-b", contentB, "success", nil)
 
 		// Try to register duplicates
 		contentADup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result A")}}
 		contentBDup := []bedrock.BedrockContentBlock{{Text: schemas.Ptr("Result B")}}
-		manager.RegisterToolResult("call-a", contentADup, "success")
-		manager.RegisterToolResult("call-b", contentBDup, "success")
+		manager.RegisterToolResult("call-a", contentADup, "success", nil)
+		manager.RegisterToolResult("call-b", contentBDup, "success", nil)
 
 		// Verify original results are preserved
 		results := manager.GetPendingResults()
@@ -2659,8 +2660,8 @@ func TestToolCallDeduplication(t *testing.T) {
 	t.Run("DuplicateToolCallIgnored", func(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
-		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
+		manager.RegisterToolCall("call-123", "get_weather", `{"location":"NYC"}`, nil)
 
 		// Deduplicated regardless of content.
 		callIDs := manager.EmitPendingToolCalls()
@@ -2672,14 +2673,14 @@ func TestToolCallDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// initial registration
-		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
-		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`, nil)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`, nil)
 
 		// duplications
-		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`)
-		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`)
-		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`)
+		manager.RegisterToolCall("call-a", "tool_a", `{"x":1}`, nil)
+		manager.RegisterToolCall("call-b", "tool_b", `{"y":2}`, nil)
+		manager.RegisterToolCall("call-c", "tool_c", `{"z":3}`, nil)
 
 		// no duplicates
 		callIDs := manager.EmitPendingToolCalls()
@@ -2693,13 +2694,13 @@ func TestToolCallDeduplication(t *testing.T) {
 		manager := bedrock.NewToolCallStateManager()
 
 		// register and emit a tool call
-		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`, nil)
 		callIDs := manager.EmitPendingToolCalls()
 		require.Len(t, callIDs, 1)
 		manager.MarkToolCallsEmitted(callIDs, 0)
 
 		// register the same tool call again after emission
-		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`)
+		manager.RegisterToolCall("call-789", "calculator", `{"expr":"1+1"}`, nil)
 
 		// duplicate was rejected
 		newCallIDs := manager.EmitPendingToolCalls()

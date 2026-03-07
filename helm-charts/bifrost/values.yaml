@@ -87,7 +87,7 @@ resources:
 
 livenessProbe:
   httpGet:
-    path: /metrics
+    path: /health
     port: http
   initialDelaySeconds: 30
   periodSeconds: 30
@@ -96,7 +96,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /metrics
+    path: /health
     port: http
   initialDelaySeconds: 10
   periodSeconds: 10
@@ -109,6 +109,20 @@ autoscaling:
   maxReplicas: 10
   targetCPUUtilizationPercentage: 80
   targetMemoryUtilizationPercentage: 80
+  # HPA scaling behavior configuration
+  # Controls how quickly the HPA scales up/down to prevent connection disruption
+  behavior:
+    scaleDown:
+      # Stabilization window prevents rapid scale-down oscillation.
+      # The HPA will wait this long after the last scale event before scaling down again.
+      # Important for long-lived streaming connections (e.g. SSE for LLM inference).
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
 
 # Additional volumes on the output Deployment definition.
 volumes: []
@@ -121,6 +135,19 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Graceful shutdown configuration for long-lived connections (SSE streaming)
+# When a pod is terminated (e.g. during HPA scale-down), active streaming connections
+# are severed abruptly. This causes clients to lose their SSE stream mid-response.
+# The preStop hook and termination grace period give in-flight requests time to complete.
+terminationGracePeriodSeconds: 60
+lifecycle:
+  preStop:
+    exec:
+      # Sleep allows the pod to be removed from the Service endpoints and load balancer
+      # before the process starts shutting down, preventing new connections from arriving
+      # while existing ones drain.
+      command: ["sh", "-c", "sleep 15"]
 
 # Bifrost specific configuration
 # You can find entire schema at https://getbifrost.ai/schema
@@ -285,16 +312,30 @@ bifrost:
   plugins:
     telemetry:
       enabled: false
-      config: {}
+      config:
+        custom_labels: []
+        # push_gateway:
+        #   enabled: false
+        #   push_gateway_url: ""
+        #   job_name: "bifrost"
+        #   instance_id: ""
+        #   push_interval: 15
+        #   basic_auth:
+        #     username: ""
+        #     password: ""
 
     logging:
       enabled: false
-      config: {}
+      config:
+        disable_content_logging: false
+        logging_headers: []
 
     governance:
       enabled: false
       config:
         is_vk_mandatory: false
+        required_headers: []
+        is_enterprise: false
 
     maxim:
       enabled: false
@@ -335,6 +376,11 @@ bifrost:
         metrics_enabled: false
         metrics_endpoint: ""          # e.g., http://otel-collector:4318/v1/metrics (HTTP) or otel-collector:4317 (gRPC)
         metrics_push_interval: 15     # Push interval in seconds (1-300)
+        # Custom headers for the collector (supports env.VAR_NAME prefix for env var substitution)
+        headers: {}
+        # TLS configuration
+        tls_ca_cert: ""               # Path to TLS CA certificate file
+        insecure: false               # Skip TLS verification (ignored if tls_ca_cert is set)
 
     datadog:
       enabled: false

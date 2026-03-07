@@ -1030,7 +1030,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_Valid(t *testing.T) {
 		"plugins": [
 			{
 				"enabled": true,
-				"name": "semanticcache",
+				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
 					"keys": ["sk-test-key"],
@@ -1052,7 +1052,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingProvider(t *testing.T) 
 		"plugins": [
 			{
 				"enabled": true,
-				"name": "semanticcache",
+				"name": "semantic_cache",
 				"config": {
 					"keys": ["sk-test-key"],
 					"dimension": 1536
@@ -1073,7 +1073,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingKeys(t *testing.T) {
 		"plugins": [
 			{
 				"enabled": true,
-				"name": "semanticcache",
+				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
 					"dimension": 1536
@@ -1094,7 +1094,7 @@ func TestValidateConfigSchema_SemanticCachePlugin_MissingDimension(t *testing.T)
 		"plugins": [
 			{
 				"enabled": true,
-				"name": "semanticcache",
+				"name": "semantic_cache",
 				"config": {
 					"provider": "openai",
 					"keys": ["sk-test-key"]

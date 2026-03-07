@@ -14,7 +14,7 @@ func (resp *VertexCountTokensResponse) ToBifrostCountTokensResponse(model string
 	total := int(resp.TotalTokens)
 
 	if resp.CachedContentTokenCount > 0 {
-		inputDetails.CachedTokens = int(resp.CachedContentTokenCount)
+		inputDetails.CachedReadTokens = int(resp.CachedContentTokenCount)
 	}
 
 	return &schemas.BifrostCountTokensResponse{

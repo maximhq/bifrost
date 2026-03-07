@@ -39,7 +39,7 @@ func TestEmbeddingRequestsCaching(t *testing.T) {
 	t.Logf("Response contains %d embeddings", len(response1.Data))
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical embedding request (should be served from cache)...")
 
@@ -115,7 +115,7 @@ func TestEmbeddingRequestsDifferentTexts(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second different embedding request...")
 	response2, err2 := setup.Client.EmbeddingRequest(ctx, request2)
@@ -146,7 +146,7 @@ func TestEmbeddingRequestsCacheExpiration(t *testing.T) {
 	}
 	AssertNoCacheHit(t, &schemas.BifrostResponse{EmbeddingResponse: response1})
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second request before TTL expiration...")
 	response2, err2 := setup.Client.EmbeddingRequest(ctx, embeddingRequest)

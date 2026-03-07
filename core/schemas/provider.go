@@ -14,7 +14,7 @@ const (
 	DefaultRequestTimeoutInSeconds = 30
 	DefaultBufferSize              = 5000
 	DefaultConcurrency             = 1000
-	DefaultStreamBufferSize        = 5000
+	DefaultStreamBufferSize        = 256
 )
 
 // Pre-defined errors for provider operations
@@ -162,6 +162,11 @@ type ProxyConfig struct {
 	CACertPEM string    `json:"ca_cert_pem"` // PEM-encoded CA certificate to trust for TLS connections through the proxy
 }
 
+// IsRedactedValue returns true if the value is redacted.
+func (pc *ProxyConfig) IsRedactedValue(value string) bool {
+	return value == "<REDACTED>" || value == "********"
+}
+
 // Redacted returns a redacted copy of the proxy configuration.
 func (pc *ProxyConfig) Redacted() *ProxyConfig {
 	// Create redacted config with same structure but redacted values
@@ -171,10 +176,10 @@ func (pc *ProxyConfig) Redacted() *ProxyConfig {
 		Username: pc.Username,
 	}
 	if pc.Password != "" {
-		redactedConfig.Password = "********"
+		redactedConfig.Password = "<REDACTED>"
 	}
 	if pc.CACertPEM != "" {
-		redactedConfig.CACertPEM = "********"
+		redactedConfig.CACertPEM = "<REDACTED>"
 	}
 	return &redactedConfig
 }

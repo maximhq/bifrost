@@ -517,7 +517,7 @@ assert_field_value 'auth_config.is_enabled' '.auth_config.is_enabled' 'true'
 assert_field_value 'auth_config.disable_auth_on_inference' '.auth_config.disable_auth_on_inference' 'false'
 
 ###############################################################################
-# 6. Plugins (telemetry, logging, governance, maxim, semanticcache, otel, datadog, custom)
+# 6. Plugins (telemetry, logging, governance, maxim, semantic_cache, otel, datadog, custom)
 ###############################################################################
 echo ""
 echo -e "${CYAN}🔌 6/10 - Plugins Configuration${NC}"
@@ -625,19 +625,19 @@ assert_field_value 'plugins: maxim api_key' '.plugins.[3].config.api_key' '"maxi
 assert_field_value 'plugins: maxim log_repo_id' '.plugins.[3].config.log_repo_id' '"repo-456"'
 
 # Semantic cache plugin
-assert_field_value 'plugins: semanticcache name' '.plugins.[4].name' '"semanticcache"'
-assert_field_value 'plugins: semanticcache provider' '.plugins.[4].config.provider' '"openai"'
-assert_field 'plugins: semanticcache keys' '.plugins.[4].config.keys'
-assert_field_value 'plugins: semanticcache embedding_model' '.plugins.[4].config.embedding_model' '"text-embedding-3-small"'
-assert_field_value 'plugins: semanticcache dimension' '.plugins.[4].config.dimension' '1536'
-assert_field_value 'plugins: semanticcache threshold' '.plugins.[4].config.threshold' '0.85'
-assert_field_value 'plugins: semanticcache ttl' '.plugins.[4].config.ttl' '"10m"'
-assert_field_value 'plugins: semanticcache conversation_history_threshold' '.plugins.[4].config.conversation_history_threshold' '5'
-assert_field_value 'plugins: semanticcache cache_by_model' '.plugins.[4].config.cache_by_model' 'true'
-assert_field_value 'plugins: semanticcache cache_by_provider' '.plugins.[4].config.cache_by_provider' 'false'
-assert_field_value 'plugins: semanticcache exclude_system_prompt' '.plugins.[4].config.exclude_system_prompt' 'true'
-assert_field_value 'plugins: semanticcache cleanup_on_shutdown' '.plugins.[4].config.cleanup_on_shutdown' 'true'
-assert_field_value 'plugins: semanticcache vector_store_namespace' '.plugins.[4].config.vector_store_namespace' '"bifrost-cache"'
+assert_field_value 'plugins: semantic_cache name' '.plugins.[4].name' '"semantic_cache"'
+assert_field_value 'plugins: semantic_cache provider' '.plugins.[4].config.provider' '"openai"'
+assert_field 'plugins: semantic_cache keys' '.plugins.[4].config.keys'
+assert_field_value 'plugins: semantic_cache embedding_model' '.plugins.[4].config.embedding_model' '"text-embedding-3-small"'
+assert_field_value 'plugins: semantic_cache dimension' '.plugins.[4].config.dimension' '1536'
+assert_field_value 'plugins: semantic_cache threshold' '.plugins.[4].config.threshold' '0.85'
+assert_field_value 'plugins: semantic_cache ttl' '.plugins.[4].config.ttl' '"10m"'
+assert_field_value 'plugins: semantic_cache conversation_history_threshold' '.plugins.[4].config.conversation_history_threshold' '5'
+assert_field_value 'plugins: semantic_cache cache_by_model' '.plugins.[4].config.cache_by_model' 'true'
+assert_field_value 'plugins: semantic_cache cache_by_provider' '.plugins.[4].config.cache_by_provider' 'false'
+assert_field_value 'plugins: semantic_cache exclude_system_prompt' '.plugins.[4].config.exclude_system_prompt' 'true'
+assert_field_value 'plugins: semantic_cache cleanup_on_shutdown' '.plugins.[4].config.cleanup_on_shutdown' 'true'
+assert_field_value 'plugins: semantic_cache vector_store_namespace' '.plugins.[4].config.vector_store_namespace' '"bifrost-cache"'
 
 # OTEL plugin
 assert_field_value 'plugins: otel name' '.plugins.[5].name' '"otel"'

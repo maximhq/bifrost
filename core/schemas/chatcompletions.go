@@ -29,16 +29,16 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                string                     `json:"id"`
-	Choices           []BifrostResponseChoice    `json:"choices"`
-	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model             string                     `json:"model"`
-	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier       *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint string                     `json:"system_fingerprint"`
-	Usage             *BifrostLLMUsage           `json:"usage"`
-	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams       map[string]interface{}     `json:"-"`
+	ID                      string                     `json:"id"`
+	Choices                 []BifrostResponseChoice    `json:"choices"`
+	Created                 int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model                   string                     `json:"model"`
+	Object                  string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier             *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint       string                     `json:"system_fingerprint"`
+	Usage                   *BifrostLLMUsage           `json:"usage"`
+	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams             map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
@@ -60,13 +60,14 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 			SystemFingerprint: cr.SystemFingerprint,
 			Usage:             cr.Usage,
 			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:           cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
 	}
@@ -92,13 +93,14 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 			},
 			Usage: cr.Usage,
 			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:           cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
 	}
@@ -127,13 +129,14 @@ func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletion
 			},
 			Usage: cr.Usage,
 			ExtraFields: BifrostResponseExtraFields{
-				RequestType:    TextCompletionRequest,
-				ChunkIndex:     cr.ExtraFields.ChunkIndex,
-				Provider:       cr.ExtraFields.Provider,
-				ModelRequested: cr.ExtraFields.ModelRequested,
-				Latency:        cr.ExtraFields.Latency,
-				RawResponse:    cr.ExtraFields.RawResponse,
-				CacheDebug:     cr.ExtraFields.CacheDebug,
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:           cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
 			},
 		}
 	}
@@ -365,7 +368,9 @@ type ToolFunctionParameters struct {
 // Properties is always emitted as an object, never null.
 func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 	if t.Properties == nil {
-		t.Properties = &OrderedMap{}
+		// Initialize with an empty map (not nil values) so it marshals to {} instead of null
+		// Required by OpenAI and JSON Schema spec
+		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
 	type Alias ToolFunctionParameters
 	data, err := Marshal(Alias(t))
@@ -499,6 +504,83 @@ type ChatToolChoiceStruct struct {
 	Function     *ChatToolChoiceFunction     `json:"function,omitempty"`      // Function to call if type is ToolChoiceTypeFunction
 	Custom       *ChatToolChoiceCustom       `json:"custom,omitempty"`        // Custom tool to call if type is ToolChoiceTypeCustom
 	AllowedTools *ChatToolChoiceAllowedTools `json:"allowed_tools,omitempty"` // Allowed tools to call if type is ToolChoiceTypeAllowedTools
+}
+
+// MarshalJSON serializes ChatToolChoiceStruct to JSON, emitting only the "type"
+// field and the active variant. This prevents zero-value fields from unused
+// variants (e.g., "custom", "allowed_tools") from appearing in the output,
+// and ensures consistent field ordering with "type" always first.
+func (s ChatToolChoiceStruct) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+
+	// Always emit "type" first
+	typeBytes, err := Marshal(string(s.Type))
+	if err != nil {
+		return nil, err
+	}
+	buf.WriteString(`"type":`)
+	buf.Write(typeBytes)
+
+	switch s.Type {
+	case ChatToolChoiceTypeFunction:
+		if s.Function != nil {
+			funcBytes, err := Marshal(s.Function)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"function":`)
+			buf.Write(funcBytes)
+		}
+	case ChatToolChoiceTypeCustom:
+		if s.Custom != nil {
+			customBytes, err := Marshal(s.Custom)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"custom":`)
+			buf.Write(customBytes)
+		}
+	case ChatToolChoiceTypeAllowedTools:
+		if s.AllowedTools != nil {
+			allowedBytes, err := Marshal(s.AllowedTools)
+			if err != nil {
+				return nil, err
+			}
+			buf.WriteString(`,"allowed_tools":`)
+			buf.Write(allowedBytes)
+		}
+	}
+
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+// UnmarshalJSON deserializes JSON into ChatToolChoiceStruct and cleans up
+// zero-value pointers that sonic may allocate for absent fields.
+func (s *ChatToolChoiceStruct) UnmarshalJSON(data []byte) error {
+	type Alias ChatToolChoiceStruct
+	var temp Alias
+	if err := Unmarshal(data, &temp); err != nil {
+		return err
+	}
+	*s = ChatToolChoiceStruct(temp)
+
+	// Clean up zero-value pointers that sonic may allocate even when the
+	// corresponding key was absent from the JSON input.
+	switch s.Type {
+	case ChatToolChoiceTypeFunction:
+		s.Custom = nil
+		s.AllowedTools = nil
+	case ChatToolChoiceTypeCustom:
+		s.Function = nil
+		s.AllowedTools = nil
+	case ChatToolChoiceTypeAllowedTools:
+		s.Function = nil
+		s.Custom = nil
+	}
+
+	return nil
 }
 
 type ChatToolChoice struct {
@@ -1008,9 +1090,54 @@ type ChatPromptTokensDetails struct {
 	AudioTokens int `json:"audio_tokens,omitempty"`
 	ImageTokens int `json:"image_tokens,omitempty"`
 
-	// For Providers which follow OpenAI's spec, CachedTokens means the number of input tokens read from the cache+input tokens used to create the cache entry. (because they do not differentiate between cache creation and cache read tokens)
-	// For Providers which do not follow OpenAI's spec, CachedTokens means only the number of input tokens read from the cache.
-	CachedTokens int `json:"cached_tokens,omitempty"`
+	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
+	CachedReadTokens  int `json:"cached_read_tokens,omitempty"`
+	CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+}
+
+// UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
+func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		TextTokens        int  `json:"text_tokens"`
+		AudioTokens       int  `json:"audio_tokens"`
+		ImageTokens       int  `json:"image_tokens"`
+		CachedReadTokens  int  `json:"cached_read_tokens"`
+		CachedWriteTokens int  `json:"cached_write_tokens"`
+		CachedTokens      *int `json:"cached_tokens"`
+	}
+	if err := Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	d.TextTokens = raw.TextTokens
+	d.AudioTokens = raw.AudioTokens
+	d.ImageTokens = raw.ImageTokens
+	d.CachedReadTokens = raw.CachedReadTokens
+	d.CachedWriteTokens = raw.CachedWriteTokens
+	// OpenAI spec providers send just cached_tokens, not separate read and write tokens and we handle them as read tokens in pricing calculations.
+	if raw.CachedTokens != nil && raw.CachedReadTokens == 0 && raw.CachedWriteTokens == 0 {
+		d.CachedReadTokens = *raw.CachedTokens
+	}
+	return nil
+}
+
+// MarshalJSON emits cached_tokens (read+write) alongside the individual fields for OpenAI spec compatibility.
+func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
+	type raw struct {
+		TextTokens        int `json:"text_tokens,omitempty"`
+		AudioTokens       int `json:"audio_tokens,omitempty"`
+		ImageTokens       int `json:"image_tokens,omitempty"`
+		CachedReadTokens  int `json:"cached_read_tokens,omitempty"`
+		CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
+		CachedTokens      int `json:"cached_tokens,omitempty"`
+	}
+	return Marshal(raw{
+		TextTokens:        d.TextTokens,
+		AudioTokens:       d.AudioTokens,
+		ImageTokens:       d.ImageTokens,
+		CachedReadTokens:  d.CachedReadTokens,
+		CachedWriteTokens: d.CachedWriteTokens,
+		CachedTokens:      d.CachedReadTokens + d.CachedWriteTokens,
+	})
 }
 
 type ChatCompletionTokensDetails struct {
@@ -1022,9 +1149,6 @@ type ChatCompletionTokensDetails struct {
 	ReasoningTokens          int  `json:"reasoning_tokens,omitempty"`
 	ImageTokens              *int `json:"image_tokens,omitempty"`
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
-
-	// This means the number of input tokens used to create the cache entry. (cache creation tokens)
-	CachedTokens int `json:"cached_tokens,omitempty"` // Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 }
 
 type BifrostCost struct {

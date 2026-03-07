@@ -26,7 +26,8 @@ type BifrostTranscriptionResponse struct {
 }
 
 type TranscriptionInput struct {
-	File []byte `json:"file"`
+	File     []byte `json:"file"`
+	Filename string `json:"filename,omitempty"` // Original filename, used to preserve file format extension
 }
 
 type TranscriptionParameters struct {
@@ -131,3 +132,4 @@ type BifrostTranscriptionStreamResponse struct {
 	Usage       *TranscriptionUsage             `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields      `json:"extra_fields"`
 }
+

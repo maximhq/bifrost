@@ -1,6 +1,6 @@
 ---
 title: "Guardrails"
-description: "Enterprise-grade content safety and security validation with support for AWS Bedrock Guardrails, Azure Content Safety, and Patronus AI for real-time input and output protection."
+description: "Enterprise-grade content safety and security validation with support for AWS Bedrock Guardrails, Azure Content Safety, GraySwan Cygnal, and Patronus AI for real-time input and output protection."
 icon: "road-barrier"
 ---
 
@@ -19,7 +19,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 | Concept | Description |
 |---------|-------------|
 | **Rules** | Custom policies defined using CEL (Common Expression Language) that determine what content to validate and when. Rules can apply to inputs, outputs, or both, and can be linked to one or more profiles for evaluation. |
-| **Profiles** | Configurations for external guardrail providers (AWS Bedrock, Azure Content Safety, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
+| **Profiles** | Configurations for external guardrail providers (AWS Bedrock, Azure Content Safety, GraySwan, Patronus AI). Profiles are reusable and can be shared across multiple rules. |
 
 **How They Work Together:**
 - **Profiles** define *how* content is evaluated using external provider capabilities
@@ -31,7 +31,7 @@ Bifrost Guardrails are built around two core concepts that work together to prov
 
 | Feature | Description |
 |---------|-------------|
-| **Multi-Provider Support** | AWS Bedrock, Azure Content Safety, and Patronus AI integration |
+| **Multi-Provider Support** | AWS Bedrock, Azure Content Safety, GraySwan, and Patronus AI integration |
 | **Dual-Stage Validation** | Guard both inputs (prompts) and outputs (responses) |
 | **Real-Time Processing** | Synchronous and asynchronous validation modes |
 | **CEL-Based Rules** | Define custom policies using Common Expression Language |
@@ -72,6 +72,7 @@ flowchart TB
         Profile1[AWS Bedrock Profile]
         Profile2[Azure Content Safety Profile]
         Profile3[Patronus AI Profile]
+        Profile4[GraySwan Profile]
     end
 
     InputValidation --> Rule1
@@ -101,6 +102,8 @@ Bifrost integrates with leading guardrail providers to offer comprehensive prote
 
 **Amazon Bedrock Guardrails** provides enterprise-grade content filtering and safety features with deep AWS integration.
 
+![AWS Bedrock Guardrails configuration form](../media/guardrails/bedrock-guardrails-provider-details.png)
+
 **Capabilities:**
 - **Content Filters**: Hate speech, insults, sexual content, violence, misconduct
 - **Denied Topics**: Block specific topics or categories
@@ -108,6 +111,86 @@ Bifrost integrates with leading guardrail providers to offer comprehensive prote
 - **PII Protection**: Detect and redact 50+ PII entity types
 - **Contextual Grounding**: Verify responses against source documents
 - **Prompt Attack Detection**: Identify injection and jailbreak attempts
+- **Image Content Support**: Analyze images in addition to text (PNG, JPEG)
+
+**Configuration Fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `access_key` | string | No* | - | AWS Access Key ID |
+| `secret_key` | string | No* | - | AWS Secret Access Key |
+| `bedrock_api_key` | string | No* | - | Alternative Bedrock API key (Bearer token) |
+| `guardrail_arn` | string | Yes | - | ARN of the Bedrock guardrail |
+| `guardrail_version` | string | Yes | - | Version of the guardrail (e.g., "1", "DRAFT") |
+| `region` | string | Yes | - | AWS region |
+
+<Note>
+*Either `access_key` + `secret_key` OR `bedrock_api_key` must be provided for authentication.
+</Note>
+
+**Authentication Methods:**
+
+<Tabs group="bedrock-auth">
+<Tab title="Access Key + Secret Key">
+Uses AWS SDK with static credentials:
+```json
+{
+  "access_key": "AKIAXXXXXXXXXXXXXXXXXX",
+  "secret_key": "your-secret-access-key",
+  "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
+  "guardrail_version": "1",
+  "region": "us-east-1"
+}
+```
+</Tab>
+<Tab title="Bedrock API Key">
+Uses HTTP REST API with Bearer token:
+```json
+{
+  "bedrock_api_key": "your-bedrock-api-key",
+  "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
+  "guardrail_version": "1",
+  "region": "us-east-1"
+}
+```
+</Tab>
+</Tabs>
+
+**Supported AWS Regions:**
+
+| Region Code | Region Name |
+|-------------|-------------|
+| `us-east-1` | US East (N. Virginia) |
+| `us-east-2` | US East (Ohio) |
+| `us-west-1` | US West (N. California) |
+| `us-west-2` | US West (Oregon) |
+| `ap-south-1` | Asia Pacific (Mumbai) |
+| `ap-northeast-1` | Asia Pacific (Tokyo) |
+| `ap-northeast-2` | Asia Pacific (Seoul) |
+| `ap-southeast-1` | Asia Pacific (Singapore) |
+| `ap-southeast-2` | Asia Pacific (Sydney) |
+| `eu-central-1` | Europe (Frankfurt) |
+| `eu-west-1` | Europe (Ireland) |
+| `eu-west-2` | Europe (London) |
+| `eu-west-3` | Europe (Paris) |
+
+**Supported Content Types:**
+- Text content
+- Images (PNG, JPEG formats)
+
+**Usage Metrics Returned:**
+
+Bedrock guardrails return detailed usage metrics for cost tracking and monitoring:
+
+| Metric | Description |
+|--------|-------------|
+| `content_policy_units` | Units consumed by content policy evaluation |
+| `contextual_grounding_policy_units` | Units for grounding checks |
+| `sensitive_information_policy_units` | Units for PII detection |
+| `topic_policy_units` | Units for topic filtering |
+| `word_policy_units` | Units for word filtering |
+| `automated_reasoning_policy_units` | Units for reasoning checks |
+| `content_policy_image_units` | Units for image content analysis |
 
 **Supported PII Types:**
 - Personal identifiers (SSN, passport, driver's license)
@@ -120,21 +203,48 @@ Bifrost integrates with leading guardrail providers to offer comprehensive prote
 
 **Azure AI Content Safety** provides multi-modal content moderation powered by Microsoft's advanced AI models.
 
+![Azure Content Safety configuration form](../media/guardrails/azure-config-on-bifrost.png)
+
 **Capabilities:**
 - **Severity-Based Filtering**: 4-level severity classification (Safe, Low, Medium, High)
 - **Multi-Category Detection**: Hate, sexual, violence, self-harm content
 - **Prompt Shield**: Advanced jailbreak and injection detection
-- **Groundedness Detection**: Verify factual accuracy against sources
-- **Protected Material**: Detect copyrighted content
-- **Custom Categories**: Define organization-specific content policies
+- **Indirect Attack Detection**: Identify hidden malicious instructions
+- **Protected Material**: Detect copyrighted content (output only)
+- **Custom Blocklists**: Define organization-specific blocked terms
+
+**Configuration Fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `endpoint` | string | Yes | - | Azure Content Safety endpoint URL |
+| `api_key` | string | Yes | - | Azure subscription key |
+| `analyze_enabled` | boolean | No | true | Enable content analysis for Hate, Sexual, Violence, SelfHarm |
+| `analyze_severity_threshold` | enum | No | "medium" | Severity level to trigger: `low`, `medium`, or `high` |
+| `jailbreak_shield_enabled` | boolean | No | false | Enable jailbreak detection (input only) |
+| `indirect_attack_shield_enabled` | boolean | No | false | Enable indirect prompt attack detection (input only) |
+| `copyright_enabled` | boolean | No | false | Enable copyrighted content detection (output only) |
+| `text_blocklist_enabled` | boolean | No | false | Enable custom blocklist filtering |
+| `blocklist_names` | array | No | - | List of Azure blocklist names to apply |
+
+**Severity Threshold Levels:**
+
+| Threshold | Numeric Value | Behavior |
+|-----------|---------------|----------|
+| `low` | 2 | Most strict - blocks severity 2 and above |
+| `medium` | 4 | Balanced - blocks severity 4 and above |
+| `high` | 6 | Least strict - blocks only severity 6 |
 
 **Detection Categories:**
 - Hate and fairness
 - Sexual content
 - Violence
 - Self-harm
-- Profanity
-- Jailbreak attempts
+
+<Note>
+**Input-only features:** Jailbreak Shield and Indirect Attack Shield only apply to input validation.
+**Output-only features:** Copyright detection only applies to output validation.
+</Note>
 
 ### Patronus AI
 
@@ -154,20 +264,54 @@ Bifrost integrates with leading guardrail providers to offer comprehensive prote
 - Custom policy templates
 - Integration with existing safety workflows
 
-### Additional Guardrail Providers
+### GraySwan Cygnal
 
-Beyond the natively integrated providers above, the following guardrail solutions are available in the ecosystem:
+**GraySwan Cygnal Monitor** provides AI safety monitoring with natural language rule definitions and advanced threat detection capabilities.
 
-- **Guardrails AI** - Open-source framework with validators for hallucination prevention, content moderation, and PII detection
-- **Lakera (Lakera Guard)** - Enterprise security platform for prompt injection, jailbreak, and data leakage protection
-- **Aporia** - Multi-modal guardrails (audio, vision, text) with 20+ pre-configured policies
-- **Lasso Security** - Real-time GenAI security with contextual data protection and custom policy wizard
-- **PromptArmor** - LLM security and compliance platform
-- **WhyLabs** - LLM security and observability platform with real-time guardrails and monitoring
-- **CalypsoAI** - Model-agnostic AI security platform with customizable scanners
-- **NeuralTrust** - LLM firewall specializing in prompt injection prevention
-- **Vigil** - Open-source prompt-level security tool
-- **Confident AI** - Red-teaming platform with LLM guardrail capabilities (DeepTeam)
+![GraySwan configuration form](../media/guardrails/gray-swan-config-on-bifrost.png)
+
+**Capabilities:**
+- **Violation Scoring**: Continuous 0-1 scale violation detection with configurable thresholds
+- **Custom Natural Language Rules**: Define safety rules in plain English without code
+- **Policy Management**: Use pre-built policies from GraySwan platform or create custom ones
+- **Indirect Prompt Injection (IPI) Detection**: Identify hidden instructions in user inputs
+- **Mutation Detection**: Detect attempts to manipulate or alter content
+- **Reasoning Modes**: Choose from fast ("off"), balanced ("hybrid"), or thorough ("thinking") analysis
+
+**Configuration Fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `api_key` | string | Yes | - | GraySwan API key |
+| `violation_threshold` | number | No | 0.5 | Score threshold (0-1) for triggering intervention. Lower values are more strict. |
+| `reasoning_mode` | enum | No | "off" | Analysis depth: `off` (fastest), `hybrid` (balanced), or `thinking` (most thorough) |
+| `policy_id` | string | No | - | Single custom policy ID from GraySwan platform |
+| `policy_ids` | array | No | - | Multiple policy IDs for aggregated rule evaluation |
+| `rules` | object | No | - | Custom natural language rules as key-value pairs |
+
+**Custom Rules Example:**
+
+![GraySwan custom rules](../media/guardrails/gray-swan-custom-rule.png)
+
+Rules are defined as key-value pairs where the key is the rule name and the value is a natural language description:
+
+```json
+{
+  "rules": {
+    "no_profanity": "Do not allow profanity or vulgar language",
+    "no_pii": "Do not allow personally identifiable information",
+    "professional_tone": "Ensure all responses maintain a professional tone"
+  }
+}
+```
+
+**Detection Features:**
+- Real-time violation scoring
+- Multi-rule evaluation
+- IPI attack detection
+- Content mutation monitoring
+- Detailed violation descriptions with rule attribution
+
 
 ---
 
@@ -409,8 +553,9 @@ Rules can be linked to multiple profiles for comprehensive validation:
 
 **Best Practices:**
 - Link PII detection rules to profiles with PII capabilities (Bedrock, Patronus)
-- Link content filtering rules to profiles with content safety features (Azure, Bedrock)
-- Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII)
+- Link content filtering rules to profiles with content safety features (Azure, Bedrock, GraySwan)
+- Use GraySwan for custom natural language rules when you need flexible, readable policies
+- Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + GraySwan for content)
 - Set appropriate timeouts when using multiple profiles
 
 ---
@@ -428,7 +573,7 @@ Profiles are reusable configurations for external guardrail providers. Each prof
 | Property | Type | Required | Description |
 |----------|------|----------|-------------|
 | `id` | integer | Yes | Unique identifier for the profile |
-| `provider_name` | string | Yes | Provider type: `bedrock`, `azure`, `patronus_ai` |
+| `provider_name` | string | Yes | Provider type: `bedrock`, `azure`, `grayswan`, `patronus_ai` |
 | `policy_name` | string | Yes | Descriptive name for the policy |
 | `enabled` | boolean | Yes | Whether the profile is active |
 | `config` | object | No | Provider-specific configuration |
@@ -447,7 +592,7 @@ Profiles are reusable configurations for external guardrail providers. Each prof
 </Frame>
 
 2. **Select Provider Type**
-   - Choose from: AWS Bedrock, Azure Content Safety, or Patronus AI
+   - Choose from: AWS Bedrock, Azure Content Safety, GraySwan, or Patronus AI
 
 3. **Configure Provider Settings**
    - Enter credentials and endpoint information
@@ -471,13 +616,11 @@ curl -X POST http://localhost:8080/api/enterprise/guardrails/providers \
     "policy_name": "PII Detection Profile",
     "enabled": true,
     "config": {
-      "aws_region": "us-east-1",
-      "guardrail_id": "gdrail-abc123",
+      "access_key": "${AWS_ACCESS_KEY_ID}",
+      "secret_key": "${AWS_SECRET_ACCESS_KEY}",
+      "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
       "guardrail_version": "1",
-      "credentials": {
-        "access_key_id": "AKIA...",
-        "secret_access_key": "secret..."
-      }
+      "region": "us-east-1"
     }
   }'
 ```
@@ -534,13 +677,11 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "policy_name": "PII Detection Profile",
           "enabled": true,
           "config": {
-            "aws_region": "us-east-1",
-            "guardrail_id": "gdrail-abc123",
+            "access_key": "${AWS_ACCESS_KEY_ID}",
+            "secret_key": "${AWS_SECRET_ACCESS_KEY}",
+            "guardrail_arn": "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123",
             "guardrail_version": "1",
-            "credentials": {
-              "access_key_id": "${AWS_ACCESS_KEY_ID}",
-              "secret_access_key": "${AWS_SECRET_ACCESS_KEY}"
-            }
+            "region": "us-east-1"
           }
         },
         {
@@ -551,11 +692,29 @@ curl -X DELETE http://localhost:8080/api/enterprise/guardrails/providers/1
           "config": {
             "endpoint": "https://your-resource.cognitiveservices.azure.com/",
             "api_key": "${AZURE_CONTENT_SAFETY_API_KEY}",
-            "api_version": "2024-02-15-preview"
+            "analyze_enabled": true,
+            "analyze_severity_threshold": "medium",
+            "jailbreak_shield_enabled": true,
+            "indirect_attack_shield_enabled": true
           }
         },
         {
           "id": 3,
+          "provider_name": "grayswan",
+          "policy_name": "Custom Safety Rules",
+          "enabled": true,
+          "config": {
+            "api_key": "${GRAYSWAN_API_KEY}",
+            "violation_threshold": 0.5,
+            "reasoning_mode": "hybrid",
+            "rules": {
+              "no_pii": "Do not allow personally identifiable information",
+              "professional_tone": "Ensure responses maintain a professional tone"
+            }
+          }
+        },
+        {
+          "id": 4,
           "provider_name": "patronus_ai",
           "policy_name": "Hallucination Detection",
           "enabled": true,
@@ -582,17 +741,37 @@ enterprise:
         policy_name: "PII Detection Profile"
         enabled: true
         config:
-          aws_region: "us-east-1"
-          guardrail_id: "gdrail-abc123"
+          guardrail_arn: "arn:aws:bedrock:us-east-1:123456789:guardrail/abc123"
           guardrail_version: "1"
+          region: "us-east-1"
+          # AWS Authentication (choose one method):
+          # Option 1: Explicit credentials
+          access_key: "${AWS_ACCESS_KEY_ID}"
+          secret_key: "${AWS_SECRET_ACCESS_KEY}"
+          # Option 2: IAM Role - omit access_key and secret_key
+          # (Bifrost will use IAM credentials from the environment)
       - id: 2
         provider_name: "azure"
         policy_name: "Content Safety Profile"
         enabled: true
         config:
           endpoint: "https://your-resource.cognitiveservices.azure.com/"
-          api_version: "2024-02-15-preview"
+          api_key: "${AZURE_CONTENT_SAFETY_API_KEY}"
+          analyze_enabled: true
+          analyze_severity_threshold: "medium"
+          jailbreak_shield_enabled: true
       - id: 3
+        provider_name: "grayswan"
+        policy_name: "Custom Safety Rules"
+        enabled: true
+        config:
+          api_key: "${GRAYSWAN_API_KEY}"
+          violation_threshold: 0.5
+          reasoning_mode: "hybrid"
+          rules:
+            no_pii: "Do not allow personally identifiable information"
+            professional_tone: "Ensure responses maintain a professional tone"
+      - id: 4
         provider_name: "patronus_ai"
         policy_name: "Hallucination Detection"
         enabled: true
@@ -607,14 +786,18 @@ enterprise:
 
 Each provider offers different capabilities. Choose profiles based on your validation needs:
 
-| Capability | AWS Bedrock | Azure Content Safety | Patronus AI |
-|------------|-------------|---------------------|-------------|
-| PII Detection | Yes | No | Yes |
-| Content Filtering | Yes | Yes | Yes |
-| Prompt Injection | Yes | Yes | Yes |
-| Hallucination Detection | No | No | Yes |
-| Toxicity Screening | Yes | Yes | Yes |
-| Custom Policies | Yes | Yes | Yes |
+| Capability | AWS Bedrock | Azure Content Safety | GraySwan | Patronus AI |
+|------------|-------------|---------------------|----------|-------------|
+| PII Detection | Yes | No | No | Yes |
+| Content Filtering | Yes | Yes | Yes | Yes |
+| Prompt Injection | Yes | Yes | Yes | Yes |
+| Hallucination Detection | No | No | No | Yes |
+| Toxicity Screening | Yes | Yes | Yes | Yes |
+| Custom Policies | Yes | Yes | Yes | Yes |
+| Custom Natural Language Rules | No | No | Yes | No |
+| Image Support | Yes | No | No | No |
+| IPI Detection | No | Yes | Yes | No |
+| Mutation Detection | No | No | Yes | No |
 
 ### Best Practices
 

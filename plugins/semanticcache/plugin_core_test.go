@@ -44,7 +44,7 @@ func TestSemanticCacheBasicFunctionality(t *testing.T) {
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making second identical request (should be served from cache)...")
 
@@ -139,7 +139,7 @@ func TestSemanticSearch(t *testing.T) {
 	t.Logf("Response: %s", *response1.Choices[0].Message.Content.ContentStr)
 
 	// Wait for cache to be written (async PostLLMHook needs time to complete)
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request - very similar text to test semantic matching
 	secondRequest := CreateBasicChatRequest(
@@ -232,7 +232,7 @@ func TestDirectVsSemanticSearch(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	t.Log("Making exact same request (should hit direct cache)...")
 	response2, err2 := setup.Client.ChatCompletionRequest(ctx, exactRequest)
@@ -310,7 +310,7 @@ func TestNoCacheScenarios(t *testing.T) {
 		return // Test will be skipped by retry function
 	}
 
-	WaitForCache()
+	WaitForCache(setup.Plugin)
 
 	// Second request with different temperature
 	request2 := CreateBasicChatRequest(basePrompt, 0.9, 50) // Different temperature
@@ -401,7 +401,7 @@ func TestCacheConfiguration(t *testing.T) {
 				return // Test will be skipped by retry function
 			}
 
-			WaitForCache()
+			WaitForCache(setup.Plugin)
 
 			_, err2 := setup.Client.ChatCompletionRequest(ctx, testRequest)
 			if err2 != nil {

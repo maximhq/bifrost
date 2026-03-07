@@ -1978,23 +1978,23 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 41,
 			},
-			expected: &schemas.BifrostLLMUsage{
-				PromptTokens:     6,
-				CompletionTokens: 42,
-				TotalTokens:      48,
-				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-					TextTokens:  6,
-					AudioTokens: 0,
-					ImageTokens: 0,
-				},
-				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
-					TextTokens:      1,
-					ReasoningTokens: 41,
-				},
+		expected: &schemas.BifrostLLMUsage{
+			PromptTokens:     6,
+			CompletionTokens: 83,
+			TotalTokens:      48,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+				TextTokens:  6,
+				AudioTokens: 0,
+				ImageTokens: 0,
+			},
+			CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
+				TextTokens:      1,
+				ReasoningTokens: 41,
 			},
 		},
-		{
-			name: "MultimodalInputWithCache",
+	},
+	{
+		name: "MultimodalInputWithCache",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        150,
 				CandidatesTokenCount:    50,
@@ -2013,9 +2013,9 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				CompletionTokens: 50,
 				TotalTokens:      200,
 				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
-					TextTokens:   50,
-					ImageTokens:  100,
-					CachedTokens: 100,
+					TextTokens:       50,
+					ImageTokens:      100,
+					CachedReadTokens: 100,
 				},
 				CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{
 					TextTokens: 50,
@@ -2111,7 +2111,7 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				assert.Equal(t, tt.expected.PromptTokensDetails.TextTokens, result.PromptTokensDetails.TextTokens)
 				assert.Equal(t, tt.expected.PromptTokensDetails.AudioTokens, result.PromptTokensDetails.AudioTokens)
 				assert.Equal(t, tt.expected.PromptTokensDetails.ImageTokens, result.PromptTokensDetails.ImageTokens)
-				assert.Equal(t, tt.expected.PromptTokensDetails.CachedTokens, result.PromptTokensDetails.CachedTokens)
+				assert.Equal(t, tt.expected.PromptTokensDetails.CachedReadTokens, result.PromptTokensDetails.CachedReadTokens)
 			} else {
 				assert.Nil(t, result.PromptTokensDetails)
 			}
@@ -2160,24 +2160,24 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				},
 				ThoughtsTokenCount: 5,
 			},
-			expected: &schemas.ResponsesResponseUsage{
-				TotalTokens:  150,
-				InputTokens:  100,
-				OutputTokens: 50,
-				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-					TextTokens:  60,
-					AudioTokens: 20,
-					ImageTokens: 20,
-				},
-				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
-					TextTokens:      40,
-					AudioTokens:     10,
-					ReasoningTokens: 5,
-				},
+		expected: &schemas.ResponsesResponseUsage{
+			TotalTokens:  150,
+			InputTokens:  100,
+			OutputTokens: 55,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{
+				TextTokens:  60,
+				AudioTokens: 20,
+				ImageTokens: 20,
+			},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
+				TextTokens:      40,
+				AudioTokens:     10,
+				ReasoningTokens: 5,
 			},
 		},
-		{
-			name: "WithCachedTokens",
+	},
+	{
+		name: "WithCachedTokens",
 			metadata: &gemini.GenerateContentResponseUsageMetadata{
 				PromptTokenCount:        200,
 				CandidatesTokenCount:    100,
@@ -2195,8 +2195,8 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				InputTokens:  200,
 				OutputTokens: 100,
 				InputTokensDetails: &schemas.ResponsesResponseInputTokens{
-					TextTokens:   200,
-					CachedTokens: 150,
+					TextTokens:       200,
+					CachedReadTokens: 150,
 				},
 				OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{
 					TextTokens: 100,
@@ -2269,7 +2269,7 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 				assert.Equal(t, tt.expected.InputTokensDetails.TextTokens, result.InputTokensDetails.TextTokens)
 				assert.Equal(t, tt.expected.InputTokensDetails.AudioTokens, result.InputTokensDetails.AudioTokens)
 				assert.Equal(t, tt.expected.InputTokensDetails.ImageTokens, result.InputTokensDetails.ImageTokens)
-				assert.Equal(t, tt.expected.InputTokensDetails.CachedTokens, result.InputTokensDetails.CachedTokens)
+				assert.Equal(t, tt.expected.InputTokensDetails.CachedReadTokens, result.InputTokensDetails.CachedReadTokens)
 			}
 
 			// Check output token details

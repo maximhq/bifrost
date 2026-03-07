@@ -1,1 +1,0 @@
-- fix: added missing routing rules and provider selection logic for bedrock integration cases in PreHTTPTransportHook

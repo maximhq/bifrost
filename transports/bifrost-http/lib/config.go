@@ -1766,27 +1766,86 @@ func buildMCPPricingDataFromFile(ctx context.Context, configData *ConfigData) mc
 	return mcpPricingData
 }
 
+// ResolveFrameworkPricingConfig resolves framework pricing configuration with precedence:
+// database > file > defaults. It also returns whether DB backfill is needed.
+func ResolveFrameworkPricingConfig(
+	dbConfig *configstoreTables.TableFrameworkConfig,
+	fileConfig *framework.FrameworkConfig,
+) (*configstoreTables.TableFrameworkConfig, *modelcatalog.Config, bool) {
+	defaultPricingURL := modelcatalog.DefaultPricingURL
+	defaultSyncSeconds := int64(modelcatalog.DefaultPricingSyncInterval.Seconds())
+
+	filePricingURL := (*string)(nil)
+	fileSyncSeconds := (*int64)(nil)
+	if fileConfig != nil && fileConfig.Pricing != nil {
+		if fileConfig.Pricing.PricingURL != nil {
+			filePricingURL = fileConfig.Pricing.PricingURL
+		}
+		if fileConfig.Pricing.PricingSyncInterval != nil && *fileConfig.Pricing.PricingSyncInterval > 0 {
+			secs := int64((*fileConfig.Pricing.PricingSyncInterval).Seconds())
+			fileSyncSeconds = &secs
+		}
+	}
+
+	resolvedPricingURL := &defaultPricingURL
+	resolvedSyncSeconds := &defaultSyncSeconds
+
+	if filePricingURL != nil {
+		resolvedPricingURL = filePricingURL
+	}
+	if fileSyncSeconds != nil {
+		resolvedSyncSeconds = fileSyncSeconds
+	}
+
+	needsDBUpdate := false
+	configID := uint(0)
+	if dbConfig != nil {
+		configID = dbConfig.ID
+		if dbConfig.PricingURL != nil {
+			resolvedPricingURL = dbConfig.PricingURL
+		} else {
+			needsDBUpdate = true
+		}
+		if dbConfig.PricingSyncInterval != nil && *dbConfig.PricingSyncInterval > 0 {
+			resolvedSyncSeconds = dbConfig.PricingSyncInterval
+		} else {
+			needsDBUpdate = true
+		}
+	}
+
+	syncDuration := time.Duration(*resolvedSyncSeconds) * time.Second
+
+	return &configstoreTables.TableFrameworkConfig{
+			ID:                  configID,
+			PricingURL:          resolvedPricingURL,
+			PricingSyncInterval: resolvedSyncSeconds,
+		}, &modelcatalog.Config{
+			PricingURL:          resolvedPricingURL,
+			PricingSyncInterval: &syncDuration,
+		}, needsDBUpdate
+}
+
 // initFrameworkConfigFromFile initializes framework config and pricing manager from file
 func initFrameworkConfigFromFile(ctx context.Context, config *Config, configData *ConfigData) {
-	pricingConfig := &modelcatalog.Config{}
 	mcpPricingConfig := &mcpcatalog.Config{}
+	var frameworkConfigFromDB *configstoreTables.TableFrameworkConfig
 	if config.ConfigStore != nil {
 		frameworkConfig, err := config.ConfigStore.GetFrameworkConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get framework config from store: %v", err)
 		}
-		if frameworkConfig != nil && frameworkConfig.PricingURL != nil {
-			pricingConfig.PricingURL = frameworkConfig.PricingURL
-		}
-		if frameworkConfig != nil && frameworkConfig.PricingSyncInterval != nil {
-			syncDuration := time.Duration(*frameworkConfig.PricingSyncInterval) * time.Second
-			pricingConfig.PricingSyncInterval = &syncDuration
-		}
+		frameworkConfigFromDB = frameworkConfig
 		mcpPricingConfig.PricingData = buildMCPPricingDataFromStore(ctx, config.ConfigStore)
-	} else if configData.FrameworkConfig != nil && configData.FrameworkConfig.Pricing != nil {
-		pricingConfig.PricingURL = configData.FrameworkConfig.Pricing.PricingURL
-		syncDuration := time.Duration(*configData.FrameworkConfig.Pricing.PricingSyncInterval) * time.Second
-		pricingConfig.PricingSyncInterval = &syncDuration
+	}
+	var fileFrameworkConfig *framework.FrameworkConfig
+	if configData != nil {
+		fileFrameworkConfig = configData.FrameworkConfig
+	}
+	normalizedFrameworkConfig, pricingConfig, needsFrameworkBackfill := ResolveFrameworkPricingConfig(frameworkConfigFromDB, fileFrameworkConfig)
+	if config.ConfigStore != nil && (frameworkConfigFromDB == nil || needsFrameworkBackfill) {
+		if err := config.ConfigStore.UpdateFrameworkConfig(ctx, normalizedFrameworkConfig); err != nil {
+			logger.Warn("failed to normalize framework config in store: %v", err)
+		}
 	}
 
 	// Initialize OAuth provider
@@ -2875,9 +2934,10 @@ func (c *Config) AddProvider(ctx context.Context, provider schemas.ModelProvider
 			// but not in the in-memory map, sync it to memory and return ErrAlreadyExists
 			// so the caller can proceed with an update instead of failing.
 			if errors.Is(err, configstore.ErrAlreadyExists) {
+				// Provider already exists in DB but not in memory - sync and return
 				c.Providers[provider] = config
 				logger.Info("provider %s already exists in DB, synced to memory", provider)
-				return fmt.Errorf("provider %s: %w", provider, ErrAlreadyExists)
+				return fmt.Errorf("provider/provider key name %s: %w", provider, ErrAlreadyExists)
 			}
 			return fmt.Errorf("failed to update provider config in store: %w", err)
 		}
@@ -2977,7 +3037,7 @@ func (c *Config) UpdateProviderConfig(ctx context.Context, provider schemas.Mode
 // RemoveProvider removes a provider configuration from memory.
 func (c *Config) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
 	c.Mu.Lock()
-	defer c.Mu.Unlock()	
+	defer c.Mu.Unlock()
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	skipDBUpdate := false
 	if ctx.Value(schemas.BifrostContextKeySkipDBUpdate) != nil {
@@ -3471,8 +3531,9 @@ func (c *Config) GetAvailableProviders() []schemas.ModelProvider {
 	availableProviders := []schemas.ModelProvider{}
 	for provider, config := range c.Providers {
 		// Check if the provider has at least one key with a non-empty value. If so, add the provider to the list.
+		// If the provider allows empty keys, add the provider to the list.
 		for _, key := range config.Keys {
-			if key.Value.GetValue() != "" {
+			if key.Value.GetValue() != "" || bifrost.CanProviderKeyValueBeEmpty(provider) {
 				if key.Enabled != nil && !*key.Enabled {
 					continue
 				}

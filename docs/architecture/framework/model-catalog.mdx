@@ -30,6 +30,7 @@ It supports diverse pricing models across different AI operation types:
 - **Text Operations**: Token-based and character-based pricing for chat completions, text completions, and embeddings.
 - **Audio Processing**: Token-based and duration-based pricing for speech synthesis and transcription.
 - **Image Processing**: Per-image costs with tiered pricing for high-token contexts.
+- **Prompt Caching**: Separate rates for cache-read tokens (`cached_read_tokens`) and cache-creation tokens (`cached_write_tokens`), both surfaced under `prompt_tokens_details` (see [Prompt Cache Cost Calculation](#prompt-cache-cost-calculation)).
 
 ### **3. Model Information Management**
 The Model Catalog maintains a pool of available models for each provider, populated from both pricing data and provider list models APIs. This enables:
@@ -127,9 +128,10 @@ type PricingEntry struct {
     OutputCostPerCharacterAbove128kTokens     *float64 `json:"output_cost_per_character_above_128k_tokens,omitempty"`
 
     // Cache and batch pricing
-    CacheReadInputTokenCost   *float64 `json:"cache_read_input_token_cost,omitempty"`
-    InputCostPerTokenBatches  *float64 `json:"input_cost_per_token_batches,omitempty"`
-    OutputCostPerTokenBatches *float64 `json:"output_cost_per_token_batches,omitempty"`
+    CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost,omitempty"`
+    CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost,omitempty"`
+    InputCostPerTokenBatches    *float64 `json:"input_cost_per_token_batches,omitempty"`
+    OutputCostPerTokenBatches   *float64 `json:"output_cost_per_token_batches,omitempty"`
 }
 ```
 
@@ -178,16 +180,43 @@ usage := &schemas.BifrostLLMUsage{
 }
 
 cost := modelCatalog.CalculateCostFromUsage(
-    "openai",                       // provider
-    "gpt-4",                        // model
-    usage,                          // usage data
-    schemas.ChatCompletionRequest,  // request type
-    false,                          // is cache read
-    false,                          // is batch
-    nil,                            // audio seconds (for audio models)
-    nil,                            // audio token details
+    "openai",                      // provider
+    "gpt-4",                       // model
+    "",                            // deployment (optional, used as fallback key)
+    usage,                         // usage data
+    schemas.ChatCompletionRequest, // request type
+    false,                         // is batch
+    nil,                           // audio seconds (for audio/speech models)
+    nil,                           // audio token details (for transcription)
+    nil,                           // image usage (for image generation)
+    nil,                           // video seconds (for video generation)
 )
 ```
+
+### Prompt Cache Cost Calculation
+
+All providers expose prompt-cache token counts through a unified structure on `prompt_tokens_details`:
+
+| Field | JSON key | What it counts |
+|---|---|---|
+| `CachedReadTokens` | `cached_read_tokens` | Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate |
+| `CachedWriteTokens` | `cached_write_tokens` | Tokens written to the prompt cache on this request, billed at the cache-creation rate |
+
+`prompt_tokens` always includes both cached-read and cached-write tokens. The cost formula is:
+
+```
+input_cost  = (prompt_tokens − cached_read_tokens − cached_write_tokens) × InputCostPerToken
+            + cached_read_tokens  × CacheReadInputTokenCost
+            + cached_write_tokens × CacheCreationInputTokenCost
+
+output_cost = completion_tokens × OutputCostPerToken
+```
+
+For tiered (>128k) or batch requests, substitute the corresponding tier or batch rate fields (e.g., `InputCostPerTokenAbove128kTokens`, `OutputCostPerTokenBatches`) into the same formula in place of the base rates.
+
+<Note>
+`cached_write_tokens` (cache creation) is an **input** cost — despite the cache write happening during the request, it's billed against the input budget at its own rate, not as output tokens.
+</Note>
 
 ### Cache Aware Cost Calculation
 For workflows that implement semantic caching, use cache-aware cost calculation:

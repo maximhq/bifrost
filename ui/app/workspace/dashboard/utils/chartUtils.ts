@@ -64,6 +64,20 @@ export function getModelColor(index: number): string {
 	return MODEL_COLORS[index % MODEL_COLORS.length];
 }
 
+// Format latency values
+export function formatLatency(ms: number): string {
+	if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+	return `${ms.toFixed(0)}ms`;
+}
+
+// Latency chart color palette
+export const LATENCY_COLORS = {
+	avg: "#06b6d4", // cyan-500
+	p90: "#3b82f6", // blue-500
+	p95: "#f59e0b", // amber-500
+	p99: "#ef4444", // red-500
+};
+
 // Chart colors
 export const CHART_COLORS = {
 	success: "#10b981", // emerald-500

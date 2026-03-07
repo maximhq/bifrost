@@ -32,6 +32,13 @@ type Key struct {
 	Description          string                `json:"description,omitempty"`            // Description of key
 }
 
+type AzureAuthType string
+
+const (
+	AzureAuthTypeClientSecret    AzureAuthType = "client_secret"
+	AzureAuthTypeManagedIdentity AzureAuthType = "managed_identity"
+)
+
 // AzureKeyConfig represents the Azure-specific configuration.
 // It contains Azure-specific settings required for service access and deployment management.
 type AzureKeyConfig struct {
@@ -73,11 +80,16 @@ type BatchS3Config struct {
 // BedrockKeyConfig represents the AWS Bedrock-specific configuration.
 // It contains AWS-specific settings required for authentication and service access.
 type BedrockKeyConfig struct {
-	AccessKey     EnvVar            `json:"access_key,omitempty"`      // AWS access key for authentication
-	SecretKey     EnvVar            `json:"secret_key,omitempty"`      // AWS secret access key for authentication
-	SessionToken  *EnvVar           `json:"session_token,omitempty"`   // AWS session token for temporary credentials
-	Region        *EnvVar           `json:"region,omitempty"`          // AWS region for service access
-	ARN           *EnvVar           `json:"arn,omitempty"`             // Amazon Resource Name for resource identification
+	AccessKey    EnvVar  `json:"access_key,omitempty"`    // AWS access key for authentication
+	SecretKey    EnvVar  `json:"secret_key,omitempty"`    // AWS secret access key for authentication
+	SessionToken *EnvVar `json:"session_token,omitempty"` // AWS session token for temporary credentials
+	Region       *EnvVar `json:"region,omitempty"`        // AWS region for service access
+	ARN          *EnvVar `json:"arn,omitempty"`           // Amazon Resource Name for resource identification
+	// IAM role for STS AssumeRole
+	RoleARN         *EnvVar `json:"role_arn,omitempty"`
+	ExternalID      *EnvVar `json:"external_id,omitempty"`
+	RoleSessionName *EnvVar `json:"session_name,omitempty"`
+
 	Deployments   map[string]string `json:"deployments,omitempty"`     // Mapping of model identifiers to inference profiles
 	BatchS3Config *BatchS3Config    `json:"batch_s3_config,omitempty"` // S3 bucket configuration for batch operations
 }

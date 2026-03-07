@@ -112,6 +112,7 @@ export function ModelUsageChart({ data, chartType, startTime, endTime, selectedM
 
 	const commonProps = {
 		data: chartData,
+		margin: { top: 6, right: 4, left: -8, bottom: 0 },
 	};
 
 	return (

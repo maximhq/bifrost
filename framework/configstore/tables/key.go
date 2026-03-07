@@ -50,6 +50,9 @@ type TableKey struct {
 	BedrockSessionToken      *schemas.EnvVar `gorm:"type:text" json:"bedrock_session_token,omitempty"`
 	BedrockRegion            *schemas.EnvVar `gorm:"type:text" json:"bedrock_region,omitempty"`
 	BedrockARN               *schemas.EnvVar `gorm:"type:text" json:"bedrock_arn,omitempty"`
+	BedrockRoleARN           *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_arn,omitempty"`
+	BedrockExternalID        *schemas.EnvVar `gorm:"type:text" json:"bedrock_external_id,omitempty"`
+	BedrockRoleSessionName   *schemas.EnvVar `gorm:"type:text" json:"bedrock_role_session_name,omitempty"`
 	BedrockDeploymentsJSON   *string         `gorm:"type:text" json:"-"` // JSON serialized map[string]string
 	BedrockBatchS3ConfigJSON *string         `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchS3Config
 
@@ -248,6 +251,24 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		} else {
 			k.BedrockARN = nil
 		}
+		if k.BedrockKeyConfig.RoleARN != nil {
+			bra := *k.BedrockKeyConfig.RoleARN
+			k.BedrockRoleARN = &bra
+		} else {
+			k.BedrockRoleARN = nil
+		}
+		if k.BedrockKeyConfig.ExternalID != nil {
+			ei := *k.BedrockKeyConfig.ExternalID
+			k.BedrockExternalID = &ei
+		} else {
+			k.BedrockExternalID = nil
+		}
+		if k.BedrockKeyConfig.RoleSessionName != nil {
+			rsn := *k.BedrockKeyConfig.RoleSessionName
+			k.BedrockRoleSessionName = &rsn
+		} else {
+			k.BedrockRoleSessionName = nil
+		}
 		if k.BedrockKeyConfig.Deployments != nil {
 			data, err := sonic.Marshal(k.BedrockKeyConfig.Deployments)
 			if err != nil {
@@ -274,6 +295,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.BedrockSessionToken = nil
 		k.BedrockRegion = nil
 		k.BedrockARN = nil
+		k.BedrockRoleARN = nil
+		k.BedrockExternalID = nil
+		k.BedrockRoleSessionName = nil
 		k.BedrockDeploymentsJSON = nil
 		k.BedrockBatchS3ConfigJSON = nil
 	}
@@ -372,6 +396,15 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptEnvVarPtr(&k.BedrockARN); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock arn: %w", err)
 		}
+		if err := encryptEnvVarPtr(&k.BedrockRoleARN); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock role arn: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockExternalID); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock external id: %w", err)
+		}
+		if err := encryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
+			return fmt.Errorf("failed to encrypt bedrock role session name: %w", err)
+		}
 		if err := encryptString(k.BedrockDeploymentsJSON); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock deployments: %w", err)
 		}
@@ -440,6 +473,15 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptEnvVarPtr(&k.BedrockARN); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock arn: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockRoleARN); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock role arn: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockExternalID); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock external id: %w", err)
+		}
+		if err := decryptEnvVarPtr(&k.BedrockRoleSessionName); err != nil {
+			return fmt.Errorf("failed to decrypt bedrock role session name: %w", err)
 		}
 		if err := decryptString(k.BedrockDeploymentsJSON); err != nil {
 			return fmt.Errorf("failed to decrypt bedrock deployments: %w", err)
@@ -532,7 +574,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.VertexKeyConfig = config
 	}
 	// Reconstruct Bedrock config if fields are present
-	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || (k.BedrockDeploymentsJSON != nil && *k.BedrockDeploymentsJSON != "") || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
+	if k.BedrockAccessKey != nil || k.BedrockSecretKey != nil || k.BedrockSessionToken != nil || k.BedrockRegion != nil || k.BedrockARN != nil || k.BedrockRoleARN != nil || k.BedrockExternalID != nil || k.BedrockRoleSessionName != nil || (k.BedrockDeploymentsJSON != nil && *k.BedrockDeploymentsJSON != "") || (k.BedrockBatchS3ConfigJSON != nil && *k.BedrockBatchS3ConfigJSON != "") {
 		bedrockConfig := &schemas.BedrockKeyConfig{}
 
 		if k.BedrockAccessKey != nil {
@@ -542,6 +584,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		bedrockConfig.SessionToken = k.BedrockSessionToken
 		bedrockConfig.Region = k.BedrockRegion
 		bedrockConfig.ARN = k.BedrockARN
+		bedrockConfig.RoleARN = k.BedrockRoleARN
+		bedrockConfig.ExternalID = k.BedrockExternalID
+		bedrockConfig.RoleSessionName = k.BedrockRoleSessionName
 
 		if k.BedrockSecretKey != nil {
 			bedrockConfig.SecretKey = *k.BedrockSecretKey

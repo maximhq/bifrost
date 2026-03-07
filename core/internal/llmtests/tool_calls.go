@@ -60,7 +60,7 @@ func RunToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 
 		// Create operations for both Chat Completions and Responses API
 		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)	
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 			chatReq := &schemas.BifrostChatRequest{
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
@@ -155,4 +155,272 @@ func validateLocationInToolCalls(t *testing.T, toolCalls []ToolCallInfo, apiName
 	}
 
 	require.True(t, locationFound, "%s API tool call should specify New York as the location", apiName)
+}
+
+// RunToolCallsWithEmptyPropertiesTest tests tool calls with explicitly empty properties ({})
+func RunToolCallsWithEmptyPropertiesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ToolCalls {
+		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("ToolCallsWithEmptyProperties", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		chatMessages := []schemas.ChatMessage{
+			CreateBasicChatMessage("Call the ping tool"),
+		}
+		responsesMessages := []schemas.ResponsesMessage{
+			CreateBasicResponsesMessage("Call the ping tool"),
+		}
+
+		// Get tools using the sample tool helper functions
+		chatTool := GetSampleChatTool(SampleToolTypePingWithEmpty)
+		responsesTool := GetSampleResponsesTool(SampleToolTypePingWithEmpty)
+
+		retryConfig := ToolCallRetryConfig("ping")
+		retryContext := TestRetryContext{
+			ScenarioName: "ToolCallsWithEmptyProperties",
+			ExpectedBehavior: map[string]interface{}{
+				"expected_tool_name": "ping",
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		expectations := ToolCallExpectations("ping", []string{}) // No required arguments
+		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			chatReq := &schemas.BifrostChatRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    chatMessages,
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(150),
+					Tools:               []schemas.ChatTool{*chatTool},
+					ToolChoice: &schemas.ChatToolChoice{
+						ChatToolChoiceStr: bifrost.Ptr("required"),
+					},
+				},
+				Fallbacks: testConfig.Fallbacks,
+			}
+			return client.ChatCompletionRequest(bfCtx, chatReq)
+		}
+
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			responsesReq := &schemas.BifrostResponsesRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    responsesMessages,
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{*responsesTool},
+					ToolChoice: &schemas.ResponsesToolChoice{
+						ResponsesToolChoiceStr: bifrost.Ptr("required"),
+					},
+				},
+			}
+			return client.ResponsesRequest(bfCtx, responsesReq)
+		}
+
+		result := WithDualAPITestRetry(t,
+			retryConfig,
+			retryContext,
+			expectations,
+			"ToolCallsWithEmptyProperties",
+			chatOperation,
+			responsesOperation)
+
+		if !result.BothSucceeded {
+			var errors []string
+			if result.ChatCompletionsError != nil {
+				errors = append(errors, "Chat Completions: "+GetErrorMessage(result.ChatCompletionsError))
+			}
+			if result.ResponsesAPIError != nil {
+				errors = append(errors, "Responses API: "+GetErrorMessage(result.ResponsesAPIError))
+			}
+			if len(errors) == 0 {
+				errors = append(errors, "One or both APIs failed validation (see logs above)")
+			}
+			t.Fatalf("❌ ToolCallsWithEmptyProperties dual API test failed: %v", errors)
+		}
+
+		validatePingToolCall := func(response *schemas.BifrostChatResponse, apiName string) {
+			toolCalls := ExtractChatToolCalls(response)
+			require.True(t, len(toolCalls) > 0, "%s API should have tool calls", apiName)
+			pingFound := false
+			for _, toolCall := range toolCalls {
+				if toolCall.Name == "ping" {
+					pingFound = true
+					t.Logf("✅ %s tool call found: %s", apiName, toolCall.Name)
+					break
+				}
+			}
+			require.True(t, pingFound, "%s API tool call should include ping tool", apiName)
+		}
+
+		validatePingResponsesToolCall := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			toolCalls := ExtractResponsesToolCalls(response)
+			require.True(t, len(toolCalls) > 0, "%s API should have tool calls", apiName)
+			pingFound := false
+			for _, toolCall := range toolCalls {
+				if toolCall.Name == "ping" {
+					pingFound = true
+					t.Logf("✅ %s tool call found: %s", apiName, toolCall.Name)
+					break
+				}
+			}
+			require.True(t, pingFound, "%s API tool call should include ping tool", apiName)
+		}
+
+		if result.ChatCompletionsResponse != nil {
+			validatePingToolCall(result.ChatCompletionsResponse, "Chat Completions")
+		}
+
+		if result.ResponsesAPIResponse != nil {
+			validatePingResponsesToolCall(result.ResponsesAPIResponse, "Responses")
+		}
+
+		t.Logf("🎉 Both Chat Completions and Responses APIs passed ToolCallsWithEmptyProperties test!")
+	})
+}
+
+// RunToolCallsWithNilPropertiesTest tests tool calls with nil properties (not defined)
+func RunToolCallsWithNilPropertiesTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.ToolCalls {
+		t.Logf("Tool calls not supported for provider %s", testConfig.Provider)
+		return
+	}
+
+	t.Run("ToolCallsWithNilProperties", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		chatMessages := []schemas.ChatMessage{
+			CreateBasicChatMessage("Call the ping tool"),
+		}
+		responsesMessages := []schemas.ResponsesMessage{
+			CreateBasicResponsesMessage("Call the ping tool"),
+		}
+
+		// Get tools using the sample tool helper functions
+		chatTool := GetSampleChatTool(SampleToolTypePingWithNil)
+		responsesTool := GetSampleResponsesTool(SampleToolTypePingWithNil)
+
+		retryConfig := ToolCallRetryConfig("ping")
+		retryContext := TestRetryContext{
+			ScenarioName: "ToolCallsWithNilProperties",
+			ExpectedBehavior: map[string]interface{}{
+				"expected_tool_name": "ping",
+			},
+			TestMetadata: map[string]interface{}{
+				"provider": testConfig.Provider,
+				"model":    testConfig.ChatModel,
+			},
+		}
+
+		expectations := ToolCallExpectations("ping", []string{}) // No required arguments
+		expectations = ModifyExpectationsForProvider(expectations, testConfig.Provider)
+
+		chatOperation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			chatReq := &schemas.BifrostChatRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    chatMessages,
+				Params: &schemas.ChatParameters{
+					MaxCompletionTokens: bifrost.Ptr(150),
+					Tools:               []schemas.ChatTool{*chatTool},
+					ToolChoice: &schemas.ChatToolChoice{
+						ChatToolChoiceStr: bifrost.Ptr("required"),
+					},
+				},
+				Fallbacks: testConfig.Fallbacks,
+			}
+			return client.ChatCompletionRequest(bfCtx, chatReq)
+		}
+
+		responsesOperation := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			responsesReq := &schemas.BifrostResponsesRequest{
+				Provider: testConfig.Provider,
+				Model:    testConfig.ChatModel,
+				Input:    responsesMessages,
+				Params: &schemas.ResponsesParameters{
+					Tools: []schemas.ResponsesTool{*responsesTool},
+					ToolChoice: &schemas.ResponsesToolChoice{
+						ResponsesToolChoiceStr: bifrost.Ptr("required"),
+					},
+				},
+			}
+			return client.ResponsesRequest(bfCtx, responsesReq)
+		}
+
+		result := WithDualAPITestRetry(t,
+			retryConfig,
+			retryContext,
+			expectations,
+			"ToolCallsWithNilProperties",
+			chatOperation,
+			responsesOperation)
+
+		if !result.BothSucceeded {
+			var errors []string
+			if result.ChatCompletionsError != nil {
+				errors = append(errors, "Chat Completions: "+GetErrorMessage(result.ChatCompletionsError))
+			}
+			if result.ResponsesAPIError != nil {
+				errors = append(errors, "Responses API: "+GetErrorMessage(result.ResponsesAPIError))
+			}
+			if len(errors) == 0 {
+				errors = append(errors, "One or both APIs failed validation (see logs above)")
+			}
+			t.Fatalf("❌ ToolCallsWithNilProperties dual API test failed: %v", errors)
+		}
+
+		validatePingToolCall := func(response *schemas.BifrostChatResponse, apiName string) {
+			toolCalls := ExtractChatToolCalls(response)
+			require.True(t, len(toolCalls) > 0, "%s API should have tool calls", apiName)
+			pingFound := false
+			for _, toolCall := range toolCalls {
+				if toolCall.Name == "ping" {
+					pingFound = true
+					t.Logf("✅ %s tool call found: %s", apiName, toolCall.Name)
+					break
+				}
+			}
+			require.True(t, pingFound, "%s API tool call should include ping tool", apiName)
+		}
+
+		validatePingResponsesToolCall := func(response *schemas.BifrostResponsesResponse, apiName string) {
+			toolCalls := ExtractResponsesToolCalls(response)
+			require.True(t, len(toolCalls) > 0, "%s API should have tool calls", apiName)
+			pingFound := false
+			for _, toolCall := range toolCalls {
+				if toolCall.Name == "ping" {
+					pingFound = true
+					t.Logf("✅ %s tool call found: %s", apiName, toolCall.Name)
+					break
+				}
+			}
+			require.True(t, pingFound, "%s API tool call should include ping tool", apiName)
+		}
+
+		if result.ChatCompletionsResponse != nil {
+			validatePingToolCall(result.ChatCompletionsResponse, "Chat Completions")
+		}
+
+		if result.ResponsesAPIResponse != nil {
+			validatePingResponsesToolCall(result.ResponsesAPIResponse, "Responses")
+		}
+
+		t.Logf("🎉 Both Chat Completions and Responses APIs passed ToolCallsWithNilProperties test!")
+	})
 }

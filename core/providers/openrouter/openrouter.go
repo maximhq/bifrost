@@ -60,6 +60,58 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
+// validationModel is a free model used to validate API keys.
+// OpenRouter's /v1/models endpoint doesn't require authentication,
+// so we make a minimal chat completion call to verify the key is valid.
+const validationModel = "meta-llama/llama-3.2-1b-instruct:free"
+
+// validateKey makes a minimal chat completion request to verify the API key is valid.
+// OpenRouter's /v1/models endpoint doesn't require authentication, so list models
+// will succeed even with an invalid key. This method catches invalid keys.
+func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+	keyValue := key.Value.GetValue()
+	if keyValue == "" {
+		return nil // Skip validation for empty keys
+	}
+
+	// Build minimal chat completion request
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
+
+	// Minimal request body: single "hi" message with max_tokens=1
+	requestBody := []byte(`{"model":"` + validationModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":1}`)
+	req.SetBody(requestBody)
+
+	// Set any extra headers from network config
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+
+	// Make request
+	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	// Check for auth errors (401, 403)
+	statusCode := resp.StatusCode()
+	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
+		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+	}
+
+	// Any 4xx/5xx error indicates the key might be invalid
+	if statusCode >= 400 {
+		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+	}
+
+	return nil
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
@@ -148,6 +200,14 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Set raw response if enabled
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		openrouterResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	// Validate the key with a minimal chat completion request (only during provider add/update).
+	// OpenRouter's /v1/models doesn't require auth, so we need this extra check.
+	if validateKeys, ok := ctx.Value(schemas.BifrostContextKeyValidateKeys).(bool); ok && validateKeys {
+		if validateErr := provider.validateKey(ctx, key); validateErr != nil {
+			return nil, validateErr
+		}
 	}
 
 	return &openrouterResponse, nil

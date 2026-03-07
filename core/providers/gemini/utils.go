@@ -528,7 +528,7 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 
 		// Add cached tokens if present
 		if metadata.CachedContentTokenCount > 0 {
-			usage.PromptTokensDetails.CachedTokens = int(metadata.CachedContentTokenCount)
+			usage.PromptTokensDetails.CachedReadTokens = int(metadata.CachedContentTokenCount)
 		}
 	}
 
@@ -553,6 +553,7 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 		// Add reasoning tokens if present
 		if metadata.ThoughtsTokenCount > 0 {
 			usage.CompletionTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+			usage.CompletionTokens = usage.CompletionTokens + int(metadata.ThoughtsTokenCount)
 		}
 	}
 
@@ -806,7 +807,7 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 
 	// Add cached tokens if present
 	if metadata.CachedContentTokenCount > 0 {
-		usage.InputTokensDetails.CachedTokens = int(metadata.CachedContentTokenCount)
+		usage.InputTokensDetails.CachedReadTokens = int(metadata.CachedContentTokenCount)
 	}
 
 	// Process output token details (modality breakdown + reasoning tokens)
@@ -826,6 +827,7 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 	// Add reasoning tokens if present
 	if metadata.ThoughtsTokenCount > 0 {
 		usage.OutputTokensDetails.ReasoningTokens = int(metadata.ThoughtsTokenCount)
+		usage.OutputTokens = usage.OutputTokens + int(metadata.ThoughtsTokenCount)
 	}
 
 	return usage
@@ -842,14 +844,15 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 	}
 	if usage.OutputTokensDetails != nil {
 		metadata.ThoughtsTokenCount = int32(usage.OutputTokensDetails.ReasoningTokens)
+		metadata.CandidatesTokenCount = metadata.CandidatesTokenCount - metadata.ThoughtsTokenCount
 	}
 
 	promptTokensDetails := make([]*ModalityTokenCount, 0)
 	candidatesTokensDetails := make([]*ModalityTokenCount, 0)
 
 	if usage.InputTokensDetails != nil {
-		if usage.InputTokensDetails.CachedTokens > 0 {
-			metadata.CachedContentTokenCount = int32(usage.InputTokensDetails.CachedTokens)
+		if usage.InputTokensDetails.CachedReadTokens > 0 {
+			metadata.CachedContentTokenCount = int32(usage.InputTokensDetails.CachedReadTokens)
 		}
 		promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
 			Modality:   ModalityText,

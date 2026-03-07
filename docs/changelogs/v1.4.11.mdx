@@ -1,0 +1,116 @@
+---
+title: "v1.4.11"
+description: "v1.4.11 changelog - 2026-03-06"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.11
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.11
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.11
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.11">
+## ✨ Features
+
+- **Anthropic Cache Control** — Added cache-control support for Anthropic tool calls
+- **Maxim Attachments** — Added attachment support to Maxim plugin
+- **Helm Graceful Shutdown** — Added graceful shutdown and HPA stabilization for streaming connections (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **Logstore Sonic Serialization** — Replaced encoding/json with sonic for logstore serialization (thanks [@davidrudduck](https://github.com/davidrudduck)!)
+
+<Danger>
+**Breaking change**: If authentication is enabled, the `/metrics` endpoint now requires bearer authentication in the request header. This change was made based on recent pentest feedback.
+</Danger>
+
+<Danger>
+**Breaking change**: We have enforced all security headers to Bifrost based on recent pentest feedback. If you face any issues please create an issue on Github or reach out to us on Discord.
+</Danger>
+
+## 🐞 Fixed
+
+- **Codex Compatibility** — Fixed fallback handling and request decompression for Codex compatibility
+- **Anthropic SSE Streaming** — Use NewSSEScanner for Responses API streaming (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- **Audio Filename Preservation** — Preserve original audio filename in transcription requests
+- **Proxy Override** — Fixed proxy override handling
+- **Raw Request Serialization** — Fixed raw request serialization in SSE events
+- **Key List Models** — Fixed key list models serialization
+- **Async Job Recovery** — Fixed async jobs stuck in "processing" on marshal failure
+- **Valkey/Redis Vector Store** — Improved Valkey Search compatibility and correctness in Redis vector store
+- **Semanticcache Nil Check** — Added nil check on message Content before accessing fields (thanks [@Javtor](https://github.com/Javtor)!)
+- **Dashboard Overflow** — Resolved dashboard and provider config overflow regressions (thanks [@kunish](https://github.com/kunish)!)
+- **Config Schema Alignment** — Fixed config schema and added test to verify Go model alignment
+- **Security Patches** — Applied security patches including default anthropic error type fix
+- **Prevent panic** in key selection when all keys have zero weight
+- **Preserve original** audio filename in transcription requests
+- **Async jobs** stuck in "processing" on marshal failure now correctly transition to "failed"
+- **Prevent panic** in key selection when all keys have zero weight
+- **Preserve original** audio filename in transcription requests
+- **Async jobs** stuck in "processing" on marshal failure now correctly transition to "failed"
+- **Adds attachment** support in Maxim plugin
+
+</Update>
+<Update label="Core" description="1.4.7">
+- feat: added cache-control support for anthropic tool calls
+- fix: Codex compatibility issues in fallback handling and request decompression
+- fix: use NewSSEScanner for Anthropic Responses API streaming (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: preserve original audio filename in transcription requests
+- fix: proxy override handling
+- fix: raw request serialization in SSE events
+- fix: key list models serialization
+- fix: security patches including default anthropic error type
+- fix: prevent panic in WeightedRandomKeySelector when all keys have zero weight by falling back to uniform random selection
+- feat: add Filename field to TranscriptionInput schema to carry original filename through the request pipeline
+- fix: add AudioFilenameFromBytes utility to detect audio format from file headers with mp3 fallback
+
+</Update>
+<Update label="Framework" description="1.2.26">
+- fix: improve Valkey Search compatibility and correctness in Redis vector store
+- fix: async jobs stuck in processing on marshal failure
+- perf: replace encoding/json with sonic in logstore serialization (thanks [@davidrudduck](https://github.com/davidrudduck)!)
+- chore: upgraded core to v1.4.7
+
+</Update>
+<Update label="governance" description="1.4.27">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="jsonparser" description="1.4.26">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="litellmcompat" description="0.0.16">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="logging" description="1.4.26">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="maxim" description="1.5.25">
+- feat: added attachment support
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="mocker" description="1.4.26">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="otel" description="1.1.26">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="semanticcache" description="1.4.25">
+- fix: nil check on message Content before accessing fields (thanks [@Javtor](https://github.com/Javtor)!)
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>
+<Update label="telemetry" description="1.4.27">
+- chore: upgraded core to v1.4.7 and framework to v1.2.26
+
+</Update>

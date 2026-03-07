@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -144,6 +145,18 @@ func (s *RDBLogStore) CreateIfNotExists(ctx context.Context, entry *Log) error {
 		Columns:   []clause.Column{{Name: "id"}},
 		DoNothing: true,
 	}).Create(entry).Error
+}
+
+// BatchCreateIfNotExists inserts multiple log entries in a single transaction.
+// Uses ON CONFLICT DO NOTHING for idempotency.
+func (s *RDBLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*Log) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&entries).Error
 }
 
 // Ping checks if the database is reachable.
@@ -819,6 +832,494 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	}, nil
 }
 
+// computePercentile computes the p-th percentile (0–1) from a pre-sorted float64 slice using linear interpolation.
+func computePercentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	rank := p * float64(len(sorted)-1)
+	lower := int(math.Floor(rank))
+	upper := int(math.Ceil(rank))
+	if lower == upper {
+		return sorted[lower]
+	}
+	frac := rank - float64(lower)
+	return sorted[lower]*(1-frac) + sorted[upper]*frac
+}
+
+// GetLatencyHistogram returns time-bucketed latency percentiles (avg, p90, p95, p99) for the given filters.
+func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("latency IS NOT NULL")
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Latency        float64 `gorm:"column:latency"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(
+			`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	case "mysql":
+		selectClause = fmt.Sprintf(
+			`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	default:
+		selectClause = fmt.Sprintf(
+			`CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Order("bucket_timestamp ASC, latency ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
+	}
+
+	// Group latency values by bucket (already sorted by latency due to ORDER BY)
+	type bucketData struct {
+		latencies []float64
+	}
+	bucketMap := make(map[int64]*bucketData)
+	var orderedKeys []int64
+
+	for _, r := range results {
+		bd, exists := bucketMap[r.BucketTimestamp]
+		if !exists {
+			bd = &bucketData{}
+			bucketMap[r.BucketTimestamp] = bd
+			orderedKeys = append(orderedKeys, r.BucketTimestamp)
+		}
+		bd.latencies = append(bd.latencies, r.Latency)
+	}
+
+	// Compute stats per bucket
+	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
+	for ts, bd := range bucketMap {
+		var sum float64
+		for _, v := range bd.latencies {
+			sum += v
+		}
+		computedBuckets[ts] = LatencyHistogramBucket{
+			Timestamp:     time.Unix(ts, 0).UTC(),
+			AvgLatency:    sum / float64(len(bd.latencies)),
+			P90Latency:    computePercentile(bd.latencies, 0.90),
+			P95Latency:    computePercentile(bd.latencies, 0.95),
+			P99Latency:    computePercentile(bd.latencies, 0.99),
+			TotalRequests: int64(len(bd.latencies)),
+		}
+	}
+
+	// Generate all bucket timestamps for the time range
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		// No time range: return what we have sorted by timestamp
+		buckets := make([]LatencyHistogramBucket, 0, len(computedBuckets))
+		for _, ts := range orderedKeys {
+			buckets = append(buckets, computedBuckets[ts])
+		}
+		return &LatencyHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+		}, nil
+	}
+
+	// Fill in all buckets, using zeros for missing timestamps
+	buckets := make([]LatencyHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := computedBuckets[ts]; exists {
+			buckets[i] = bucket
+		} else {
+			buckets[i] = LatencyHistogramBucket{
+				Timestamp: time.Unix(ts, 0).UTC(),
+			}
+		}
+	}
+
+	return &LatencyHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+	}, nil
+}
+
+// GetProviderCostHistogram returns time-bucketed cost data with provider breakdown for the given filters.
+func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderCostHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("cost IS NOT NULL AND cost > 0")
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Provider        string  `gorm:"column:provider"`
+		TotalCost       float64 `gorm:"column:total_cost"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			provider,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(cost), 0) as total_cost
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider cost histogram: %w", err)
+	}
+
+	bucketMap := make(map[int64]*ProviderCostHistogramBucket)
+	providersSet := make(map[string]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
+			bucket.TotalCost += r.TotalCost
+			bucket.ByProvider[r.Provider] = r.TotalCost
+		} else {
+			bucketMap[r.BucketTimestamp] = &ProviderCostHistogramBucket{
+				Timestamp:  time.Unix(r.BucketTimestamp, 0).UTC(),
+				TotalCost:  r.TotalCost,
+				ByProvider: map[string]float64{r.Provider: r.TotalCost},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		buckets := make([]ProviderCostHistogramBucket, 0, len(bucketMap))
+		for _, bucket := range bucketMap {
+			buckets = append(buckets, *bucket)
+		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
+		return &ProviderCostHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+			Providers:         providers,
+		}, nil
+	}
+
+	buckets := make([]ProviderCostHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := bucketMap[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = ProviderCostHistogramBucket{
+				Timestamp:  time.Unix(ts, 0).UTC(),
+				TotalCost:  0,
+				ByProvider: make(map[string]float64),
+			}
+		}
+	}
+
+	return &ProviderCostHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+		Providers:         providers,
+	}, nil
+}
+
+// GetProviderTokenHistogram returns time-bucketed token usage with provider breakdown for the given filters.
+func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderTokenHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+
+	var results []struct {
+		BucketTimestamp  int64  `gorm:"column:bucket_timestamp"`
+		Provider         string `gorm:"column:provider"`
+		PromptTokens     int64  `gorm:"column:prompt_tokens"`
+		CompletionTokens int64  `gorm:"column:completion_tokens"`
+		TotalTokens      int64  `gorm:"column:total_tokens"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(`
+			(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp,
+			provider,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	case "mysql":
+		selectClause = fmt.Sprintf(`
+			(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	default:
+		selectClause = fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp,
+			provider,
+			COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+			COALESCE(SUM(total_tokens), 0) as total_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Group("bucket_timestamp, provider").
+		Order("bucket_timestamp ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider token histogram: %w", err)
+	}
+
+	bucketMap := make(map[int64]*ProviderTokenHistogramBucket)
+	providersSet := make(map[string]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		if bucket, exists := bucketMap[r.BucketTimestamp]; exists {
+			bucket.ByProvider[r.Provider] = ProviderTokenStats{
+				PromptTokens:     r.PromptTokens,
+				CompletionTokens: r.CompletionTokens,
+				TotalTokens:      r.TotalTokens,
+			}
+		} else {
+			bucketMap[r.BucketTimestamp] = &ProviderTokenHistogramBucket{
+				Timestamp: time.Unix(r.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderTokenStats{
+					r.Provider: {
+						PromptTokens:     r.PromptTokens,
+						CompletionTokens: r.CompletionTokens,
+						TotalTokens:      r.TotalTokens,
+					},
+				},
+			}
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		buckets := make([]ProviderTokenHistogramBucket, 0, len(bucketMap))
+		for _, bucket := range bucketMap {
+			buckets = append(buckets, *bucket)
+		}
+		sort.Slice(buckets, func(i, j int) bool {
+			return buckets[i].Timestamp.Before(buckets[j].Timestamp)
+		})
+		return &ProviderTokenHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+			Providers:         providers,
+		}, nil
+	}
+
+	buckets := make([]ProviderTokenHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := bucketMap[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = ProviderTokenHistogramBucket{
+				Timestamp:  time.Unix(ts, 0).UTC(),
+				ByProvider: make(map[string]ProviderTokenStats),
+			}
+		}
+	}
+
+	return &ProviderTokenHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+		Providers:         providers,
+	}, nil
+}
+
+// GetProviderLatencyHistogram returns time-bucketed latency percentiles with provider breakdown for the given filters.
+func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
+	if bucketSizeSeconds <= 0 {
+		bucketSizeSeconds = 3600
+	}
+
+	dialect := s.db.Dialector.Name()
+
+	baseQuery := s.db.WithContext(ctx).Model(&Log{})
+	baseQuery = s.applyFilters(baseQuery, filters)
+	baseQuery = baseQuery.Where("status IN ?", []string{"success", "error"})
+	baseQuery = baseQuery.Where("latency IS NOT NULL")
+
+	var results []struct {
+		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
+		Provider        string  `gorm:"column:provider"`
+		Latency        float64 `gorm:"column:latency"`
+	}
+
+	var selectClause string
+	switch dialect {
+	case "sqlite":
+		selectClause = fmt.Sprintf(
+			`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, provider, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	case "mysql":
+		selectClause = fmt.Sprintf(
+			`(FLOOR(UNIX_TIMESTAMP(timestamp) / %d) * %d) as bucket_timestamp, provider, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	default:
+		selectClause = fmt.Sprintf(
+			`CAST(FLOOR(EXTRACT(EPOCH FROM timestamp) / %d) * %d AS BIGINT) as bucket_timestamp, provider, latency`,
+			bucketSizeSeconds, bucketSizeSeconds,
+		)
+	}
+
+	if err := baseQuery.
+		Select(selectClause).
+		Order("bucket_timestamp ASC, provider ASC, latency ASC").
+		Find(&results).Error; err != nil {
+		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
+	}
+
+	// Group latency values by (bucket, provider)
+	type providerBucketKey struct {
+		BucketTimestamp int64
+		Provider        string
+	}
+	latencyMap := make(map[providerBucketKey][]float64)
+	providersSet := make(map[string]bool)
+	var orderedBuckets []int64
+	seenBuckets := make(map[int64]bool)
+
+	for _, r := range results {
+		providersSet[r.Provider] = true
+		key := providerBucketKey{BucketTimestamp: r.BucketTimestamp, Provider: r.Provider}
+		latencyMap[key] = append(latencyMap[key], r.Latency)
+		if !seenBuckets[r.BucketTimestamp] {
+			seenBuckets[r.BucketTimestamp] = true
+			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
+		}
+	}
+
+	providers := make([]string, 0, len(providersSet))
+	for provider := range providersSet {
+		providers = append(providers, provider)
+	}
+
+	// Compute stats per (bucket, provider)
+	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
+	for key, latencies := range latencyMap {
+		var sum float64
+		for _, v := range latencies {
+			sum += v
+		}
+		stats := ProviderLatencyStats{
+			AvgLatency:    sum / float64(len(latencies)),
+			P90Latency:    computePercentile(latencies, 0.90),
+			P95Latency:    computePercentile(latencies, 0.95),
+			P99Latency:    computePercentile(latencies, 0.99),
+			TotalRequests: int64(len(latencies)),
+		}
+		if bucket, exists := computedBuckets[key.BucketTimestamp]; exists {
+			bucket.ByProvider[key.Provider] = stats
+		} else {
+			computedBuckets[key.BucketTimestamp] = &ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(key.BucketTimestamp, 0).UTC(),
+				ByProvider: map[string]ProviderLatencyStats{key.Provider: stats},
+			}
+		}
+	}
+
+	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
+
+	if len(allTimestamps) == 0 {
+		buckets := make([]ProviderLatencyHistogramBucket, 0, len(computedBuckets))
+		for _, ts := range orderedBuckets {
+			if bucket, exists := computedBuckets[ts]; exists {
+				buckets = append(buckets, *bucket)
+			}
+		}
+		return &ProviderLatencyHistogramResult{
+			Buckets:           buckets,
+			BucketSizeSeconds: bucketSizeSeconds,
+			Providers:         providers,
+		}, nil
+	}
+
+	buckets := make([]ProviderLatencyHistogramBucket, len(allTimestamps))
+	for i, ts := range allTimestamps {
+		if bucket, exists := computedBuckets[ts]; exists {
+			buckets[i] = *bucket
+		} else {
+			buckets[i] = ProviderLatencyHistogramBucket{
+				Timestamp:  time.Unix(ts, 0).UTC(),
+				ByProvider: make(map[string]ProviderLatencyStats),
+			}
+		}
+	}
+
+	return &ProviderLatencyHistogramResult{
+		Buckets:           buckets,
+		BucketSizeSeconds: bucketSizeSeconds,
+		Providers:         providers,
+	}, nil
+}
+
 // HasLogs checks if there are any logs in the database.
 func (s *RDBLogStore) HasLogs(ctx context.Context) (bool, error) {
 	var log Log
@@ -938,6 +1439,45 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 func (s *RDBLogStore) FindAll(ctx context.Context, query any, fields ...string) ([]*Log, error) {
 	var logs []*Log
 	if err := s.db.WithContext(ctx).Select(fields).Where(query).Find(&logs).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return []*Log{}, nil
+		}
+		return nil, err
+	}
+	return logs, nil
+}
+
+// allowedDistinctLogColumns is an allowlist of column names that can be passed to
+// FindAllDistinct. GORM's Distinct() does not parameterize column identifiers,
+// so we validate against this set to prevent SQL injection.
+var allowedDistinctLogColumns = map[string]struct{}{
+	"id": {}, "parent_request_id": {}, "timestamp": {}, "object_type": {},
+	"provider": {}, "model": {}, "number_of_retries": {}, "fallback_index": {},
+	"selected_key_id": {}, "selected_key_name": {},
+	"virtual_key_id": {}, "virtual_key_name": {},
+	"routing_engines_used": {}, "routing_rule_id": {}, "routing_rule_name": {},
+	"status": {}, "stream": {},
+}
+
+// FindAllDistinct finds all distinct log entries for the given fields.
+// Uses SQL DISTINCT to return only unique combinations, avoiding loading
+// all rows when only unique values are needed (e.g., for filter dropdowns).
+func (s *RDBLogStore) FindAllDistinct(ctx context.Context, query any, fields ...string) ([]*Log, error) {
+	var logs []*Log
+	db := s.db.WithContext(ctx).Where(query)
+	if len(fields) > 0 {
+		for _, f := range fields {
+			if _, ok := allowedDistinctLogColumns[f]; !ok {
+				return nil, fmt.Errorf("invalid distinct field: %s", f)
+			}
+		}
+		args := make([]interface{}, len(fields))
+		for i, f := range fields {
+			args[i] = f
+		}
+		db = db.Distinct(args...)
+	}
+	if err := db.Find(&logs).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return []*Log{}, nil
 		}

@@ -1230,7 +1230,11 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 			team.Name = *req.Name
 		}
 		if req.CustomerID != nil {
-			team.CustomerID = req.CustomerID
+			if *req.CustomerID == "" {
+				team.CustomerID = nil
+			} else {
+				team.CustomerID = req.CustomerID
+			}
 		}
 		// Handle budget updates
 		if req.Budget != nil {

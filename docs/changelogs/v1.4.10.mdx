@@ -1,0 +1,126 @@
+---
+title: "v1.4.10"
+description: "v1.4.10 changelog - 2026-03-03"
+---
+<Tabs>
+  <Tab title="NPX">
+    ```bash
+    npx -y @maximhq/bifrost --transport-version v1.4.10
+    ```
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker pull maximhq/bifrost:v1.4.10
+    docker run -p 8080:8080 maximhq/bifrost:v1.4.10
+    ```
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="1.4.10">
+## ✨ Features
+
+- **Response Header Forwarding** — Forward provider response headers back to clients for all providers
+- **Streaming Compression** — Added streaming compression support for provider responses
+- **Bedrock Invoke & Count Tokens** — Added bedrock invoke support and count tokens for bedrock provider
+- **Async Rerank** — Added async support for rerank requests
+- **Dashboard Graphs** — Added new dashboard graphs and graph fixes
+- **Gzip for Azure Speech** — Added gzip compression for azure speech streams
+- **Grayswan Guardrails** — Added grayswan guardrails configuration
+- **E2E Tests** — Added e2e tests for API
+- **Azure Managed Identity** — option to provider key form (DefaultAzureCredential when no API key or Entra ID)
+- **Bedrock STS AssumeRole** — support (role_arn, external_id, session_name) in key config for cross-account access
+
+
+## 🐞 Fixed
+
+- **Parallel Tool Call Deltas** — Route parallel tool call argument deltas by id/index to prevent argument merging during streaming (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- **Count Tokens Route** — Count tokens route fixed to match OpenAI schema
+  <Warning>
+    **Breaking change.** The count tokens route has moved from `/v1/count_tokens` to `/v1/responses/input_tokens`, and the request body field has been renamed from incorrect `messages` to `input`. Please update your clients accordingly.
+  </Warning>
+- **Cached Tokens Handling** — Standardized cached tokens handling for all providers
+  <Note>
+    **Breaking change.** Cache tokens moved from usage top-level into `prompt_tokens_details` (Chat) and `input_tokens_details` (Responses), with standardized keys. If you have persisted data (logs, analytics, or custom storage), migrate: (1) move `usage.cache_read_input_tokens` → `usage.prompt_tokens_details.cached_read_tokens` or `usage.input_tokens_details.cached_read_tokens`; (2) move `usage.cache_creation_input_tokens` → `usage.prompt_tokens_details.cached_write_tokens` or `usage.input_tokens_details.cached_write_tokens`.
+  </Note>
+- **Team update** fixes team update flow by handling nil customer id
+- **Bedrock Integration Routing** — Added missing routing logic for bedrock integration
+- **Nil Tool Properties** — Handle nil properties in tool function parameters
+- **Logprobs JSON Tag** — Fixed logprobs JSON tag in BifrostResponseChoice (thanks [@robechun](https://github.com/robechun)!)
+- **Provider Deletion** — Fixed delete providers bug, empty provider list bug, and deleting provider not loaded in memory
+- **Data Connectors** — Fixed enabling/disabling data connectors
+- **OpenRouter Keys** — Added proper status check for openrouter keys
+- **Governance Virtual Key** — Added governance wrong virtual key check
+- **Pricing Config** — Normalized framework pricing config
+- **Model Limit Validation** — Fixed model limit form validation
+- **Dashboard Height** — Minor dashboard height fix
+
+</Update>
+<Update label="Core" description="1.4.6">
+- feat: added response header forwarding for providers
+- feat: added streaming compression support for providers
+- feat: added bedrock invoke and count tokens support
+- feat: added gzip compression for azure speech streams
+- feat: add Azure DefaultAzureCredential support — use managed identity when no API key or Entra ID credentials provided
+- feat: add Bedrock STS AssumeRole support (role_arn, external_id, session_name) in key config for cross-account access
+- fix: standardized cached tokens handling across all providers
+  <Note>
+    **Breaking change.** Cache tokens moved from usage top-level into `ChatPromptTokensDetails` (`prompt_tokens_details`) and `ResponsesResponseInputTokens` (`input_tokens_details`), with standardized keys. If you have persisted data (logs, analytics, or custom storage), migrate: (1) move `usage.cache_read_input_tokens` → `usage.prompt_tokens_details.cached_read_tokens` or `usage.input_tokens_details.cached_read_tokens`; (2) move `usage.cache_creation_input_tokens` → `usage.prompt_tokens_details.cached_write_tokens` or `usage.input_tokens_details.cached_write_tokens`.
+  </Note>
+- fix: handle nil properties in tool function parameters
+- fix: fixed logprobs JSON tag in BifrostResponseChoice (thanks [@robechun](https://github.com/robechun)!)
+- fix: added proper status check for openrouter keys
+
+</Update>
+<Update label="Framework" description="1.2.25">
+- feat: added response header forwarding support
+- feat: added new dashboard graphs and graph fixes
+- feat: added bedrock invoke streaming support
+- fix: standardized cached tokens handling
+- fix: preserve parallel tool call deltas during streaming (thanks [@KTS-o7](https://github.com/KTS-o7)!)
+- fix: added proper status check for openrouter keys
+- chore: bump core to 1.4.6
+
+</Update>
+<Update label="governance" description="1.4.26">
+- feat: added governance wrong virtual key check
+- feat: added streaming compression support
+- fix: added bedrock integration support for routing in governance
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="jsonparser" description="1.4.25">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="litellmcompat" description="0.0.15">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="logging" description="1.4.25">
+- feat: added response header forwarding support
+- feat: added new dashboard graphs
+- fix: count tokens route fixes
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="maxim" description="1.5.24">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="mocker" description="1.4.25">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="otel" description="1.1.25">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="semanticcache" description="1.4.24">
+- fix: DefaultCacheKey dropped during JSON unmarshal (thanks [@Georgehe4](https://github.com/Georgehe4)!)
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>
+<Update label="telemetry" description="1.4.26">
+- chore: bump core to 1.4.6 and framework to 1.2.25
+
+</Update>

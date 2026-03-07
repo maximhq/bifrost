@@ -3,9 +3,9 @@ module github.com/maximhq/bifrost/plugins/maxim
 go 1.26
 
 require (
-	github.com/maximhq/bifrost/core v1.4.4
-	github.com/maximhq/bifrost/framework v1.2.23
-	github.com/maximhq/maxim-go v0.1.14
+	github.com/maximhq/bifrost/core v1.4.7
+	github.com/maximhq/bifrost/framework v1.2.26
+	github.com/maximhq/maxim-go v0.1.16
 )
 
 require github.com/google/uuid v1.6.0

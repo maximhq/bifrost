@@ -397,7 +397,7 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 			}
 			if response.Usage.CachedTokens != nil {
 				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-					CachedTokens: *response.Usage.CachedTokens,
+					CachedReadTokens: *response.Usage.CachedTokens,
 				}
 			}
 			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens

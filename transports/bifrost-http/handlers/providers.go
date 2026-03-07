@@ -266,6 +266,10 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	// Add provider to store (env vars will be processed by store)
 	if err := h.inMemoryStore.AddProvider(ctx, payload.Provider, config); err != nil {
 		logger.Warn("Failed to add provider %s: %v", payload.Provider, err)
+		if errors.Is(err, lib.ErrAlreadyExists) {
+			SendError(ctx, fasthttp.StatusConflict, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to add provider: %v", err))
 		return
 	}
@@ -445,6 +449,16 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
 	config.NetworkConfig = &nc
+	// Merge proxy config - preserve secrets if redacted values were sent back
+	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+		}
+		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
+			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
+		}
+	}
+
 	config.ProxyConfig = payload.ProxyConfig
 	config.CustomProviderConfig = payload.CustomProviderConfig
 	config.PricingOverrides = payload.PricingOverrides
@@ -929,6 +943,30 @@ func (h *ProviderHandler) mergeKeys(oldRawKeys []schemas.Key, oldRedactedKeys []
 					if updateKey.BedrockKeyConfig.ARN.IsRedacted() &&
 						updateKey.BedrockKeyConfig.ARN.Equals(oldRedactedKey.BedrockKeyConfig.ARN) {
 						mergedKey.BedrockKeyConfig.ARN = oldRawKey.BedrockKeyConfig.ARN
+					}
+				}
+				if updateKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleARN != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleARN.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleARN.Equals(oldRedactedKey.BedrockKeyConfig.RoleARN) {
+						mergedKey.BedrockKeyConfig.RoleARN = oldRawKey.BedrockKeyConfig.RoleARN
+					}
+				}
+				if updateKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRedactedKey.BedrockKeyConfig.ExternalID != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.ExternalID.IsRedacted() &&
+						updateKey.BedrockKeyConfig.ExternalID.Equals(oldRedactedKey.BedrockKeyConfig.ExternalID) {
+						mergedKey.BedrockKeyConfig.ExternalID = oldRawKey.BedrockKeyConfig.ExternalID
+					}
+				}
+				if updateKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRedactedKey.BedrockKeyConfig.RoleSessionName != nil &&
+					oldRawKey.BedrockKeyConfig != nil {
+					if updateKey.BedrockKeyConfig.RoleSessionName.IsRedacted() &&
+						updateKey.BedrockKeyConfig.RoleSessionName.Equals(oldRedactedKey.BedrockKeyConfig.RoleSessionName) {
+						mergedKey.BedrockKeyConfig.RoleSessionName = oldRawKey.BedrockKeyConfig.RoleSessionName
 					}
 				}
 			}

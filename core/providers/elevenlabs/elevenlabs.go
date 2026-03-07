@@ -95,6 +95,8 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
 			Provider:    providerName,
@@ -111,6 +113,7 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	response := elevenlabsResponse.ToBifrostListModelsResponse(providerName, key.Models, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()
+	response.ExtraFields.ProviderResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
 
 	// Set raw request if enabled
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
@@ -234,6 +237,8 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
@@ -254,10 +259,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 	// Create response based on whether timestamps were requested
 	bifrostResponse := &schemas.BifrostSpeechResponse{
 		ExtraFields: schemas.BifrostResponseExtraFields{
-			RequestType:    schemas.SpeechRequest,
-			Provider:       providerName,
-			ModelRequested: request.Model,
-			Latency:        latency.Milliseconds(),
+			RequestType:             schemas.SpeechRequest,
+			Provider:                providerName,
+			ModelRequested:          request.Model,
+			Latency:                 latency.Milliseconds(),
+			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 		},
 	}
 
@@ -365,6 +371,9 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, providerName), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Extract provider response headers before status check so error responses also forward them
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(resp)
@@ -388,14 +397,19 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 			close(responseChan)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
-		// Setup cancellation handler to close body stream on ctx cancellation
+		// Decompress gzip-encoded streams transparently (no-op for non-gzip)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+
+		// Setup cancellation handler to close the raw network stream on ctx cancellation,
+		// which immediately unblocks any in-progress read (including reads blocked inside a gzip decompression layer).
 		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
 		defer stopCancellation()
 
 		// read binary audio chunks from the stream
 		// 4KB buffer for reading chunks
 		buffer := make([]byte, 4096)
-		bodyStream := resp.BodyStream()
+		bodyStream := reader
 		chunkIndex := -1
 		lastChunkTime := time.Now()
 
@@ -528,6 +542,8 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Extract and set provider response headers so they're available on error paths
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
 		provider.logger.Debug("error from %s provider: %s", providerName, string(resp.Body()))
 		return nil, parseElevenlabsError(resp, &providerUtils.RequestMetadata{
@@ -564,10 +580,11 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 
 	response := ToBifrostTranscriptionResponse(chunks)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
-		RequestType:    schemas.TranscriptionRequest,
-		Provider:       providerName,
-		ModelRequested: request.Model,
-		Latency:        latency.Milliseconds(),
+		RequestType:             schemas.TranscriptionRequest,
+		Provider:                providerName,
+		ModelRequested:          request.Model,
+		Latency:                 latency.Milliseconds(),
+		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
 	}
 
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
@@ -587,7 +604,11 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 	}
 
 	if len(reqBody.File) > 0 {
-		fileWriter, err := writer.CreateFormFile("file", "audio.wav")
+		filename := reqBody.Filename
+		if filename == "" {
+			filename = providerUtils.AudioFilenameFromBytes(reqBody.File)
+		}
+		fileWriter, err := writer.CreateFormFile("file", filename)
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("failed to create file field", err, providerName)
 		}

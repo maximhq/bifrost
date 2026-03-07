@@ -2,42 +2,21 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { BifrostErrorResponse } from "@/lib/types/config";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { createBaseQueryWithRefresh } from "@enterprise/lib/store/utils/baseQueryWithRefresh";
-import { clearOAuthStorage, getAccessToken } from "@enterprise/lib/store/utils/tokenManager";
+import { clearOAuthStorage } from "@enterprise/lib/store/utils/tokenManager";
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 
-// Helper function to get token from localStorage
-// If enterprise, use access_token from enterprise tokenManager; otherwise use bifrost-auth-token
+// Auth tokens are now stored in HTTP-only cookies (set by server)
+// No client-side token needed — handled by credentials: "include"
 export const getTokenFromStorage = (): Promise<string | null> => {
-	if (typeof window === "undefined") {
-		return Promise.resolve(null);
-	}
-	try {
-		if (IS_ENTERPRISE) {
-			// Enterprise OAuth login - use tokenManager
-			return getAccessToken();
-		} else {
-			// Traditional login - use bifrost-auth-token
-			return Promise.resolve(localStorage.getItem("bifrost-auth-token"));
-		}
-	} catch (error) {
-		return Promise.resolve(null);
-	}
+	return Promise.resolve(null);
 };
 
-// Helper function to set token in localStorage (non-enterprise only)
-export const setAuthToken = (token: string | null) => {
-	if (typeof window === "undefined") {
-		return;
-	}
-	try {
-		if (token) {
-			localStorage.setItem("bifrost-auth-token", token);
-		} else {
-			localStorage.removeItem("bifrost-auth-token");
-		}
-	} catch (error) {
-		throw new Error("Error setting token in localStorage");
-	}
+// Helper function to set auth token
+// Non-enterprise: no-op — auth relies on HTTPOnly cookies set by the server
+// Enterprise: handled separately via tokenManager
+export const setAuthToken = (_token: string | null) => {
+	// Non-enterprise auth is cookie-based; no client-side token storage needed.
+	// Enterprise token management is handled by the tokenManager module.
 };
 
 // Helper function to clear all auth-related storage

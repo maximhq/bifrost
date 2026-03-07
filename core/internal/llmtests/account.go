@@ -117,6 +117,7 @@ type ComprehensiveTestConfig struct {
 	BatchExtraParams         map[string]interface{} // Extra params for batch operations (e.g., role_arn, output_s3_uri for Bedrock)
 	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
+	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.
@@ -228,7 +229,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 			{
-				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0"},
+				Models: []string{"cohere.embed-v4:0", "amazon.nova-canvas-v1:0", "anthropic.claude-sonnet-4-20250514-v1:0"},
 				Weight: 1.0,
 				BedrockKeyConfig: &schemas.BedrockKeyConfig{
 					AccessKey:    *schemas.NewEnvVar("env.AWS_ACCESS_KEY_ID"),

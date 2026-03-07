@@ -88,6 +88,7 @@ func stripPreferHeader(extraHeaders map[string]string) map[string]string {
 // This is a reusable utility for any Replicate streaming endpoint.
 // It returns the response body stream (as io.Reader) and any error that occurred during connection.
 func listenToReplicateStreamURL(
+	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
 	streamURL string,
 	key schemas.Key,
@@ -128,6 +129,11 @@ func listenToReplicateStreamURL(
 			return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, schemas.Replicate)
 		}
 		return nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, schemas.Replicate)
+	}
+
+	// Extract provider response headers before status check so error responses also forward them
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	}
 
 	// Check for HTTP errors

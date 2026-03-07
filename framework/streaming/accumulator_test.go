@@ -263,6 +263,192 @@ func TestGetLastChunkMethodsSafe(t *testing.T) {
 	}
 }
 
+func TestAccumulateToolCallsInterleavedParallel(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	message := &schemas.ChatMessage{
+		Role: schemas.ChatMessageRoleAssistant,
+	}
+
+	makeDelta := func(index uint16, id *string, name *string, args string) schemas.ChatAssistantMessageToolCall {
+		return schemas.ChatAssistantMessageToolCall{
+			Index: index,
+			ID:    id,
+			Type:  schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      name,
+				Arguments: args,
+			},
+		}
+	}
+
+	toolCallID0 := "call_0"
+	toolCallID1 := "call_1"
+	toolNameAdd := "add"
+	toolNameMultiply := "multiply"
+
+	// Interleaved deltas for parallel tool calls
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, &toolCallID0, &toolNameAdd, ""),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, &toolCallID1, &toolNameMultiply, ""),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, nil, nil, "{\"a\": 1"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, nil, nil, "{\"a\": 2"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(0, nil, nil, ", \"b\": 3}"),
+	})
+	accumulator.accumulateToolCallsInMessage(message, []schemas.ChatAssistantMessageToolCall{
+		makeDelta(1, nil, nil, ", \"b\": 4}"),
+	})
+
+	if message.ChatAssistantMessage == nil {
+		t.Fatal("expected ChatAssistantMessage to be initialized")
+	}
+
+	toolCalls := message.ChatAssistantMessage.ToolCalls
+	if len(toolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls, got %d", len(toolCalls))
+	}
+
+	var addCall *schemas.ChatAssistantMessageToolCall
+	var multiplyCall *schemas.ChatAssistantMessageToolCall
+	for i := range toolCalls {
+		if toolCalls[i].Function.Name != nil {
+			switch *toolCalls[i].Function.Name {
+			case "add":
+				addCall = &toolCalls[i]
+			case "multiply":
+				multiplyCall = &toolCalls[i]
+			}
+		}
+	}
+
+	if addCall == nil || multiplyCall == nil {
+		t.Fatalf("expected both add and multiply tool calls, got add=%v multiply=%v", addCall != nil, multiplyCall != nil)
+	}
+
+	if addCall.Function.Arguments != "{\"a\": 1, \"b\": 3}" {
+		t.Fatalf("unexpected add arguments: %s", addCall.Function.Arguments)
+	}
+	if multiplyCall.Function.Arguments != "{\"a\": 2, \"b\": 4}" {
+		t.Fatalf("unexpected multiply arguments: %s", multiplyCall.Function.Arguments)
+	}
+}
+
+// TestBuildCompleteMessageFromResponsesStreamChunksParallelToolCalls tests that
+// parallel function call argument deltas are routed to the correct message by ItemID,
+// preventing arguments from being merged across different tool calls.
+func TestBuildCompleteMessageFromResponsesStreamChunksParallelToolCalls(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	accumulator := NewAccumulator(nil, logger)
+
+	itemID0 := "call_0"
+	itemID1 := "call_1"
+	fnName0 := "add"
+	fnName1 := "multiply"
+
+	makeChunk := func(idx int, resp *schemas.BifrostResponsesStreamResponse) *ResponsesStreamChunk {
+		return &ResponsesStreamChunk{
+			ChunkIndex:     idx,
+			Timestamp:      time.Now(),
+			StreamResponse: resp,
+		}
+	}
+
+	ptr := func(s string) *string { return &s }
+
+	chunks := []*ResponsesStreamChunk{
+		// OutputItemAdded for call_0 (add)
+		makeChunk(0, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &schemas.ResponsesMessage{
+				ID:   ptr(itemID0),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name: ptr(fnName0),
+				},
+			},
+		}),
+		// OutputItemAdded for call_1 (multiply)
+		makeChunk(1, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			Item: &schemas.ResponsesMessage{
+				ID:   ptr(itemID1),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name: ptr(fnName1),
+				},
+			},
+		}),
+		// Argument delta for call_0
+		makeChunk(2, &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ItemID: ptr(itemID0),
+			Delta:  ptr(`{"a": 1`),
+		}),
+		// Argument delta for call_1
+		makeChunk(3, &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ItemID: ptr(itemID1),
+			Delta:  ptr(`{"a": 2`),
+		}),
+		// Argument delta continuation for call_0
+		makeChunk(4, &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ItemID: ptr(itemID0),
+			Delta:  ptr(`, "b": 3}`),
+		}),
+		// Argument delta continuation for call_1
+		makeChunk(5, &schemas.BifrostResponsesStreamResponse{
+			Type:   schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta,
+			ItemID: ptr(itemID1),
+			Delta:  ptr(`, "b": 4}`),
+		}),
+	}
+
+	messages := accumulator.buildCompleteMessageFromResponsesStreamChunks(chunks)
+
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+
+	var addMsg *schemas.ResponsesMessage
+	var multiplyMsg *schemas.ResponsesMessage
+	for i := range messages {
+		if messages[i].ID != nil && *messages[i].ID == itemID0 {
+			addMsg = &messages[i]
+		}
+		if messages[i].ID != nil && *messages[i].ID == itemID1 {
+			multiplyMsg = &messages[i]
+		}
+	}
+
+	if addMsg == nil || multiplyMsg == nil {
+		t.Fatalf("expected both add and multiply messages, got add=%v multiply=%v", addMsg != nil, multiplyMsg != nil)
+	}
+
+	if addMsg.ResponsesToolMessage == nil || addMsg.ResponsesToolMessage.Arguments == nil {
+		t.Fatalf("add message missing arguments")
+	}
+	if multiplyMsg.ResponsesToolMessage == nil || multiplyMsg.ResponsesToolMessage.Arguments == nil {
+		t.Fatalf("multiply message missing arguments")
+	}
+
+	if *addMsg.ResponsesToolMessage.Arguments != `{"a": 1, "b": 3}` {
+		t.Fatalf("unexpected add arguments: %s", *addMsg.ResponsesToolMessage.Arguments)
+	}
+	if *multiplyMsg.ResponsesToolMessage.Arguments != `{"a": 2, "b": 4}` {
+		t.Fatalf("unexpected multiply arguments: %s", *multiplyMsg.ResponsesToolMessage.Arguments)
+	}
+}
+
 // TestAudioStreamingFinalChunkNoDeadlock tests that audio streaming doesn't deadlock on final chunk
 func TestAudioStreamingFinalChunkNoDeadlock(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)

@@ -74,8 +74,8 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 				formattedTime: formatTimestamp(bucket.timestamp, data.bucket_size_seconds),
 			};
 			// Flatten by_model for easier chart access
-			models.forEach((model) => {
-				item[`model_${model}`] = bucket.by_model?.[model] || 0;
+			models.forEach((model, idx) => {
+				item[`model_${idx}`] = bucket.by_model?.[model] || 0;
 			});
 			return item;
 		});
@@ -89,6 +89,7 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 
 	const commonProps = {
 		data: chartData,
+		margin: { top: 6, right: 4, left: -8, bottom: 0 },
 	};
 
 	return (
@@ -123,7 +124,7 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 						{displayModels.map((model, idx) => (
 							<Bar
 								key={model}
-								dataKey={`model_${model}`}
+								dataKey={`model_${idx}`}
 								stackId="cost"
 								fill={getModelColor(idx)}
 								fillOpacity={0.9}
@@ -159,7 +160,7 @@ export function CostChart({ data, chartType, startTime, endTime, selectedModel }
 							<Area
 								key={model}
 								type="monotone"
-								dataKey={`model_${model}`}
+								dataKey={`model_${idx}`}
 								stackId="1"
 								stroke={getModelColor(idx)}
 								fill={getModelColor(idx)}
