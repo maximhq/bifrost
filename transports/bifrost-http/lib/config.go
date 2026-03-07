@@ -313,7 +313,7 @@ var DefaultClientConfig = configstore.ClientConfig{
 	DisableContentLogging:   false,
 	EnforceAuthOnInference:  false,
 	AllowDirectKeys:         false,
-	AllowedOrigins:          []string{"*"},
+	AllowedOrigins:          []string{},
 	AllowedHeaders:          []string{},
 	MaxRequestBodySizeMB:    100,
 	MCPAgentDepth:           10,
