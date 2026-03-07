@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	koanfmaps "github.com/knadh/koanf/maps"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -274,7 +275,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
 					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = orderedFields
+					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+						bedrockReq.AdditionalModelRequestFields,
+						orderedFields,
+					)
 				}
 			}
 
@@ -351,14 +355,78 @@ func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 	if fields == nil {
 		return
 	}
-	current := map[string]any{}
+	current := map[string]interface{}{}
 	if existing, ok := fields.Get("output_config"); ok {
-		if m, ok := existing.(map[string]any); ok && m != nil {
+		if m, ok := toStringInterfaceMap(existing); ok && m != nil {
 			current = m
 		}
 	}
-	current[key] = value
+	koanfmaps.Merge(map[string]interface{}{key: value}, current)
 	fields.Set("output_config", current)
+}
+
+func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *schemas.OrderedMap {
+	if existing == nil {
+		if incoming == nil {
+			return nil
+		}
+		return incoming.Clone()
+	}
+	if incoming == nil {
+		return existing
+	}
+
+	merged := existing.Clone()
+	incoming.Range(func(key string, value interface{}) bool {
+		if key == "output_config" {
+			current := map[string]interface{}{}
+			if existingValue, ok := merged.Get(key); ok {
+				if m, ok := toStringInterfaceMap(existingValue); ok && m != nil {
+					current = m
+				}
+			}
+			if incomingMap, ok := toStringInterfaceMap(value); ok && incomingMap != nil {
+				koanfmaps.Merge(incomingMap, current)
+				merged.Set(key, current)
+			} else {
+				merged.Set(key, value)
+			}
+			return true
+		}
+		merged.Set(key, value)
+		return true
+	})
+	return merged
+}
+
+func toStringInterfaceMap(v any) (map[string]interface{}, bool) {
+	switch m := v.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(m))
+		for k, val := range m {
+			out[k] = val
+		}
+		return out, true
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		out := make(map[string]interface{}, m.Len())
+		m.Range(func(key string, value interface{}) bool {
+			out[key] = value
+			return true
+		})
+		return out, true
+	case schemas.OrderedMap:
+		out := make(map[string]interface{}, m.Len())
+		m.Range(func(key string, value interface{}) bool {
+			out[key] = value
+			return true
+		})
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
