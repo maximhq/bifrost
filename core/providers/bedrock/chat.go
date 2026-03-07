@@ -267,7 +267,20 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 	return bifrostResponse, nil
 }
 
-func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+// BedrockStreamState tracks per-stream tool call index state.
+type BedrockStreamState struct {
+	nextToolCallIndex         int
+	contentBlockToToolCallIdx map[int]int
+}
+
+// NewBedrockStreamState returns initialised stream state for one streaming response.
+func NewBedrockStreamState() *BedrockStreamState {
+	return &BedrockStreamState{
+		contentBlockToToolCallIdx: make(map[int]int),
+	}
+}
+
+func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
 	// event with metrics/usage is the last and with stop reason is the second last
 	switch {
 	case chunk.Role != nil:
@@ -291,16 +304,16 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 	case chunk.Start != nil && chunk.Start.ToolUse != nil:
 		toolUseStart := chunk.Start.ToolUse
 
-		// Determine the tool call index from ContentBlockIndex
-		// ContentBlockIndex identifies which content block this tool call belongs to
-		var toolCallIndex uint16
+		toolCallIdx := 0
 		if chunk.ContentBlockIndex != nil {
-			toolCallIndex = uint16(*chunk.ContentBlockIndex)
+			toolCallIdx = state.nextToolCallIndex
+			state.contentBlockToToolCallIdx[*chunk.ContentBlockIndex] = toolCallIdx
+			state.nextToolCallIndex++
 		}
 
 		// Create tool call structure for start event
 		var toolCall schemas.ChatAssistantMessageToolCall
-		toolCall.Index = toolCallIndex
+		toolCall.Index = uint16(toolCallIdx)
 		toolCall.ID = schemas.Ptr(toolUseStart.ToolUseID)
 		toolCall.Type = schemas.Ptr("function")
 		toolCall.Function.Name = schemas.Ptr(toolUseStart.Name)
@@ -349,16 +362,14 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifro
 			// Handle tool use delta
 			toolUseDelta := chunk.Delta.ToolUse
 
-			// Determine the tool call index from ContentBlockIndex
-			// This must match the index used in the corresponding Start event
-			var toolCallIndex uint16
+			toolCallIdx := 0
 			if chunk.ContentBlockIndex != nil {
-				toolCallIndex = uint16(*chunk.ContentBlockIndex)
+				toolCallIdx = state.contentBlockToToolCallIdx[*chunk.ContentBlockIndex]
 			}
 
 			// Create tool call structure
 			var toolCall schemas.ChatAssistantMessageToolCall
-			toolCall.Index = toolCallIndex
+			toolCall.Index = uint16(toolCallIdx)
 			toolCall.Type = schemas.Ptr("function")
 
 			// For streaming, we need to accumulate tool use data
