@@ -41,6 +41,15 @@ export const Selectors = {
       saveBtn: '[data-testid="custom-provider-save-btn"]',
       cancelBtn: '[data-testid="custom-provider-cancel-btn"]',
     },
+    
+    // Pricing tab
+    pricingTab: '[data-testid="provider-tab-pricing"]',
+    pricingForm: {
+      container: '[data-testid="provider-pricing-form"]',
+      jsonInput: '[data-testid="provider-pricing-overrides-json-input"]',
+      resetBtn: '[data-testid="provider-pricing-overrides-reset-button"]',
+      saveBtn: '[data-testid="provider-pricing-overrides-save-button"]',
+    },
   },
 
   // Virtual Keys Page
