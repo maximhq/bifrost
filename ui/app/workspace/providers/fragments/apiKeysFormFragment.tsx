@@ -793,11 +793,12 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							if (v === 'oauth') {
 								// Clear API key when switching to OAuth
 								form.setValue('key.value', undefined)
-							} else {
-								// Clear OAuth config when switching to API Key
-								form.setValue('key.anthropic_oauth_key_config', undefined)
 							}
+							// Note: switching to api_key does NOT clear OAuth config here.
+							// The AnthropicOAuthSection's Disconnect button handles server-side
+							// logout before clearing the config, preventing orphaned refresh tokens.
 						}}>
+
 							<TabsList className="grid w-full grid-cols-2">
 								<TabsTrigger value="api_key" data-testid="anthropic-auth-tab-api-key">API Key</TabsTrigger>
 								<TabsTrigger value="oauth" data-testid="anthropic-auth-tab-oauth">OAuth (Claude Pro/Max)</TabsTrigger>
@@ -895,11 +896,19 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 		}
 	}, [oauthConfigId, logoutOAuth, form])
 
-	const handleCancel = useCallback(() => {
+	const handleCancel = useCallback(async () => {
+		// Clean up server-side OAuth config for the initiated but uncompleted flow
+		if (oauthConfigId) {
+			try {
+				await logoutOAuth({ oauth_config_id: oauthConfigId }).unwrap()
+			} catch {
+				// Best-effort cleanup; stale pending configs expire after 15 minutes
+			}
+		}
 		setFlowState('idle')
 		setAuthCode('')
 		setOauthConfigId('')
-	}, [])
+	}, [oauthConfigId, logoutOAuth])
 
 	if (flowState === 'connected') {
 		return (
