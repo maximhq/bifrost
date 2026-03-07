@@ -19,10 +19,11 @@ jobs:
       startsWith(github.event.release.tag_name, 'transports/v')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout release tag
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event.release.tag_name || github.sha }}
+          fetch-depth: 0
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v16
@@ -30,13 +31,24 @@ jobs:
       - name: Enable Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@v9
 
-      - name: Compute hashes
+      - name: Compute hashes from release tree
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: bash nix/packages/update-hashes.sh
 
-      - name: Pull with rebase
-        run: git pull --rebase --autostash
+      - name: Apply hashes to main and commit
+        run: |
+          # Save computed hashes
+          VENDOR_HASH=$(cat nix/packages/vendorHash)
+          NPM_HASH=$(cat nix/packages/npmDepsHash)
+
+          # Switch to main
+          git checkout main
+          git pull --rebase --autostash
+
+          # Write hashes
+          echo -n "$VENDOR_HASH" > nix/packages/vendorHash
+          echo -n "$NPM_HASH" > nix/packages/npmDepsHash
 
       - uses: stefanzweifel/git-auto-commit-action@v6
         with:
