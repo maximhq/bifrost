@@ -1,0 +1,39 @@
+---
+title: "LibreChat"
+description: "Integrate LibreChat with Bifrost to access any AI provider through a modern open-source chat interface."
+icon: "message"
+---
+
+[LibreChat](https://github.com/danny-avila/LibreChat) is a modern, open-source chat client that supports multiple providers.
+
+## Setup
+
+1. **Install LibreChat:** There are multiple ways of local setup, please follow the [LibreChat documentation](https://www.librechat.ai/docs/local) for more details.
+
+2. **Add Bifrost as a custom provider**: Now that you have LibreChat installed, you can add Bifrost as a custom provider.
+
+   Add the following to your `librechat.yaml` file:
+   ```yaml
+   custom:
+    - name: "Bifrost"
+      apiKey: "dummy" # Add the authentication key if login is enabled, otherwise add a placeholder
+      baseURL: "http://host.docker.internal:8080/v1" # Or localhost:8080 if running locally, or {your-bifrost-container}:8080 if running in the same docker network
+      models:
+        default: ["openai/gpt-4o"] # Replace with the model you want to use
+        fetch: true
+      titleConvo: true
+      titleModel: "openai/gpt-4o" # Replace with the model you want to use for chat title generation
+      summarize: false # Set to true if you want to enable chat summary generation
+      summaryModel: "openai/gpt-4o" # Replace with the model you want to use for chat summary generation
+      forcePrompt: false # Set to true if you want to enable force prompt generation
+      modelDisplayLabel: "Bifrost"
+      iconURL: https://getbifrost.ai/bifrost-logo.png
+   ```
+
+   <Note>
+   If you're running LibreChat in a docker container, LibreChat does not automatically use the `librechat.yaml` file, please check the Step 1 of the [LibreChat documentation](https://www.librechat.ai/docs/quick_start/custom_endpoints#step-1-create-or-edit-a-docker-override-file) for more details.
+   </Note>
+
+3. **Run LibreChat**
+
+   Now you can start using Bifrost as a provider in LibreChat, with all the features of Bifrost.
