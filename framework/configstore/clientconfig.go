@@ -530,6 +530,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash AnthropicOAuthKeyConfig
+	if key.AnthropicOAuthKeyConfig != nil {
+		data, err := sonic.Marshal(key.AnthropicOAuthKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash Enabled (nil = false, only true produces different hash)
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
