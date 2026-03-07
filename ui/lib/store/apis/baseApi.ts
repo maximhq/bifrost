@@ -155,6 +155,10 @@ export const baseApi = createApi({
 		"MCPToolGroups",
 		"AuditLogs",
 		"UserGovernance",
+		"Folders",
+		"Prompts",
+		"Versions",
+		"Sessions",
 	],
 	endpoints: () => ({}),
 });
