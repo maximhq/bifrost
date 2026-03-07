@@ -548,6 +548,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 		// Set integration type to context
 		bifrostCtx.SetValue(schemas.BifrostContextKeyIntegrationType, string(config.Type))
 
+		// Detect CLI user agent (claude-cli, gemini-cli, qwen-cli, cursor, codex, n8n)
+		// and propagate it to the BifrostContext for tool deduplication.
+		if cliAgent := DetectCLIUserAgent(ctx); cliAgent != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+		}
+
 		// Set available providers to context
 		availableProviders := g.handlerStore.GetAvailableProviders()
 		bifrostCtx.SetValue(schemas.BifrostContextKeyAvailableProviders, availableProviders)
