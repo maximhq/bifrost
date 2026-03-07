@@ -799,8 +799,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 							}
 						}}>
 							<TabsList className="grid w-full grid-cols-2">
-								<TabsTrigger value="api_key">API Key</TabsTrigger>
-								<TabsTrigger value="oauth">OAuth (Claude Pro/Max)</TabsTrigger>
+								<TabsTrigger value="api_key" data-testid="anthropic-auth-tab-api-key">API Key</TabsTrigger>
+								<TabsTrigger value="oauth" data-testid="anthropic-auth-tab-oauth">OAuth (Claude Pro/Max)</TabsTrigger>
 							</TabsList>
 						</Tabs>
 					</div>
@@ -838,12 +838,23 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 	}, [form])
 
 	const handleInitiate = useCallback(async () => {
+		// Open blank tab synchronously to avoid popup blockers
+		const authWindow = window.open('about:blank', '_blank')
+		if (authWindow) {
+			authWindow.opener = null
+		}
 		try {
 			const result = await initiateOAuth().unwrap()
 			setOauthConfigId(result.oauth_config_id)
-			window.open(result.authorize_url, '_blank')
+			if (authWindow && !authWindow.closed) {
+				authWindow.location.href = result.authorize_url
+			} else {
+				// Fallback: navigate in same tab if popup was blocked
+				window.location.href = result.authorize_url
+			}
 			setFlowState('initiated')
 		} catch (err) {
+			authWindow?.close()
 			setErrorMessage(getErrorMessage(err))
 			setFlowState('error')
 		}
@@ -905,11 +916,11 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 						</div>
 					</div>
 					<div className="flex items-center gap-2">
-						<Button type="button" variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing}>
+						<Button type="button" variant="outline" size="sm" onClick={handleRefresh} disabled={isRefreshing} data-testid="anthropic-oauth-refresh">
 							{isRefreshing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
 							Refresh
 						</Button>
-						<Button type="button" variant="outline" size="sm" onClick={handleDisconnect} disabled={isLoggingOut}>
+						<Button type="button" variant="outline" size="sm" onClick={handleDisconnect} disabled={isLoggingOut} data-testid="anthropic-oauth-disconnect">
 							{isLoggingOut ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unplug className="h-4 w-4" />}
 							Disconnect
 						</Button>
@@ -924,7 +935,7 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 			<div className="rounded-sm border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950">
 				<div className="space-y-3">
 					<p className="text-sm text-red-700 dark:text-red-300">{errorMessage || 'An error occurred during the OAuth flow.'}</p>
-					<Button type="button" variant="outline" size="sm" onClick={() => { setFlowState('idle'); setErrorMessage(''); }}>
+					<Button type="button" variant="outline" size="sm" onClick={() => { setFlowState('idle'); setErrorMessage(''); }} data-testid="anthropic-oauth-retry">
 						Try Again
 					</Button>
 				</div>
@@ -955,13 +966,14 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 							value={authCode}
 							onChange={(e) => setAuthCode(e.target.value)}
 							className="font-mono text-sm"
+							data-testid="anthropic-oauth-code-input"
 						/>
-						<Button type="button" onClick={handleExchange} disabled={isExchanging || !authCode.trim()}>
+						<Button type="button" onClick={handleExchange} disabled={isExchanging || !authCode.trim()} data-testid="anthropic-oauth-exchange">
 							{isExchanging && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
 							Exchange Code
 						</Button>
 					</div>
-					<button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={handleCancel}>
+					<button type="button" className="text-xs text-muted-foreground underline hover:text-foreground" onClick={handleCancel} data-testid="anthropic-oauth-cancel">
 						Cancel
 					</button>
 				</div>
@@ -979,7 +991,7 @@ function AnthropicOAuthSection({ form }: { form: UseFormReturn<any> }) {
 					Connect your Claude Pro or Max subscription to use as a provider key via OAuth. You&apos;ll be redirected to Anthropic&apos;s authorization page to grant access.
 				</AlertDescription>
 			</Alert>
-			<Button type="button" variant="outline" onClick={handleInitiate} disabled={isInitiating}>
+			<Button type="button" variant="outline" onClick={handleInitiate} disabled={isInitiating} data-testid="anthropic-oauth-connect">
 				{isInitiating ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
 				Connect with Claude
 			</Button>
