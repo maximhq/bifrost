@@ -125,6 +125,9 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				},
 			}
 		}
+		// Handles edge cases where the error chain contains context.Canceled but the
+		// parent context is still valid (e.g., a nested/derived context was cancelled).
+		// IsBifrostError is false since this may indicate a transient provider-side issue.
 		if errors.Is(err, context.Canceled) {
 			return latency, &schemas.BifrostError{
 				IsBifrostError: false,
