@@ -565,6 +565,8 @@ paths:
     $ref: './paths/management/providers.yaml#/keys'
   /api/models:
     $ref: './paths/management/providers.yaml#/models'
+  /api/models/details:
+    $ref: './paths/management/providers.yaml#/models-details'
 
   # Plugins
   /api/plugins:
