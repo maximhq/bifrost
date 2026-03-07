@@ -1,0 +1,91 @@
+---
+title: "Codex CLI"
+description: "Use OpenAI's Codex CLI with Bifrost for powerful code generation with any provider."
+icon: "openai"
+---
+
+[Codex CLI](https://developers.openai.com/codex/cli/) provides powerful code generation and completion capabilities directly in your terminal.
+
+## To install Codex CLI
+
+```bash
+npm install -g @openai/codex
+```
+
+## Configuring Codex CLI to work with Bifrost
+
+Codex CLI supports multiple authentication methods. Choose the one that matches your account type.
+
+### ChatGPT account (OAuth)
+
+If you have a ChatGPT Plus, Pro, Team, Enterprise, or Edu subscription, Codex CLI authenticates via browser-based OAuth — no API key needed.
+
+1. **Set the Bifrost base URL**
+   ```bash
+   export OPENAI_BASE_URL=http://localhost:8080/openai
+   ```
+
+2. **Run Codex and sign in**
+   ```bash
+   codex
+   ```
+   Select **Sign in with ChatGPT** and authenticate via your browser. All traffic automatically routes through Bifrost.
+
+### API key based usage
+
+For users with OpenAI API keys or Bifrost virtual keys:
+
+1. **Configure environment variables**
+   ```bash
+   export OPENAI_API_KEY=your-api-key  # OpenAI API key or Bifrost virtual key
+   export OPENAI_BASE_URL=http://localhost:8080/openai
+   ```
+
+2. **Run Codex**
+   ```bash
+   codex
+   ```
+
+Now all Codex CLI traffic flows through Bifrost, giving you access to any provider/model configured in your Bifrost setup, plus observability and governance.
+
+## Model Configuration
+
+Use the `--model` flag to start Codex with a specific model:
+
+```bash
+codex --model gpt-5-codex
+codex --model gpt-5.4-pro
+```
+
+Switch models mid-session with the `/model` command:
+
+```bash
+/model gpt-5.4-pro
+/model gpt-5-codex
+```
+
+## Using Non-OpenAI Models with Codex CLI
+
+Bifrost automatically translates OpenAI API requests to other providers, so you can use Codex CLI with models from Anthropic, Google, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model.
+
+```bash
+# Start with an Anthropic model
+codex --model anthropic/claude-sonnet-4-5-20250929
+
+# Start with a Google model
+codex --model gemini/gemini-2.5-pro
+
+# Switch mid-session
+/model anthropic/claude-sonnet-4-5-20250929
+/model mistral/mistral-large-latest
+```
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Warning>
+Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
+</Warning>
