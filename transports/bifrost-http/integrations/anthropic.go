@@ -300,7 +300,10 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 	headers := extractHeadersFromRequest(ctx)
 
 	// Detect CLI user agent (claude-cli, gemini-cli, qwen-cli, cursor, codex, n8n)
-	DetectCLIUserAgent(ctx, bifrostCtx)
+	// and propagate it to the BifrostContext for tool deduplication.
+	if cliAgent := DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
 
 	// Check if anthropic oauth headers are present
 	if shouldUsePassthrough(bifrostCtx, provider, model, "") {

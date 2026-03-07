@@ -327,9 +327,11 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 	return nil, nil
 }
 
-// DetectCLIUserAgent detects if the request is coming from a known CLI tool or integration.
-// It checks the User-Agent header and sets the BifrostContextKeyUserAgent key in the BifrostContext.
-// Returns the detected user agent string if found, otherwise empty string.
+// DetectCLIUserAgent detects if the request is coming from a known CLI tool or integration
+// by inspecting the User-Agent header. Returns the detected agent identifier string
+// (e.g. "cursor", "gemini-cli") or an empty string if no known CLI is detected.
+// The caller is responsible for propagating the returned value to the BifrostContext
+// if required (e.g. bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, agent)).
 //
 // Supported integrations:
 //   - claude-cli  (User-Agent contains "claude-cli")
@@ -341,34 +343,26 @@ func (g *GenericRouter) extractFallbacksFromRequest(req interface{}) ([]string, 
 //
 // For "cursor", "codex" and "n8n" we require a word-boundary match to avoid
 // false positives from User-Agents that merely contain those strings as substrings
-// (e.g. "precursor/2.0", "vs-codex-plugin/1.0").  A token matches when it appears
-// at the very beginning of the header value, or is immediately preceded by a
-// non-alphanumeric character (space, '/', '-', etc.).
-func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) string {
-	userAgent := string(ctx.Request.Header.Peek("User-Agent"))
-	userAgentLower := strings.ToLower(userAgent)
-	var detectedAgent string
+// (e.g. "precursor/2.0", "vs-codex-plugin/1.0").
+func DetectCLIUserAgent(ctx *fasthttp.RequestCtx) string {
+	userAgentLower := strings.ToLower(string(ctx.Request.Header.Peek("User-Agent")))
 
 	switch {
 	case strings.Contains(userAgentLower, "claude-cli"):
-		detectedAgent = "claude-cli"
+		return "claude-cli"
 	case strings.Contains(userAgentLower, "gemini-cli"):
-		detectedAgent = "gemini-cli"
+		return "gemini-cli"
 	case strings.Contains(userAgentLower, "qwen-cli"):
-		detectedAgent = "qwen-cli"
+		return "qwen-cli"
 	case isCLIToken(userAgentLower, "cursor"):
-		detectedAgent = "cursor"
+		return "cursor"
 	case isCLIToken(userAgentLower, "codex"):
-		detectedAgent = "codex"
+		return "codex"
 	case isCLIToken(userAgentLower, "n8n"):
-		detectedAgent = "n8n"
+		return "n8n"
 	}
 
-	if detectedAgent != "" {
-		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, detectedAgent)
-	}
-
-	return detectedAgent
+	return ""
 }
 
 // isCLIToken returns true when token appears in ua as a proper product token.
@@ -381,26 +375,26 @@ func DetectCLIUserAgent(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostCon
 // Examples that MATCH    : "cursor/1.0", "codex/0.1", "n8n/2.0", "my-app cursor/1.0"
 // Examples that DON'T    : "precursor/2.0", "my-cursor-editor/1.0", "vs-codex-plugin/1.0", "plugin-n8n/1.0"
 func isCLIToken(ua, token string) bool {
-	idx := strings.Index(ua, token)
-	if idx < 0 {
-		return false
-	}
-	// Check left boundary: must be start or preceded by space or '/'
-	if idx > 0 {
-		prev := ua[idx-1]
-		if prev != ' ' && prev != '/' {
+	for start := 0; start < len(ua); {
+		idx := strings.Index(ua[start:], token)
+		if idx < 0 {
 			return false
 		}
-	}
-	// Check right boundary: must be end, or followed by '/', ' ', or '@'
-	end := idx + len(token)
-	if end < len(ua) {
-		next := ua[end]
-		if next != '/' && next != ' ' && next != '@' {
-			return false
+		idx += start
+
+		// Check left boundary: must be start of string, or preceded by space or '/'
+		leftOK := idx == 0 || ua[idx-1] == ' ' || ua[idx-1] == '/'
+		// Check right boundary: must be end of string, or followed by '/', ' ', or '@'
+		end := idx + len(token)
+		rightOK := end == len(ua) || ua[end] == '/' || ua[end] == ' ' || ua[end] == '@'
+
+		if leftOK && rightOK {
+			return true
 		}
+
+		start = idx + 1
 	}
-	return true
+	return false
 }
 
 // getVirtualKeyFromBifrostContext extracts the virtual key value from bifrost context.
