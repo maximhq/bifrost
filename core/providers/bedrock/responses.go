@@ -1850,12 +1850,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				inferenceConfig.StopSequences = stop
 			}
 
-			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
-				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
-					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = orderedFields
+				if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
+					if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
+						delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
+						bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+							bedrockReq.AdditionalModelRequestFields,
+							orderedFields,
+						)
+					}
 				}
-			}
 
 			if responseFields, exists := bifrostReq.Params.ExtraParams["additionalModelResponseFieldPaths"]; exists {
 				if fields, ok := responseFields.([]string); ok {
