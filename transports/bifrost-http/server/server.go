@@ -50,7 +50,7 @@ var enterprisePlugins = []string{
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
 	// Plugins callbacks
-	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error
+	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *string, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
 	GetPluginStatus(ctx context.Context) map[string]schemas.PluginStatus
 	// Auth related callbacks
@@ -839,11 +839,14 @@ func (s *BifrostHTTPServer) updatePluginErrorStatus(name, step string, originalE
 }
 
 // SyncLoadedPlugin syncs a loaded plugin to the Bifrost client and updates the plugin status
-func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin) error {
+func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, plugin schemas.BasePlugin, placement *string, order *int) error {
 	// 2. Register (replaces old version atomically)
 	if err := s.Config.ReloadPlugin(plugin); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "registering", err)
 	}
+	// 2b. Set order info and re-sort
+	s.Config.SetPluginOrderInfo(plugin.GetName(), placement, order)
+	s.Config.SortAndRebuildPlugins()
 	// 3. Update Bifrost client
 	if err := s.Client.ReloadPlugin(plugin, InferPluginTypes(plugin)); err != nil {
 		return s.updatePluginErrorStatus(plugin.GetName(), "reloading bifrost config for", err)
@@ -861,14 +864,14 @@ func (s *BifrostHTTPServer) SyncLoadedPlugin(ctx context.Context, name string, p
 // ReloadPlugin reloads a plugin with new instance and updates Bifrost core.
 // The plugin is checked for LLM and MCP interfaces independently and registered
 // to the appropriate arrays based on which interfaces it implements.
-func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any) error {
+func (s *BifrostHTTPServer) ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *string, order *int) error {
 	logger.Debug("reloading plugin %s", name)
 	// 1. Instantiate new version
 	plugin, err := InstantiatePlugin(ctx, name, path, pluginConfig, s.Config)
 	if err != nil {
 		return s.updatePluginErrorStatus(name, "loading", err)
 	}
-	return s.SyncLoadedPlugin(ctx, name, plugin)
+	return s.SyncLoadedPlugin(ctx, name, plugin, placement, order)
 }
 
 // RemovePlugin removes a plugin from the server.

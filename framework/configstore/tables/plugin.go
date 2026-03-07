@@ -22,6 +22,9 @@ type TablePlugin struct {
 	UpdatedAt  time.Time `gorm:"index;not null" json:"updated_at"`
 	IsCustom   bool      `gorm:"not null;default:false" json:"isCustom"`
 
+	Placement *string `gorm:"column:placement;type:varchar(20);null" json:"placement,omitempty"`
+	Order     *int    `gorm:"column:exec_order;type:int;null" json:"order,omitempty"`
+
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
 	ConfigHash string `gorm:"type:varchar(255);null" json:"config_hash"`
