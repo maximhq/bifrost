@@ -170,7 +170,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}
@@ -274,7 +274,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 			var bifrostResp *schemas.BifrostChatResponse
 
 			if tt.isStream {
-				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream()
+				bifrostResp, _, _ = tt.response.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
 			} else {
 				bifrostResp = tt.response.ToBifrostChatResponse()
 			}

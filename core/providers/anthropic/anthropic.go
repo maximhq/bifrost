@@ -693,6 +693,9 @@ func HandleAnthropicChatCompletionStreaming(
 			structuredOutputToolName = toolName
 		}
 
+		// Per-response tool-call index state
+		streamState := NewAnthropicStreamState()
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -837,7 +840,7 @@ func HandleAnthropicChatCompletionStreaming(
 				}
 			}
 
-			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName)
+			response, bifrostErr, isLastChunk := event.ToBifrostChatCompletionStream(ctx, structuredOutputToolName, streamState)
 			if bifrostErr != nil {
 				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
 					RequestType:    schemas.ChatCompletionStreamRequest,
@@ -1805,24 +1808,6 @@ func (provider *AnthropicProvider) BatchResults(ctx *schemas.BifrostContext, key
 	}
 
 	return nil, lastErr
-}
-
-// splitJSONL splits JSONL content into individual lines.
-func splitJSONL(data []byte) [][]byte {
-	var lines [][]byte
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			if i > start {
-				lines = append(lines, data[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, data[start:])
-	}
-	return lines
 }
 
 // Embedding is not supported by the Anthropic provider.
