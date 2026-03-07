@@ -189,7 +189,7 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
-													<code className="cursor-default px-2 py-1 font-mono text-sm">{maskKey(vk.value, isRevealed)}</code>
+													<code className="cursor-default px-2 py-1 font-mono text-sm" data-testid="vk-key-value">{maskKey(vk.value, isRevealed)}</code>
 													<Button
 														variant="ghost"
 														size="sm"

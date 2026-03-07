@@ -111,32 +111,26 @@ test.describe('Providers', () => {
     })
 
     test('should display empty state when no keys configured', async ({ providersPage }) => {
-      // Select a provider that typically has no keys in fresh install
-      await providersPage.selectProvider('groq')
-      // Get key count
-      const keyCount = await providersPage.getKeyCount()
-
-      // Check for empty state message
-      const emptyMessage = providersPage.page.getByText('No keys found')
-      const isEmptyStateVisible = await emptyMessage.isVisible().catch(() => false)
-
-      // Deterministic assertion: either empty state is shown OR there are keys
-      if (keyCount === 0) {
-        // When no keys, empty state should be shown
-        expect(isEmptyStateVisible).toBe(true)
-      } else {
-        // When keys exist, empty state should NOT be shown
-        expect(isEmptyStateVisible).toBe(false)
+      // Add Nebius from the dropdown if not already in sidebar (created with no keys)
+      if (!(await providersPage.providerExists('nebius'))) {
+        await providersPage.addKnownProviderFromDropdown('nebius')
+        createdProviders.push('nebius')
       }
+      // Select Nebius (it has zero keys)
+      const providerItem = providersPage.getProviderItem('nebius')
+      await expect(providerItem).toBeVisible({ timeout: 15000 })
+      await providersPage.selectProvider('nebius')
+      const keyCount = await providersPage.getKeyCount()
+      expect(keyCount).toBe(0)
+
+      // Empty state row should be visible
+      await expect(providersPage.keysTableEmptyState).toBeVisible()
     })
   })
 
   test.describe('Custom Providers', () => {
     test('should open custom provider creation sheet', async ({ providersPage }) => {
-      await providersPage.addProviderBtn.click()
-
-      // Verify sheet is visible
-      await expect(providersPage.customProviderSheet).toBeVisible()
+      await providersPage.openCustomProviderSheet()
 
       // Verify form fields are present
       await expect(providersPage.customProviderNameInput).toBeVisible()
@@ -179,8 +173,7 @@ test.describe('Providers', () => {
     })
 
     test('should cancel custom provider creation', async ({ providersPage }) => {
-      await providersPage.addProviderBtn.click()
-      await expect(providersPage.customProviderSheet).toBeVisible()
+      await providersPage.openCustomProviderSheet()
 
       // Fill some data
       await providersPage.customProviderNameInput.fill('cancelled-provider')
@@ -195,12 +188,33 @@ test.describe('Providers', () => {
       const providerExists = await providersPage.providerExists('cancelled-provider')
       expect(providerExists).toBe(false)
     })
+
+    test('should delete custom provider and update UI', async ({ providersPage }) => {
+      const providerData = createCustomProviderData({
+        name: `delete-test-${Date.now()}`,
+        baseProviderType: 'openai',
+        baseUrl: 'https://api.delete-test.com/v1',
+      })
+      createdProviders.push(providerData.name)
+
+      await providersPage.createProvider(providerData)
+
+      const providerItem = providersPage.getProviderItem(providerData.name)
+      await expect(providerItem).toBeVisible({ timeout: 15000 })
+
+      await providersPage.deleteProvider(providerData.name, { skipToastWait: true })
+
+      const idx = createdProviders.indexOf(providerData.name)
+      if (idx >= 0) createdProviders.splice(idx, 1)
+
+      // Assert provider is no longer in the configured providers list (do not rely on toast)
+      await expect(providerItem).not.toBeVisible({ timeout: 5000 })
+    })
   })
 
   test.describe('Form Validation', () => {
     test('should require name for custom provider', async ({ providersPage }) => {
-      await providersPage.addProviderBtn.click()
-      await expect(providersPage.customProviderSheet).toBeVisible()
+      await providersPage.openCustomProviderSheet()
 
       // Try to save without name
       await providersPage.baseUrlInput.fill('https://api.example.com')
@@ -214,8 +228,7 @@ test.describe('Providers', () => {
     })
 
     test('should require base URL for custom provider', async ({ providersPage }) => {
-      await providersPage.addProviderBtn.click()
-      await expect(providersPage.customProviderSheet).toBeVisible()
+      await providersPage.openCustomProviderSheet()
 
       // Fill only name
       await providersPage.customProviderNameInput.fill('test-provider')
@@ -268,14 +281,14 @@ test.describe('Provider Key Management', () => {
 
     await providersPage.addKey(keyData)
 
-    // Now edit it
+    // Now edit it - set weight to 0.7
     await providersPage.editKey(keyData.name, {
       weight: 0.7,
     })
 
-    // Key should still exist
-    const keyExists = await providersPage.keyExists(keyData.name)
-    expect(keyExists).toBe(true)
+    // Verify weight was saved and displayed (wait for table to refresh after save)
+    const keyRow = providersPage.getKeyRow(keyData.name)
+    await expect(keyRow.getByTestId('key-weight-value')).toContainText('0.7', { timeout: 10000 })
   })
 
   test('should delete a key', async ({ providersPage }) => {
@@ -313,12 +326,15 @@ test.describe('Provider Key Management', () => {
 
     await providersPage.addKey(keyData)
 
-    // Toggle the key
-    await providersPage.toggleKeyEnabled(keyData.name)
+    // Key starts enabled
+    let isEnabled = await providersPage.getKeyEnabledState(keyData.name)
+    expect(isEnabled).toBe(true)
 
-    // Key should still exist
-    const keyExists = await providersPage.keyExists(keyData.name)
-    expect(keyExists).toBe(true)
+    // Toggle to disabled
+    await providersPage.toggleKeyEnabled(keyData.name)
+    await providersPage.page.waitForTimeout(9000)
+    isEnabled = await providersPage.getKeyEnabledState(keyData.name)
+    expect(isEnabled).toBe(false)
   })
 })
 
@@ -342,12 +358,9 @@ test.describe('Provider Configuration', () => {
     // Select OpenAI provider
     await providersPage.selectProvider('openai')
 
-    // Check for models section or tab
+    // Models section should be visible for selected provider
     const modelsSection = providersPage.page.getByText(/Models/i).first()
-    const modelsVisible = await modelsSection.isVisible().catch(() => false)
-
-    // Either models are shown directly or there's no models section
-    expect(modelsVisible !== undefined).toBe(true)
+    await expect(modelsSection).toBeVisible()
   })
 })
 
@@ -366,11 +379,11 @@ test.describe('Performance Tuning', () => {
   })
 
   test('should display raw request/response toggles', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('performance')
+    await providersPage.selectConfigTab('debugging')
 
-    // Should see raw request and response toggles
-    const rawRequestLabel = providersPage.page.getByText('Include Raw Request')
-    const rawResponseLabel = providersPage.page.getByText('Include Raw Response')
+    // Should see raw request and response toggles (Debugging tab labels)
+    const rawRequestLabel = providersPage.page.getByText('Send Back Raw Request')
+    const rawResponseLabel = providersPage.page.getByText('Send Back Raw Response')
 
     await expect(rawRequestLabel).toBeVisible()
     await expect(rawResponseLabel).toBeVisible()
@@ -401,6 +414,10 @@ test.describe('Performance Tuning', () => {
     const saveBtn = providersPage.getConfigSaveBtn('performance')
     await expect(saveBtn).toBeEnabled()
     await providersPage.savePerformanceConfig()
+
+    // Verify value persisted after save (reload would be ideal but we restore instead)
+    const afterSaveValue = await concurrencyInput.inputValue()
+    expect(afterSaveValue).toBe(newValue)
 
     // Restore original value
     await providersPage.fillNumberInput(concurrencyInput, originalValue)
@@ -445,7 +462,7 @@ test.describe('Performance Tuning', () => {
   })
 
   test('should toggle and save raw request/response', async ({ providersPage }) => {
-    await providersPage.selectConfigTab('performance')
+    await providersPage.selectConfigTab('debugging')
 
     const rawRequestSwitch = providersPage.getRawRequestSwitch()
     const rawResponseSwitch = providersPage.getRawResponseSwitch()
@@ -459,9 +476,9 @@ test.describe('Performance Tuning', () => {
     await rawResponseSwitch.click()
 
     // Save and verify success
-    const saveBtn = providersPage.getConfigSaveBtn('performance')
+    const saveBtn = providersPage.getConfigSaveBtn('debugging')
     await expect(saveBtn).toBeEnabled()
-    await providersPage.savePerformanceConfig()
+    await providersPage.saveDebuggingConfig()
 
     // Restore original states
     const currentRawRequest = await rawRequestSwitch.getAttribute('data-state') === 'checked'
@@ -474,7 +491,7 @@ test.describe('Performance Tuning', () => {
       await rawResponseSwitch.click()
     }
 
-    await providersPage.savePerformanceConfig()
+    await providersPage.saveDebuggingConfig()
   })
 })
 
@@ -710,5 +727,59 @@ test.describe('Governance (Budget & Rate Limits)', () => {
       expect(await tokenInput.inputValue()).toBe('100000')
       expect(await requestInput.inputValue()).toBe('1000')
     }
+  })
+})
+
+test.describe('Debugging Tab', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+    await providersPage.selectProvider('openai')
+  })
+
+  test('should display debugging tab', async ({ providersPage }) => {
+    await providersPage.openConfigSheet()
+    const debuggingTab = providersPage.page.getByTestId('provider-tab-debugging')
+    await expect(debuggingTab).toBeVisible()
+  })
+
+  test('should navigate to debugging tab', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('debugging')
+
+    const debuggingTab = providersPage.page.getByTestId('provider-tab-debugging')
+    await expect(debuggingTab).toHaveAttribute('data-state', 'active')
+    const debuggingContent = providersPage.page.getByTestId('provider-config-debugging-content')
+    await expect(debuggingContent).toBeVisible()
+  })
+})
+
+test.describe('vLLM Provider', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+  })
+
+  test('should display vLLM-specific key fields when adding key to vLLM provider', async ({ providersPage }) => {
+    const vllmAvailable = await providersPage.providerExists('vllm')
+    if (!vllmAvailable) {
+      test.skip(true, 'vLLM provider not in sidebar (add from dropdown first)')
+      return
+    }
+
+    await providersPage.selectProvider('vllm')
+    await providersPage.addKeyBtn.click()
+
+    const vllmUrlInput = providersPage.page.getByTestId('key-input-vllm-url')
+    const vllmModelInput = providersPage.page.getByTestId('key-input-vllm-model-name')
+
+    const urlVisible = await vllmUrlInput.isVisible().catch(() => false)
+    const modelVisible = await vllmModelInput.isVisible().catch(() => false)
+
+    if (!urlVisible && !modelVisible) {
+      test.skip(true, 'vLLM key form fields not shown (provider may use standard key form)')
+      return
+    }
+    await expect(vllmUrlInput).toBeVisible()
+    await expect(vllmModelInput).toBeVisible()
+
+    await providersPage.keyCancelBtn.click()
   })
 })

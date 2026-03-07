@@ -13,6 +13,8 @@ export class ProvidersPage extends BasePage {
   // Locators
   readonly providerList: Locator
   readonly addProviderBtn: Locator
+  /** Add New Provider dropdown > "Custom provider..." menu item */
+  readonly addProviderOptionCustom: Locator
   readonly addKeyBtn: Locator
   readonly keysTable: Locator
 
@@ -23,6 +25,9 @@ export class ProvidersPage extends BasePage {
   readonly baseUrlInput: Locator
   readonly customProviderSaveBtn: Locator
   readonly customProviderCancelBtn: Locator
+
+  // Keys table empty state (when provider has no keys)
+  readonly keysTableEmptyState: Locator
 
   // Key form
   readonly keyForm: Locator
@@ -35,6 +40,7 @@ export class ProvidersPage extends BasePage {
     // Provider list
     this.providerList = page.locator(Selectors.providers.providerList)
     this.addProviderBtn = page.getByTestId('add-provider-btn')
+    this.addProviderOptionCustom = page.getByTestId('add-provider-option-custom')
 
     // Keys table
     this.addKeyBtn = page.getByTestId('add-key-btn')
@@ -47,6 +53,9 @@ export class ProvidersPage extends BasePage {
     this.baseUrlInput = page.getByTestId('base-url-input')
     this.customProviderSaveBtn = page.getByTestId('custom-provider-save-btn')
     this.customProviderCancelBtn = page.getByTestId('custom-provider-cancel-btn')
+
+    // Keys table empty state
+    this.keysTableEmptyState = page.getByTestId('keys-table-empty-state')
 
     // Key form
     this.keyForm = page.getByTestId('key-form')
@@ -125,14 +134,32 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
+   * Add a known provider from the "Add provider" dropdown (e.g. Nebius, OpenAI).
+   * Opens the dropdown and clicks the option with data-testid add-provider-option-{name}.
+   */
+  async addKnownProviderFromDropdown(providerName: string): Promise<void> {
+    await this.addProviderBtn.click()
+    const option = this.page.getByTestId(`add-provider-option-${providerName}`)
+    await option.waitFor({ state: 'visible', timeout: 5000 })
+    await option.click()
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Open the custom provider sheet via Add New Provider > Custom provider...
+   */
+  async openCustomProviderSheet(): Promise<void> {
+    await this.addProviderBtn.click()
+    await this.addProviderOptionCustom.waitFor({ state: 'visible', timeout: 5000 })
+    await this.addProviderOptionCustom.click()
+    await expect(this.customProviderSheet).toBeVisible({ timeout: 5000 })
+  }
+
+  /**
    * Create a custom provider
    */
   async createProvider(config: CustomProviderConfig): Promise<void> {
-    // Click add provider button
-    await this.addProviderBtn.click()
-
-    // Wait for custom provider sheet to appear
-    await expect(this.customProviderSheet).toBeVisible()
+    await this.openCustomProviderSheet()
 
     // Fill in provider name
     await this.customProviderNameInput.fill(config.name)
@@ -164,14 +191,12 @@ export class ProvidersPage extends BasePage {
    * @param options.skipToastWait - If true, do not wait for success toast (e.g. for cleanup); avoids cleanup failures when toast is missing or already gone.
    */
   async deleteProvider(name: string, options?: { skipToastWait?: boolean }): Promise<void> {
-    // First select the provider
+    // First select the provider (config panel shows with delete button)
     await this.selectProvider(name)
 
-    // Find and click the delete button
-    const providerItem = this.getProviderItem(name)
-    await providerItem.hover()
-
-    const deleteBtn = providerItem.locator('svg.lucide-trash')
+    // Click the delete button in the config panel
+    const deleteBtn = this.page.getByTestId('provider-delete-btn')
+    await deleteBtn.waitFor({ state: 'visible', timeout: 5000 })
     await deleteBtn.click()
 
     // Confirm deletion in dialog
@@ -195,6 +220,24 @@ export class ProvidersPage extends BasePage {
     return this.page.getByTestId(`key-row-${name}`).or(
       this.page.locator('tr, [role="row"]').filter({ hasText: name })
     )
+  }
+
+  /**
+   * Get the displayed weight for a key
+   */
+  async getKeyWeight(name: string): Promise<string> {
+    const keyRow = this.getKeyRow(name)
+    return (await keyRow.getByTestId('key-weight-value').textContent()) ?? ''
+  }
+
+  /**
+   * Get the enabled state of a key (switch checked or not)
+   */
+  async getKeyEnabledState(name: string): Promise<boolean> {
+    const keyRow = this.getKeyRow(name)
+    const switchEl = keyRow.getByTestId('key-enabled-switch')
+    const checked = await switchEl.getAttribute('data-state')
+    return checked === 'checked'
   }
 
   /**
@@ -289,7 +332,7 @@ export class ProvidersPage extends BasePage {
    */
   async toggleKeyEnabled(keyName: string): Promise<void> {
     const keyRow = this.getKeyRow(keyName)
-    const switchEl = keyRow.locator('button[role="switch"]')
+    const switchEl = keyRow.getByTestId('key-enabled-switch')
     await switchEl.click()
     await this.waitForSuccessToast()
   }
@@ -352,17 +395,10 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Promise<void> {
     await this.openConfigSheet()
 
-    const tabLabels: Record<string, string> = {
-      network: 'Network config',
-      proxy: 'Proxy config',
-      performance: 'Performance tuning',
-      governance: 'Governance',
-    }
-
-    const tab = this.page.getByRole('tab', { name: tabLabels[tabName] })
+    const tab = this.page.getByTestId(`provider-tab-${tabName}`)
     await tab.click()
     await this.page.waitForTimeout(300)
   }
@@ -370,12 +406,13 @@ export class ProvidersPage extends BasePage {
   /**
    * Get the save button for the current config tab
    */
-  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance'): Locator {
+  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Locator {
     const buttonNames: Record<string, string> = {
       network: 'Save Network Configuration',
       proxy: 'Save Proxy Configuration',
       performance: 'Save Performance Configuration',
       governance: 'Save Governance Configuration',
+      debugging: 'Save Debugging Configuration',
     }
     return this.page.getByRole('button', { name: buttonNames[configType] })
   }
@@ -399,17 +436,17 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
-   * Get raw request switch
+   * Get raw request switch (Debugging tab: "Send Back Raw Request")
    */
   getRawRequestSwitch(): Locator {
-    return this.page.getByLabel('Include Raw Request').locator('..').locator('button[role="switch"]')
+    return this.page.getByLabel('Send Back Raw Request').locator('..').locator('button[role="switch"]')
   }
 
   /**
-   * Get raw response switch
+   * Get raw response switch (Debugging tab: "Send Back Raw Response")
    */
   getRawResponseSwitch(): Locator {
-    return this.page.getByLabel('Include Raw Response').locator('..').locator('button[role="switch"]')
+    return this.page.getByLabel('Send Back Raw Response').locator('..').locator('button[role="switch"]')
   }
 
   /**
@@ -444,13 +481,21 @@ export class ProvidersPage extends BasePage {
   }
 
   /**
-   * Set performance configuration
+   * Save debugging configuration and wait for success toast
+   */
+  async saveDebuggingConfig(): Promise<void> {
+    const saveBtn = this.getConfigSaveBtn('debugging')
+    await saveBtn.click()
+    await this.waitForSuccessToast()
+  }
+
+  /**
+   * Set performance configuration (concurrency, buffer size only).
+   * For raw request/response toggles use setDebuggingConfig.
    */
   async setPerformanceConfig(config: {
     concurrency?: number
     bufferSize?: number
-    rawRequest?: boolean
-    rawResponse?: boolean
   }): Promise<void> {
     await this.selectConfigTab('performance')
 
@@ -463,10 +508,17 @@ export class ProvidersPage extends BasePage {
       const input = this.getBufferSizeInput()
       await this.fillNumberInput(input, String(config.bufferSize))
     }
+  }
+
+  /**
+   * Set debugging configuration (raw request/response toggles).
+   */
+  async setDebuggingConfig(config: { rawRequest?: boolean; rawResponse?: boolean }): Promise<void> {
+    await this.selectConfigTab('debugging')
 
     if (config.rawRequest !== undefined) {
       const switchEl = this.getRawRequestSwitch()
-      const isChecked = await switchEl.getAttribute('data-state') === 'checked'
+      const isChecked = (await switchEl.getAttribute('data-state')) === 'checked'
       if (isChecked !== config.rawRequest) {
         await switchEl.click()
       }
@@ -474,7 +526,7 @@ export class ProvidersPage extends BasePage {
 
     if (config.rawResponse !== undefined) {
       const switchEl = this.getRawResponseSwitch()
-      const isChecked = await switchEl.getAttribute('data-state') === 'checked'
+      const isChecked = (await switchEl.getAttribute('data-state')) === 'checked'
       if (isChecked !== config.rawResponse) {
         await switchEl.click()
       }
@@ -607,7 +659,8 @@ export class ProvidersPage extends BasePage {
    */
   async isGovernanceTabVisible(): Promise<boolean> {
     await this.openConfigSheet()
-    const tab = this.page.getByRole('tab', { name: 'Governance' })
+    const tab = this.page.getByTestId('provider-tab-governance')
     return await tab.isVisible().catch(() => false)
   }
+
 }
