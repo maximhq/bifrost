@@ -686,7 +686,10 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			return
 		}
 		if sendRawRequestBody, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && sendRawRequestBody {
-			bifrostReq.SetRawRequestBody(rawBody)
+			// Re-read the body from the context: PreCallback (e.g.
+			// checkAnthropicPassthrough) may have updated it to strip
+			// the provider prefix that the governance plugin added.
+			bifrostReq.SetRawRequestBody(ctx.Request.Body())
 		}
 
 		// Extract and parse fallbacks from the request if present

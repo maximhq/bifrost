@@ -3,7 +3,10 @@ package integrations
 import (
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 func TestFilterVertexUnsupportedBetaHeaders(t *testing.T) {
@@ -83,5 +86,72 @@ func TestFilterVertexUnsupportedBetaHeaders(t *testing.T) {
 		vals, ok := result["Anthropic-Beta"]
 		assert.True(t, ok, "header key casing should be preserved and matching should be case-insensitive")
 		assert.Equal(t, []string{"interleaved-thinking-2025-05-14"}, vals)
+	})
+}
+
+func TestStripModelPrefixFromBody(t *testing.T) {
+	makeCtx := func(body string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetBodyString(body)
+		return ctx
+	}
+
+	bodyModel := func(ctx *fasthttp.RequestCtx) string {
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(ctx.Request.Body(), &m))
+		return m["model"].(string)
+	}
+
+	t.Run("strips matching provider prefix from model field", func(t *testing.T) {
+		ctx := makeCtx(`{"model":"anthropic/claude-sonnet-4-6","max_tokens":1024}`)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		assert.Equal(t, "claude-sonnet-4-6", bodyModel(ctx))
+	})
+
+	t.Run("preserves other fields unchanged", func(t *testing.T) {
+		ctx := makeCtx(`{"model":"anthropic/claude-sonnet-4-6","max_tokens":1024,"stream":true}`)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(ctx.Request.Body(), &m))
+		assert.Equal(t, "claude-sonnet-4-6", m["model"])
+		assert.Equal(t, float64(1024), m["max_tokens"])
+		assert.Equal(t, true, m["stream"])
+	})
+
+	t.Run("no-op when model does not match", func(t *testing.T) {
+		ctx := makeCtx(`{"model":"openai/gpt-4o","max_tokens":1024}`)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		assert.Equal(t, "openai/gpt-4o", bodyModel(ctx))
+	})
+
+	t.Run("no-op when body has no model field", func(t *testing.T) {
+		original := `{"max_tokens":1024}`
+		ctx := makeCtx(original)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		assert.JSONEq(t, original, string(ctx.Request.Body()))
+	})
+
+	t.Run("no-op on empty body", func(t *testing.T) {
+		ctx := makeCtx("")
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		assert.Empty(t, ctx.Request.Body())
+	})
+
+	t.Run("no-op on invalid JSON", func(t *testing.T) {
+		original := `{invalid`
+		ctx := makeCtx(original)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		assert.Equal(t, original, string(ctx.Request.Body()))
+	})
+
+	t.Run("preserves nested content containing the model name", func(t *testing.T) {
+		ctx := makeCtx(`{"model":"anthropic/claude-sonnet-4-6","messages":[{"content":"use anthropic/claude-sonnet-4-6"}]}`)
+		stripModelPrefixFromBody(ctx, "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6")
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(ctx.Request.Body(), &m))
+		assert.Equal(t, "claude-sonnet-4-6", m["model"])
+		msgs := m["messages"].([]any)
+		msg := msgs[0].(map[string]any)
+		assert.Equal(t, "use anthropic/claude-sonnet-4-6", msg["content"], "nested content must not be modified")
 	})
 }
