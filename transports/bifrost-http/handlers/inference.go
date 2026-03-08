@@ -795,7 +795,9 @@ func (h *CompletionHandler) textCompletion(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Detect CLI user agent for MCP tool deduplication
-	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
 
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingTextCompletion(ctx, bifrostTextReq, bifrostCtx, cancel)
@@ -902,7 +904,9 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Detect CLI user agent for MCP tool deduplication
-	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
 
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingChatCompletion(ctx, bifrostChatReq, bifrostCtx, cancel)
@@ -993,7 +997,9 @@ func (h *CompletionHandler) responses(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Detect CLI user agent for MCP tool deduplication
-	integrations.DetectCLIUserAgent(ctx, bifrostCtx)
+	if cliAgent := integrations.DetectCLIUserAgent(ctx); cliAgent != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserAgent, cliAgent)
+	}
 
 	if req.Stream != nil && *req.Stream {
 		h.handleStreamingResponses(ctx, bifrostResponsesReq, bifrostCtx, cancel)
