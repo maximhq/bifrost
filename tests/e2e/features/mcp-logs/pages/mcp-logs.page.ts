@@ -11,6 +11,7 @@ export class MCPLogsPage extends BasePage {
   readonly filtersSection: Locator
   readonly filtersButton: Locator
   readonly statsCards: Locator
+  readonly statTooltip: Locator
 
   // Filter elements
   readonly toolNameFilter: Locator
@@ -41,6 +42,7 @@ export class MCPLogsPage extends BasePage {
     this.statsCards = page.locator('[data-testid="mcp-stats-cards"]').or(
       page.locator('text=Total Executions').locator('..').locator('..')
     )
+    this.statTooltip = page.locator('[data-testid$="-tooltip"]')
 
     // Filter elements - filters are inside a popover opened by the Filters button
     this.toolNameFilter = page.locator('[data-testid="filter-tool-name"]').or(
@@ -55,7 +57,7 @@ export class MCPLogsPage extends BasePage {
     this.searchInput = page.locator('[data-testid="filter-search"]').or(
       page.getByPlaceholder('Search MCP logs')
     )
-    this.dateRangePicker = page.locator('[data-testid="filter-date-range"]').or(
+    this.dateRangePicker = page.locator('[data-testid="mcp-filter-date-range"]').or(
       page.locator('button').filter({ hasText: /Last/i })
     )
     this.liveToggle = page.locator('[data-testid="live-toggle"]').or(
@@ -361,6 +363,25 @@ export class MCPLogsPage extends BasePage {
     // MCP logs page shows "Total Executions" not "Total Requests"
     const statsText = this.page.locator('text=Total Executions')
     return await statsText.isVisible().catch(() => false)
+  }
+
+  /**
+   * Hover a stats card value to reveal its tooltip.
+   */
+  async hoverStatValue(statName: string): Promise<void> {
+    const testIds: Record<string, string> = {
+      'Total Executions': 'mcp-logs-stat-value-total-executions',
+      'Success Rate': 'mcp-logs-stat-value-success-rate',
+      'Avg Latency': 'mcp-logs-stat-value-avg-latency',
+      'Total Cost': 'mcp-logs-stat-value-total-cost',
+    }
+    const testId = testIds[statName]
+    if (!testId) {
+      throw new Error(`Unknown stat name: "${statName}". Valid names: ${Object.keys(testIds).join(', ')}`)
+    }
+    const value = this.page.getByTestId(testId)
+    await value.waitFor({ state: 'visible' })
+    await value.hover()
   }
 
   /**

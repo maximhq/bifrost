@@ -149,8 +149,9 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 	} as const;
 
 	return (
-		<div className="flex items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
+		<div className="flex flex-wrap items-center gap-2">
+			<div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+			<Button variant={"outline"} size="sm" className="h-7.5 shrink-0" data-testid="mcp-live-toggle" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
 						<Pause className="h-4 w-4" />
@@ -163,87 +164,93 @@ export function MCPLogFilters({ filters, onFiltersChange, liveEnabled, onLiveTog
 					</>
 				)}
 			</Button>
-			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
-				<Search className="mr-0.5 ml-2 size-4" />
-				<Input
-					type="text"
-					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0 dark:bg-zinc-900"
-					placeholder="Search MCP logs"
-					value={localSearch}
-					onChange={(e) => handleSearchChange(e.target.value)}
-				/>
+				<div className="border-input flex h-7.5 min-w-[220px] flex-1 items-center gap-2 rounded-sm border">
+					<Search className="mr-0.5 ml-2 size-4 shrink-0" />
+					<Input
+						type="text"
+						className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
+						placeholder="Search MCP logs"
+						value={localSearch}
+						onChange={(e) => handleSearchChange(e.target.value)}
+					/>
+				</div>
 			</div>
 
-			<DateTimePickerWithRange
-				dateTime={{
-					from: startTime,
-					to: endTime,
-				}}
-				onDateTimeUpdate={(p) => {
-					setStartTime(p.from);
-					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
-				}}
-			/>
-			<Popover open={openFiltersPopover} onOpenChange={setOpenFiltersPopover}>
-				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5 w-[120px]">
-						<FilterIcon className="h-4 w-4" />
-						Filters
-						{getSelectedCount() > 0 && (
-							<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
-								{getSelectedCount()}
-							</span>
-						)}
-					</Button>
-				</PopoverTrigger>
-				<PopoverContent className="w-[200px] p-0" align="end">
-					<Command>
-						<CommandInput placeholder="Search filters..." />
-						<CommandList>
-							<CommandEmpty>No filters found.</CommandEmpty>
-							{Object.entries(FILTER_OPTIONS)
-								.filter(([_, values]) => values.length > 0)
-								.map(([category, values]) => (
-									<CommandGroup key={category} heading={category}>
-										{values.map((value) => {
-											const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
-											const isLoading =
-												(category === "Tool Names" && filterDataLoading) ||
-												(category === "Servers" && filterDataLoading) ||
-												(category === "Virtual Keys" && filterDataLoading);
-											return (
-												<CommandItem
-													key={value}
-													onSelect={() => !isLoading && handleFilterSelect(category as keyof typeof FILTER_OPTIONS, value)}
-													disabled={isLoading}
-												>
-													<div
-														className={cn(
-															"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
-															selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
-														)}
+			<div className="flex w-full flex-wrap items-center gap-2 min-[1120px]:ml-auto min-[1120px]:w-auto min-[1120px]:justify-end">
+				<DateTimePickerWithRange
+					className="w-full min-[720px]:w-auto"
+					buttonClassName="w-full max-w-full min-[720px]:w-[320px] min-[960px]:w-[360px]"
+					triggerTestId="mcp-filter-date-range"
+					dateTime={{
+						from: startTime,
+						to: endTime,
+					}}
+					onDateTimeUpdate={(p) => {
+						setStartTime(p.from);
+						setEndTime(p.to);
+						onFiltersChange({
+							...filters,
+							start_time: p.from?.toISOString(),
+							end_time: p.to?.toISOString(),
+						});
+					}}
+				/>
+				<Popover open={openFiltersPopover} onOpenChange={setOpenFiltersPopover}>
+					<PopoverTrigger asChild>
+						<Button variant="outline" size="sm" className="h-7.5 min-w-[120px] shrink-0">
+							<FilterIcon className="h-4 w-4" />
+							Filters
+							{getSelectedCount() > 0 && (
+								<span className="bg-primary/10 flex h-6 w-6 items-center justify-center rounded-full text-xs font-normal">
+									{getSelectedCount()}
+								</span>
+							)}
+						</Button>
+					</PopoverTrigger>
+					<PopoverContent className="w-[200px] p-0" align="end">
+						<Command>
+							<CommandInput placeholder="Search filters..." />
+							<CommandList>
+								<CommandEmpty>No filters found.</CommandEmpty>
+								{Object.entries(FILTER_OPTIONS)
+									.filter(([_, values]) => values.length > 0)
+									.map(([category, values]) => (
+										<CommandGroup key={category} heading={category}>
+											{values.map((value) => {
+												const selected = isSelected(category as keyof typeof FILTER_OPTIONS, value);
+												const isLoading =
+													(category === "Tool Names" && filterDataLoading) ||
+													(category === "Servers" && filterDataLoading) ||
+													(category === "Virtual Keys" && filterDataLoading);
+												return (
+													<CommandItem
+														key={value}
+														onSelect={() => !isLoading && handleFilterSelect(category as keyof typeof FILTER_OPTIONS, value)}
+														disabled={isLoading}
 													>
-														{isLoading ? (
-															<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
-														) : (
-															<Check className="text-primary-foreground size-3" />
-														)}
-													</div>
-													<span className={cn("lowercase", isLoading && "text-muted-foreground")}>{value}</span>
-												</CommandItem>
-											);
-										})}
-									</CommandGroup>
-								))}
-						</CommandList>
-					</Command>
-				</PopoverContent>
-			</Popover>
+														<div
+															className={cn(
+																"border-primary mr-2 flex h-4 w-4 items-center justify-center rounded-sm border",
+																selected ? "bg-primary text-primary-foreground" : "opacity-50 [&_svg]:invisible",
+															)}
+														>
+															{isLoading ? (
+																<div className="border-primary h-3 w-3 animate-spin rounded-full border border-t-transparent" />
+															) : (
+																<Check className="text-primary-foreground size-3" />
+															)}
+														</div>
+														<span className={cn("lowercase", isLoading && "text-muted-foreground")}>{value}</span>
+													</CommandItem>
+												);
+											})}
+										</CommandGroup>
+									))}
+							</CommandList>
+						</Command>
+					</PopoverContent>
+				</Popover>
+			</div>
 		</div>
 	);
 }

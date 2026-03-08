@@ -6,6 +6,7 @@ import { EmptyState } from "@/app/workspace/logs/views/emptyState";
 import { LogsDataTable } from "@/app/workspace/logs/views/logsTable";
 import { LogsVolumeChart } from "@/app/workspace/logs/views/logsVolumeChart";
 import FullPageLoader from "@/components/fullPageLoader";
+import { OverviewStatValue } from "@/components/overviewStatValue";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -670,36 +671,54 @@ export default function LogsPage() {
 		return true;
 	};
 
-	const statCards = useMemo(
-		() => [
+	const statCards = useMemo(() => {
+		const totalRequests = stats ? stats.total_requests.toLocaleString() : undefined;
+		const successRate = stats ? `${stats.success_rate.toFixed(2)}%` : undefined;
+		const successRateTooltip = stats ? `${stats.success_rate}%` : undefined;
+		const avgLatency = stats ? `${stats.average_latency.toFixed(2)}ms` : undefined;
+		const avgLatencyTooltip = stats ? `${stats.average_latency}ms` : undefined;
+		const totalTokens = stats ? stats.total_tokens.toLocaleString() : undefined;
+		const totalCost = stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : undefined;
+		const totalCostTooltip = stats ? `$${stats.total_cost ?? 0}` : undefined;
+
+		return [
 			{
 				title: "Total Requests",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats?.total_requests.toLocaleString() || "-",
+				testId: "logs-stat-value-total-requests",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : totalRequests ?? "-",
+				tooltip: fetchingStats ? undefined : totalRequests,
 				icon: <BarChart className="size-4" />,
 			},
 			{
 				title: "Success Rate",
-				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
+				testId: "logs-stat-value-success-rate",
+				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : successRate ?? "-",
+				tooltip: fetchingStats ? undefined : successRateTooltip,
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
 				title: "Avg Latency",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `${stats.average_latency.toFixed(2)}ms` : "-",
+				testId: "logs-stat-value-avg-latency",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : avgLatency ?? "-",
+				tooltip: fetchingStats ? undefined : avgLatencyTooltip,
 				icon: <Clock className="size-4" />,
 			},
 			{
 				title: "Total Tokens",
-				value: fetchingStats ? <Skeleton className="h-8 w-24" /> : stats?.total_tokens.toLocaleString() || "-",
+				testId: "logs-stat-value-total-tokens",
+				value: fetchingStats ? <Skeleton className="h-8 w-24" /> : totalTokens ?? "-",
+				tooltip: fetchingStats ? undefined : totalTokens,
 				icon: <Hash className="size-4" />,
 			},
 			{
 				title: "Total Cost",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : "-",
+				testId: "logs-stat-value-total-cost",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : totalCost ?? "-",
+				tooltip: fetchingStats ? undefined : totalCostTooltip,
 				icon: <DollarSign className="size-4" />,
 			},
-		],
-		[stats, fetchingStats],
-	);
+		];
+	}, [stats, fetchingStats]);
 
 	const columns = useMemo(() => createColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
@@ -713,13 +732,13 @@ export default function LogsPage() {
 				<div className="mx-auto flex h-full w-full flex-col">
 					<div className="flex flex-1 flex-col gap-2 overflow-hidden">
 						{/* Quick Stats */}
-						<div className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
+						<div data-testid="logs-stats-cards" className="grid shrink-0 grid-cols-1 gap-4 md:grid-cols-5">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
 										<div className="min-w-0 w-full">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
-											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											<OverviewStatValue value={card.value} tooltip={card.tooltip} data-testid={card.testId} />
 										</div>
 									</CardContent>
 								</Card>

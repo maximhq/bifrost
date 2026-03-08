@@ -1,6 +1,7 @@
 "use client";
 
 import FullPageLoader from "@/components/fullPageLoader";
+import { OverviewStatValue } from "@/components/overviewStatValue";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -420,31 +421,46 @@ export default function MCPLogsPage() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [filters, initialLoading]);
 
-	const statCards = useMemo(
-		() => [
+	const statCards = useMemo(() => {
+		const totalExecutions = stats ? stats.total_executions.toLocaleString() : undefined;
+		const successRate = stats ? `${stats.success_rate.toFixed(2)}%` : undefined;
+		const successRateTooltip = stats ? `${stats.success_rate}%` : undefined;
+		const avgLatency = stats ? `${stats.average_latency.toFixed(2)}ms` : undefined;
+		const avgLatencyTooltip = stats ? `${stats.average_latency}ms` : undefined;
+		const totalCost = stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : undefined;
+		const totalCostTooltip = stats ? `$${stats.total_cost ?? 0}` : undefined;
+
+		return [
 			{
 				title: "Total Executions",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats?.total_executions.toLocaleString() || "-",
+				testId: "mcp-logs-stat-value-total-executions",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : totalExecutions ?? "-",
+				tooltip: fetchingStats ? undefined : totalExecutions,
 				icon: <Hash className="size-4" />,
 			},
 			{
 				title: "Success Rate",
-				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : stats ? `${stats.success_rate.toFixed(2)}%` : "-",
+				testId: "mcp-logs-stat-value-success-rate",
+				value: fetchingStats ? <Skeleton className="h-8 w-16" /> : successRate ?? "-",
+				tooltip: fetchingStats ? undefined : successRateTooltip,
 				icon: <CheckCircle className="size-4" />,
 			},
 			{
 				title: "Avg Latency",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `${stats.average_latency.toFixed(2)}ms` : "-",
+				testId: "mcp-logs-stat-value-avg-latency",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : avgLatency ?? "-",
+				tooltip: fetchingStats ? undefined : avgLatencyTooltip,
 				icon: <Clock className="size-4" />,
 			},
 			{
 				title: "Total Cost",
-				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : stats ? `$${(stats.total_cost ?? 0).toFixed(4)}` : "-",
+				testId: "mcp-logs-stat-value-total-cost",
+				value: fetchingStats ? <Skeleton className="h-8 w-20" /> : totalCost ?? "-",
+				tooltip: fetchingStats ? undefined : totalCostTooltip,
 				icon: <DollarSign className="size-4" />,
 			},
-		],
-		[stats, fetchingStats],
-	);
+		];
+	}, [stats, fetchingStats]);
 
 	const columns = useMemo(() => createMCPColumns(handleDelete, hasDeleteAccess), [handleDelete, hasDeleteAccess]);
 
@@ -471,13 +487,13 @@ export default function MCPLogsPage() {
 				<div className="mx-auto w-full space-y-6">
 					<div className="space-y-6">
 						{/* Quick Stats */}
-						<div className="grid grid-cols-1 gap-4 md:grid-cols-4">
+						<div data-testid="mcp-stats-cards" className="grid grid-cols-1 gap-4 md:grid-cols-4">
 							{statCards.map((card) => (
 								<Card key={card.title} className="py-4 shadow-none">
 									<CardContent className="flex items-center justify-between px-4">
 										<div className="min-w-0 w-full">
 											<div className="text-muted-foreground text-xs">{card.title}</div>
-											<div className="truncate font-mono text-xl font-medium sm:text-2xl">{card.value}</div>
+											<OverviewStatValue value={card.value} tooltip={card.tooltip} data-testid={card.testId} />
 										</div>
 									</CardContent>
 								</Card>

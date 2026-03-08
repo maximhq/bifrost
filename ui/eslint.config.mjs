@@ -1,5 +1,4 @@
 import { fixupConfigRules } from "@eslint/compat";
-import eslintPluginImport from "eslint-plugin-import";
 import { FlatCompat } from "@eslint/eslintrc";
 import js from "@eslint/js";
 import typescriptEslintEslintPlugin from "@typescript-eslint/eslint-plugin";
@@ -24,7 +23,6 @@ const eslintConfig = [
 			prettier: eslintPluginPrettier,
 			"@typescript-eslint": typescriptEslintEslintPlugin,
 			"unused-imports": eslintPluginUnusedImports,
-			import: eslintPluginImport,
 		},
 	},
 	{
