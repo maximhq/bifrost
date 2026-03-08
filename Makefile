@@ -27,7 +27,7 @@ include recipes/fly.mk
 include recipes/ecs.mk
 include recipes/local-k8s.mk
 
-.PHONY: all help dev build-ui build run install-air clean test install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -213,6 +213,12 @@ build: build-ui ## Build bifrost-http binary
 		$(MAKE) _build-with-docker TARGET_OS=$$TARGET_OS TARGET_ARCH=$$TARGET_ARCH $(if $(DYNAMIC),DYNAMIC=$(DYNAMIC)); \
 	fi
 
+build-cli: ## Build bifrost CLI binary
+	@echo "$(GREEN)Building bifrost CLI...$(NC)"
+	@mkdir -p ./tmp
+	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -o ../tmp/bifrost .
+	@echo "$(GREEN)Built: tmp/bifrost$(NC)"
+
 _build-with-docker: # Internal target for Docker-based cross-compilation
 	@echo "$(CYAN)Using Docker for cross-compilation...$(NC)"; \
 	if [ "$(TARGET_OS)" = "linux" ]; then \
@@ -282,6 +288,10 @@ run: build ## Build and run bifrost-http (no hot reload)
 		-log-level "$(LOG_LEVEL)" \
 		$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)")
 		$(if $(APP_DIR),-app-dir "$(APP_DIR)")
+
+run-cli: build-cli ## Run bifrost CLI (Usage: make run-cli [ARGS="--config ~/.bifrost/config.json"])
+	@echo "$(GREEN)Running bifrost CLI...$(NC)"
+	@./tmp/bifrost $(ARGS)
 
 clean: ## Clean build artifacts and temporary files
 	@echo "$(YELLOW)Cleaning build artifacts...$(NC)"
@@ -894,7 +904,7 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 		exit 1; \
 	fi
 
-test-all: test-core test-plugins test ## Run all tests
+test-all: test-core test-plugins test test-cli ## Run all tests
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(NC)"
 	@echo "$(GREEN)              All Tests Complete - Summary                 $(NC)"
@@ -1255,7 +1265,7 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 	@echo "$(YELLOW)Cleaning existing workspace...$(NC)"
 	@rm -f go.work go.work.sum || true
 	@echo "$(YELLOW)Initializing new workspace...$(NC)"
-	@go work init ./core ./framework ./transports
+	@go work init ./cli ./core ./framework ./transports
 	@echo "$(YELLOW)Adding plugin modules...$(NC)"
 	@for plugin_dir in ./plugins/*/; do \
 		if [ -d "$$plugin_dir" ] && [ -f "$$plugin_dir/go.mod" ]; then \
@@ -1286,8 +1296,12 @@ work-clean: ## Remove local go.work
 # Module parameter for mod-tidy (all/core/plugins/framework/transport)
 MODULE ?= all
 
-mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|core|plugins|framework|transport])
+mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|cli|core|plugins|framework|transport])
 	@echo "$(GREEN)Running go mod tidy...$(NC)"
+	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "cli" ]; then \
+		echo "$(CYAN)Tidying cli...$(NC)"; \
+		cd cli && $(if $(LOCAL),,GOWORK=off) go mod tidy && echo "$(GREEN)  ✓ cli$(NC)"; \
+	fi
 	@if [ "$(MODULE)" = "all" ] || [ "$(MODULE)" = "core" ]; then \
 		echo "$(CYAN)Tidying core...$(NC)"; \
 		cd core && go mod tidy && echo "$(GREEN)  ✓ core$(NC)"; \
@@ -1311,3 +1325,11 @@ mod-tidy: ## Run go mod tidy on modules (Usage: make mod-tidy [MODULE=all|core|p
 	fi
 	@echo ""
 	@echo "$(GREEN)✓ go mod tidy complete$(NC)"
+
+test-cli: install-gotestsum ## Run CLI tests
+	@echo "$(GREEN)Running CLI tests...$(NC)"
+	@mkdir -p $(TEST_REPORTS_DIR)
+	@cd cli && GOWORK=off gotestsum \
+		--format=$(GOTESTSUM_FORMAT) \
+		--junitfile=../$(TEST_REPORTS_DIR)/cli.xml \
+		-- ./...

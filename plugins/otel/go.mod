@@ -134,5 +134,5 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	go.opentelemetry.io/proto/otlp v1.9.0
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 )

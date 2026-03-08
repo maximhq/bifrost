@@ -83,6 +83,7 @@
                   "quickstart/gateway/cli-agents"
                 ]
               },
+              "quickstart/cli/getting-started",
               {
                 "group": "Use as Go SDK",
                 "icon": "code",
