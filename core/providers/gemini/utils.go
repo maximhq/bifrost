@@ -436,6 +436,51 @@ func isImageMimeType(mimeType string) bool {
 	return false
 }
 
+// isGeminiNativeURI returns true if the URI can be passed directly to Gemini's
+// fileData.fileUri (gs:// bucket URIs and Google File API URIs).
+func isGeminiNativeURI(uri string) bool {
+	return strings.HasPrefix(uri, "gs://") ||
+		strings.HasPrefix(uri, "https://generativelanguage.googleapis.com/")
+}
+
+// fetchFileURLToInlineData downloads content from a non-Gemini-native HTTP(S)
+// URL and returns a Part with InlineData. Gemini's fileData.fileUri is
+// unreliable for signed HTTP URLs (e.g. GCS signed URLs), so we fetch the
+// content ourselves and send it as base64-encoded inline data instead.
+func fetchFileURLToInlineData(fileURL string, mimeType string) (*Part, error) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	req.SetRequestURI(fileURL)
+	req.Header.SetMethod(fasthttp.MethodGet)
+
+	client := &fasthttp.Client{
+		ReadTimeout:  60 * time.Second,
+		WriteTimeout: 10 * time.Second,
+	}
+	if err := client.Do(req, resp); err != nil {
+		return nil, fmt.Errorf("fetching file URL: %w", err)
+	}
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, fmt.Errorf("fetching file URL: HTTP %d", resp.StatusCode())
+	}
+
+	body := resp.Body()
+	if len(body) == 0 {
+		return nil, fmt.Errorf("fetching file URL: empty response body")
+	}
+
+	return &Part{
+		InlineData: &Blob{
+			MIMEType: mimeType,
+			Data:     encodeBytesToBase64String(body),
+		},
+	}, nil
+}
+
 // convertFileDataToBytes converts file data (data URL or base64) to raw bytes for Gemini API.
 // Returns the bytes and an extracted mime type (if found in data URL).
 func convertFileDataToBytes(fileData string) ([]byte, string) {
@@ -1573,12 +1618,20 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 							if block.File.FileType != nil {
 								mimeType = *block.File.FileType
 							}
-							parts = append(parts, &Part{
-								FileData: &FileData{
-									FileURI:  *block.File.FileURL,
-									MIMEType: mimeType,
-								},
-							})
+							fileURL := *block.File.FileURL
+							if isGeminiNativeURI(fileURL) {
+								parts = append(parts, &Part{
+									FileData: &FileData{
+										FileURI:  fileURL,
+										MIMEType: mimeType,
+									},
+								})
+							} else {
+								part, err := fetchFileURLToInlineData(fileURL, mimeType)
+								if err == nil {
+									parts = append(parts, part)
+								}
+							}
 						} else if block.File.FileData != nil {
 							// Inline file data - convert to InlineData (Blob)
 							fileData := *block.File.FileData
