@@ -225,6 +225,8 @@ export const networkConfigSchema = z
 		max_retries: z.number().min(0, "Max retries must be greater than 0").max(10, "Max retries must be less than 10"),
 		retry_backoff_initial: z.number().min(100),
 		retry_backoff_max: z.number().min(1000),
+		insecure_skip_verify: z.boolean().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "retry_backoff_initial must be <= retry_backoff_max",
@@ -262,6 +264,8 @@ export const networkFormConfigSchema = z
 			.number("Retry backoff max must be a number")
 			.min(100, "Retry backoff max must be at least 100ms")
 			.max(1000000, "Retry backoff max must be at most 1000000ms"),
+		insecure_skip_verify: z.boolean().optional(),
+		ca_cert_pem: z.string().optional(),
 	})
 	.refine((d) => d.retry_backoff_initial <= d.retry_backoff_max, {
 		message: "Initial backoff must be less than or equal to max backoff",

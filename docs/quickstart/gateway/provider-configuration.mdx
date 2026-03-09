@@ -146,6 +146,10 @@ Each key in a provider needs to have a unique name.
 **Kubernetes DNS (only for custom endpoint):** When running in Kubernetes, use fully qualified domain names (FQDN) like `http://<service>.<namespace>.svc.cluster.local:8000` for cross-namespace custom endpoints. Short names like `http://<service>:8000` only work within the same namespace.
 </Tip>
 
+<Tip>
+**Air-gapped or self-signed certificates:** If your custom provider uses HTTPS with a self-signed or internal CA certificate, add `"insecure_skip_verify": true` or `"ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"` to `network_config`. See [Custom Providers - TLS](../../providers/custom-providers#tls-for-self-signed-or-internal-certificates) for details.
+</Tip>
+
 ## Making Requests
 
 Once providers are configured, you can make requests to any specific provider. This example shows how to send a request directly to OpenAI's GPT-4o Mini model. Bifrost handles the provider-specific API formatting automatically.

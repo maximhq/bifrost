@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -253,4 +254,28 @@ func TestSonic_ChatTool_ToolFunctionParametersPreservesOrder(t *testing.T) {
 	require.NoError(t, err)
 	paramOutputKeys := ExtractTopLevelKeyOrder(paramOutput)
 	assert.Equal(t, "$defs", paramOutputKeys[0], "parameters should have $defs first")
+}
+
+// TestNetworkConfig_TLSFieldsRoundTrip verifies that insecure_skip_verify and ca_cert_pem
+// round-trip correctly through JSON marshaling (used by config.json).
+func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
+	nc := NetworkConfig{
+		BaseURL:                        "https://example.com",
+		DefaultRequestTimeoutInSeconds: 60,
+		MaxRetries:                     3,
+		InsecureSkipVerify:             true,
+		CACertPEM:                      "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+	}
+
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+
+	var decoded NetworkConfig
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, nc.InsecureSkipVerify, decoded.InsecureSkipVerify, "insecure_skip_verify should round-trip")
+	assert.Equal(t, nc.CACertPEM, decoded.CACertPEM, "ca_cert_pem should round-trip")
+	assert.Contains(t, string(data), `"insecure_skip_verify":true`)
+	assert.Contains(t, string(data), `"ca_cert_pem"`)
 }

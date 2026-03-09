@@ -53,6 +53,8 @@ type NetworkConfig struct {
 	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`     // Disables TLS certificate verification for provider connections
+	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`              // PEM-encoded CA certificate to trust for provider endpoint connections
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -67,6 +69,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -79,6 +83,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
+	nc.InsecureSkipVerify = alias.InsecureSkipVerify
+	nc.CACertPEM = alias.CACertPEM
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -104,6 +110,8 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -114,9 +122,23 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		// Convert time.Duration (nanoseconds) to milliseconds
 		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
 		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
+		InsecureSkipVerify:  nc.InsecureSkipVerify,
+		CACertPEM:           nc.CACertPEM,
 	}
 
 	return json.Marshal(alias)
+}
+
+// Redacted returns a redacted copy of the network configuration with CACertPEM masked.
+func (nc *NetworkConfig) Redacted() *NetworkConfig {
+	if nc == nil {
+		return nil
+	}
+	redacted := *nc
+	if nc.CACertPEM != "" {
+		redacted.CACertPEM = "<REDACTED>"
+	}
+	return &redacted
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.

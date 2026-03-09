@@ -448,6 +448,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
+	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
+	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
+		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {

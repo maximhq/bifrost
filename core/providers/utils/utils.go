@@ -323,6 +323,46 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
+// It merges with any existing TLSConfig (e.g., from ConfigureProxy).
+func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	if !networkConfig.InsecureSkipVerify && networkConfig.CACertPEM == "" {
+		return client
+	}
+
+	tlsConfig := client.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+
+	if networkConfig.InsecureSkipVerify {
+		logger.Warn("insecure_skip_verify is enabled for provider — TLS certificate verification is disabled. Not recommended for production.")
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	if networkConfig.CACertPEM != "" {
+		caTLSConfig, err := createTLSConfigWithCA(networkConfig.CACertPEM)
+		if err != nil {
+			logger.Warn("Failed to configure custom CA certificate for provider: %v", err)
+		} else {
+			if tlsConfig.RootCAs != nil {
+				tlsConfig.RootCAs = tlsConfig.RootCAs.Clone()
+				// Merge: append network CA to existing pool (e.g. from proxy)
+				if !tlsConfig.RootCAs.AppendCertsFromPEM([]byte(networkConfig.CACertPEM)) {
+					logger.Warn("Failed to append CA certificate to existing TLS config")
+				}
+			} else {
+				tlsConfig.RootCAs = caTLSConfig.RootCAs
+			}
+		}
+	}
+
+	client.TLSConfig = tlsConfig
+	return client
+}
+
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies.
 var hopByHopHeaders = map[string]bool{
 	"connection":          true,
