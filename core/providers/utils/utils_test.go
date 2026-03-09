@@ -1089,6 +1089,64 @@ func TestParseAndSetRawRequest_SSEStreamingChunks(t *testing.T) {
 	}
 }
 
+// TestBuildClientStreamChunk_ImageGenerationStripping verifies that
+// BuildClientStreamChunk correctly handles BifrostImageGenerationStreamResponse:
+// strips raw fields when in logging-only mode and never mutates the original.
+func TestBuildClientStreamChunk_ImageGenerationStripping(t *testing.T) {
+	rawReq := json.RawMessage(`{"model":"dall-e-3"}`)
+	rawResp := json.RawMessage(`{"data":[{"url":"https://example.com/img.png"}]}`)
+
+	imgResp := &schemas.BifrostImageGenerationStreamResponse{
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RawRequest:  rawReq,
+			RawResponse: rawResp,
+		},
+	}
+
+	response := &schemas.BifrostResponse{ImageGenerationStreamResponse: imgResp}
+
+	t.Run("logging-only: raw fields stripped from image gen chunk, original preserved", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
+
+		chunk := BuildClientStreamChunk(ctx, response, nil)
+		if chunk.BifrostImageGenerationStreamResponse == nil {
+			t.Fatal("expected BifrostImageGenerationStreamResponse in chunk")
+		}
+		if chunk.BifrostImageGenerationStreamResponse.ExtraFields.RawRequest != nil {
+			t.Error("expected RawRequest stripped from chunk, but it was present")
+		}
+		if chunk.BifrostImageGenerationStreamResponse.ExtraFields.RawResponse != nil {
+			t.Error("expected RawResponse stripped from chunk, but it was present")
+		}
+		// Original must not be mutated.
+		if imgResp.ExtraFields.RawRequest == nil {
+			t.Error("original BifrostImageGenerationStreamResponse.ExtraFields.RawRequest was mutated")
+		}
+		if imgResp.ExtraFields.RawResponse == nil {
+			t.Error("original BifrostImageGenerationStreamResponse.ExtraFields.RawResponse was mutated")
+		}
+		if chunk.BifrostImageGenerationStreamResponse == imgResp {
+			t.Error("chunk contains same pointer as original; it must be a copy")
+		}
+	})
+
+	t.Run("no logging flag: raw fields preserved in image gen chunk", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		chunk := BuildClientStreamChunk(ctx, response, nil)
+		if chunk.BifrostImageGenerationStreamResponse == nil {
+			t.Fatal("expected BifrostImageGenerationStreamResponse in chunk")
+		}
+		if chunk.BifrostImageGenerationStreamResponse.ExtraFields.RawRequest == nil {
+			t.Error("expected RawRequest present in chunk, but it was nil")
+		}
+		if chunk.BifrostImageGenerationStreamResponse.ExtraFields.RawResponse == nil {
+			t.Error("expected RawResponse present in chunk, but it was nil")
+		}
+	})
+}
+
 // TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk verifies
 // that when BifrostContextKeyRawRequestResponseForLogging is set, ProcessAndSendResponse
 // strips RawRequest and RawResponse from the outgoing stream chunk, while leaving other

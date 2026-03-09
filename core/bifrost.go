@@ -4382,18 +4382,10 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Run post hooks on the stream message
 					processedResponse, processedError := pipelinePostHookRunner(ctx, bifrostResponse, streamMsg.BifrostError)
 
-					streamResponse := &schemas.BifrostStreamChunk{}
-					if processedResponse != nil {
-						streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
-						streamResponse.BifrostChatResponse = processedResponse.ChatResponse
-						streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
-						streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
-						streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
-						streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
-					}
-					if processedError != nil {
-						streamResponse.BifrostError = processedError
-					}
+					// Build the client-facing chunk via the shared helper, which strips raw
+					// request/response fields when in logging-only mode without mutating the
+					// shared processedResponse or processedError objects.
+					streamResponse := providerUtils.BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 					// Send the processed message to the output stream
 					outputStream <- streamResponse
