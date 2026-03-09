@@ -1101,6 +1101,7 @@ func HandleOpenAIChatCompletionStreaming(
 
 		var finishReason *string
 		var messageID string
+		forwardedTerminalFinishReason := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1212,7 +1213,7 @@ func HandleOpenAIChatCompletionStreaming(
 						response.ExtraFields.RawResponse = jsonData
 					}
 
-					if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
+					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
 						// Set raw request if enabled
 						if sendBackRawRequest {
 							providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
@@ -1278,7 +1279,6 @@ func HandleOpenAIChatCompletionStreaming(
 				if choice.FinishReason != nil && *choice.FinishReason != "" {
 					// Collect finish reason and send at the end of the stream
 					finishReason = choice.FinishReason
-					response.Choices[0].FinishReason = nil
 				}
 
 				if response.ID != "" && messageID == "" {
@@ -1293,6 +1293,9 @@ func HandleOpenAIChatCompletionStreaming(
 						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0) {
+					if choice.FinishReason != nil && *choice.FinishReason != "" {
+						forwardedTerminalFinishReason = true
+					}
 					chunkIndex++
 
 					response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
@@ -1317,7 +1320,11 @@ func HandleOpenAIChatCompletionStreaming(
 		}
 
 		if !isResponsesToChatCompletionsFallback {
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, streamRequestType, providerName, request.Model)
+			finalFinishReason := finishReason
+			if forwardedTerminalFinishReason {
+				finalFinishReason = nil
+			}
+			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, streamRequestType, providerName, request.Model)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
