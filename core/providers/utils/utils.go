@@ -1691,29 +1691,66 @@ func ProcessAndSendResponse(
 	}
 
 	streamResponse := &schemas.BifrostStreamChunk{}
+	// Determine once whether raw fields must be stripped from the client-facing chunk.
+	dropRaw, _ := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool)
 	if processedResponse != nil {
-		// Strip raw data from streaming chunks when only captured for internal logging
-		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
-			extraField := processedResponse.GetExtraFields()
-			if extraField != nil {
-				extraField.RawRequest = nil
-				extraField.RawResponse = nil
-			}
-		}
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
 		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
+		// Strip raw fields from client-facing copies without mutating the shared objects
+		// that PostLLMHook goroutines may still be reading.
+		if dropRaw {
+			if streamResponse.BifrostTextCompletionResponse != nil {
+				cp := *streamResponse.BifrostTextCompletionResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTextCompletionResponse = &cp
+			}
+			if streamResponse.BifrostChatResponse != nil {
+				cp := *streamResponse.BifrostChatResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostChatResponse = &cp
+			}
+			if streamResponse.BifrostResponsesStreamResponse != nil {
+				cp := *streamResponse.BifrostResponsesStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostResponsesStreamResponse = &cp
+			}
+			if streamResponse.BifrostSpeechStreamResponse != nil {
+				cp := *streamResponse.BifrostSpeechStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostSpeechStreamResponse = &cp
+			}
+			if streamResponse.BifrostTranscriptionStreamResponse != nil {
+				cp := *streamResponse.BifrostTranscriptionStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTranscriptionStreamResponse = &cp
+			}
+			if streamResponse.BifrostImageGenerationStreamResponse != nil {
+				cp := *streamResponse.BifrostImageGenerationStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostImageGenerationStreamResponse = &cp
+			}
+		}
 	}
 	if processedError != nil {
-		// Strip raw data from streaming error chunks when only captured for internal logging
-		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
-			processedError.ExtraFields.RawRequest = nil
-			processedError.ExtraFields.RawResponse = nil
+		if dropRaw {
+			// Strip raw fields from a client-facing copy without mutating the shared error object.
+			errCopy := *processedError
+			errCopy.ExtraFields.RawRequest = nil
+			errCopy.ExtraFields.RawResponse = nil
+			streamResponse.BifrostError = &errCopy
+		} else {
+			streamResponse.BifrostError = processedError
 		}
-		streamResponse.BifrostError = processedError
 	}
 
 	select {
@@ -1756,28 +1793,59 @@ func ProcessAndSendBifrostError(
 	}
 
 	streamResponse := &schemas.BifrostStreamChunk{}
+	// Determine once whether raw fields must be stripped from the client-facing chunk.
+	dropRaw, _ := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool)
 	if processedResponse != nil {
-		// Strip raw data from streaming chunks when only captured for internal logging
-		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
-			extraField := processedResponse.GetExtraFields()
-			if extraField != nil {
-				extraField.RawRequest = nil
-				extraField.RawResponse = nil
-			}
-		}
 		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
 		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
 		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
 		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
 		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+		// Strip raw fields from client-facing copies without mutating the shared objects
+		// that PostLLMHook goroutines may still be reading.
+		if dropRaw {
+			if streamResponse.BifrostTextCompletionResponse != nil {
+				cp := *streamResponse.BifrostTextCompletionResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTextCompletionResponse = &cp
+			}
+			if streamResponse.BifrostChatResponse != nil {
+				cp := *streamResponse.BifrostChatResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostChatResponse = &cp
+			}
+			if streamResponse.BifrostResponsesStreamResponse != nil {
+				cp := *streamResponse.BifrostResponsesStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostResponsesStreamResponse = &cp
+			}
+			if streamResponse.BifrostSpeechStreamResponse != nil {
+				cp := *streamResponse.BifrostSpeechStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostSpeechStreamResponse = &cp
+			}
+			if streamResponse.BifrostTranscriptionStreamResponse != nil {
+				cp := *streamResponse.BifrostTranscriptionStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTranscriptionStreamResponse = &cp
+			}
+		}
 	}
 	if processedError != nil {
-		// Strip raw data from streaming error chunks when only captured for internal logging
-		if drop, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && drop {
-			processedError.ExtraFields.RawRequest = nil
-			processedError.ExtraFields.RawResponse = nil
+		if dropRaw {
+			// Strip raw fields from a client-facing copy without mutating the shared error object.
+			errCopy := *processedError
+			errCopy.ExtraFields.RawRequest = nil
+			errCopy.ExtraFields.RawResponse = nil
+			streamResponse.BifrostError = &errCopy
+		} else {
+			streamResponse.BifrostError = processedError
 		}
-		streamResponse.BifrostError = processedError
 	}
 
 	select {

@@ -133,11 +133,12 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 									<div className="space-y-0.5">
 										<FormLabel>Store Raw Request/Response</FormLabel>
 										<p className="text-muted-foreground text-xs">
-											Capture the raw provider request and response for internal logging only; the data is not exposed in API responses returned to clients
+											Capture the raw provider request and response for internal logging. Raw payloads are not returned to clients unless send_back_raw_request or send_back_raw_response are also enabled.
 										</p>
 									</div>
 									<FormControl>
 										<Switch
+											data-testid="provider-debugging-store-raw-request-response-switch"
 											size="md"
 											checked={field.value}
 											disabled={!hasUpdateProviderAccess}

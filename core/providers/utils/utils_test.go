@@ -1092,7 +1092,8 @@ func TestParseAndSetRawRequest_SSEStreamingChunks(t *testing.T) {
 // TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk verifies
 // that when BifrostContextKeyRawRequestResponseForLogging is set, ProcessAndSendResponse
 // strips RawRequest and RawResponse from the outgoing stream chunk, while leaving other
-// ExtraFields intact.
+// ExtraFields intact. It also verifies that the original BifrostResponse is not mutated
+// (shared object safety for PostLLMHook goroutines).
 func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChunk(t *testing.T) {
 	rawReq := json.RawMessage(`{"model":"gpt-4","messages":[]}`)
 	rawResp := json.RawMessage(`{"id":"chatcmpl-001"}`)
@@ -1154,6 +1155,17 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChu
 				if hasRawResp {
 					t.Error("expected RawResponse to be nil (stripped) in chunk, but it was present")
 				}
+				// Critical: the original shared object must NOT have been mutated.
+				if response.ChatResponse.ExtraFields.RawRequest == nil {
+					t.Error("original BifrostResponse.ChatResponse.ExtraFields.RawRequest was mutated (nil); shared object must be preserved")
+				}
+				if response.ChatResponse.ExtraFields.RawResponse == nil {
+					t.Error("original BifrostResponse.ChatResponse.ExtraFields.RawResponse was mutated (nil); shared object must be preserved")
+				}
+				// The chunk must be a copy, not the same pointer as the original.
+				if chunk.BifrostChatResponse == response.ChatResponse {
+					t.Error("chunk.BifrostChatResponse is the same pointer as the original; it must be a copy to avoid data races")
+				}
 			} else {
 				if !hasRawReq {
 					t.Error("expected RawRequest to be present in chunk, but it was nil")
@@ -1168,7 +1180,8 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromResponseChu
 
 // TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk verifies
 // that when BifrostContextKeyRawRequestResponseForLogging is set, raw data is stripped
-// from BifrostError payloads embedded in stream chunks.
+// from BifrostError payloads embedded in stream chunks, without mutating the shared
+// BifrostError object (shared object safety for PostLLMHook goroutines).
 func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(t *testing.T) {
 	rawReq := json.RawMessage(`{"model":"gpt-4"}`)
 	rawResp := json.RawMessage(`{"error":"rate limit exceeded"}`)
@@ -1231,6 +1244,17 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(
 				}
 				if hasRawResp {
 					t.Error("expected RawResponse to be nil (stripped) in error chunk, but it was present")
+				}
+				// Critical: the original shared BifrostError must NOT have been mutated.
+				if bifrostErr.ExtraFields.RawRequest == nil {
+					t.Error("original BifrostError.ExtraFields.RawRequest was mutated (nil); shared object must be preserved")
+				}
+				if bifrostErr.ExtraFields.RawResponse == nil {
+					t.Error("original BifrostError.ExtraFields.RawResponse was mutated (nil); shared object must be preserved")
+				}
+				// The chunk must hold a copy, not the same pointer as the original.
+				if chunk.BifrostError == bifrostErr {
+					t.Error("chunk.BifrostError is the same pointer as the original; it must be a copy to avoid data races")
 				}
 			} else {
 				if !hasRawReq {
