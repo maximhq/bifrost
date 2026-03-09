@@ -4737,20 +4737,27 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 
-		// When store_raw_request_response is enabled and neither send_back_raw_* flag is
-		// active (on the config or pre-set in the request context), set the logging-only
-		// context flag. ShouldSendBackRaw* functions honour this flag so providers capture
-		// raw payloads for PostLLMHook plugins without modifying the user's SendBack flags.
-		// The existing stripping logic (non-streaming: bifrost.go; streaming: utils.go)
-		// removes the payloads before the response reaches the client.
-		// Always set the flag explicitly (true or false) so stale values from a previous
-		// provider attempt cannot leak into a fallback attempt on a reused context.
+		// Determine whether this provider attempt should capture raw payloads.
+		// logging-only mode (store_raw_request_response=true, send_back_raw_*=false):
+		//   sets BifrostContextKeySendBackRaw* = true so providers capture via the unified
+		//   ShouldSendBackRaw* path, and sets BifrostContextKeyRawRequestResponseForLogging
+		//   so the payload is stripped before the response reaches the client.
+		// full send-back mode (send_back_raw_request/response=true):
+		//   BifrostContextKeySendBackRaw* are set as before; stripping flag stays false.
+		// Always set both flags explicitly so stale values from a previous provider
+		// attempt (e.g. first attempt was logging-only, fallback is full send-back)
+		// cannot leak into the new attempt on a reused context.
 		existingSendBackReq, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawRequest).(bool)
 		existingSendBackResp, _ := req.Context.Value(schemas.BifrostContextKeySendBackRawResponse).(bool)
 		loggingOnly := config.StoreRawRequestResponse &&
 			!config.SendBackRawRequest && !existingSendBackReq &&
 			!config.SendBackRawResponse && !existingSendBackResp
 		req.Context.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, loggingOnly)
+		if loggingOnly {
+			// Enable capture via the standard flags so ShouldSendBackRaw* needs only one check.
+			req.Context.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
+			req.Context.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
+		}
 
 		key := schemas.Key{}
 		var keys []schemas.Key

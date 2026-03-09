@@ -1170,7 +1170,8 @@
                   "budget_id": { "type": "string" },
                   "rate_limit_id": { "type": "string" },
                   "send_back_raw_request": { "type": "boolean" },
-                  "send_back_raw_response": { "type": "boolean" }
+                  "send_back_raw_response": { "type": "boolean" },
+                  "store_raw_request_response": { "type": "boolean" }
                 },
                 "required": ["name"]
               }
@@ -2191,6 +2192,10 @@
         },
         "send_back_raw_response": {
           "type": "boolean"
+        },
+        "store_raw_request_response": {
+          "type": "boolean",
+          "description": "Capture raw request/response for plugins only; stripped before returning to client"
         },
         "custom_provider_config": {
           "type": "object",

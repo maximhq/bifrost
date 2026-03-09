@@ -1594,15 +1594,12 @@ type RequestMetadata struct {
 // ShouldSendBackRawRequest checks if the raw request should be captured.
 // Context overrides are intentionally restricted to asymmetric behavior: a context value can only
 // promote false→true and will not override a true config to false, avoiding accidental suppression.
-// When store_raw_request_response is enabled (logging-only mode), this also returns true so that
-// providers capture the raw payload for PostLLMHook plugins; the payload is stripped before
-// the response is returned to the client.
+// Both full send-back mode and logging-only mode (store_raw_request_response) set
+// BifrostContextKeySendBackRawRequest=true in the request context so a single flag is checked here.
+// In logging-only mode the payload is stripped before the response reaches the client.
 func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
 	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
 		return sendBackRawRequest
-	}
-	if loggingOnly, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && loggingOnly {
-		return true
 	}
 	return defaultSendBackRawRequest
 }
@@ -1610,15 +1607,12 @@ func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest boo
 // ShouldSendBackRawResponse checks if the raw response should be captured.
 // Context overrides are intentionally restricted to asymmetric behavior: a context value can only
 // promote false→true and will not override a true config to false, avoiding accidental suppression.
-// When store_raw_request_response is enabled (logging-only mode), this also returns true so that
-// providers capture the raw payload for PostLLMHook plugins; the payload is stripped before
-// the response is returned to the client.
+// Both full send-back mode and logging-only mode (store_raw_request_response) set
+// BifrostContextKeySendBackRawResponse=true in the request context so a single flag is checked here.
+// In logging-only mode the payload is stripped before the response reaches the client.
 func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse bool) bool {
 	if sendBackRawResponse, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok && sendBackRawResponse {
 		return sendBackRawResponse
-	}
-	if loggingOnly, ok := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool); ok && loggingOnly {
-		return true
 	}
 	return defaultSendBackRawResponse
 }

@@ -249,6 +249,7 @@ bifrost:
     #     password: ""
     #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
     #   send_back_raw_response: false   # Include raw response in BifrostResponse
+  #   store_raw_request_response: false # Capture raw payloads for plugins only; not returned to client
     #
     # anthropic:
     #   keys:

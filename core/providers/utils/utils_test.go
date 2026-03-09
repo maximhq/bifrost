@@ -1248,22 +1248,21 @@ func TestProcessAndSendResponse_StoreRawLoggingOnly_StripsRawDataFromErrorChunk(
 // whether providers should capture the raw request body. It covers:
 //   - Default (no context flags): returns the provider default
 //   - BifrostContextKeySendBackRawRequest=true in context: always returns true
-//   - BifrostContextKeyRawRequestResponseForLogging=true in context: returns true (logging-only mode)
-//   - Both flags set simultaneously: returns true
+//   - Logging-only mode: requestWorker sets BifrostContextKeySendBackRawRequest=true,
+//     so the function sees a single flag (no second check needed).
 func TestShouldSendBackRawRequest(t *testing.T) {
 	tests := []struct {
-		name           string
+		name            string
 		contextSendBack bool
-		contextLogging  bool
 		providerDefault bool
 		want            bool
 	}{
 		{
-			name: "provider default false, no context flags",
+			name: "provider default false, no context flag",
 			want: false,
 		},
 		{
-			name:            "provider default true, no context flags",
+			name:            "provider default true, no context flag",
 			providerDefault: true,
 			want:            true,
 		},
@@ -1273,20 +1272,17 @@ func TestShouldSendBackRawRequest(t *testing.T) {
 			want:            true,
 		},
 		{
-			name:           "context LoggingOnly=true returns true (capture for plugins)",
-			contextLogging: true,
-			want:           true,
-		},
-		{
-			name:            "context LoggingOnly=true overrides provider default false",
-			contextLogging:  true,
-			providerDefault: false,
+			name:            "context SendBack=true with provider default true",
+			contextSendBack: true,
+			providerDefault: true,
 			want:            true,
 		},
 		{
-			name:            "both context flags set returns true",
+			// requestWorker sets BifrostContextKeySendBackRawRequest=true in logging-only
+			// mode so a single flag covers both full send-back and logging-only cases.
+			name:            "logging-only: context SendBack=true set by requestWorker",
 			contextSendBack: true,
-			contextLogging:  true,
+			providerDefault: false,
 			want:            true,
 		},
 	}
@@ -1296,9 +1292,6 @@ func TestShouldSendBackRawRequest(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.contextSendBack {
 				ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, true)
-			}
-			if tt.contextLogging {
-				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
 			}
 
 			got := ShouldSendBackRawRequest(ctx, tt.providerDefault)
@@ -1314,16 +1307,15 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 	tests := []struct {
 		name            string
 		contextSendBack bool
-		contextLogging  bool
 		providerDefault bool
 		want            bool
 	}{
 		{
-			name: "provider default false, no context flags",
+			name: "provider default false, no context flag",
 			want: false,
 		},
 		{
-			name:            "provider default true, no context flags",
+			name:            "provider default true, no context flag",
 			providerDefault: true,
 			want:            true,
 		},
@@ -1333,20 +1325,17 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 			want:            true,
 		},
 		{
-			name:           "context LoggingOnly=true returns true (capture for plugins)",
-			contextLogging: true,
-			want:           true,
-		},
-		{
-			name:            "context LoggingOnly=true overrides provider default false",
-			contextLogging:  true,
-			providerDefault: false,
+			name:            "context SendBack=true with provider default true",
+			contextSendBack: true,
+			providerDefault: true,
 			want:            true,
 		},
 		{
-			name:            "both context flags set returns true",
+			// requestWorker sets BifrostContextKeySendBackRawResponse=true in logging-only
+			// mode so a single flag covers both full send-back and logging-only cases.
+			name:            "logging-only: context SendBack=true set by requestWorker",
 			contextSendBack: true,
-			contextLogging:  true,
+			providerDefault: false,
 			want:            true,
 		},
 	}
@@ -1356,9 +1345,6 @@ func TestShouldSendBackRawResponse(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			if tt.contextSendBack {
 				ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
-			}
-			if tt.contextLogging {
-				ctx.SetValue(schemas.BifrostContextKeyRawRequestResponseForLogging, true)
 			}
 
 			got := ShouldSendBackRawResponse(ctx, tt.providerDefault)
