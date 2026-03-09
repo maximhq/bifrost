@@ -52,6 +52,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 	});
 	const [isOpen, setIsOpen] = React.useState<boolean>(false);
 	const [predefinedPeriod, setPredefinedPeriod] = React.useState<string | undefined>(props.predefinedPeriod);
+	const defaultButtonWidthClass = buttonClassName ? undefined : !predefinedPeriod ? "w-[360px]" : "w-[140px]";
 	const disabledDateRange = useMemo(() => {
 		if (!props.disabledBefore && !props.disabledAfter) return undefined;
 		let range: any = {};
@@ -119,8 +120,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 						variant="outline"
 						data-testid={props.triggerTestId}
 						className={cn(
-							!predefinedPeriod && "w-[360px]",
-							predefinedPeriod && "w-[140px]",
+							defaultButtonWidthClass,
 							"justify-start text-left font-normal",
 							!date && "text-content-disabled",
 							buttonClassName,

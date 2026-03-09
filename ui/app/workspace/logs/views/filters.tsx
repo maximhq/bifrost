@@ -131,8 +131,9 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 	);
 
 	return (
-		<div className="flex items-center justify-between space-x-2">
-			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
+		<div className="flex flex-wrap items-center gap-2">
+			<div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+			<Button variant={"outline"} size="sm" className="h-7.5 shrink-0" data-testid="logs-live-toggle" onClick={() => onLiveToggle(!liveEnabled)}>
 				{liveEnabled ? (
 					<>
 						<Pause className="h-4 w-4" />
@@ -145,66 +146,71 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					</>
 				)}
 			</Button>
-			<div className="border-input flex h-7.5 flex-1 items-center gap-2 rounded-sm border">
-				<Search className="mr-0.5 ml-2 size-4" />
-				<Input
-					type="text"
-					className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
-					placeholder="Search logs"
-					value={localSearch}
-					onChange={(e) => handleSearchChange(e.target.value)}
-				/>
+				<div className="border-input flex h-7.5 min-w-[220px] flex-1 items-center gap-2 rounded-sm border">
+					<Search className="mr-0.5 ml-2 size-4 shrink-0" />
+					<Input
+						type="text"
+						className="!h-7 rounded-tl-none rounded-tr-sm rounded-br-sm rounded-bl-none border-none bg-slate-50 shadow-none outline-none focus-visible:ring-0"
+						placeholder="Search logs"
+						value={localSearch}
+						onChange={(e) => handleSearchChange(e.target.value)}
+					/>
+				</div>
 			</div>
 
-			<DateTimePickerWithRange
-				triggerTestId="filter-date-range"
-				dateTime={{
-					from: startTime,
-					to: endTime,
-				}}
-				onDateTimeUpdate={(p) => {
-					setStartTime(p.from);
-					setEndTime(p.to);
-					onFiltersChange({
-						...filters,
-						start_time: p.from?.toISOString(),
-						end_time: p.to?.toISOString(),
-					});
-				}}
-				preDefinedPeriods={LOG_TIME_PERIODS}
-				onPredefinedPeriodChange={(periodValue) => {
-					if (!periodValue) return;
-					const { from, to } = getRangeForPeriod(periodValue);
-					setStartTime(from);
-					setEndTime(to);
-					onFiltersChange({
-						...filters,
-						start_time: from.toISOString(),
-						end_time: to.toISOString(),
-					});
-				}}
-			/>
-			<FilterPopover filters={filters} onFilterChange={handleFilterChange} showMissingCost />
-			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
-				<PopoverTrigger asChild>
-					<Button variant="outline" size="sm" className="h-7.5">
-						<MoreVertical className="h-4 w-4" />
-					</Button>
-				</PopoverTrigger>
-				<PopoverContent className="bg-accent w-[250px] p-2" align="end">
-					<Command>
-						<CommandList>
-							<CommandItem className="hover:bg-accent/50 cursor-pointer" onSelect={handleRecalculateCosts}>
-								<Calculator className="text-muted-foreground size-4" />
-								<div className="flex flex-col">
-									<span className="text-sm">Recalculate costs</span>
-									<span className="text-muted-foreground text-xs">For all logs that don't have a cost</span>
-								</div>
-							</CommandItem>
-						</CommandList>
-					</Command>
-				</PopoverContent>
-			</Popover>
+			<div className="flex w-full flex-wrap items-center gap-2 min-[1120px]:ml-auto min-[1120px]:w-auto min-[1120px]:justify-end">
+				<DateTimePickerWithRange
+					className="w-full min-[720px]:w-auto"
+					buttonClassName="w-full max-w-full min-[720px]:w-[320px] min-[960px]:w-[360px]"
+					triggerTestId="filter-date-range"
+					dateTime={{
+						from: startTime,
+						to: endTime,
+					}}
+					onDateTimeUpdate={(p) => {
+						setStartTime(p.from);
+						setEndTime(p.to);
+						onFiltersChange({
+							...filters,
+							start_time: p.from?.toISOString(),
+							end_time: p.to?.toISOString(),
+						});
+					}}
+					preDefinedPeriods={LOG_TIME_PERIODS}
+					onPredefinedPeriodChange={(periodValue) => {
+						if (!periodValue) return;
+						const { from, to } = getRangeForPeriod(periodValue);
+						setStartTime(from);
+						setEndTime(to);
+						onFiltersChange({
+							...filters,
+							start_time: from.toISOString(),
+							end_time: to.toISOString(),
+						});
+					}}
+				/>
+				<FilterPopover filters={filters} onFilterChange={handleFilterChange} showMissingCost />
+				<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
+					<PopoverTrigger asChild>
+						<Button variant="outline" size="sm" className="h-7.5 shrink-0">
+							<MoreVertical className="h-4 w-4" />
+						</Button>
+					</PopoverTrigger>
+					<PopoverContent className="bg-accent w-[250px] p-2" align="end">
+						<Command>
+							<CommandList>
+								<CommandItem className="hover:bg-accent/50 cursor-pointer" data-testid="logs-recalculate-costs-btn" onSelect={handleRecalculateCosts}>
+									<Calculator className="text-muted-foreground size-4" />
+									<div className="flex flex-col">
+										<span className="text-sm">Recalculate costs</span>
+										<span className="text-muted-foreground text-xs">For all logs that don't have a cost</span>
+									</div>
+								</CommandItem>
+							</CommandList>
+						</Command>
+					</PopoverContent>
+				</Popover>
+			</div>
 		</div>
 	);
 }

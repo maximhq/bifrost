@@ -11,6 +11,8 @@ export class LogsPage extends BasePage {
   readonly filtersSection: Locator
   readonly filtersButton: Locator
   readonly statsCards: Locator
+  readonly statTooltip: Locator
+  readonly configBanner: Locator
 
   // Filter elements
   readonly providerFilter: Locator
@@ -38,7 +40,9 @@ export class LogsPage extends BasePage {
     // The filters section is the container with search input and filters button
     this.filtersSection = page.locator('input[placeholder="Search logs"]').locator('..')
     this.filtersButton = page.getByRole('button', { name: /Filters/i })
-    this.statsCards = page.locator('[data-testid="stats-cards"]').or(page.locator('text=Total Requests').locator('..').locator('..'))
+    this.statsCards = page.locator('[data-testid="logs-stats-cards"]').or(page.locator('text=Total Requests').locator('..').locator('..'))
+    this.statTooltip = page.locator('[data-testid$="-tooltip"]')
+    this.configBanner = page.getByText('Config store setup is missing.', { exact: true })
 
     // Filter elements - filters are inside a popover opened by the Filters button
     this.providerFilter = page.locator('[data-testid="filter-provider"]').or(
@@ -78,8 +82,11 @@ export class LogsPage extends BasePage {
   async goto(): Promise<void> {
     await this.page.goto('/workspace/logs')
     await waitForNetworkIdle(this.page)
-    // Wait for table or empty state to be visible
-    await this.logsTable.or(this.page.locator('text=/No logs found|No results found/i')).waitFor({ state: 'visible', timeout: 10000 })
+    // Wait for a stable terminal UI state in either a configured or unconfigured environment
+    await this.logsTable
+      .or(this.page.locator('text=/No logs found|No results found/i'))
+      .or(this.configBanner)
+      .waitFor({ state: 'visible', timeout: 10000 })
   }
 
   /**
@@ -352,6 +359,26 @@ export class LogsPage extends BasePage {
       return await value.textContent()
     }
     return null
+  }
+
+  /**
+   * Hover a stats card value to reveal its tooltip.
+   */
+  async hoverStatValue(statName: string): Promise<void> {
+    const testIds: Record<string, string> = {
+      'Total Requests': 'logs-stat-value-total-requests',
+      'Success Rate': 'logs-stat-value-success-rate',
+      'Avg Latency': 'logs-stat-value-avg-latency',
+      'Total Tokens': 'logs-stat-value-total-tokens',
+      'Total Cost': 'logs-stat-value-total-cost',
+    }
+    const testId = testIds[statName]
+    if (!testId) {
+      throw new Error(`Unknown stat name: "${statName}". Valid names: ${Object.keys(testIds).join(', ')}`)
+    }
+    const value = this.page.getByTestId(testId)
+    await value.waitFor({ state: 'visible' })
+    await value.hover()
   }
 
   /**

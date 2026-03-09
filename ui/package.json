@@ -9,7 +9,8 @@
 		"fix-paths": "node scripts/fix-paths.js",
 		"copy-build": "rm -rf ../transports/bifrost-http/ui && cp -r out ../transports/bifrost-http/ui",
 		"start": "next start",
-		"lint": "next lint"
+		"lint": "next lint",
+		"test:unit": "vitest run"
 	},
 	"dependencies": {
 		"@bprogress/next": "3.2.12",
@@ -68,6 +69,8 @@
 		"@eslint/eslintrc": "3.3.1",
 		"@eslint/js": "9.34.0",
 		"@tailwindcss/postcss": "4.2.1",
+		"@testing-library/jest-dom": "6.9.1",
+		"@testing-library/react": "16.3.0",
 		"@types/lodash.isequal": "4.5.8",
 		"@types/node": "20",
 		"@types/react": "19.2.7",
@@ -80,12 +83,14 @@
 		"eslint-plugin-import": "2.32.0",
 		"eslint-plugin-prettier": "5.5.4",
 		"eslint-plugin-unused-imports": "4.2.0",
+		"jsdom": "27.0.0",
 		"monaco-editor-webpack-plugin": "7.1.0",
 		"prettier": "3.6.2",
 		"prettier-plugin-tailwindcss": "0.6.14",
 		"tailwindcss": "4.1.12",
 		"tw-animate-css": "1.3.7",
-		"typescript": "5.9.2"
+		"typescript": "5.9.2",
+		"vitest": "3.2.4"
 	},
 	"overrides": {
 		"tar": "7.5.3"

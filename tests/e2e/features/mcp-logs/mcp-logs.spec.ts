@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { mockMCPLogsOverviewApis } from '../../core/utils/observability-mocks'
 
 test.describe('MCP Logs', () => {
   test.beforeEach(async ({ mcpLogsPage }) => {
@@ -34,6 +35,20 @@ test.describe('MCP Logs', () => {
       const searchVisible = await mcpLogsPage.searchInput.isVisible().catch(() => false)
       const filtersButtonVisible = await mcpLogsPage.filtersButton.isVisible().catch(() => false)
       expect(searchVisible || filtersButtonVisible).toBe(true)
+    })
+  })
+
+  test.describe('Stat Tooltips', () => {
+    test.beforeEach(async ({ mcpLogsPage, page }) => {
+      await mockMCPLogsOverviewApis(page)
+      await mcpLogsPage.goto()
+    })
+
+    test('should show stat value tooltip on hover', async ({ mcpLogsPage }) => {
+      await mcpLogsPage.hoverStatValue('Avg Latency')
+
+      await expect(mcpLogsPage.statTooltip).toBeVisible()
+      await expect(mcpLogsPage.statTooltip).toContainText('9280.45ms')
     })
   })
 

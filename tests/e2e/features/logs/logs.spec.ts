@@ -1,4 +1,5 @@
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { mockLogsOverviewApis } from '../../core/utils/observability-mocks'
 import { createLogSearchQuery, SAMPLE_MODELS, SAMPLE_PROVIDERS } from './logs.data'
 
 test.describe('LLM Logs', () => {
@@ -26,6 +27,20 @@ test.describe('LLM Logs', () => {
 
       // Either search input OR filters button should be visible
       expect(searchVisible || filtersButtonVisible).toBe(true)
+    })
+  })
+
+  test.describe('Stat Tooltips', () => {
+    test.beforeEach(async ({ logsPage, page }) => {
+      await mockLogsOverviewApis(page)
+      await logsPage.goto()
+    })
+
+    test('should show stat value tooltip on hover', async ({ logsPage }) => {
+      await logsPage.hoverStatValue('Avg Latency')
+
+      await expect(logsPage.statTooltip).toBeVisible()
+      await expect(logsPage.statTooltip).toContainText('14580.9ms')
     })
   })
 
