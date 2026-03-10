@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 const externalLinks = [
 	{
 		title: "Discord Server",
-		url: "https://getmax.im/bifrost-discord",
+		url: "https://discord.gg/WJzTeWDEsX",
 		icon: DiscordLogoIcon,
 	},
 	{
