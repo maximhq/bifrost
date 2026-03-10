@@ -1,12 +1,11 @@
 name: Release CLI
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "CLI version to release (e.g., 1.0.0)"
-        required: true
-        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - 'cli/**'
 
 # Prevent concurrent runs
 concurrency:
@@ -14,7 +13,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      tag_exists: ${{ steps.check-tag.outputs.exists }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Get version from file
+        id: get-version
+        run: echo "version=$(cat cli/version)" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: check-tag
+        run: |
+          if git rev-parse "cli/v${{ steps.get-version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test-cli:
+    needs: [check-version]
+    if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,7 +61,8 @@ jobs:
         run: go test ./...
 
   release-cli:
-    needs: [test-cli]
+    needs: [check-version, test-cli]
+    if: needs.check-version.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -67,4 +94,4 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: ./.github/workflows/scripts/release-cli.sh "${{ inputs.version }}"
+        run: ./.github/workflows/scripts/release-cli.sh "${{ needs.check-version.outputs.version }}"

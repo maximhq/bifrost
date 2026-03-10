@@ -94,14 +94,30 @@ jobs:
         if: steps.check-bifrost.outputs.changed == 'true'
         working-directory: npx/bifrost
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${{ steps.extract-version.outputs.version }}"
           echo "Publishing @maximhq/bifrost@${VERSION} to npm..."
           if npm view @maximhq/bifrost@"${VERSION}" version >/dev/null 2>&1; then
             echo "@maximhq/bifrost@${VERSION} already exists on npm. Skipping publish."
+            exit 0
+          fi
+          
+          # Try OIDC (Trusted Publishing) first - no token needed
+          echo "Attempting publish with OIDC (Trusted Publishing)..."
+          if npm publish --provenance --access public 2>&1; then
+            echo "Published successfully with OIDC!"
+            exit 0
+          fi
+          
+          # Fallback to NPM_TOKEN if OIDC fails
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "OIDC failed, falling back to NPM_TOKEN..."
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            npm publish --access public
           else
-            npm publish --provenance --access public
+            echo "OIDC failed and no NPM_TOKEN available"
+            exit 1
           fi
 
       - name: Configure Git
@@ -185,14 +201,30 @@ jobs:
         if: steps.check-cli.outputs.changed == 'true'
         working-directory: npx/bifrost-cli
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${{ steps.extract-version.outputs.version }}"
           echo "Publishing @maximhq/bifrost-cli@${VERSION} to npm..."
           if npm view @maximhq/bifrost-cli@"${VERSION}" version >/dev/null 2>&1; then
             echo "@maximhq/bifrost-cli@${VERSION} already exists on npm. Skipping publish."
+            exit 0
+          fi
+          
+          # Try OIDC (Trusted Publishing) first - no token needed
+          echo "Attempting publish with OIDC (Trusted Publishing)..."
+          if npm publish --provenance --access public 2>&1; then
+            echo "Published successfully with OIDC!"
+            exit 0
+          fi
+          
+          # Fallback to NPM_TOKEN if OIDC fails
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "OIDC failed, falling back to NPM_TOKEN..."
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            npm publish --access public
           else
-            npm publish --provenance --access public
+            echo "OIDC failed and no NPM_TOKEN available"
+            exit 1
           fi
 
       - name: Configure Git
