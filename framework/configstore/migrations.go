@@ -302,6 +302,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
@@ -4243,6 +4246,94 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAllowAllKeysToProviderConfig adds the allow_all_keys column to the provider config table
+// and backfills existing rows: any provider config with no keys in the join table previously meant
+// "allow all keys" (old semantic), so they get allow_all_keys = true to preserve behaviour.
+func migrationAddAllowAllKeysToProviderConfig(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_allow_all_keys_to_provider_config",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+
+			// Add the column if it doesn't exist
+			if !migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.AddColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to add allow_all_keys column: %w", err)
+				}
+			}
+
+			// Backfill: find all provider configs that have no keys in the join table.
+			// These previously meant "allow all keys", so set allow_all_keys = true.
+			var allConfigs []tables.TableVirtualKeyProviderConfig
+			if err := tx.Find(&allConfigs).Error; err != nil {
+				return fmt.Errorf("failed to query provider configs: %w", err)
+			}
+
+			// Track which VK IDs were modified so we can recompute their config_hash.
+			// Without this, subsequent config-sync diff logic would see a stale hash
+			// and attempt to re-reconcile the VK (potentially undoing the backfill).
+			modifiedVKIDs := make(map[string]struct{})
+
+			for _, pc := range allConfigs {
+				var keyCount int64
+				if err := tx.Table("governance_virtual_key_provider_config_keys").
+					Where("table_virtual_key_provider_config_id = ?", pc.ID).
+					Count(&keyCount).Error; err != nil {
+					return fmt.Errorf("failed to count keys for provider config %d: %w", pc.ID, err)
+				}
+
+				if keyCount == 0 {
+					if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+						Where("id = ?", pc.ID).
+						Update("allow_all_keys", true).Error; err != nil {
+						return fmt.Errorf("failed to backfill allow_all_keys for provider config %d: %w", pc.ID, err)
+					}
+					modifiedVKIDs[pc.VirtualKeyID] = struct{}{}
+				}
+			}
+
+			// Recompute and persist config_hash for every VK that was modified.
+			for vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s'", vk.Name)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migratorInstance := tx.Migrator()
+			if migratorInstance.HasColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys") {
+				if err := migratorInstance.DropColumn(&tables.TableVirtualKeyProviderConfig{}, "allow_all_keys"); err != nil {
+					return fmt.Errorf("failed to drop allow_all_keys column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running allow_all_keys migration: %s", err.Error())
 	}
 	return nil
 }

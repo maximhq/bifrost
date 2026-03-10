@@ -89,9 +89,10 @@ export interface VirtualKeyProviderConfig {
 	provider: string;
 	weight: number | null;
 	allowed_models: string[];
+	allow_all_keys: boolean; // True means all keys allowed; false with empty keys means no keys allowed
 	budget?: Budget;
 	rate_limit?: RateLimit;
-	keys?: DBKey[]; // Associated database keys for this provider
+	keys?: DBKey[]; // Associated database keys for this provider (only used when allow_all_keys is false)
 }
 
 export interface VirtualKeyMCPConfig {
