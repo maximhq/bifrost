@@ -781,10 +781,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				logMsg.SemanticCacheDebug = result.GetExtraFields().CacheDebug
 			}
 			if logMsg.UpdateData != nil && p.pricingManager != nil {
-				cost := p.pricingManager.CalculateCostWithScopes(result, modelcatalog.PricingLookupScopes{
+				cost := p.pricingManager.CalculateCost(result, &modelcatalog.PricingLookupScopes{
 					VirtualKeyID:  logMsg.VirtualKeyID,
-					ProviderKeyID: logMsg.SelectedKeyID,
-					ProviderID:    string(provider),
+					SelectedKeyID: logMsg.SelectedKeyID,
+					Provider:      string(provider),
 				})
 				logMsg.UpdateData.Cost = &cost
 			}

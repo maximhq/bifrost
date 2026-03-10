@@ -447,10 +447,10 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 
 		cost := 0.0
 		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCostWithScopes(result, modelcatalog.PricingLookupScopes{
+			cost = p.pricingManager.CalculateCost(result, &modelcatalog.PricingLookupScopes{
 				VirtualKeyID:  virtualKeyID,
-				ProviderKeyID: selectedKeyID,
-				ProviderID:    string(provider),
+				SelectedKeyID: selectedKeyID,
+				Provider:      string(provider),
 			})
 		}
 

@@ -984,7 +984,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
-			p.postHookWorker(ctx, result, provider, model, requestType, effectiveVK, selectedKeyID, requestID, userID, isCacheRead, isBatch, isFinalChunk)
+			p.postHookWorker(result, provider, model, requestType, effectiveVK, selectedKeyID, requestID, userID, isCacheRead, isBatch, isFinalChunk)
 		}()
 	}
 
@@ -1131,12 +1131,13 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - model: The model of the request
 //   - requestType: The type of the request
 //   - virtualKey: The virtual key of the request (empty string if not present)
+//   - selectedKeyID: The selected provider key ID used for scoped pricing overrides
 //   - requestID: The request ID
 //   - userID: The user ID for enterprise user-level governance (empty string if not present)
 //   - isCacheRead: Whether the request is a cache read
 //   - isBatch: Whether the request is a batch request
 //   - isFinalChunk: Whether the request is the final chunk
-func (p *GovernancePlugin) postHookWorker(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, providerKeyID, requestID, userID string, _, _, isFinalChunk bool) {
+func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provider schemas.ModelProvider, model string, requestType schemas.RequestType, virtualKey, selectedKeyID, requestID, userID string, _, _, isFinalChunk bool) {
 	// Determine if request was successful
 	success := (result != nil)
 
@@ -1146,10 +1147,10 @@ func (p *GovernancePlugin) postHookWorker(ctx *schemas.BifrostContext, result *s
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCostWithScopes(result, modelcatalog.PricingLookupScopes{
+			cost = p.modelCatalog.CalculateCost(result, &modelcatalog.PricingLookupScopes{
 				VirtualKeyID:  virtualKey,
-				ProviderKeyID: providerKeyID,
-				ProviderID:    string(provider),
+				SelectedKeyID: selectedKeyID,
+				Provider:      string(provider),
 			})
 		}
 		tokensUsed := 0

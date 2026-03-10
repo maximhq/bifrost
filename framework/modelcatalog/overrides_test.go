@@ -178,12 +178,12 @@ func TestGetPricing_DeploymentLookupUsesRequestedModelForOverrideMatching(t *tes
 		},
 	}))
 
-	pricing, ok := mc.getPricingWithScopesAndMatchModel(
+	pricing, ok := mc.getPricingLocked(
 		"dep-gpt4o",
 		"gpt-4o",
 		"openai",
 		schemas.ChatCompletionRequest,
-		PricingLookupScopes{ProviderID: "openai"},
+		PricingLookupScopes{Provider: "openai"},
 	)
 	require.True(t, ok)
 	require.NotNil(t, pricing)
@@ -536,23 +536,23 @@ func TestApplyScopedPricingOverrides_ScopePrecedence(t *testing.T) {
 			name: "virtual key wins over provider key, provider and global",
 			scopes: PricingLookupScopes{
 				VirtualKeyID:  virtualKeyScopeID,
-				ProviderKeyID: providerKeyScopeID,
-				ProviderID:    providerScopeID,
+				SelectedKeyID: providerKeyScopeID,
+				Provider:      providerScopeID,
 			},
 			expected: virtualKeyCost,
 		},
 		{
 			name: "provider key wins over provider and global",
 			scopes: PricingLookupScopes{
-				ProviderKeyID: providerKeyScopeID,
-				ProviderID:    providerScopeID,
+				SelectedKeyID: providerKeyScopeID,
+				Provider:      providerScopeID,
 			},
 			expected: providerKeyCost,
 		},
 		{
 			name: "provider wins over global",
 			scopes: PricingLookupScopes{
-				ProviderID: providerScopeID,
+				Provider: providerScopeID,
 			},
 			expected: providerCost,
 		},

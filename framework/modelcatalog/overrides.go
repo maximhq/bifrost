@@ -13,8 +13,8 @@ import (
 
 type PricingLookupScopes struct {
 	VirtualKeyID  string
-	ProviderKeyID string
-	ProviderID    string
+	SelectedKeyID string
+	Provider      string
 }
 
 func normalizeScopeIDPointer(id *string) *string {
@@ -207,20 +207,20 @@ func (mc *ModelCatalog) applyScopedPricingOverrides(model string, requestType sc
 
 func resolveScopedOverride(compiled *compiledScopedOverrides, model, mode string, scopes PricingLookupScopes) *compiledPricingOverride {
 	scopeOrder := make([]string, 0, 6)
-	if scopes.VirtualKeyID != "" && scopes.ProviderID != "" && scopes.ProviderKeyID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProviderKey, scopes.VirtualKeyID, scopes.ProviderID, scopes.ProviderKeyID))
+	if scopes.VirtualKeyID != "" && scopes.Provider != "" && scopes.SelectedKeyID != "" {
+		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProviderKey, scopes.VirtualKeyID, scopes.Provider, scopes.SelectedKeyID))
 	}
-	if scopes.VirtualKeyID != "" && scopes.ProviderID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProvider, scopes.VirtualKeyID, scopes.ProviderID, ""))
+	if scopes.VirtualKeyID != "" && scopes.Provider != "" {
+		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProvider, scopes.VirtualKeyID, scopes.Provider, ""))
 	}
 	if scopes.VirtualKeyID != "" {
 		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKey, scopes.VirtualKeyID, "", ""))
 	}
-	if scopes.ProviderKeyID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProviderKey, "", "", scopes.ProviderKeyID))
+	if scopes.SelectedKeyID != "" {
+		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProviderKey, "", "", scopes.SelectedKeyID))
 	}
-	if scopes.ProviderID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProvider, "", scopes.ProviderID, ""))
+	if scopes.Provider != "" {
+		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProvider, "", scopes.Provider, ""))
 	}
 	scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindGlobal, "", "", ""))
 

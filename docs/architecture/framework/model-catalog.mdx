@@ -182,6 +182,7 @@ Calculate costs from a Bifrost response:
 // Calculate cost for a completed request
 cost := modelCatalog.CalculateCost(
     result, // *schemas.BifrostResponse
+    nil,    // *PricingLookupScopes (nil = no scoped overrides)
 )
 
 logger.Info("Request cost: $%.6f", cost)
@@ -192,7 +193,7 @@ logger.Info("Request cost: $%.6f", cost)
 
 ```go
 // CalculateCost handles all cost scenarios including cache-aware pricing
-cost := modelCatalog.CalculateCost(result) // *schemas.BifrostResponse
+cost := modelCatalog.CalculateCost(result, nil) // *schemas.BifrostResponse, *PricingLookupScopes
 
 // Cache hits return 0 for direct hits, embedding cost for semantic matches
 // Cache misses return base model cost + embedding generation cost

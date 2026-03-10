@@ -701,7 +701,7 @@ func TestCalculateCost_SemanticCacheDirectHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -740,7 +740,7 @@ func TestCalculateCost_SemanticCacheSemanticHit(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Only embedding cost: 500 * 0.00000002 = 0.00001
 	assert.InDelta(t, 0.00001, cost, 1e-12)
 }
@@ -778,7 +778,7 @@ func TestCalculateCost_SemanticCacheMiss(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Base cost: 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	// Embedding cost: 500 * 0.00000002 = 0.00001
 	// Total: 0.01251
@@ -799,7 +799,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -809,7 +809,7 @@ func TestCalculateCost_SemanticCacheHitNoEmbeddingInfo(t *testing.T) {
 
 func TestCalculateCost_NilResponse(t *testing.T) {
 	mc := testCatalogWithPricing(nil)
-	assert.Equal(t, 0.0, mc.CalculateCost(nil))
+	assert.Equal(t, 0.0, mc.CalculateCost(nil, nil))
 }
 
 func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
@@ -826,7 +826,7 @@ func TestCalculateCost_ProviderComputedCostPassthrough(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.99, cost)
 }
 
@@ -836,7 +836,7 @@ func TestCalculateCost_NoUsageData(t *testing.T) {
 	})
 
 	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", nil)
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -857,7 +857,7 @@ func TestCalculateCost_ChatCompletion_GPT4o(t *testing.T) {
 		TotalTokens:      12000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
 }
@@ -888,7 +888,7 @@ func TestCalculateCost_ChatCompletion_Claude35Sonnet_WithCache(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Input: (5000-3000)*0.000003 + 3000*0.0000003 = 0.006 + 0.0009 = 0.0069
 	// Output: (1000-500)*0.000015 + 500*0.00000375 = 0.0075 + 0.001875 = 0.009375
 	// Total: 0.0069 + 0.009375 = 0.016275
@@ -910,7 +910,7 @@ func TestCalculateCost_Embedding(t *testing.T) {
 		TotalTokens:  10000,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 10000 * 0.0000001 = 0.001
 	assert.InDelta(t, 0.001, cost, 1e-12)
 }
@@ -929,7 +929,7 @@ func TestCalculateCost_Rerank(t *testing.T) {
 		TotalTokens:  500,
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -946,7 +946,7 @@ func TestCalculateCost_ImageGeneration(t *testing.T) {
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 3},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// 3 * 0.052 = 0.156
 	assert.InDelta(t, 0.156, cost, 1e-12)
 }
@@ -968,7 +968,7 @@ func TestCalculateCost_StreamRequestTypeNormalized(t *testing.T) {
 		},
 	}
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 
@@ -977,7 +977,7 @@ func TestCalculateCost_NoPricingData(t *testing.T) {
 	resp := makeChatResponse(schemas.OpenAI, "unknown-model", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
 	})
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.Equal(t, 0.0, cost)
 }
 
@@ -1192,7 +1192,7 @@ func TestCalculateCost_200kTier_EndToEnd(t *testing.T) {
 		TotalTokens:      210000, // Above 200k
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	// Tiered rate: input=0.000006, output=0.00003
 	// 190000*0.000006 + 20000*0.00003 = 1.14 + 0.6 = 1.74
 	assert.InDelta(t, 1.74, cost, 1e-9)
@@ -1213,7 +1213,7 @@ func TestCalculateCost_ProviderCostZeroTotalStillCalculates(t *testing.T) {
 		},
 	})
 
-	cost := mc.CalculateCost(resp)
+	cost := mc.CalculateCost(resp, nil)
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
 

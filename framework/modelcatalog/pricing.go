@@ -20,22 +20,24 @@ type costInput struct {
 
 // CalculateCost calculates the cost of a Bifrost response.
 // It handles all request types, cache debug billing, and tiered pricing.
-func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse) float64 {
-	return mc.CalculateCostWithScopes(result, PricingLookupScopes{})
-}
-
-func (mc *ModelCatalog) CalculateCostWithScopes(result *schemas.BifrostResponse, scopes PricingLookupScopes) float64 {
+// If scopes is nil, no scoped overrides are applied.
+func (mc *ModelCatalog) CalculateCost(result *schemas.BifrostResponse, scopes *PricingLookupScopes) float64 {
 	if result == nil {
 		return 0
+	}
+
+	var s PricingLookupScopes
+	if scopes != nil {
+		s = *scopes
 	}
 
 	// Handle semantic cache billing
 	cacheDebug := result.GetExtraFields().CacheDebug
 	if cacheDebug != nil {
-		return mc.calculateCostWithCache(result, cacheDebug, scopes)
+		return mc.calculateCostWithCache(result, cacheDebug, s)
 	}
 
-	return mc.calculateBaseCost(result, scopes)
+	return mc.calculateBaseCost(result, s)
 }
 
 // calculateCostWithCache handles cost calculation when semantic cache debug info is present.
@@ -63,10 +65,10 @@ func (mc *ModelCatalog) computeCacheEmbeddingCost(cacheDebug *schemas.BifrostCac
 	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
 		return 0
 	}
-	if scopes.ProviderID == "" {
-		scopes.ProviderID = *cacheDebug.ProviderUsed
+	if scopes.Provider == "" {
+		scopes.Provider = *cacheDebug.ProviderUsed
 	}
-	pricing, exists := mc.getPricingWithScopes(*cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest, scopes)
+	pricing, exists := mc.getPricingLocked(*cacheDebug.ModelUsed, *cacheDebug.ModelUsed, *cacheDebug.ProviderUsed, schemas.EmbeddingRequest, scopes)
 	if !exists {
 		return 0
 	}
@@ -510,18 +512,18 @@ func safeTotalTokens(usage *schemas.BifrostLLMUsage) int {
 func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, requestType schemas.RequestType, scopes PricingLookupScopes) *configstoreTables.TableModelPricing {
 	mc.logger.Debug("looking up pricing for model %s and provider %s of request type %s", model, provider, normalizeRequestType(requestType))
 
-	if scopes.ProviderID == "" {
-		scopes.ProviderID = provider
+	if scopes.Provider == "" {
+		scopes.Provider = provider
 	}
 
-	pricing, exists := mc.getPricingWithScopes(model, provider, requestType, scopes)
+	pricing, exists := mc.getPricingLocked(model, model, provider, requestType, scopes)
 	if exists {
 		return pricing
 	}
 
 	if deployment != "" {
 		mc.logger.Debug("pricing not found for model %s, trying deployment %s", model, deployment)
-		pricing, exists = mc.getPricingWithScopesAndMatchModel(deployment, model, provider, requestType, scopes)
+		pricing, exists = mc.getPricingLocked(deployment, model, provider, requestType, scopes)
 		if exists {
 			return pricing
 		}
@@ -533,14 +535,11 @@ func (mc *ModelCatalog) resolvePricing(provider, model, deployment string, reque
 
 // getPricing returns pricing information for a model (thread-safe)
 func (mc *ModelCatalog) getPricing(model, provider string, requestType schemas.RequestType) (*configstoreTables.TableModelPricing, bool) {
-	return mc.getPricingWithScopes(model, provider, requestType, PricingLookupScopes{ProviderID: provider})
+	return mc.getPricingLocked(model, model, provider, requestType, PricingLookupScopes{Provider: provider})
 }
 
-func (mc *ModelCatalog) getPricingWithScopes(model, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (*configstoreTables.TableModelPricing, bool) {
-	return mc.getPricingWithScopesAndMatchModel(model, model, provider, requestType, scopes)
-}
-
-func (mc *ModelCatalog) getPricingWithScopesAndMatchModel(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (*configstoreTables.TableModelPricing, bool) {
+// getPricingLocked acquires a read lock and resolves pricing for a model with scoped overrides.
+func (mc *ModelCatalog) getPricingLocked(lookupModel, matchModel, provider string, requestType schemas.RequestType, scopes PricingLookupScopes) (*configstoreTables.TableModelPricing, bool) {
 	mc.mu.RLock()
 	pricing, ok := mc.resolvePricingEntryLocked(lookupModel, matchModel, provider, requestType, scopes)
 	mc.mu.RUnlock()

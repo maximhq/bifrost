@@ -680,7 +680,7 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 
 	resp := buildResponseForRequestType(requestType, usage, extraFields)
 
-	return p.pricingManager.CalculateCostWithScopes(resp, scopes), nil
+	return p.pricingManager.CalculateCost(resp, &scopes), nil
 }
 
 // buildResponseForRequestType wraps BifrostLLMUsage into the correct response
@@ -793,8 +793,8 @@ func pricingScopesForLog(logEntry *logstore.Log) modelcatalog.PricingLookupScope
 	}
 
 	return modelcatalog.PricingLookupScopes{
-		ProviderID:    logEntry.Provider,
-		ProviderKeyID: logEntry.SelectedKeyID,
+		Provider:      logEntry.Provider,
+		SelectedKeyID: logEntry.SelectedKeyID,
 		VirtualKeyID:  virtualKeyID,
 	}
 }
