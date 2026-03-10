@@ -872,6 +872,54 @@ Set `role_arn` to assume an IAM role before signing requests. AssumeRole require
 
 ## Setup & Configuration
 
+### How to Use ARNs and Application Inference Profiles
+
+When using AWS Bedrock inference profiles or application inference profiles, you must split the configuration correctly to avoid `UnknownOperationException`:
+
+| Field | Purpose |
+|-------|---------|
+| **`arn`** | The ARN prefix (everything before the final `/resource-id`). Required for URL formation when using inference profiles. |
+| **`deployments`** | Map logical model names to the **model ID or inference profile resource ID only** — not the full ARN. |
+
+<Warning>
+**Do not** put the full ARN in the deployments mapping. The resource ID (e.g., `abc12xyz`) goes in `deployments`; the ARN prefix goes in the dedicated `arn` field. Putting the full ARN in `deployments` causes malformed URLs and `UnknownOperationException`.
+</Warning>
+
+**Application inference profiles** — use the resource ID (short alphanumeric suffix) in deployments:
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "eu-west-1",
+    "arn": "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile",
+    "deployments": {
+      "claude-opus-4-6": "ghi56rst",
+      "claude-sonnet-4-5": "jkl78mno"
+    }
+  }
+}
+```
+
+**Cross-region inference profiles** — use the model identifier (e.g., `us.anthropic.claude-3-5-sonnet-v1:0`) in deployments:
+
+```json
+{
+  "bedrock_key_config": {
+    "access_key": "your-aws-access-key",
+    "secret_key": "your-aws-secret-key",
+    "session_token": "optional-session-token",
+    "region": "us-east-1",
+    "arn": "arn:aws:bedrock:us-east-1:123456789012:inference-profile",
+    "deployments": {
+      "claude-sonnet": "us.anthropic.claude-3-5-sonnet-v1:0"
+    }
+  }
+}
+```
+
 For detailed instructions on setting up AWS Bedrock authentication including credentials, IAM roles, regions, and deployment mapping, see the quickstart guides:
 
 <Tabs>

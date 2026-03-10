@@ -1253,6 +1253,7 @@ curl --location 'http://localhost:8080/api/providers' \
 - In IAM role authentication, if both `access_key` and `secret_key` are empty, Bifrost uses IAM role authentication from the environment.
 - `arn` is required for URL formation - `deployments` mapping is ignored without it.
 - When using `arn` + `deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
+- **ARN vs deployments**: Put the ARN prefix in `arn` and the model/inference profile resource ID only in `deployments` — never the full ARN in deployments. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
 
 ### Google Vertex
 

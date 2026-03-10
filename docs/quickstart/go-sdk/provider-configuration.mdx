@@ -506,6 +506,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 - In IAM role authentication, if both `AccessKey` and `SecretKey` are empty, Bifrost uses IAM from the environment.
 - `ARN` is required for URL formation - `Deployments` mapping is ignored without it.
 - When using `ARN` + `Deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
+- **ARN vs Deployments**: Put the ARN prefix in `ARN` and the model/inference profile resource ID only in `Deployments` — never the full ARN in Deployments. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
 
 </Tab>
 
