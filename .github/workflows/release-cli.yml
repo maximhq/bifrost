@@ -4,9 +4,7 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'cli/**'
-
+    
 # Prevent concurrent runs
 concurrency:
   group: release-cli
