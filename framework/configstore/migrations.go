@@ -299,6 +299,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddKeyIDToRoutingRules(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRoutingTargetsTable(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4122,22 +4125,121 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	return nil
 }
 
+// legacyRoutingRuleColumns is a migration-only struct that represents the old routing_rules
+// schema before provider/model/key_id were moved to the routing_targets table.
+// GORM's SQLite DropColumn/AddColumn need a real struct (not a string table name) to
+// reconstruct the table correctly, so we keep this stub around for migration use only.
+type legacyRoutingRuleColumns struct {
+	Provider string  `gorm:"column:provider;type:varchar(255)"`
+	Model    string  `gorm:"column:model;type:varchar(255)"`
+	KeyID    *string `gorm:"column:key_id;type:varchar(255)"`
+}
+
+func (legacyRoutingRuleColumns) TableName() string { return "routing_rules" }
+
+// migrationAddRoutingTargetsTable creates the routing_targets table and seeds one target row per
+// existing routing rule, migrating the legacy provider/model/key_id columns.
+// After seeding, the legacy columns are dropped from routing_rules.
+func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_targets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1. Create routing_targets table
+			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				if err := mg.CreateTable(&tables.TableRoutingTarget{}); err != nil {
+					return fmt.Errorf("failed to create routing_targets table: %w", err)
+				}
+			}
+
+			// 2. Seed one target per existing routing rule (idempotent).
+			// Only possible when the legacy columns still exist (i.e. upgrading from an older schema).
+			// On a fresh database AutoMigrate creates routing_rules without these columns, so skip seeding.
+			type legacyRule struct {
+				ID       string
+				Provider string
+				Model    string
+				KeyID    *string
+			}
+			if mg.HasColumn("routing_rules", "provider") {
+			var rows []legacyRule
+			if err := tx.Table("routing_rules").Select("id, provider, model, key_id").Scan(&rows).Error; err != nil {
+				return fmt.Errorf("failed to scan routing_rules for seeding: %w", err)
+			}
+			for _, row := range rows {
+				var count int64
+				if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
+					return fmt.Errorf("failed to count targets for rule %s: %w", row.ID, err)
+				}
+				if count > 0 {
+					continue // already seeded
+				}
+				target := tables.TableRoutingTarget{
+					RuleID: row.ID,
+					Weight: 1.0,
+					KeyID:  row.KeyID,
+				}
+				if row.Provider != "" {
+					p := row.Provider
+					target.Provider = &p
+				}
+				if row.Model != "" {
+					m := row.Model
+					target.Model = &m
+				}
+				if err := tx.Create(&target).Error; err != nil {
+					return fmt.Errorf("failed to seed target for rule %s: %w", row.ID, err)
+				}
+			}
+			} // end if mg.HasColumn("routing_rules", "provider")
+
+			// 3. Drop legacy single-target columns from routing_rules.
+			// Must use the struct form (not string) so SQLite can reconstruct the table correctly.
+			legacyModel := &legacyRoutingRuleColumns{}
+			for _, col := range []string{"provider", "model", "key_id"} {
+				if mg.HasColumn("routing_rules", col) {
+					if err := mg.DropColumn(legacyModel, col); err != nil {
+						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if mg.HasTable(&tables.TableRoutingTarget{}) {
+				return mg.DropTable(&tables.TableRoutingTarget{})
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running routing_targets_table migration: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddKeyIDToRoutingRules adds the key_id column to the routing_rules table
 // to allow routing rules to pin a specific API key by its UUID.
+// NOTE: key_id was later moved to the routing_targets table, so TableRoutingRule no longer
+// has this field. We use string-based column operations to avoid struct field lookup failures.
 func migrationAddKeyIDToRoutingRules(ctx context.Context, db *gorm.DB) error {
 	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: "add_key_id_to_routing_rules",
 		Migrate: func(tx *gorm.DB) error {
 			mg := tx.WithContext(ctx).Migrator()
-			if !mg.HasColumn(&tables.TableRoutingRule{}, "key_id") {
-				return mg.AddColumn(&tables.TableRoutingRule{}, "key_id")
+			if !mg.HasColumn("routing_rules", "key_id") {
+				return mg.AddColumn(&legacyRoutingRuleColumns{}, "key_id")
 			}
 			return nil
 		},
 		Rollback: func(tx *gorm.DB) error {
 			mg := tx.WithContext(ctx).Migrator()
-			if mg.HasColumn(&tables.TableRoutingRule{}, "key_id") {
-				return mg.DropColumn(&tables.TableRoutingRule{}, "key_id")
+			if mg.HasColumn("routing_rules", "key_id") {
+				return mg.DropColumn(&legacyRoutingRuleColumns{}, "key_id")
 			}
 			return nil
 		},

@@ -34,6 +34,7 @@ import { toast } from "sonner";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { getErrorMessage } from "@/lib/store";
+import { RoutingTarget } from "@/lib/types/routingRules";
 
 interface RoutingRulesTableProps {
 	rules: RoutingRule[] | undefined;
@@ -66,8 +67,7 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 					<TableHeader>
 						<TableRow>
 							<TableHead>Name</TableHead>
-							<TableHead>Provider</TableHead>
-							<TableHead>Model</TableHead>
+							<TableHead>Targets</TableHead>
 							<TableHead>Scope</TableHead>
 							<TableHead className="text-right">Priority</TableHead>
 							<TableHead>Expression</TableHead>
@@ -78,7 +78,7 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 					<TableBody>
 						{[...Array(5)].map((_, i) => (
 							<TableRow key={i}>
-								<TableCell colSpan={8} className="h-10">
+								<TableCell colSpan={7} className="h-10">
 									<div className="h-2 w-32 bg-muted rounded animate-pulse" />
 								</TableCell>
 							</TableRow>
@@ -109,8 +109,7 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 					<TableHeader>
 						<TableRow className="bg-muted/50">
 							<TableHead className="font-semibold">Name</TableHead>
-							<TableHead className="font-semibold">Provider</TableHead>
-							<TableHead className="font-semibold">Model</TableHead>
+							<TableHead className="font-semibold">Targets</TableHead>
 							<TableHead className="font-semibold">Scope</TableHead>
 							<TableHead className="text-right font-semibold">Priority</TableHead>
 							<TableHead className="font-semibold">Expression</TableHead>
@@ -130,17 +129,7 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 									</div>
 								</TableCell>
 								<TableCell>
-									<div className="flex items-center gap-2">
-										<RenderProviderIcon
-											provider={rule.provider as ProviderIconType}
-											size="sm"
-											className="h-4 w-4"
-										/>
-										<span className="text-sm">{getProviderLabel(rule.provider || "-")}</span>
-									</div>
-								</TableCell>
-								<TableCell className="text-sm">
-									<span className="font-mono">{rule.model || "-"}</span>
+									<TargetsSummary targets={rule.targets || []} />
 								</TableCell>
 								<TableCell>
 									<Badge variant="secondary">{getScopeLabel(rule.scope)}</Badge>
@@ -200,5 +189,38 @@ export function RoutingRulesTable({ rules, isLoading, onEdit, canDelete = false 
 				</AlertDialogContent>
 			</AlertDialog>
 		</>
+	);
+}
+
+function TargetsSummary({ targets }: { targets: RoutingTarget[] }) {
+	if (!targets || targets.length === 0) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+
+	const first = targets[0];
+	const label = [
+		first.provider ? getProviderLabel(first.provider) : "Any",
+		first.model || "Any model",
+	].join(" / ");
+
+	return (
+		<div className="flex flex-col gap-1">
+			<div className="flex items-center gap-1.5">
+				{first.provider && (
+					<RenderProviderIcon
+						provider={first.provider as ProviderIconType}
+						size="sm"
+						className="h-4 w-4 shrink-0"
+					/>
+				)}
+				<span className="text-sm truncate max-w-[160px]">{label}</span>
+				{targets.length === 1 && (
+					<span className="text-xs text-muted-foreground shrink-0">{first.weight}</span>
+				)}
+			</div>
+			{targets.length > 1 && (
+				<span className="text-xs text-muted-foreground">+{targets.length - 1} more target{targets.length > 2 ? "s" : ""} (probabilistic)</span>
+			)}
+		</div>
 	);
 }

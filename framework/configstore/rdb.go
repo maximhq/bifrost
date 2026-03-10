@@ -2341,7 +2341,7 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 // GetRoutingRules retrieves all routing rules from the database.
 func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
 	var rules []tables.TableRoutingRule
-	if err := s.db.WithContext(ctx).Order("priority ASC, created_at DESC").Find(&rules).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Targets").Order("priority ASC, created_at DESC").Find(&rules).Error; err != nil {
 		return nil, err
 	}
 	return rules, nil
@@ -2350,7 +2350,7 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 // GetRoutingRulesByScope retrieves routing rules by scope and scope ID, ordered by priority ASC.
 func (s *RDBConfigStore) GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error) {
 	var rules []tables.TableRoutingRule
-	query := s.db.WithContext(ctx)
+	query := s.db.WithContext(ctx).Preload("Targets")
 
 	if scope == "global" {
 		query = query.Where("scope = ?", "global")
@@ -2369,7 +2369,7 @@ func (s *RDBConfigStore) GetRoutingRulesByScope(ctx context.Context, scope strin
 // GetRoutingRule retrieves a specific routing rule by ID.
 func (s *RDBConfigStore) GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error) {
 	var rule tables.TableRoutingRule
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&rule).Error; err != nil {
+	if err := s.db.WithContext(ctx).Preload("Targets").Where("id = ?", id).First(&rule).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -2426,10 +2426,22 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
 	}
 
-	if err := database.WithContext(ctx).Create(rule).Error; err != nil {
-		return s.parseGormError(err)
-	}
-	return nil
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		targets := rule.Targets
+		rule.Targets = nil
+		if err := tx.Omit("Targets").Create(rule).Error; err != nil {
+			return err
+		}
+		rule.Targets = targets
+
+		for i := range rule.Targets {
+			rule.Targets[i].RuleID = rule.ID
+			if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 }
 
 // UpdateRoutingRule updates an existing routing rule in the database.
@@ -2463,17 +2475,37 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
 	}
 
-	if err := database.WithContext(ctx).Save(rule).Error; err != nil {
-		return s.parseGormError(err)
-	}
-	return nil
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		targets := rule.Targets
+		rule.Targets = nil
+		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
+			return err
+		}
+		rule.Targets = targets
+
+		if err := tx.Where("rule_id = ?", rule.ID).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+			return err
+		}
+		for i := range rule.Targets {
+			rule.Targets[i].RuleID = rule.ID
+			if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 }
 
-// DeleteRoutingRule deletes a routing rule from the database.
+// DeleteRoutingRule deletes a routing rule and its targets from the database.
 func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	database := s.db
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
+	}
+
+	// Delete targets first
+	if err := database.WithContext(ctx).Where("rule_id = ?", id).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+		return s.parseGormError(err)
 	}
 
 	result := database.WithContext(ctx).Delete(&tables.TableRoutingRule{}, "id = ?", id)

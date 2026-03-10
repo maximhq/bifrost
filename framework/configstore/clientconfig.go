@@ -870,11 +870,23 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash CelExpression
 	hash.Write([]byte(r.CelExpression))
 
-	// Hash Provider
-	hash.Write([]byte(r.Provider))
-
-	// Hash Model
-	hash.Write([]byte(r.Model))
+	// Hash Targets (sorted by ID for determinism)
+	for _, t := range r.Targets {
+		if t.Provider != nil {
+			hash.Write([]byte(*t.Provider))
+		}
+		if t.Model != nil {
+			hash.Write([]byte(*t.Model))
+		}
+		if t.KeyID != nil {
+			hash.Write([]byte(*t.KeyID))
+		}
+		data, err := sonic.Marshal(t.Weight)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 
 	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
 	if r.Fallbacks != nil {

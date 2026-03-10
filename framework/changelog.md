@@ -1,1 +1,2 @@
+- feat: add `routing_targets` table with 1:many relationship to `routing_rules`; migrates existing single-target rules to the new table with `weight=100`; drops legacy `provider`, `model`, `key_id` columns from `routing_rules`
 - feat: add `key_id` column to `routing_rules` table

@@ -22,8 +22,15 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { X, Save, AlertCircle, Plus, Trash2 } from "lucide-react";
-import { RoutingRule, RoutingRuleFormData, DEFAULT_ROUTING_RULE_FORM_DATA, ROUTING_RULE_SCOPES } from "@/lib/types/routingRules";
+import { X, Save, Plus, Trash2 } from "lucide-react";
+import {
+	RoutingRule,
+	RoutingRuleFormData,
+	RoutingTargetFormData,
+	DEFAULT_ROUTING_RULE_FORM_DATA,
+	DEFAULT_ROUTING_TARGET,
+	ROUTING_RULE_SCOPES,
+} from "@/lib/types/routingRules";
 import {
 	useCreateRoutingRuleMutation,
 	useUpdateRoutingRuleMutation,
@@ -83,7 +90,8 @@ export function RoutingRuleSheet({
 	const [createRoutingRule, { isLoading: isCreating }] = useCreateRoutingRuleMutation();
 	const [updateRoutingRule, { isLoading: isUpdating }] = useUpdateRoutingRuleMutation();
 
-	// State to track the query structure for the rule builder
+	// State for targets and query (managed outside react-hook-form for complex nested structures)
+	const [targets, setTargets] = useState<RoutingTargetFormData[]>([{ ...DEFAULT_ROUTING_TARGET }]);
 	const [query, setQuery] = useState<RuleGroupType>(defaultQuery);
 	const [builderKey, setBuilderKey] = useState(0);
 
@@ -103,25 +111,14 @@ export function RoutingRuleSheet({
 	const enabled = watch("enabled");
 	const scope = watch("scope");
 	const scopeId = watch("scope_id");
-	const provider = watch("provider");
-	const model = watch("model");
-	const keyId = watch("key_id");
 	const fallbacks = watch("fallbacks");
 
-	// Get available providers from configured providers, fallback to providers in rules
+	// Get available providers from configured providers
 	const availableProviders = providersData.length > 0
 		? providersData.map((p) => p.name)
 		: Array.from(
-			new Set([...rules.map((r) => r.provider).filter((p) => p !== "")]),
-		);
-
-	// Get keys for the selected provider
-	const availableKeys = provider
-		? (providersData.find((p) => p.name === provider)?.keys ?? [])
-		: [];
-	const availableModels = Array.from(
-		new Set([...rules.map((r) => r.model).filter((m) => m !== "" && m !== undefined)]),
-	) as string[];
+			new Set(rules.flatMap((r) => r.targets?.map((t) => t.provider).filter(Boolean) ?? []))
+		) as string[];
 
 	// Initialize form data when editing rule changes
 	useEffect(() => {
@@ -130,14 +127,22 @@ export function RoutingRuleSheet({
 			setValue("name", editingRule.name);
 			setValue("description", editingRule.description);
 			setValue("cel_expression", editingRule.cel_expression);
-			setValue("provider", editingRule.provider);
-			setValue("model", editingRule.model || "");
-			setValue("key_id", editingRule.key_id || "");
 			setValue("fallbacks", editingRule.fallbacks || []);
 			setValue("scope", editingRule.scope);
 			setValue("scope_id", editingRule.scope_id || "");
 			setValue("priority", editingRule.priority);
 			setValue("enabled", editingRule.enabled);
+			// Restore targets
+			if (editingRule.targets && editingRule.targets.length > 0) {
+				setTargets(editingRule.targets.map((t) => ({
+					provider: t.provider || "",
+					model: t.model || "",
+					key_id: t.key_id || "",
+					weight: t.weight,
+				})));
+			} else {
+				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
+			}
 			// Restore the query object if it exists, otherwise use default
 			if (editingRule.query) {
 				setQuery(editingRule.query);
@@ -147,6 +152,7 @@ export function RoutingRuleSheet({
 			setBuilderKey((prev) => prev + 1);
 		} else {
 			reset();
+			setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 			setQuery(defaultQuery);
 			setBuilderKey((prev) => prev + 1);
 		}
@@ -160,6 +166,21 @@ export function RoutingRuleSheet({
 		[setValue],
 	);
 
+	const addTarget = () => {
+		const remaining = 1 - targets.reduce((sum, t) => sum + (t.weight || 0), 0);
+		setTargets((prev) => [...prev, { ...DEFAULT_ROUTING_TARGET, weight: Math.max(0, parseFloat(remaining.toFixed(4))) }]);
+	};
+
+	const removeTarget = (index: number) => {
+		setTargets((prev) => prev.filter((_, i) => i !== index));
+	};
+
+	const updateTarget = (index: number, field: keyof RoutingTargetFormData, value: string | number) => {
+		setTargets((prev) => prev.map((t, i) => i === index ? { ...t, [field]: value } : t));
+	};
+
+	const totalWeight = targets.reduce((sum, t) => sum + (t.weight || 0), 0);
+
 	const onSubmit = (data: RoutingRuleFormData) => {
 		// Validate scope_id is required when scope is not global
 		if (data.scope !== "global" && !data.scope_id?.trim()) {
@@ -167,19 +188,33 @@ export function RoutingRuleSheet({
 			return;
 		}
 
+		// Validate targets
+		if (targets.length === 0) {
+			toast.error("At least one routing target is required");
+			return;
+		}
+		for (const t of targets) {
+			if (t.weight <= 0) {
+				toast.error("Each target weight must be greater than 0");
+				return;
+			}
+		}
+		if (Math.abs(totalWeight - 1) > 0.001) {
+			toast.error(`Target weights must sum to 1, current total: ${totalWeight.toFixed(4)}`);
+			return;
+		}
+
 		// Validate regex patterns in routing rules
 		const regexErrors = validateRoutingRules(query);
 		if (regexErrors.length > 0) {
-			const errorMessage = regexErrors.join("\n");
-			toast.error(`Invalid regex pattern:\n${errorMessage}`);
+			toast.error(`Invalid regex pattern:\n${regexErrors.join("\n")}`);
 			return;
 		}
 
 		// Validate rate limit and budget rules
 		const rateLimitErrors = validateRateLimitAndBudgetRules(query);
 		if (rateLimitErrors.length > 0) {
-			const errorMessage = rateLimitErrors.join("\n");
-			toast.error(`Invalid rule configuration:\n${errorMessage}`);
+			toast.error(`Invalid rule configuration:\n${rateLimitErrors.join("\n")}`);
 			return;
 		}
 
@@ -193,9 +228,12 @@ export function RoutingRuleSheet({
 			name: data.name,
 			description: data.description,
 			cel_expression: data.cel_expression,
-			provider: data.provider,
-			model: data.model,
-			key_id: data.key_id || undefined,
+			targets: targets.map((t) => ({
+				provider: t.provider || undefined,
+				model: t.model || undefined,
+				key_id: t.key_id || undefined,
+				weight: t.weight,
+			})),
 			fallbacks: validFallbacks,
 			scope: data.scope,
 			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
@@ -219,6 +257,7 @@ export function RoutingRuleSheet({
 						: "Routing rule created successfully",
 				);
 				reset();
+				setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 				setQuery(defaultQuery);
 				setBuilderKey((prev) => prev + 1);
 				onOpenChange(false);
@@ -231,6 +270,7 @@ export function RoutingRuleSheet({
 
 	const handleCancel = () => {
 		reset();
+		setTargets([{ ...DEFAULT_ROUTING_TARGET }]);
 		setQuery(defaultQuery);
 		setBuilderKey((prev) => prev + 1);
 		onOpenChange(false);
@@ -400,7 +440,7 @@ export function RoutingRuleSheet({
 							initialQuery={query}
 							onChange={handleQueryChange}
 							providers={availableProviders}
-							models={availableModels}
+							models={[]}
 							allowCustomModels={true}
 						/>
 					</div>
@@ -412,117 +452,50 @@ export function RoutingRuleSheet({
 
 					<Separator />
 
-					{/* Routing Target */}
+					{/* Routing Targets */}
 					<div className="space-y-3">
-						<Label>Routing Target</Label>
-						<p className="text-muted-foreground text-xs">Leave provider or model empty to use the incoming request value</p>
-						<div className="grid grid-cols-2 gap-4">
-							<div className="space-y-2">
-								<Label htmlFor="provider" className="text-sm">
-									Provider
-								</Label>
-								<div className="flex gap-2">
-									<Select value={provider} onValueChange={(value) => { setValue("provider", value); setValue("key_id", ""); }}>
-										<SelectTrigger className="flex-1">
-											<SelectValue placeholder="Select provider (optional)" />
-										</SelectTrigger>
-										<SelectContent>
-											{availableProviders.map((provider) => (
-												<SelectItem key={provider} value={provider}>
-													<div className="flex items-center gap-2">
-														<RenderProviderIcon
-															provider={provider as ProviderIconType}
-															size="sm"
-															className="h-4 w-4"
-														/>
-														<span>{getProviderLabel(provider)}</span>
-													</div>
-												</SelectItem>
-											))}
-										</SelectContent>
-									</Select>
-									{provider && (
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											onClick={() => { setValue("provider", ""); setValue("key_id", ""); }}
-											className="h-9 px-2"
-											title="Clear provider selection"
-										>
-											<X className="h-4 w-4" />
-										</Button>
-									)}
-								</div>
-								{errors.provider && <p className="text-destructive text-sm">{errors.provider.message}</p>}
+						<div className="flex items-center justify-between">
+							<div>
+								<Label>Routing Targets</Label>
+								<p className="text-muted-foreground text-xs mt-0.5">
+									Weights must sum to 1. Leave provider or model empty to use the incoming request value.
+								</p>
 							</div>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={addTarget}
+								className="gap-2 shrink-0"
+							>
+								<Plus className="h-4 w-4" />
+								Add Target
+							</Button>
+						</div>
 
-							<div className="space-y-2">
-								<Label htmlFor="model" className="text-sm">
-									Model
-								</Label>
-								<div className="flex gap-2">
-									<div className="flex-1">
-										<ModelMultiselect
-											provider={provider || undefined}
-											value={model}
-											onChange={(value) => setValue("model", value)}
-											placeholder="Search for a model... (optional)"
-											isSingleSelect
-											loadModelsOnEmptyProvider
-										/>
-									</div>
-									{model && (
-										<Button
-											type="button"
-											variant="outline"
-											size="sm"
-											onClick={() => setValue("model", "")}
-											className="h-9 px-2"
-											title="Clear model selection"
-										>
-											<X className="h-4 w-4" />
-										</Button>
-									)}
-								</div>
-								{errors.model && <p className="text-destructive text-sm">{errors.model.message}</p>}
-							</div>
+						<div className="space-y-3">
+							{targets.map((target, index) => (
+								<TargetRow
+									key={index}
+									target={target}
+									index={index}
+									availableProviders={availableProviders}
+									providersData={providersData}
+									showRemove={targets.length > 1}
+									onUpdate={updateTarget}
+									onRemove={removeTarget}
+								/>
+							))}
+						</div>
+
+						{/* Weight sum indicator */}
+						<div className={`flex items-center justify-end gap-2 text-xs font-medium ${Math.abs(totalWeight - 1) > 0.001 ? "text-destructive" : "text-muted-foreground"}`}>
+							Total weight: {totalWeight.toFixed(4)}
+							{Math.abs(totalWeight - 1) > 0.001 && (
+								<span className="text-destructive">(must equal 1)</span>
+							)}
 						</div>
 					</div>
-
-					{/* Key Selector - only shown when a provider is selected */}
-					{provider && availableKeys.length > 0 && (
-						<div className="space-y-2">
-							<Label className="text-sm">API Key</Label>
-							<p className="text-muted-foreground text-xs">Pin a specific key for this provider. Leave unset to use load-balanced key selection.</p>
-							<div className="flex gap-2">
-								<Select value={keyId || ""} onValueChange={(value) => setValue("key_id", value)}>
-									<SelectTrigger className="flex-1">
-										<SelectValue placeholder="Select key (optional)" />
-									</SelectTrigger>
-									<SelectContent>
-										{availableKeys.map((key) => (
-											<SelectItem key={key.id} value={key.id}>
-												{key.name}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-								{keyId && (
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										onClick={() => setValue("key_id", "")}
-										className="h-9 px-2"
-										title="Clear key selection"
-									>
-										<X className="h-4 w-4" />
-									</Button>
-								)}
-							</div>
-						</div>
-					)}
 
 					{/* Fallbacks */}
 					<div className="space-y-3">
@@ -635,5 +608,157 @@ export function RoutingRuleSheet({
 				</form>
 			</SheetContent>
 		</Sheet>
+	);
+}
+
+interface TargetRowProps {
+	target: RoutingTargetFormData;
+	index: number;
+	availableProviders: string[];
+	providersData: Array<{ name: string; keys: Array<{ id: string; name: string }> }>;
+	showRemove: boolean;
+	onUpdate: (index: number, field: keyof RoutingTargetFormData, value: string | number) => void;
+	onRemove: (index: number) => void;
+}
+
+function TargetRow({ target, index, availableProviders, providersData, showRemove, onUpdate, onRemove }: TargetRowProps) {
+	const availableKeys = target.provider
+		? (providersData.find((p) => p.name === target.provider)?.keys ?? [])
+		: [];
+
+	return (
+		<div className="rounded-lg border p-3 space-y-3">
+			<div className="flex items-center justify-between">
+				<span className="text-sm font-medium text-muted-foreground">Target {index + 1}</span>
+				<div className="flex items-center gap-2">
+					<div className="flex items-center gap-1.5">
+						<Label className="text-xs text-muted-foreground shrink-0">Weight (0–1)</Label>
+						<Input
+							type="number"
+							min={0.001}
+							max={1}
+							step={0.001}
+							value={target.weight}
+							onChange={(e) => onUpdate(index, "weight", parseFloat(e.target.value) || 0)}
+							className="h-8 w-24 text-sm"
+						/>
+					</div>
+					{showRemove && (
+						<Button
+							type="button"
+							variant="ghost"
+							size="sm"
+							onClick={() => onRemove(index)}
+							className="h-8 w-8 p-0"
+						>
+							<Trash2 className="h-3.5 w-3.5" />
+						</Button>
+					)}
+				</div>
+			</div>
+
+			<div className="grid grid-cols-2 gap-3">
+				<div className="space-y-1.5">
+					<Label className="text-xs">Provider</Label>
+					<div className="flex gap-1.5">
+						<Select
+							value={target.provider}
+							onValueChange={(value) => {
+								onUpdate(index, "provider", value);
+								onUpdate(index, "key_id", "");
+							}}
+						>
+							<SelectTrigger className="flex-1 h-9 text-sm">
+								<SelectValue placeholder="Incoming (optional)" />
+							</SelectTrigger>
+							<SelectContent>
+								{availableProviders.map((prov) => (
+									<SelectItem key={prov} value={prov}>
+										<div className="flex items-center gap-2">
+											<RenderProviderIcon
+												provider={prov as ProviderIconType}
+												size="sm"
+												className="h-4 w-4"
+											/>
+											<span>{getProviderLabel(prov)}</span>
+										</div>
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						{target.provider && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => { onUpdate(index, "provider", ""); onUpdate(index, "key_id", ""); }}
+								className="h-9 w-9 p-0"
+							>
+								<X className="h-3.5 w-3.5" />
+							</Button>
+						)}
+					</div>
+				</div>
+
+				<div className="space-y-1.5">
+					<Label className="text-xs">Model</Label>
+					<div className="flex gap-1.5">
+						<div className="flex-1">
+							<ModelMultiselect
+								provider={target.provider || undefined}
+								value={target.model}
+								onChange={(value) => onUpdate(index, "model", value)}
+								placeholder="Incoming (optional)"
+								isSingleSelect
+								loadModelsOnEmptyProvider
+								className="!h-9 !min-h-9"
+							/>
+						</div>
+						{target.model && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => onUpdate(index, "model", "")}
+								className="h-9 w-9 p-0"
+							>
+								<X className="h-3.5 w-3.5" />
+							</Button>
+						)}
+					</div>
+				</div>
+			</div>
+
+			{target.provider && availableKeys.length > 0 && (
+				<div className="space-y-1.5">
+					<Label className="text-xs">API Key <span className="text-muted-foreground">(optional — leave unset for load-balanced selection)</span></Label>
+					<div className="flex gap-1.5">
+						<Select value={target.key_id || ""} onValueChange={(value) => onUpdate(index, "key_id", value)}>
+							<SelectTrigger className="flex-1 h-9 text-sm">
+								<SelectValue placeholder="Select key (optional)" />
+							</SelectTrigger>
+							<SelectContent>
+								{availableKeys.map((key) => (
+									<SelectItem key={key.id} value={key.id}>
+										{key.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+						{target.key_id && (
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								onClick={() => onUpdate(index, "key_id", "")}
+								className="h-9 w-9 p-0"
+							>
+								<X className="h-3.5 w-3.5" />
+							</Button>
+						)}
+					</div>
+				</div>
+			)}
+		</div>
 	);
 }

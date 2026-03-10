@@ -1,1 +1,2 @@
+- feat: routing rules now support multiple weighted targets for probabilistic routing
 - feat: routing rules now support `key_id` field to pin a specific API key for matched requests, bypassing load-balanced key selection

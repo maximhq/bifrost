@@ -2,6 +2,7 @@ package governance
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 
@@ -138,23 +139,25 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
 			}
 
-			// If rule matched, return routing decision
+			// If rule matched, select a target probabilistically and return routing decision
 			if matched {
-				// Use incoming provider/model if rule's are empty
-				provider := rule.Provider
-				if provider == "" {
-					provider = string(routingCtx.Provider)
+				target := selectWeightedTarget(rule.Targets)
+
+				provider := string(routingCtx.Provider)
+				if target.Provider != nil && *target.Provider != "" {
+					provider = *target.Provider
 				}
 
-				model := rule.Model
-				if model == "" {
-					model = routingCtx.Model
+				model := routingCtx.Model
+				if target.Model != nil && *target.Model != "" {
+					model = *target.Model
 				}
 
 				keyID := ""
-				if rule.KeyID != nil {
-					keyID = *rule.KeyID
+				if target.KeyID != nil {
+					keyID = *target.KeyID
 				}
+
 				decision := &RoutingDecision{
 					Provider:        provider,
 					Model:           model,
@@ -167,8 +170,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, rule.ID)
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
 
-				re.logger.Debug("[RoutingEngine] Rule matched! Decision: provider=%s, model=%s, fallbacks=%v", provider, model, rule.ParsedFallbacks)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
+				re.logger.Debug("[RoutingEngine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", target.Weight, provider, model, rule.ParsedFallbacks)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, target.Weight, provider, model, rule.ParsedFallbacks))
 				return decision, nil
 			}
 
@@ -178,6 +181,34 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// selectWeightedTarget picks one target from the slice using weighted random selection.
+// Each target's Weight contributes proportionally to its probability of being chosen.
+// Weights do not need to be normalised to 100; the function normalises internally.
+// If the slice is empty, a zero-value target is returned (caller uses incoming provider/model).
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) configstoreTables.TableRoutingTarget {
+	if len(targets) == 0 {
+		return configstoreTables.TableRoutingTarget{}
+	}
+	if len(targets) == 1 {
+		return targets[0]
+	}
+
+	total := 0.0
+	for _, t := range targets {
+		total += t.Weight
+	}
+
+	r := rand.Float64() * total
+	cumulative := 0.0
+	for _, t := range targets {
+		cumulative += t.Weight
+		if r < cumulative {
+			return t
+		}
+	}
+	return targets[len(targets)-1]
 }
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy

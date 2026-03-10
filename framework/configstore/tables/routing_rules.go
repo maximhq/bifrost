@@ -18,12 +18,11 @@ type TableRoutingRule struct {
 	Enabled       bool   `gorm:"not null;default:true" json:"enabled"`
 	CelExpression string `gorm:"type:text;not null" json:"cel_expression"`
 
-	// Routing Target (output)
-	Provider        string   `gorm:"type:varchar(255);not null" json:"provider"` // Primary provider (e.g., "openai", "azure")
-	Model           string   `gorm:"type:varchar(255)" json:"model"`             // Optional model override, empty = use original
-	KeyID           *string  `gorm:"type:varchar(255)" json:"key_id,omitempty"` // Optional: pin a specific API key by its UUID
-	Fallbacks       *string  `gorm:"type:text" json:"-"`                         // JSON array of fallback chains
-	ParsedFallbacks []string `gorm:"-" json:"fallbacks"`                         // Parsed fallbacks from JSON
+	// Routing Targets (output) — 1:many relationship; weights must sum to 1
+	Targets []TableRoutingTarget `gorm:"foreignKey:RuleID" json:"targets,omitempty"`
+
+	Fallbacks       *string  `gorm:"type:text" json:"-"`           // JSON array of fallback chains
+	ParsedFallbacks []string `gorm:"-" json:"fallbacks,omitempty"` // Parsed fallbacks from JSON
 
 	Query       *string        `gorm:"type:text" json:"-"`
 	ParsedQuery map[string]any `gorm:"-" json:"query,omitempty"`
@@ -80,3 +79,17 @@ func (r *TableRoutingRule) AfterFind(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// TableRoutingTarget represents a weighted routing target for probabilistic routing.
+// Multiple targets can be associated with a single routing rule; weights determine
+// the probability of each target being selected and must sum to 100 across all targets in a rule.
+type TableRoutingTarget struct {
+	RuleID   string  `gorm:"type:varchar(255);not null;index" json:"rule_id"`
+	Provider *string `gorm:"type:varchar(255)" json:"provider,omitempty"`          // nil = use incoming provider
+	Model    *string `gorm:"type:varchar(255)" json:"model,omitempty"`             // nil = use incoming model
+	KeyID    *string `gorm:"type:varchar(255)" json:"key_id,omitempty"`            // nil = no key pin
+	Weight   float64 `gorm:"type:decimal(5,4);not null;default:1" json:"weight"` // must sum to 1 across all targets in a rule
+}
+
+// TableName for TableRoutingTarget
+func (TableRoutingTarget) TableName() string { return "routing_targets" }

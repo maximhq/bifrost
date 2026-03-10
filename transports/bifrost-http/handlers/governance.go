@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -120,36 +121,42 @@ type UpdateBudgetRequest struct {
 	ResetDuration *string  `json:"reset_duration,omitempty"`
 }
 
+// RoutingTarget represents a single weighted routing target within a rule.
+// All fields except Weight are optional; nil means "use the incoming request's value".
+// Weights across all targets in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0).
+type RoutingTarget struct {
+	Provider *string `json:"provider,omitempty"` // nil = use incoming provider
+	Model    *string `json:"model,omitempty"`    // nil = use incoming model
+	KeyID    *string `json:"key_id,omitempty"`   // nil = no key pin
+	Weight   float64 `json:"weight"`             // must be > 0; all weights must sum to 1
+}
+
 // CreateRoutingRuleRequest represents the request body for creating a routing rule
 type CreateRoutingRuleRequest struct {
-	Name          string         `json:"name" validate:"required"`
-	Description   string         `json:"description,omitempty"`
-	Enabled       bool           `json:"enabled,omitempty"`
-	CelExpression string         `json:"cel_expression"`
-	Provider      string         `json:"provider,omitempty"` // Optional; empty uses incoming request provider
-	Model         string         `json:"model,omitempty"`    // Optional; empty uses incoming request model
-	KeyID         string         `json:"key_id,omitempty"`   // Optional; pins a specific API key by UUID
-	Fallbacks     []string       `json:"fallbacks,omitempty"`
-	Scope         string         `json:"scope,omitempty"` // Defaults to "global" if not provided
-	ScopeID       *string        `json:"scope_id,omitempty"`
-	Query         map[string]any `json:"query,omitempty"`
-	Priority      int            `json:"priority,omitempty"` // Defaults to 0 if not provided
+	Name          string          `json:"name" validate:"required"`
+	Description   string          `json:"description,omitempty"`
+	Enabled       bool            `json:"enabled,omitempty"`
+	CelExpression string          `json:"cel_expression"`
+	Targets       []RoutingTarget `json:"targets"` // Required; weights must sum to 1
+	Fallbacks     []string        `json:"fallbacks,omitempty"`
+	Scope         string          `json:"scope,omitempty"` // Defaults to "global" if not provided
+	ScopeID       *string         `json:"scope_id,omitempty"`
+	Query         map[string]any  `json:"query,omitempty"`
+	Priority      int             `json:"priority,omitempty"` // Defaults to 0 if not provided
 }
 
 // UpdateRoutingRuleRequest represents the request body for updating a routing rule
 type UpdateRoutingRuleRequest struct {
-	Name          *string        `json:"name,omitempty"`
-	Description   *string        `json:"description,omitempty"`
-	Enabled       *bool          `json:"enabled,omitempty"`
-	CelExpression *string        `json:"cel_expression,omitempty"`
-	Provider      *string        `json:"provider,omitempty"`
-	Model         *string        `json:"model,omitempty"`
-	KeyID         *string        `json:"key_id,omitempty"` // Optional; pins a specific API key by UUID; send "" to clear
-	Fallbacks     []string       `json:"fallbacks,omitempty"`
-	Query         map[string]any `json:"query,omitempty"`
-	Priority      *int           `json:"priority,omitempty"`
-	Scope         *string        `json:"scope,omitempty"`
-	ScopeID       *string        `json:"scope_id,omitempty"`
+	Name          *string         `json:"name,omitempty"`
+	Description   *string         `json:"description,omitempty"`
+	Enabled       *bool           `json:"enabled,omitempty"`
+	CelExpression *string         `json:"cel_expression,omitempty"`
+	Targets       []RoutingTarget `json:"targets,omitempty"` // If provided, replaces all existing targets; weights must sum to 1
+	Fallbacks     []string        `json:"fallbacks,omitempty"`
+	Query         map[string]any  `json:"query,omitempty"`
+	Priority      *int            `json:"priority,omitempty"`
+	Scope         *string         `json:"scope,omitempty"`
+	ScopeID       *string         `json:"scope_id,omitempty"`
 }
 
 // CreateRateLimitRequest represents the request body for creating a rate limit using flexible approach
@@ -2644,6 +2651,16 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// Validate targets
+	if len(req.Targets) == 0 {
+		SendError(ctx, 400, "at least one target is required")
+		return
+	}
+	if err := validateRoutingTargets(req.Targets); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
+
 	// Set defaults
 	scope := req.Scope
 	if scope == "" {
@@ -2656,29 +2673,29 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	priority := req.Priority
-	if priority == 0 && req.Priority == 0 { // Default to 0
-		priority = 0
-	}
-
-	var keyID *string
-	if req.KeyID != "" {
-		keyID = &req.KeyID
+	// Build targets
+	ruleID := uuid.NewString()
+	targets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		targets = append(targets, configstoreTables.TableRoutingTarget{
+			Provider: t.Provider,
+			Model:    t.Model,
+			KeyID:    t.KeyID,
+			Weight:   t.Weight,
+		})
 	}
 
 	// Create routing rule
 	rule := &configstoreTables.TableRoutingRule{
-		ID:              uuid.NewString(),
+		ID:              ruleID,
 		Name:            req.Name,
 		Description:     req.Description,
 		Enabled:         req.Enabled,
 		CelExpression:   req.CelExpression,
-		Provider:        req.Provider,
-		Model:           req.Model,
-		KeyID:           keyID,
+		Targets:         targets,
 		Scope:           scope,
 		ScopeID:         req.ScopeID,
-		Priority:        priority,
+		Priority:        req.Priority,
 		ParsedFallbacks: req.Fallbacks,
 		ParsedQuery:     req.Query,
 	}
@@ -2736,18 +2753,21 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	if req.CelExpression != nil {
 		rule.CelExpression = *req.CelExpression
 	}
-	if req.Provider != nil {
-		rule.Provider = *req.Provider
-	}
-	if req.Model != nil {
-		rule.Model = *req.Model
-	}
-	if req.KeyID != nil {
-		if *req.KeyID == "" {
-			rule.KeyID = nil
-		} else {
-			rule.KeyID = req.KeyID
+	if len(req.Targets) > 0 {
+		if err := validateRoutingTargets(req.Targets); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
 		}
+		newTargets := make([]configstoreTables.TableRoutingTarget, 0, len(req.Targets))
+		for _, t := range req.Targets {
+			newTargets = append(newTargets, configstoreTables.TableRoutingTarget{
+				Provider: t.Provider,
+				Model:    t.Model,
+				KeyID:    t.KeyID,
+				Weight:   t.Weight,
+			})
+		}
+		rule.Targets = newTargets
 	}
 	if req.Priority != nil {
 		rule.Priority = *req.Priority
@@ -2813,4 +2833,19 @@ func (h *GovernanceHandler) deleteRoutingRule(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Routing rule deleted successfully",
 	})
+}
+
+// validateRoutingTargets checks that all weights are positive and sum to 1.
+func validateRoutingTargets(targets []RoutingTarget) error {
+	total := 0.0
+	for _, t := range targets {
+		if t.Weight <= 0 {
+			return fmt.Errorf("each target weight must be greater than 0")
+		}
+		total += t.Weight
+	}
+	if math.Abs(total-1.0) > 0.001 {
+		return fmt.Errorf("target weights must sum to 1, got %.4f", total)
+	}
+	return nil
 }
