@@ -95,7 +95,8 @@
 		"react-textarea-autosize": "8.5.9",
 		"tailwindcss": "4.1.12",
 		"tw-animate-css": "1.3.7",
-		"typescript": "5.9.2"
+		"typescript": "5.9.2",
+		"vitest": "^4.0.18"
 	},
 	"overrides": {
 		"tar": "7.5.3"

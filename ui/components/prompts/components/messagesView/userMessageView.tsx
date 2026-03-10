@@ -5,6 +5,8 @@ import { Markdown } from "@/components/ui/markdown";
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { fileToAttachment } from "../../utils/attachment";
+import { RichTextarea } from "@/components/ui/custom/richTextarea";
+import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 
 export function UserMessageView({
 	message,
@@ -24,10 +26,12 @@ export function UserMessageView({
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const messageRef = useRef(message);
 	messageRef.current = message;
+	const pendingCursorRef = useRef<number | null>(null);
 	const content = message.content;
 	const isEmpty = !content;
 	const messageAttachments = message.attachments;
 	const canAttach = supportsVision && !disabled;
+	const hasVariables = JINJA_VAR_REGEX.test(content);
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -120,6 +124,24 @@ export function UserMessageView({
 		[addAttachments],
 	);
 
+	const handleReadOnlyClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+		if (disabled) return;
+		const target = e.target as HTMLTextAreaElement;
+		pendingCursorRef.current = target.selectionStart ?? 0;
+		setEditMode(true);
+	};
+
+	const handleEditFocus = (e: React.FocusEvent<HTMLTextAreaElement>) => {
+		const pos = pendingCursorRef.current;
+		pendingCursorRef.current = null;
+		const target = e.target;
+		requestAnimationFrame(() => {
+			const cursorPos = pos ?? target.value.length;
+			target.selectionStart = cursorPos;
+			target.selectionEnd = cursorPos;
+		});
+	};
+
 	return (
 		<div
 			className="group relative hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors"
@@ -174,24 +196,43 @@ export function UserMessageView({
 
 			<div>
 				{editMode ? (
-					<Textarea
+					<RichTextarea
 						autoFocus
 						value={content}
 						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none"
 						disabled={disabled}
 						onChange={(e) => {
 							const clone = message.clone();
 							clone.content = e.target.value;
 							onChange(clone.serialized);
 						}}
+						onFocus={handleEditFocus}
 						onBlur={() => {
 							if (content.trim().length > 0) setEditMode(false);
 						}}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
 					/>
 				) : isEmpty && messageAttachments.length === 0 ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter user message...</div>
+				) : hasVariables ? (
+					<RichTextarea
+						readOnly
+						value={content}
+						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none cursor-text"
+						onClick={handleReadOnlyClick}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
+					/>
 				) : (
-					<Markdown content={content} className="text-muted-foreground" />
+					<div
+						className={!disabled ? "cursor-text" : undefined}
+						onClick={() => {
+							if (!disabled) setEditMode(true);
+						}}
+					>
+						<Markdown content={content} className="text-muted-foreground" />
+					</div>
 				)}
 			</div>
 

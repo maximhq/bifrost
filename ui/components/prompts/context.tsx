@@ -13,7 +13,7 @@ import {
 	useUpdatePromptMutation,
 } from "@/lib/store/apis/promptsApi";
 import { useGetModelParametersQuery } from "@/lib/store/apis/providersApi";
-import { Message, MessageRole, MessageType } from "@/lib/message";
+import { Message, MessageRole, MessageType, extractVariablesFromMessages, mergeVariables, type VariableMap } from "@/lib/message";
 import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib/types/prompts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
@@ -54,6 +54,10 @@ interface PromptContextValue {
 	setModelParams: React.Dispatch<React.SetStateAction<ModelParams>>;
 	apiKeyId: string;
 	setApiKeyId: React.Dispatch<React.SetStateAction<string>>;
+
+	// Jinja2 variables
+	variables: VariableMap;
+	setVariables: React.Dispatch<React.SetStateAction<VariableMap>>;
 
 	// Sheet states
 	folderSheet: { open: boolean; folder?: Folder };
@@ -142,6 +146,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
+	const [variables, setVariables] = useState<VariableMap>({});
 
 	// Fetch model datasheet for capabilities
 	const { data: datasheetData } = useGetModelParametersQuery(model, { skip: !model });
@@ -193,15 +198,21 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setModel(mod || "gpt-4o");
 		};
 
+		const loadMessages = (msgs: Message[]) => {
+			setMessages(msgs);
+			const varNames = extractVariablesFromMessages(msgs);
+			setVariables((prev) => mergeVariables(prev, varNames));
+		};
+
 		if (selectedSession) {
 			const raw = (selectedSession.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedSession.model_params, selectedSession.provider, selectedSession.model);
 		} else if (selectedVersion) {
 			const raw = (selectedVersion.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedVersion.model_params, selectedVersion.provider, selectedVersion.model);
 		} else if (selectedPrompt?.latest_version) {
 			// Only fall back to latest_version after sessions have settled
@@ -210,13 +221,13 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const version = selectedPrompt.latest_version;
 			const raw = (version.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(version.model_params, version.provider, version.model);
 			if (sessions.length === 0) {
 				setUrlState({ versionId: version.id });
 			}
 		} else {
-			setMessages([Message.system("")]);
+			loadMessages([Message.system("")]);
 			setProvider("openai");
 			setModel("gpt-4o");
 			setModelParams({});
@@ -335,7 +346,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const isActive = () => activeRunRef.current === runToken;
 
 			setIsStreaming(true);
-			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId }, {
+			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -384,7 +395,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId],
+		[messages, provider, model, modelParams, apiKeyId, variables],
 	);
 
 	const handleSubmitToolResult = useCallback(
@@ -414,7 +425,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 			// Execute with the updated messages
 			setIsStreaming(true);
-			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId }, {
+			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -463,7 +474,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId],
+		[messages, provider, model, modelParams, apiKeyId, variables],
 	);
 
 	const value: PromptContextValue = {
@@ -493,6 +504,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		setModelParams,
 		apiKeyId,
 		setApiKeyId,
+		variables,
+		setVariables,
 		folderSheet,
 		setFolderSheet,
 		promptSheet,

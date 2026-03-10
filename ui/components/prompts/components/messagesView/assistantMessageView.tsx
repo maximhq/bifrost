@@ -91,6 +91,13 @@ export function AssistantMessageView({
 							clone.content = e.target.value;
 							onChange(clone.serialized);
 						}}
+						onFocus={(e) => {
+							const target = e.target;
+							requestAnimationFrame(() => {
+								target.selectionStart = target.value.length;
+								target.selectionEnd = target.value.length;
+							});
+						}}
 						onBlur={() => {
 							if (content.trim().length > 0) setEditMode(false);
 						}}
@@ -98,7 +105,14 @@ export function AssistantMessageView({
 				) : isEmpty ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter assistant message...</div>
 				) : (
-					<Markdown content={content} isStreaming={isStreaming} className="text-muted-foreground" />
+					<div
+						className={!disabled && !isStreaming ? "cursor-text" : undefined}
+						onClick={() => {
+							if (!disabled && !isStreaming) setEditMode(true);
+						}}
+					>
+						<Markdown content={content} isStreaming={isStreaming} className="text-muted-foreground" />
+					</div>
 				)}
 			</div>
 		</div>
