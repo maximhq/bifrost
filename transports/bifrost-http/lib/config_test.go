@@ -680,6 +680,10 @@ func (m *MockConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVir
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetVirtualKeysPaginated(ctx context.Context, params configstore.VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) {
 	return nil, nil
 }
@@ -1117,7 +1121,7 @@ func createTestSQLiteConfigStore(t *testing.T, dir string) configstore.ConfigSto
 		Config: &configstore.SQLiteConfig{
 			Path: dbPath,
 		},
-	}, nil)
+	}, &testLogger{})
 	if err != nil {
 		t.Fatalf("failed to create SQLite config store: %v", err)
 	}
@@ -1261,6 +1265,18 @@ func makeVirtualKeyWithTeam(id, name, value, teamID string) tables.TableVirtualK
 		Value:       value,
 		IsActive:    true,
 		TeamID:      &teamID,
+	}
+}
+
+// makeVirtualKeyWithCustomer creates a virtual key with customer association
+func makeVirtualKeyWithCustomer(id, name, value, customerID string) tables.TableVirtualKey {
+	return tables.TableVirtualKey{
+		ID:          id,
+		Name:        name,
+		Description: "Test virtual key with customer",
+		Value:       value,
+		IsActive:    true,
+		CustomerID:  &customerID,
 	}
 }
 
@@ -16073,4 +16089,138 @@ func TestRemoveProvider_SkipDBUpdate(t *testing.T) {
 	if _, exists := cfg.Providers["test-provider"]; exists {
 		t.Fatal("provider should be removed from memory when skipDBUpdate is true")
 	}
+}
+
+// =============================================================================
+// GetVirtualKeysPaginated SQLite Integration Tests
+// =============================================================================
+
+func TestSQLite_GetVirtualKeysPaginated(t *testing.T) {
+	dir := t.TempDir()
+	store := createTestSQLiteConfigStore(t, dir)
+	ctx := context.Background()
+
+	// ID strings for FK references
+	team1 := "team-1"
+	team2 := "team-2"
+	cust1 := "cust-1"
+	cust2 := "cust-2"
+
+	// Create referenced customers and teams first (FK constraints)
+	customers := []tables.TableCustomer{
+		{ID: cust1, Name: "Customer One"},
+		{ID: cust2, Name: "Customer Two"},
+	}
+	for i := range customers {
+		require.NoError(t, store.CreateCustomer(ctx, &customers[i]))
+	}
+	teams := []tables.TableTeam{
+		{ID: team1, Name: "Team One", CustomerID: &cust1},
+		{ID: team2, Name: "Team Two", CustomerID: &cust2},
+	}
+	for i := range teams {
+		require.NoError(t, store.CreateTeam(ctx, &teams[i]))
+	}
+
+	vks := []tables.TableVirtualKey{
+		{ID: "vk-1", Name: "alpha-key", Value: "val-1", IsActive: true, TeamID: &team1},
+		{ID: "vk-2", Name: "beta-key", Value: "val-2", IsActive: true, TeamID: &team2},
+		{ID: "vk-3", Name: "alpha-test", Value: "val-3", IsActive: true, CustomerID: &cust1},
+		{ID: "vk-4", Name: "gamma-key", Value: "val-4", IsActive: true, CustomerID: &cust2},
+		{ID: "vk-5", Name: "delta-key", Value: "val-5", IsActive: true, TeamID: &team1},
+	}
+	for i := range vks {
+		err := store.CreateVirtualKey(ctx, &vks[i])
+		require.NoError(t, err, "failed to seed VK %s", vks[i].ID)
+	}
+
+	t.Run("Pagination", func(t *testing.T) {
+		// First page: limit=2, offset=0
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			Limit: 2, Offset: 0,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), totalCount)
+		require.Len(t, results, 2)
+
+		// Last page: offset=4
+		results, totalCount, err = store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			Limit: 2, Offset: 4,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), totalCount)
+		require.Len(t, results, 1)
+	})
+
+	t.Run("Search", func(t *testing.T) {
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			Search: "alpha",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), totalCount)
+		require.Len(t, results, 2)
+		for _, vk := range results {
+			require.Contains(t, vk.Name, "alpha")
+		}
+	})
+
+	t.Run("CustomerID_filter", func(t *testing.T) {
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			CustomerID: "cust-1",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), totalCount)
+		require.Len(t, results, 1)
+		require.Equal(t, "vk-3", results[0].ID)
+	})
+
+	t.Run("TeamID_filter", func(t *testing.T) {
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			TeamID: "team-1",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), totalCount)
+		require.Len(t, results, 2)
+		for _, vk := range results {
+			require.NotNil(t, vk.TeamID)
+			require.Equal(t, "team-1", *vk.TeamID)
+		}
+	})
+
+	t.Run("OR_filter_customer_and_team", func(t *testing.T) {
+		// When both customer and team are provided, should return VKs matching either
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			CustomerID: "cust-1",
+			TeamID:     "team-2",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), totalCount)
+		require.Len(t, results, 2)
+		ids := map[string]bool{}
+		for _, vk := range results {
+			ids[vk.ID] = true
+		}
+		require.True(t, ids["vk-2"], "should include team-2 VK")
+		require.True(t, ids["vk-3"], "should include cust-1 VK")
+	})
+
+	t.Run("Default_limit", func(t *testing.T) {
+		// limit=0 should default to 25
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			Limit: 0,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), totalCount)
+		require.Len(t, results, 5) // all 5, since <25
+	})
+
+	t.Run("Max_limit_cap", func(t *testing.T) {
+		// limit=200 should be capped to 100
+		results, totalCount, err := store.GetVirtualKeysPaginated(ctx, configstore.VirtualKeyQueryParams{
+			Limit: 200,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(5), totalCount)
+		require.Len(t, results, 5) // all 5, since <100
+	})
 }

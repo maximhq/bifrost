@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -291,8 +292,38 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		})
 		return
 	}
-	// Preload all relationships for complete information
-	virtualKeys, err := h.configStore.GetVirtualKeys(ctx)
+	// Parse pagination and filter query params
+	params := configstore.VirtualKeyQueryParams{
+		Search:     string(ctx.QueryArgs().Peek("search")),
+		CustomerID: string(ctx.QueryArgs().Peek("customer_id")),
+		TeamID:     string(ctx.QueryArgs().Peek("team_id")),
+	}
+	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+			return
+		}
+		params.Limit = n
+	}
+	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil {
+			SendError(ctx, 400, "Invalid offset parameter: must be a number")
+			return
+		}
+		if n < 0 {
+			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+			return
+		}
+		params.Offset = n
+	}
+
+	virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
 	if err != nil {
 		logger.Error("failed to retrieve virtual keys: %v", err)
 		SendError(ctx, 500, "Failed to retrieve virtual keys")
@@ -301,6 +332,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
+		"total_count":  totalCount,
+		"limit":        params.Limit,
+		"offset":       params.Offset,
 	})
 }
 

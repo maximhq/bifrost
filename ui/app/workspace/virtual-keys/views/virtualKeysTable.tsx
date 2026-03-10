@@ -13,13 +13,15 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getErrorMessage, useDeleteVirtualKeyMutation } from "@/lib/store"
 import { Customer, Team, VirtualKey } from "@/lib/types/governance"
 import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/utils/governance"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { Copy, Edit, Eye, EyeOff, Plus, Trash2 } from "lucide-react"
+import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
@@ -28,11 +30,35 @@ import VirtualKeySheet from "./virtualKeySheet"
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];
+	totalCount: number;
 	teams: Team[];
 	customers: Customer[];
+	search: string;
+	onSearchChange: (value: string) => void;
+	customerFilter: string;
+	onCustomerFilterChange: (value: string) => void;
+	teamFilter: string;
+	onTeamFilterChange: (value: string) => void;
+	offset: number;
+	limit: number;
+	onOffsetChange: (offset: number) => void;
 }
 
-export default function VirtualKeysTable({ virtualKeys, teams, customers }: VirtualKeysTableProps) {
+export default function VirtualKeysTable({
+	virtualKeys,
+	totalCount,
+	teams,
+	customers,
+	search,
+	onSearchChange,
+	customerFilter,
+	onCustomerFilterChange,
+	teamFilter,
+	onTeamFilterChange,
+	offset,
+	limit,
+	onOffsetChange,
+}: VirtualKeysTableProps) {
   const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false)
   const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null)
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set())
@@ -110,8 +136,10 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 		toast.success("Copied to clipboard");
 	};
 
-	// Empty state when user has no virtual keys (same pattern as Plugins)
-	if (virtualKeys?.length === 0) {
+	const hasActiveFilters = search || customerFilter || teamFilter;
+
+	// True empty state: no VKs at all (not just filtered to zero)
+	if (totalCount === 0 && !hasActiveFilters) {
 		return (
 			<>
 				{showVirtualKeySheet && (
@@ -154,11 +182,51 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 					</Button>
 				</div>
 
+				{/* Toolbar: Search + Filters */}
+				<div className="flex items-center gap-3">
+					<div className="relative max-w-sm flex-1">
+						<Search className="text-muted-foreground absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2" />
+						<Input
+							placeholder="Search by name..."
+							value={search}
+							onChange={(e) => onSearchChange(e.target.value)}
+							className="pl-9"
+							data-testid="vk-search-input"
+						/>
+					</div>
+					<Select value={customerFilter} onValueChange={(val) => onCustomerFilterChange(val === "all" ? "" : val)}>
+						<SelectTrigger className="w-[180px]" data-testid="vk-customer-filter">
+							<SelectValue placeholder="All Customers" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Customers</SelectItem>
+							{customers.map((c) => (
+								<SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					{customerFilter && teamFilter && (
+						<span className="text-muted-foreground text-xs font-medium">or</span>
+					)}
+					<Select value={teamFilter} onValueChange={(val) => onTeamFilterChange(val === "all" ? "" : val)}>
+						<SelectTrigger className="w-[180px]" data-testid="vk-team-filter">
+							<SelectValue placeholder="All Teams" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectItem value="all">All Teams</SelectItem>
+							{teams.map((t) => (
+								<SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</div>
+
 				<div className="rounded-sm border">
 					<Table data-testid="vk-table">
 						<TableHeader>
 							<TableRow>
 								<TableHead>Name</TableHead>
+								<TableHead>Assigned To</TableHead>
 								<TableHead>Key</TableHead>
 								<TableHead>Budget</TableHead>
 								<TableHead>Status</TableHead>
@@ -166,7 +234,14 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{virtualKeys?.map((vk) => {
+							{virtualKeys.length === 0 ? (
+								<TableRow>
+									<TableCell colSpan={6} className="h-24 text-center">
+										<span className="text-muted-foreground text-sm">No matching virtual keys found.</span>
+									</TableCell>
+								</TableRow>
+							) : (
+								virtualKeys.map((vk) => {
 									const isRevealed = revealedKeys.has(vk.id);
 									const isExhausted =
 										(vk.budget?.current_usage && vk.budget?.max_limit && vk.budget.current_usage >= vk.budget.max_limit) ||
@@ -186,6 +261,15 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 										>
 											<TableCell className="max-w-[200px]">
 												<div className="truncate font-medium">{vk.name}</div>
+											</TableCell>
+											<TableCell>
+												{vk.team ? (
+													<Badge variant="outline">Team: {vk.team.name}</Badge>
+												) : vk.customer ? (
+													<Badge variant="outline">Customer: {vk.customer.name}</Badge>
+												) : (
+													<span className="text-muted-foreground text-sm">-</span>
+												)}
 											</TableCell>
 											<TableCell onClick={(e) => e.stopPropagation()}>
 												<div className="flex items-center gap-2">
@@ -265,10 +349,42 @@ export default function VirtualKeysTable({ virtualKeys, teams, customers }: Virt
 											</TableCell>
 										</TableRow>
 									);
-								})}
+								})
+							)}
 						</TableBody>
 					</Table>
 				</div>
+
+				{/* Pagination */}
+				{totalCount > 0 && (
+					<div className="flex items-center justify-between px-2">
+						<p className="text-muted-foreground text-sm">
+							Showing {offset + 1}-{Math.min(offset + limit, totalCount)} of {totalCount}
+						</p>
+						<div className="flex gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={offset === 0}
+								onClick={() => onOffsetChange(Math.max(0, offset - limit))}
+								data-testid="vk-pagination-prev-btn"
+							>
+								<ChevronLeft className="mr-1 h-4 w-4" />
+								Previous
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={offset + limit >= totalCount}
+								onClick={() => onOffsetChange(offset + limit)}
+								data-testid="vk-pagination-next-btn"
+							>
+								Next
+								<ChevronRight className="ml-1 h-4 w-4" />
+							</Button>
+						</div>
+					</div>
+				)}
 			</div>
 		</>
 	);

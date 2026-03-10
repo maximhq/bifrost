@@ -13,6 +13,7 @@ import {
 	GetRateLimitsResponse,
 	GetTeamsResponse,
 	GetUsageStatsResponse,
+	GetVirtualKeysParams,
 	GetVirtualKeysResponse,
 	HealthCheckResponse,
 	ModelConfig,
@@ -34,10 +35,16 @@ import { baseApi } from "./baseApi";
 export const governanceApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Virtual Keys
-		getVirtualKeys: builder.query<GetVirtualKeysResponse, { fromMemory?: boolean } | void>({
+		getVirtualKeys: builder.query<GetVirtualKeysResponse, GetVirtualKeysParams | void>({
 			query: (params) => ({
 				url: "/governance/virtual-keys",
-				params: { from_memory: params?.fromMemory ?? false },
+				params: {
+					...(params?.limit && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+					...(params?.customer_id && { customer_id: params.customer_id }),
+					...(params?.team_id && { team_id: params.team_id }),
+				},
 			}),
 			providesTags: ["VirtualKeys"],
 		}),
@@ -53,23 +60,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
-				try {
-					const { data } = await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
-						dispatch(
-							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
-								if (!draft.virtual_keys) draft.virtual_keys = [];
-								draft.virtual_keys.unshift(data.virtual_key);
-								draft.count = (draft.count || 0) + 1;
-							}),
-						);
-					}
-				} catch {
-					// Mutation failed, do nothing - error handling bubbled up
-				}
-			},
+			invalidatesTags: ["VirtualKeys"],
 		}),
 
 		updateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, { vkId: string; data: UpdateVirtualKeyRequest }>({
@@ -78,30 +69,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			async onQueryStarted({ vkId }, { dispatch, queryFulfilled }) {
-				try {
-					const { data } = await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
-						dispatch(
-							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
-								if (!draft.virtual_keys) return;
-								const index = draft.virtual_keys.findIndex((vk) => vk.id === vkId);
-								if (index !== -1) {
-									draft.virtual_keys[index] = data.virtual_key;
-								}
-							}),
-						);
-					}
-					dispatch(
-						governanceApi.util.updateQueryData("getVirtualKey", vkId, (draft) => {
-							draft.virtual_key = data.virtual_key;
-						}),
-					);
-				} catch {
-					// Mutation failed
-				}
-			},
+			invalidatesTags: ["VirtualKeys"],
 		}),
 
 		deleteVirtualKey: builder.mutation<{ message: string }, string>({
@@ -109,23 +77,7 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/virtual-keys/${vkId}`,
 				method: "DELETE",
 			}),
-			async onQueryStarted(vkId, { dispatch, queryFulfilled }) {
-				try {
-					await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
-						dispatch(
-							governanceApi.util.updateQueryData("getVirtualKeys", variant, (draft) => {
-								if (!draft.virtual_keys) return;
-								draft.virtual_keys = draft.virtual_keys.filter((vk) => vk.id !== vkId);
-								draft.count = Math.max(0, (draft.count || 0) - 1);
-							}),
-						);
-					}
-				} catch {
-					// Mutation failed
-				}
-			},
+			invalidatesTags: ["VirtualKeys"],
 		}),
 
 		// Teams

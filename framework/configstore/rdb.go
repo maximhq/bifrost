@@ -1433,6 +1433,70 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 	return virtualKeys, nil
 }
 
+// GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
+func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
+	// Build base query with filters
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableVirtualKey{})
+
+	// Virtual keys are either customer-scoped or team-scoped, never both.
+	// When both filters are provided, use OR to match keys belonging to either.
+	if params.CustomerID != "" && params.TeamID != "" {
+		baseQuery = baseQuery.Where("(customer_id = ? OR team_id = ?)", params.CustomerID, params.TeamID)
+	} else if params.CustomerID != "" {
+		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
+	} else if params.TeamID != "" {
+		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	}
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	// Get total count before pagination
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Apply pagination defaults
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Fetch with preloads and pagination
+	var virtualKeys []tables.TableVirtualKey
+	if err := baseQuery.
+		Preload("Team").
+		Preload("Team.Customer").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.RateLimit").
+		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, name, key_id, models_json, provider")
+		}).
+		Preload("MCPConfigs").
+		Preload("MCPConfigs.MCPClient").
+		Order("created_at ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&virtualKeys).Error; err != nil {
+		return nil, 0, err
+	}
+	return virtualKeys, totalCount, nil
+}
+
 // GetVirtualKey retrieves a virtual key from the database.
 func (s *RDBConfigStore) GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
 	var virtualKey tables.TableVirtualKey

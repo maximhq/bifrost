@@ -221,6 +221,7 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
 		// we silently drop writes for these reserved keys
+
 		return
 	}
 	bc.valuesMu.Lock()
@@ -311,7 +312,7 @@ func (bc *BifrostContext) GetRoutingEngineLogs() []RoutingEngineLogEntry {
 	return nil
 }
 
-// AppendToContext appends a value to the context list value.
+// AppendToContextList appends a value to the context list value.
 // Parameters:
 //   - ctx: The Bifrost context
 //   - key: The key to append the value to

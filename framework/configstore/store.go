@@ -14,6 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// VirtualKeyQueryParams holds pagination, filtering, and search parameters for virtual key queries.
+type VirtualKeyQueryParams struct {
+	Limit      int
+	Offset     int
+	Search     string
+	CustomerID string
+	TeamID     string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -71,6 +80,7 @@ type ConfigStore interface {
 
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
+	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
