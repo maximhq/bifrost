@@ -1,1 +1,2 @@
+- feat: migrate VK provider config allowed keys to explicit allow-list semantics — add AllowAllKeys bool to TableVirtualKeyProviderConfig; backfill existing configs with allow_all_keys=true; empty keys now denies all, ["*"] allows all
 - feat: add MCPDisableAutoToolInject column to TableClientConfig

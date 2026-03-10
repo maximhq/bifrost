@@ -467,7 +467,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 
 				// Get keys for this provider config if specified
 				var keys []configstoreTables.TableKey
-				if len(pc.KeyIDs) > 0 {
+				allowAllKeys := false
+				if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+					allowAllKeys = true
+				} else if len(pc.KeyIDs) > 0 {
 					var err error
 					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 					if err != nil {
@@ -483,6 +486,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					Provider:      pc.Provider,
 					Weight:        pc.Weight,
 					AllowedModels: pc.AllowedModels,
+					AllowAllKeys:  allowAllKeys,
 					Keys:          keys,
 				}
 
@@ -804,7 +808,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
-					if len(pc.KeyIDs) > 0 {
+					allowAllKeys := false
+					if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+						allowAllKeys = true
+					} else if len(pc.KeyIDs) > 0 {
 						var err error
 						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 						if err != nil {
@@ -821,6 +828,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						Provider:      pc.Provider,
 						Weight:        pc.Weight,
 						AllowedModels: pc.AllowedModels,
+						AllowAllKeys:  allowAllKeys,
 						Keys:          keys,
 					}
 					// Create budget for provider config if provided
@@ -875,7 +883,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
-					if len(pc.KeyIDs) > 0 {
+					allowAllKeys := false
+					if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+						allowAllKeys = true
+					} else if len(pc.KeyIDs) > 0 {
 						var err error
 						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 						if err != nil {
@@ -885,6 +896,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							return fmt.Errorf("some keys not found for provider %s: expected %d, found %d", pc.Provider, len(pc.KeyIDs), len(keys))
 						}
 					}
+					existing.AllowAllKeys = allowAllKeys
 					existing.Keys = keys
 
 					// Handle budget updates for provider config
