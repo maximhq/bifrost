@@ -931,15 +931,81 @@ func loadGovernanceConfigFromFile(ctx context.Context, config *Config, configDat
 		config.GovernanceConfig = governanceConfig
 		// Merge with config file if present
 		if configData.Governance != nil {
+			preprocessGovernanceVirtualKeys(ctx, config, configData)
 			mergeGovernanceConfig(ctx, config, configData, governanceConfig)
 		}
 	} else if configData.Governance != nil {
 		// No governance config in store, use config file
 		logger.Debug("no governance config found in store, processing from config file")
+		preprocessGovernanceVirtualKeys(ctx, config, configData)
 		config.GovernanceConfig = configData.Governance
 		createGovernanceConfigInStore(ctx, config)
 	} else {
 		logger.Debug("no governance config in store or config file")
+	}
+}
+
+// preprocessGovernanceVirtualKeys expands absent provider_configs / mcp_configs on each VK
+// in configData to all currently configured providers / MCP clients.
+//
+// Go's JSON decoder sets a slice field to nil when the key is absent, and to a non-nil
+// empty slice when the key is present but empty ([]). We use this to distinguish:
+//   - absent → allow all (expand to every provider / MCP client present at init time)
+//   - explicit [] → deny all (leave as empty slice; resolver enforces deny-by-default)
+//
+// DEPRECATED (next major version): relying on an absent key for allow-all behaviour will be
+// removed. Always include the field explicitly in your config.json:
+//   - to allow all providers:   list them explicitly in provider_configs
+//   - to deny all providers:    set provider_configs: []
+//   - to allow all MCP clients: list them explicitly in mcp_configs
+//   - to deny all MCP clients:  set mcp_configs: []
+// In the next major version both absent and [] will mean deny-all (deny-by-default).
+func preprocessGovernanceVirtualKeys(ctx context.Context, config *Config, configData *ConfigData) {
+	for i := range configData.Governance.VirtualKeys {
+		vk := &configData.Governance.VirtualKeys[i]
+
+		// Absent provider_configs → allow all providers configured right now.
+		// DEPRECATED: explicitly list provider_configs in config.json instead of relying on absence.
+		if vk.ProviderConfigs == nil {
+			logger.Warn(
+				"virtual key %q has no provider_configs in config.json — expanding to all %d configured provider(s). "+
+					"This implicit allow-all behaviour is DEPRECATED and will be removed in the next major version. "+
+					"Please add an explicit provider_configs list to your config.json.",
+				vk.ID, len(config.Providers),
+			)
+			expanded := make([]configstoreTables.TableVirtualKeyProviderConfig, 0, len(config.Providers))
+			for providerName := range config.Providers {
+				expanded = append(expanded, configstoreTables.TableVirtualKeyProviderConfig{
+					Provider:     string(providerName),
+					AllowAllKeys: true,
+				})
+			}
+			vk.ProviderConfigs = expanded
+		}
+
+		// Absent mcp_configs → allow all MCP clients configured right now.
+		// DEPRECATED: explicitly list mcp_configs in config.json instead of relying on absence.
+		if vk.MCPConfigs == nil && config.MCPConfig != nil && len(config.MCPConfig.ClientConfigs) > 0 {
+			logger.Warn(
+				"virtual key %q has no mcp_configs in config.json — expanding to all %d configured MCP client(s). "+
+					"This implicit allow-all behaviour is DEPRECATED and will be removed in the next major version. "+
+					"Please add an explicit mcp_configs list to your config.json.",
+				vk.ID, len(config.MCPConfig.ClientConfigs),
+			)
+			vk.MCPConfigs = make([]configstoreTables.TableVirtualKeyMCPConfig, 0, len(config.MCPConfig.ClientConfigs))
+			for _, client := range config.MCPConfig.ClientConfigs {
+				vk.MCPConfigs = append(vk.MCPConfigs, configstoreTables.TableVirtualKeyMCPConfig{
+					MCPClientName:  client.Name,
+					ToolsToExecute: []string{"*"},
+				})
+			}
+		}
+
+		// Resolve client names → DB IDs for all MCPConfigs (including explicitly-listed ones)
+		// so that MCPClientID is populated before GenerateVirtualKeyHash is called.
+		if len(vk.MCPConfigs) > 0 {
+			vk.MCPConfigs = resolveMCPConfigClientIDs(ctx, config.ConfigStore, vk.MCPConfigs, vk.ID)
+		}
 	}
 }
 
@@ -1109,9 +1175,6 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 						}
 						configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
 					}
-					// Resolve MCP client names to IDs for config file mcp_configs
-					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
-						ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -1139,9 +1202,6 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 				}
 				configData.Governance.VirtualKeys[i].Value = governance.GenerateVirtualKey()
 			}
-			// Resolve MCP client names to IDs for config file mcp_configs
-			configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
-				ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
 			virtualKeysToAdd = append(virtualKeysToAdd, configData.Governance.VirtualKeys[i])
 		}
 	}
@@ -2349,6 +2409,7 @@ func reconcileVirtualKeyAssociations(
 			// Update existing provider config from file
 			existing.Weight = newPC.Weight
 			existing.AllowedModels = newPC.AllowedModels
+			existing.AllowAllKeys = newPC.AllowAllKeys
 			existing.BudgetID = newPC.BudgetID
 			existing.RateLimitID = newPC.RateLimitID
 			existing.Keys = newPC.Keys

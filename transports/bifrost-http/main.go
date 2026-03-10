@@ -63,6 +63,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
@@ -143,6 +144,7 @@ func main() {
 	lib.SetLogger(logger)
 	bifrostServer.SetLogger(logger)
 	handlers.SetLogger(logger)
+	tables.SetLogger(logger)
 
 	ctx := context.Background()
 	err := server.Bootstrap(ctx)
