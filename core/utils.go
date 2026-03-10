@@ -3,6 +3,8 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -479,4 +481,20 @@ func sanitizeSpanName(name string) string {
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
+}
+
+// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+func hashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
+}
+
+func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
+	// Hash session ID to prevent PII leakage and ensure bounded key size
+	hashedSessionID := hashSHA256(sessionID)
+	discriminator := model
+	if discriminator == "" {
+		discriminator = "__modelless__"
+	}
+	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
 }

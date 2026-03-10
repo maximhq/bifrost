@@ -151,6 +151,56 @@ func (s *Store) SetWithTTL(key string, value any, ttl time.Duration) error {
 	return nil
 }
 
+// SetNXWithTTL atomically sets a value with TTL only if the key does not exist.
+// Returns true if the key was set, false if the key already existed.
+// ttl=0 means no expiration.
+func (s *Store) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
+	if err := s.validateMutable(key, ttl); err != nil {
+		return false, err
+	}
+
+	now := time.Now().UnixNano()
+	var expiresAt int64
+	if ttl > 0 {
+		expiresAt = now + int64(ttl)
+	}
+
+	var valueJSON []byte
+	var err error
+
+	if s.delegate != nil {
+		valueJSON, err = sonic.Marshal(value)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	s.mu.Lock()
+	
+	// Check if key exists and is not expired
+	if existing, ok := s.data[key]; ok {
+		if !isExpired(existing, now) {
+			s.mu.Unlock()
+			return false, nil // Key already exists
+		}
+		// Key exists but is expired, allow overwrite
+	}
+	
+	// Key doesn't exist or is expired, set it
+	s.data[key] = entry{
+		value:     value,
+		writtenAt: now,
+		expiresAt: expiresAt,
+	}
+	s.mu.Unlock()
+
+	if s.delegate != nil {
+		s.delegate.OnSet(key, valueJSON, now, expiresAt)
+	}
+
+	return true, nil
+}
+
 // SetRemote applies a remotely-gossiped entry without triggering OnSet.
 // writtenAt and expiresAt must be absolute Unix nanosecond timestamps.
 // If the local entry was written more recently than writtenAt the update is

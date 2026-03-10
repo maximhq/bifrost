@@ -312,20 +312,20 @@ type Config struct {
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
-	DropExcessRequests:      false,
-	PrometheusLabels:        []string{},
-	InitialPoolSize:         schemas.DefaultInitialPoolSize,
-	EnableLogging:           true,
-	DisableContentLogging:   false,
-	EnforceAuthOnInference:  false,
-	AllowDirectKeys:         false,
-	AllowedOrigins:          []string{"*"},
-	AllowedHeaders:          []string{},
-	MaxRequestBodySizeMB:    100,
-	MCPAgentDepth:           10,
-	MCPToolExecutionTimeout: 30,
-	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
-	EnableLiteLLMFallbacks:  false,
+	DropExcessRequests:              false,
+	PrometheusLabels:                []string{},
+	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
+	EnableLogging:                   true,
+	DisableContentLogging:           false,
+	EnforceAuthOnInference:          false,
+	AllowDirectKeys:                 false,
+	AllowedOrigins:                  []string{"*"},
+	AllowedHeaders:                  []string{},
+	MaxRequestBodySizeMB:            100,
+	MCPAgentDepth:                   10,
+	MCPToolExecutionTimeout:         30,
+	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
+	EnableLiteLLMFallbacks:          false,
 	HideDeletedVirtualKeysInFilters: false,
 }
 
@@ -442,6 +442,10 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	}
 	// Initialize stores from config file
 	if err = initStoresFromFile(ctx, config, &configData); err != nil {
+		return nil, err
+	}
+	// Initialize kvstore
+	if err := initKVStore(config); err != nil {
 		return nil, err
 	}
 	// From now on, config store gets priority if enabled and we find data.
@@ -1959,6 +1963,9 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	if err = initDefaultFrameworkConfig(ctx, config); err != nil {
 		return nil, err
 	}
+	if err := initKVStore(config); err != nil {
+		return nil, err
+	}
 	// Sync encryption: encrypt any plaintext rows written during config loading
 	syncEncryption(ctx, config)
 	return config, nil
@@ -2552,6 +2559,19 @@ func (c *Config) GetAsyncJobResultTTL() int {
 // GetKVStore returns the shared in-memory kvstore instance.
 func (c *Config) GetKVStore() *kvstore.Store {
 	return c.KVStore
+}
+
+// initKVStore initializes the kvstore for the config
+func initKVStore(config *Config) error {
+	var err error
+	config.KVStore, err = kvstore.New(kvstore.Config{
+		DefaultTTL:      30 * time.Minute,
+		CleanupInterval: 1 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize kvstore: %w", err)
+	}
+	return nil
 }
 
 // GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.
