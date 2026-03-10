@@ -4,10 +4,7 @@ name: NPX Package Publish
 on:
   push:
     branches:
-      - main
-    paths:
-      - 'npx/bifrost/package.json'
-      - 'npx/bifrost-cli/package.json'
+      - main    
 
 # Prevent concurrent runs for the same trigger
 concurrency:
