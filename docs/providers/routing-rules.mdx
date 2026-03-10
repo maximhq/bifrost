@@ -234,8 +234,7 @@ Access routing rules from the dashboard:
 - **Description** (optional): Internal notes
 - **Enabled**: Toggle rule on/off
 - **CEL Expression**: Visual or manual expression builder
-- **Provider** (required): Target provider if matched
-- **Model** (optional): Target model if matched (empty = use original)
+- **Targets** (required): One or more weighted routing targets — each has Provider (optional), Model (optional), API Key (optional, requires Provider to be set), and Weight (%). Weights must sum to 1. When multiple targets are defined, one is selected probabilistically at request time.
 - **Fallbacks** (optional): Array of fallback providers
 - **Scope**: Where rule applies (global, customer, team, virtual_key)
 - **Scope ID**: Required if scope is not global
@@ -273,9 +272,11 @@ GET /api/governance/routing-rules
       "description": "Route premium users to fast provider",
       "enabled": true,
       "cel_expression": "headers[\"x-tier\"] == \"premium\"",
-      "provider": "openai",
-      "model": "gpt-4o",
-      "fallbacks": ["azure/gpt-4o", "groq/gpt-3.5-turbo"],
+      "targets": [
+        { "provider": "openai", "model": "gpt-4o", "weight": 0.7 },
+        { "provider": "azure",  "model": "gpt-4o", "weight": 0.3 }
+      ],
+      "fallbacks": ["groq/gpt-3.5-turbo"],
       "scope": "global",
       "scope_id": null,
       "priority": 10,
@@ -306,8 +307,9 @@ Content-Type: application/json
   "description": "When budget is high, route to cheaper provider",
   "enabled": true,
   "cel_expression": "budget_used > 85",
-  "provider": "groq",
-  "model": "",
+  "targets": [
+    { "provider": "groq", "weight": 1 }
+  ],
   "fallbacks": ["openai/gpt-4o"],
   "scope": "team",
   "scope_id": "team-uuid-456",
@@ -369,9 +371,11 @@ Define routing rules in your `config.json` file under the governance configurati
         "description": "Route premium users to fast provider",
         "enabled": true,
         "cel_expression": "headers[\"x-tier\"] == \"premium\"",
-        "provider": "openai",
-        "model": "gpt-4o",
-        "fallbacks": ["azure/gpt-4o", "groq/gpt-3.5-turbo"],
+        "targets": [
+          { "provider": "openai", "model": "gpt-4o", "weight": 0.7 },
+          { "provider": "azure",  "model": "gpt-4o", "weight": 0.3 }
+        ],
+        "fallbacks": ["groq/gpt-3.5-turbo"],
         "scope": "global",
         "scope_id": null,
         "priority": 10
@@ -382,8 +386,9 @@ Define routing rules in your `config.json` file under the governance configurati
         "description": "Route to cheaper provider when budget is high",
         "enabled": true,
         "cel_expression": "budget_used > 85",
-        "provider": "groq",
-        "model": "llama-2-70b",
+        "targets": [
+          { "provider": "groq", "model": "llama-2-70b", "weight": 1 }
+        ],
         "fallbacks": [],
         "scope": "team",
         "scope_id": "team-ml-ops",
@@ -400,8 +405,11 @@ Define routing rules in your `config.json` file under the governance configurati
 - **description** (string, optional): Internal documentation
 - **enabled** (boolean): Whether rule is active
 - **cel_expression** (string): CEL expression for rule matching
-- **provider** (string, optional): Target provider if matched (empty string = use incoming request provider)
-- **model** (string, optional): Target model if matched (empty string = use incoming request model)
+- **targets** (array, required): One or more routing targets. Each target has:
+  - `provider` (string, optional): Target provider — omit to use the incoming request provider
+  - `model` (string, optional): Target model — omit to use the incoming request model
+  - `key_id` (string, optional): UUID of the API key to pin — requires `provider` to be present; omit for load-balanced key selection
+  - `weight` (number, required): Probability weight — all weights in a rule must sum to 1 (e.g. 0.7 + 0.3 = 1.0)
 - **fallbacks** (array[string]): Fallback providers in "provider/model" format
 - **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
 - **scope_id** (string, optional): ID of scoped entity (null for global scope)
@@ -420,8 +428,9 @@ Routes are automatically loaded on startup from the `config.json` governance sec
         "name": "Premium Tier Fast Track",
         "enabled": true,
         "cel_expression": "headers[\"x-tier\"] == \"premium\"",
-        "provider": "openai",
-        "model": "gpt-4o",
+        "targets": [
+          { "provider": "openai", "model": "gpt-4o", "weight": 1 }
+        ],
         "fallbacks": ["azure/gpt-4o"],
         "scope": "global",
         "priority": 0
@@ -431,8 +440,9 @@ Routes are automatically loaded on startup from the `config.json` governance sec
         "name": "Budget Exhaustion Fallback",
         "enabled": true,
         "cel_expression": "budget_used > 90",
-        "provider": "groq",
-        "model": "llama-2-70b",
+        "targets": [
+          { "provider": "groq", "model": "llama-2-70b", "weight": 1 }
+        ],
         "fallbacks": [],
         "scope": "global",
         "priority": 5
@@ -442,8 +452,9 @@ Routes are automatically loaded on startup from the `config.json` governance sec
         "name": "ML Team Anthropic Route",
         "enabled": true,
         "cel_expression": "team_name == \"ml-research\"",
-        "provider": "anthropic",
-        "model": "claude-3-opus-20240229",
+        "targets": [
+          { "provider": "anthropic", "model": "claude-3-opus-20240229", "weight": 1 }
+        ],
         "fallbacks": ["bedrock/claude-3-opus"],
         "scope": "team",
         "scope_id": "team-ml-research",
@@ -476,8 +487,9 @@ Route requests based on customer tier using headers:
 {
   "name": "Premium Tier Fast Track",
   "cel_expression": "headers[\"x-tier\"] == \"premium\"",
-  "provider": "openai",
-  "model": "gpt-4o",
+  "targets": [
+    { "provider": "openai", "model": "gpt-4o", "weight": 1 }
+  ],
   "fallbacks": ["azure/gpt-4o"],
   "scope": "global",
   "priority": 10
@@ -492,8 +504,9 @@ Route to cheaper provider when budget is exhausted:
 {
   "name": "Budget Exhaustion Fallback",
   "cel_expression": "budget_used > 90",
-  "provider": "groq",
-  "model": "llama-2-70b",
+  "targets": [
+    { "provider": "groq", "model": "llama-2-70b", "weight": 1 }
+  ],
   "fallbacks": [],
   "scope": "global",
   "priority": 5
@@ -508,8 +521,9 @@ Route team-specific requests to their preferred provider:
 {
   "name": "ML Team Anthropic Preference",
   "cel_expression": "team_name == \"ml-research\"",
-  "provider": "anthropic",
-  "model": "claude-3-opus-20240229",
+  "targets": [
+    { "provider": "anthropic", "model": "claude-3-opus-20240229", "weight": 1 }
+  ],
   "fallbacks": ["bedrock/claude-3-opus"],
   "scope": "team",
   "scope_id": "team-ml-research-uuid",
@@ -525,29 +539,33 @@ Combine multiple criteria for sophisticated routing:
 {
   "name": "Production Premium Route",
   "cel_expression": "headers[\"x-environment\"] == \"production\" && headers[\"x-priority\"] == \"high\" && tokens_used < 75",
-  "provider": "openai",
-  "model": "gpt-4o",
+  "targets": [
+    { "provider": "openai", "model": "gpt-4o", "weight": 1 }
+  ],
   "fallbacks": ["azure/gpt-4o"],
   "scope": "global",
   "priority": 5
 }
 ```
 
-### Use Case 5: A/B Testing
+### Use Case 5: Probabilistic A/B Testing
 
-Route percentage of traffic using request patterns:
+Split traffic across providers or models by weight for canary deployments or cost optimization:
 
 ```json
 {
-  "name": "A/B Test New Model",
-  "cel_expression": "headers[\"x-user-id\"].contains(\"test-\") || headers[\"x-ab-test\"] == \"new-model\"",
-  "provider": "openai",
-  "model": "gpt-4o-mini",
-  "fallbacks": ["openai/gpt-4o"],
+  "name": "Split Traffic OpenAI vs Groq",
+  "cel_expression": "true",
+  "targets": [
+    { "provider": "openai", "model": "gpt-4o",        "weight": 0.7 },
+    { "provider": "groq",   "model": "llama-3.1-70b", "weight": 0.3 }
+  ],
   "scope": "global",
   "priority": 15
 }
 ```
+
+Each request matching this rule has a 70% chance of going to OpenAI and a 30% chance of going to Groq. Weights must always sum to 1.
 
 ### Use Case 6: Regional Routing
 
@@ -557,8 +575,9 @@ Route based on region headers:
 {
   "name": "EU Data Residency",
   "cel_expression": "headers[\"x-region\"] == \"eu\"",
-  "provider": "azure",
-  "model": "gpt-4o",
+  "targets": [
+    { "provider": "azure", "model": "gpt-4o", "weight": 1 }
+  ],
   "fallbacks": [],
   "scope": "global",
   "priority": 0
@@ -576,9 +595,10 @@ Routing Rules run **BEFORE** governance provider selection and can override it:
 **If a routing rule matches:**
 ```
 1. Routing Rules → CEL expression evaluation (first-match-wins)
-2. Rule matches → provider/model/fallbacks overridden
-3. Governance provider_configs → SKIPPED
-4. Load Balancing → selects best key
+2. Rule matches → target selected probabilistically from targets array
+3. provider/model/key_id/fallbacks overridden from selected target
+4. Governance provider_configs → SKIPPED
+5. Load Balancing → selects best key (unless key_id was pinned)
 ```
 
 **If no routing rule matches:**
@@ -811,7 +831,7 @@ Enable debug logging to see routing rule evaluation:
 [RoutingEngine] Rule rule-1 evaluation result: matched=false
 [RoutingEngine] Evaluating rule: id=rule-2, name=Budget Fallback, expression=budget_used>80
 [RoutingEngine] Rule rule-2 evaluation result: matched=true
-[RoutingEngine] Rule matched! Decision: provider=groq, model=gpt-3.5-turbo, fallbacks=[azure/gpt-4o]
+[RoutingEngine] Rule matched! Selected target: provider=groq, model=gpt-3.5-turbo (weight=1), fallbacks=[azure/gpt-4o]
 ```
 
 ---
@@ -829,23 +849,48 @@ curl -X POST http://localhost:8080/api/governance/routing-rules \
     "description": "Switch to cheaper provider when budget >85%",
     "enabled": true,
     "cel_expression": "budget_used > 85",
-    "provider": "groq",
-    "model": "llama-2-70b",
+    "targets": [
+      { "provider": "groq", "model": "llama-2-70b", "weight": 1 }
+    ],
     "fallbacks": ["openai/gpt-3.5-turbo"],
     "scope": "global",
     "priority": 10
   }'
 ```
 
-#### Create Header-Based Rule
+#### Create Probabilistic Split Rule
 ```bash
 curl -X POST http://localhost:8080/api/governance/routing-rules \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Premium Tier Route",
+    "name": "Premium Tier Split",
     "cel_expression": "headers[\"x-tier\"] == \"premium\"",
-    "provider": "openai",
-    "model": "gpt-4o",
+    "targets": [
+      { "provider": "openai", "model": "gpt-4o",   "weight": 0.7 },
+      { "provider": "azure",  "model": "gpt-4o",   "weight": 0.3 }
+    ],
+    "scope": "global",
+    "priority": 5
+  }'
+```
+
+#### Create Rule with Pinned API Key
+```bash
+curl -X POST http://localhost:8080/api/governance/routing-rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pin Production Key for Premium Tier",
+    "description": "Always use the dedicated production key for premium requests",
+    "enabled": true,
+    "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+    "targets": [
+      {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "key_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "weight": 1
+      }
+    ],
     "scope": "global",
     "priority": 5
   }'

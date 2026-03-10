@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddRoutingTargetsTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
@@ -4118,6 +4121,159 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// legacyRoutingRuleColumns is a migration-only struct that represents the old routing_rules
+// schema before provider/model/key_id were moved to the routing_targets table.
+// GORM's SQLite DropColumn/AddColumn need a real struct (not a string table name) to
+// reconstruct the table correctly, so we keep this stub around for migration use only.
+type legacyRoutingRuleColumns struct {
+	Provider string `gorm:"column:provider;type:varchar(255)"`
+	Model    string `gorm:"column:model;type:varchar(255)"`
+}
+
+func (legacyRoutingRuleColumns) TableName() string { return "routing_rules" }
+
+// migrationAddRoutingTargetsTable creates the routing_targets table and seeds one target row per
+// existing routing rule, migrating the legacy provider/model columns.
+// After seeding, the legacy columns are dropped from routing_rules.
+func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_targets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1. Create routing_targets table
+			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				if err := mg.CreateTable(&tables.TableRoutingTarget{}); err != nil {
+					return fmt.Errorf("failed to create routing_targets table: %w", err)
+				}
+			}
+			if !mg.HasConstraint(&tables.TableRoutingRule{}, "Targets") {
+				if err := mg.CreateConstraint(&tables.TableRoutingRule{}, "Targets"); err != nil {
+					return fmt.Errorf("failed to create routing_targets foreign key: %w", err)
+				}
+			}
+
+			// 2. Seed one target per existing routing rule (idempotent).
+			// Only possible when the legacy columns still exist (i.e. upgrading from an older schema).
+			// On a fresh database AutoMigrate creates routing_rules without these columns, so skip seeding.
+			type legacyRule struct {
+				ID       string
+				Provider string
+				Model    string
+			}
+			if mg.HasColumn("routing_rules", "provider") {
+				var rows []legacyRule
+				if err := tx.Table("routing_rules").Select("id, provider, model").Scan(&rows).Error; err != nil {
+					return fmt.Errorf("failed to scan routing_rules for seeding: %w", err)
+				}
+				for _, row := range rows {
+					var count int64
+					if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
+						return fmt.Errorf("failed to count targets for rule %s: %w", row.ID, err)
+					}
+					if count > 0 {
+						continue // already seeded
+					}
+					target := tables.TableRoutingTarget{
+						RuleID: row.ID,
+						Weight: 1.0,
+					}
+					if row.Provider != "" {
+						p := row.Provider
+						target.Provider = &p
+					}
+					if row.Model != "" {
+						m := row.Model
+						target.Model = &m
+					}
+					if err := tx.Create(&target).Error; err != nil {
+						return fmt.Errorf("failed to seed target for rule %s: %w", row.ID, err)
+					}
+				}
+			} // end if mg.HasColumn("routing_rules", "provider")
+
+			// 3. Drop legacy single-target columns from routing_rules.
+			// Must use the struct form (not string) so SQLite can reconstruct the table correctly.
+			legacyModel := &legacyRoutingRuleColumns{}
+			for _, col := range []string{"provider", "model"} {
+				if mg.HasColumn("routing_rules", col) {
+					if err := mg.DropColumn(legacyModel, col); err != nil {
+						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
+					}
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				return nil
+			}
+
+			// 1. Add provider and model columns back to routing_rules (before dropping targets)
+			legacyModel := &legacyRoutingRuleColumns{}
+			for _, col := range []string{"provider", "model"} {
+				if !mg.HasColumn("routing_rules", col) {
+					if err := mg.AddColumn(legacyModel, col); err != nil {
+						return fmt.Errorf("failed to add column %s to routing_rules: %w", col, err)
+					}
+				}
+			}
+
+			// 2. Backfill provider/model from routing_targets into routing_rules (join by rule_id)
+			type targetRow struct {
+				RuleID   string
+				Provider *string
+				Model    *string
+			}
+			var targets []targetRow
+			if err := tx.Table("routing_targets").Select("rule_id, provider, model").Order("rule_id").Scan(&targets).Error; err != nil {
+				return fmt.Errorf("failed to scan routing_targets for backfill: %w", err)
+			}
+			ruleData := make(map[string]targetRow)
+			for _, t := range targets {
+				if _, ok := ruleData[t.RuleID]; !ok {
+					ruleData[t.RuleID] = t
+				}
+			}
+			for ruleID, t := range ruleData {
+				provider, model := "", ""
+				if t.Provider != nil {
+					provider = *t.Provider
+				}
+				if t.Model != nil {
+					model = *t.Model
+				}
+				if err := tx.Table("routing_rules").Where("id = ?", ruleID).Updates(map[string]interface{}{
+					"provider": provider,
+					"model":    model,
+				}).Error; err != nil {
+					return fmt.Errorf("failed to backfill routing_rule %s: %w", ruleID, err)
+				}
+			}
+
+			// 3. Drop routing_targets table
+			if mg.HasConstraint(&tables.TableRoutingRule{}, "Targets") {
+				if err := mg.DropConstraint(&tables.TableRoutingRule{}, "Targets"); err != nil {
+					return fmt.Errorf("failed to drop routing_targets foreign key: %w", err)
+				}
+			}
+			if err := mg.DropTable(&tables.TableRoutingTarget{}); err != nil {
+				return fmt.Errorf("failed to drop routing_targets table: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running routing_targets_table migration: %s", err.Error())
 	}
 	return nil
 }

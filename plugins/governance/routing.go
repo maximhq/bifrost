@@ -2,6 +2,7 @@ package governance
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
 
@@ -33,6 +34,7 @@ type ScopeLevel struct {
 type RoutingDecision struct {
 	Provider        string   // Primary provider (e.g., "openai", "azure")
 	Model           string   // Model to use (or empty to use original)
+	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
 	Fallbacks       []string // Fallback chain: ["provider/model", ...]
 	MatchedRuleID   string   // ID of the rule that matched
 	MatchedRuleName string   // Name of the rule that matched
@@ -137,22 +139,34 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → no match", rule.Name, rule.CelExpression))
 			}
 
-			// If rule matched, return routing decision
+			// If rule matched, select a target probabilistically and return routing decision
 			if matched {
-				// Use incoming provider/model if rule's are empty
-				provider := rule.Provider
-				if provider == "" {
-					provider = string(routingCtx.Provider)
+				target, ok := selectWeightedTarget(rule.Targets)
+				if !ok {
+					re.logger.Debug("[RoutingEngine] Rule %s matched but has no valid targets (empty list or all-negative weights), skipping — note: all-zero weights use uniform selection and would not reach here", rule.Name)
+					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched but no valid targets (empty or all-negative weights), skipping", rule.Name, rule.CelExpression))
+					continue
 				}
 
-				model := rule.Model
-				if model == "" {
-					model = routingCtx.Model
+				provider := string(routingCtx.Provider)
+				if target.Provider != nil && *target.Provider != "" {
+					provider = *target.Provider
+				}
+
+				model := routingCtx.Model
+				if target.Model != nil && *target.Model != "" {
+					model = *target.Model
+				}
+
+				keyID := ""
+				if target.KeyID != nil {
+					keyID = *target.KeyID
 				}
 
 				decision := &RoutingDecision{
 					Provider:        provider,
 					Model:           model,
+					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
@@ -161,8 +175,8 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, rule.ID)
 				ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, rule.Name)
 
-				re.logger.Debug("[RoutingEngine] Rule matched! Decision: provider=%s, model=%s, fallbacks=%v", provider, model, rule.ParsedFallbacks)
-				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, routing to provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, provider, model, rule.ParsedFallbacks))
+				re.logger.Debug("[RoutingEngine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", target.Weight, provider, model, rule.ParsedFallbacks)
+				ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v", rule.Name, rule.CelExpression, target.Weight, provider, model, rule.ParsedFallbacks))
 				return decision, nil
 			}
 
@@ -172,6 +186,55 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 	// No rule matched - return nil decision (caller should use default routing)
 	re.logger.Debug("[RoutingEngine] No routing rule matched, using default routing")
 	return nil, nil
+}
+
+// selectWeightedTarget picks one target from the slice using weighted random selection.
+// Each target's Weight contributes proportionally to its probability of being chosen.
+// Weights do not need to be normalised to 100; the function normalises internally.
+// Returns ok=false only when len(targets)==0 or all targets have negative weights (filtered out).
+// When all valid targets have weight==0 the function falls back to uniform random selection
+// and still returns ok=true, so zero-weight targets are valid and handled.
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+	if len(targets) == 0 {
+		return configstoreTables.TableRoutingTarget{}, false
+	}
+
+	// Filter out negative weights as a precaution against malformed DB data.
+	// Negative weights are blocked at write time by validateRoutingTargets, but
+	// we guard here defensively so a bad row cannot corrupt the cumulative range.
+	valid := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
+	for _, t := range targets {
+		if t.Weight >= 0 {
+			valid = append(valid, t)
+		}
+	}
+	if len(valid) == 0 {
+		return configstoreTables.TableRoutingTarget{}, false
+	}
+
+	total := 0.0
+	for _, t := range valid {
+		total += t.Weight
+	}
+
+	// All weights are 0 — select uniformly at random among valid targets.
+	if total == 0 {
+		return valid[rand.IntN(len(valid))], true
+	}
+
+	if len(valid) == 1 {
+		return valid[0], true
+	}
+
+	r := rand.Float64() * total
+	cumulative := 0.0
+	for _, t := range valid {
+		cumulative += t.Weight
+		if r < cumulative {
+			return t, true
+		}
+	}
+	return valid[len(valid)-1], true
 }
 
 // buildScopeChain builds the scope evaluation chain based on organizational hierarchy

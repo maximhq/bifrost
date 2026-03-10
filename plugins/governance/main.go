@@ -827,7 +827,12 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			body["fallbacks"] = decision.Fallbacks
 		}
 
-		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, fallbacks=%v", decision.Provider, decision.Model, decision.Fallbacks)
+		// Pin specific API key by ID if the routing rule specifies one
+		if decision.KeyID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+		}
+
+		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
 	}
 
 	return body, decision, nil
