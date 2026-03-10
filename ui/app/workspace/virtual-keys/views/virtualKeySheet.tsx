@@ -177,7 +177,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				virtualKey?.provider_configs?.map((config) => ({
 					...config,
 					weight: config.weight ?? "",
-					key_ids: config.keys?.map((key) => key.key_id) || [],
+					key_ids: config.allow_all_keys ? ["*"] : (config.keys?.map((key) => key.key_id) || []),
 					budget: config.budget
 						? {
 							max_limit: String(config.budget.max_limit),
@@ -722,32 +722,42 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 															{(() => {
 																const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
 																const configKeyIds = config.key_ids || [];
-																const selectedProviderKeys = providerKeys
-																	.filter((key) => configKeyIds.includes(key.key_id))
-																	.map((key) => ({
+																const hasWildcard = configKeyIds.includes("*");
+																const allKeyOptions = [
+																	{
+																		label: "Allow All Keys",
+																		value: "*",
+																		description: "Allow all current and future keys for this provider",
+																		provider: "",
+																	},
+																	...providerKeys.map((key) => ({
 																		label: key.name,
 																		value: key.key_id,
 																		description: key.models?.join(", ") || "",
 																		provider: key.provider,
-																	}));
-
-																if (providerKeys.length === 0) return null;
+																	})),
+																];
+																const selectedProviderKeys = hasWildcard
+																	? [allKeyOptions[0]]
+																	: providerKeys
+																		.filter((key) => configKeyIds.includes(key.key_id))
+																		.map((key) => ({
+																			label: key.name,
+																			value: key.key_id,
+																			description: key.models?.join(", ") || "",
+																			provider: key.provider,
+																		}));
 
 																return (
 																	<div className="mx-0.5 space-y-2">
 																		<Label className="text-sm font-medium">Allowed Keys</Label>
-																		<p className="text-muted-foreground text-xs">Keep empty to use all available keys for the provider</p>
+																		<p className="text-muted-foreground text-xs">Select specific keys or allow all. Leave empty to block all keys for this provider.</p>
 																		<AsyncMultiSelect
 																			hideSelectedOptions
 																			isNonAsync
 																			closeMenuOnSelect={false}
 																			menuPlacement="auto"
-																			defaultOptions={providerKeys.map((key) => ({
-																				label: key.name,
-																				value: key.key_id,
-																				description: key.models?.join(", ") || "",
-																				provider: key.provider,
-																			}))}
+																			defaultOptions={allKeyOptions}
 																			views={{
 																				multiValue: (multiValueProps: MultiValueProps<VirtualKeyType>) => {
 																					return (
@@ -790,11 +800,25 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			}}
 																			value={selectedProviderKeys}
 																			onChange={(keys) => {
-																				// Update key_ids for this provider config
-																				const newKeyIds = keys.map((key) => key.value as string);
-																				handleUpdateProviderConfig(index, "key_ids", newKeyIds);
+																				const hadStar = hasWildcard;
+																				const hasStar = keys.some((k) => k.value === "*");
+																				if (!hadStar && hasStar) {
+																					// Just selected "Allow All Keys" — set to ["*"] only
+																					handleUpdateProviderConfig(index, "key_ids", ["*"]);
+																				} else if (hadStar && hasStar && keys.length > 1) {
+																					// Had "*", still has "*", but user also selected a specific key — drop "*"
+																					handleUpdateProviderConfig(index, "key_ids", keys.filter((k) => k.value !== "*").map((k) => k.value as string));
+																				} else {
+																					handleUpdateProviderConfig(index, "key_ids", keys.map((k) => k.value as string));
+																				}
 																			}}
-																			placeholder="Select keys..."
+																			placeholder={
+																				hasWildcard
+																					? "All keys allowed"
+																					: configKeyIds.length === 0
+																						? "No keys selected"
+																						: "Select keys..."
+																			}
 																			className="hover:bg-accent w-full"
 																			menuClassName="z-[60] max-h-[300px] overflow-y-auto w-full cursor-pointer custom-scrollbar"
 																		/>
