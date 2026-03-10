@@ -38,12 +38,14 @@ type ModelParams map[string]interface{}
 
 // BeforeSave GORM hook to serialize JSON fields
 func (v *TablePromptVersion) BeforeSave(tx *gorm.DB) error {
-	data, err := json.Marshal(v.ModelParams)
-	if err != nil {
-		return err
+	if v.ModelParams != nil {
+		data, err := json.Marshal(v.ModelParams)
+		if err != nil {
+			return err
+		}
+		paramsStr := string(data)
+		v.ModelParamsJSON = &paramsStr
 	}
-	paramsStr := string(data)
-	v.ModelParamsJSON = &paramsStr
 	return nil
 }
 

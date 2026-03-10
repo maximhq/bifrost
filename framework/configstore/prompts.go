@@ -320,7 +320,7 @@ func (s *RDBConfigStore) DeletePromptVersion(ctx context.Context, id uint) error
 					return err
 				}
 			} else {
-				if err := tx.Model(&prevVersion).Update("is_latest", true).Error; err != nil {
+				if err := tx.Model(&prevVersion).UpdateColumn("is_latest", true).Error; err != nil {
 					return err
 				}
 			}

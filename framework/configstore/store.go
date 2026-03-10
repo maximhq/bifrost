@@ -177,6 +177,10 @@ type ConfigStore interface {
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
+	// Model parameters
+	GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error)
+	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
+
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
 	GetKeysByProvider(ctx context.Context, provider string) ([]tables.TableKey, error)

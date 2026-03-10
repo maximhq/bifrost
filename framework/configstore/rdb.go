@@ -1260,6 +1260,49 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
+// MODEL PARAMETERS METHODS
+
+// GetModelParameters retrieves model parameters for a specific model.
+func (s *RDBConfigStore) GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error) {
+	var params tables.TableModelParameters
+	if err := s.db.WithContext(ctx).Where("model = ?", model).First(&params).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &params, nil
+}
+
+// UpsertModelParameters inserts or updates model parameters for a specific model.
+func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	db := txDB.WithContext(ctx)
+
+	var existing tables.TableModelParameters
+	err := db.Where("model = ?", params.Model).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := db.Create(params).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			return nil
+		}
+		return s.parseGormError(err)
+	}
+
+	params.ID = existing.ID
+	if err := db.Save(params).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 // PLUGINS METHODS
 
 func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error) {

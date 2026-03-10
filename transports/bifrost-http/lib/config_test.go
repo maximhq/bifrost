@@ -841,6 +841,15 @@ func (m *MockConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB)
 	return nil
 }
 
+// Model parameters
+func (m *MockConfigStore) GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Provider methods
 func (m *MockConfigStore) GetProvider(ctx context.Context, provider schemas.ModelProvider) (*tables.TableProvider, error) {
 	return nil, nil

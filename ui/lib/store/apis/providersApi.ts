@@ -64,6 +64,30 @@ export interface ListBaseModelsResponse {
 	total: number;
 }
 
+const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
+	mode: "chat",
+	base_model: "default",
+	model_parameters: [
+		{
+			id: "temperature",
+			label: "Temperature",
+			helpText:
+				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
+			type: "number",
+			default: 1,
+			range: { min: 0, max: 2, step: 0.01 },
+		},
+		{
+			id: "max_tokens",
+			label: "Max Tokens",
+			helpText: "The maximum number of tokens that can be generated in the Result.",
+			type: "number",
+			default: 4096,
+			range: { min: 1, max: 8192, step: 1 },
+		},
+	],
+};
+
 export const providersApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// Get all providers
@@ -174,19 +198,19 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: ["BaseModels"],
 		}),
 
-		// Get model datasheet (parameters, capabilities) from external API
-		getModelDatasheet: builder.query<ModelDatasheetResponse, string>({
-			queryFn: async (model) => {
-				try {
-					const res = await fetch(`https://getbifrost.ai/datasheet-extended?model=${encodeURIComponent(model)}`);
-					if (!res.ok) {
-						return { error: { status: res.status, data: `Failed to fetch datasheet for ${model}` } };
+		// Get model parameters (parameters, capabilities) from local API
+		// Falls back to default parameters if the API returns an error (e.g. model not found)
+		getModelParameters: builder.query<ModelDatasheetResponse, string>({
+			queryFn: async (model, _queryApi, _extraOptions, baseQuery) => {
+				const result = await baseQuery(`/models/parameters?model=${encodeURIComponent(model)}`);
+				if (result.error) {
+					// If the model is not found, return the default parameters
+					if ((result.error as any)?.status === 404) {
+						return { data: DEFAULT_MODEL_PARAMETERS };
 					}
-					const data = await res.json();
-					return { data };
-				} catch (err) {
-					return { error: { status: "FETCH_ERROR", data: String(err) } };
+					return { error: result.error };
 				}
+				return { data: result.data as ModelDatasheetResponse };
 			},
 		}),
 	}),
@@ -206,6 +230,6 @@ export const {
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,
-	useGetModelDatasheetQuery,
-	useLazyGetModelDatasheetQuery,
+	useGetModelParametersQuery,
+	useLazyGetModelParametersQuery,
 } = providersApi;

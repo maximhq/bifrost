@@ -97,6 +97,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 }
 
@@ -696,6 +697,33 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, response)
+}
+
+// getModelParameters handles GET /api/models/parameters - Get model parameters for a specific model
+// Query parameters:
+//   - model: The model name to get parameters for (required)
+func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
+	modelParam := string(ctx.QueryArgs().Peek("model"))
+	if modelParam == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model query parameter is required")
+		return
+	}
+
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+		return
+	}
+
+	data := modelCatalog.GetModelParametersData(modelParam)
+	if data == nil {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+		return
+	}
+
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions

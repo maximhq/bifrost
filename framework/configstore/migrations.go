@@ -4254,5 +4254,32 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_prompt_id_to_prompt_message_tables migration: %s", err.Error())
 	}
 
+	m = migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_parameters_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.TableModelParameters{}) {
+				if err := migrator.CreateTable(&tables.TableModelParameters{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&tables.TableModelParameters{}) {
+				if err := migrator.DropTable(&tables.TableModelParameters{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
+	}
+
 	return nil
 }

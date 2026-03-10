@@ -12,7 +12,7 @@ import {
 	useGetVersionsQuery,
 	useUpdatePromptMutation,
 } from "@/lib/store/apis/promptsApi";
-import { useGetModelDatasheetQuery } from "@/lib/store/apis/providersApi";
+import { useGetModelParametersQuery } from "@/lib/store/apis/providersApi";
 import { Message, MessageRole, MessageType } from "@/lib/message";
 import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib/types/prompts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -144,7 +144,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const activeRunRef = useRef<symbol | null>(null);
 
 	// Fetch model datasheet for capabilities
-	const { data: datasheetData } = useGetModelDatasheetQuery(model, { skip: !model });
+	const { data: datasheetData } = useGetModelParametersQuery(model, { skip: !model });
 	const supportsVision = datasheetData?.supports_vision ?? false;
 
 	// Derived data

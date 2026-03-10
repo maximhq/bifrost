@@ -1,6 +1,6 @@
 'use client'
 
-import { useGetModelDatasheetQuery } from '@/lib/store/apis/providersApi'
+import { useGetModelParametersQuery } from '@/lib/store/apis/providersApi'
 import { Parameter, ParameterType } from './types'
 import ParameterFieldView from './paramFieldView'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -37,16 +37,16 @@ export default function ModelParameters({
   disabled,
   hideFields,
 }: ModelParametersProps) {
-  const { data, isLoading, isError } = useGetModelDatasheetQuery(model, {
+  const { data, isLoading, isError } = useGetModelParametersQuery(model, {
     skip: !model,
   })
 
   // Ensure parameters belong to the current model (RTK Query may briefly return stale cached data)
   const datasheetModel = data?.base_model
   const parameters = useMemo(() => {
-    if (!data?.model_parameters || datasheetModel !== model) return []
+    if (!data?.model_parameters || isLoading) return []
     return data.model_parameters.filter((p) => SUPPORTED_TYPES.has(p.type))
-  }, [data, datasheetModel, model])
+  }, [data, isLoading])
 
   // Clear config when switching models — values stay undefined until the user explicitly sets them
   const prevModelRef = useRef(model)
