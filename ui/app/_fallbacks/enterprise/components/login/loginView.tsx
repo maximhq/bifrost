@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 const externalLinks = [
 	{
 		title: "Discord Server",
-		url: "https://discord.gg/WJzTeWDEsX",
+		url: "https://discord.gg/exN5KAydbU",
 		icon: DiscordLogoIcon,
 	},
 	{
