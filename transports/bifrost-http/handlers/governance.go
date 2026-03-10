@@ -128,6 +128,7 @@ type CreateRoutingRuleRequest struct {
 	CelExpression string         `json:"cel_expression"`
 	Provider      string         `json:"provider,omitempty"` // Optional; empty uses incoming request provider
 	Model         string         `json:"model,omitempty"`    // Optional; empty uses incoming request model
+	KeyID         string         `json:"key_id,omitempty"`   // Optional; pins a specific API key by UUID
 	Fallbacks     []string       `json:"fallbacks,omitempty"`
 	Scope         string         `json:"scope,omitempty"` // Defaults to "global" if not provided
 	ScopeID       *string        `json:"scope_id,omitempty"`
@@ -143,6 +144,7 @@ type UpdateRoutingRuleRequest struct {
 	CelExpression *string        `json:"cel_expression,omitempty"`
 	Provider      *string        `json:"provider,omitempty"`
 	Model         *string        `json:"model,omitempty"`
+	KeyID         *string        `json:"key_id,omitempty"` // Optional; pins a specific API key by UUID; send "" to clear
 	Fallbacks     []string       `json:"fallbacks,omitempty"`
 	Query         map[string]any `json:"query,omitempty"`
 	Priority      *int           `json:"priority,omitempty"`
@@ -2659,6 +2661,11 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		priority = 0
 	}
 
+	var keyID *string
+	if req.KeyID != "" {
+		keyID = &req.KeyID
+	}
+
 	// Create routing rule
 	rule := &configstoreTables.TableRoutingRule{
 		ID:              uuid.NewString(),
@@ -2668,6 +2675,7 @@ func (h *GovernanceHandler) createRoutingRule(ctx *fasthttp.RequestCtx) {
 		CelExpression:   req.CelExpression,
 		Provider:        req.Provider,
 		Model:           req.Model,
+		KeyID:           keyID,
 		Scope:           scope,
 		ScopeID:         req.ScopeID,
 		Priority:        priority,
@@ -2733,6 +2741,13 @@ func (h *GovernanceHandler) updateRoutingRule(ctx *fasthttp.RequestCtx) {
 	}
 	if req.Model != nil {
 		rule.Model = *req.Model
+	}
+	if req.KeyID != nil {
+		if *req.KeyID == "" {
+			rule.KeyID = nil
+		} else {
+			rule.KeyID = req.KeyID
+		}
 	}
 	if req.Priority != nil {
 		rule.Priority = *req.Priority

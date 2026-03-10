@@ -21,6 +21,7 @@ type TableRoutingRule struct {
 	// Routing Target (output)
 	Provider        string   `gorm:"type:varchar(255);not null" json:"provider"` // Primary provider (e.g., "openai", "azure")
 	Model           string   `gorm:"type:varchar(255)" json:"model"`             // Optional model override, empty = use original
+	KeyID           *string  `gorm:"type:varchar(255)" json:"key_id,omitempty"` // Optional: pin a specific API key by its UUID
 	Fallbacks       *string  `gorm:"type:text" json:"-"`                         // JSON array of fallback chains
 	ParsedFallbacks []string `gorm:"-" json:"fallbacks"`                         // Parsed fallbacks from JSON
 

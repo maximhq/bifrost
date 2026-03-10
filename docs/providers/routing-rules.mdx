@@ -402,6 +402,7 @@ Define routing rules in your `config.json` file under the governance configurati
 - **cel_expression** (string): CEL expression for rule matching
 - **provider** (string, optional): Target provider if matched (empty string = use incoming request provider)
 - **model** (string, optional): Target model if matched (empty string = use incoming request model)
+- **key_id** (string, optional): UUID of the API key to pin for this rule — bypasses load-balanced key selection and always uses this key. Omit to use the normal key selection logic.
 - **fallbacks** (array[string]): Fallback providers in "provider/model" format
 - **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
 - **scope_id** (string, optional): ID of scoped entity (null for global scope)
@@ -846,6 +847,23 @@ curl -X POST http://localhost:8080/api/governance/routing-rules \
     "cel_expression": "headers[\"x-tier\"] == \"premium\"",
     "provider": "openai",
     "model": "gpt-4o",
+    "scope": "global",
+    "priority": 5
+  }'
+```
+
+#### Create Rule with Pinned API Key
+```bash
+curl -X POST http://localhost:8080/api/governance/routing-rules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Pin Production Key for Premium Tier",
+    "description": "Always use the dedicated production key for premium requests",
+    "enabled": true,
+    "cel_expression": "headers[\"x-tier\"] == \"premium\"",
+    "provider": "openai",
+    "model": "gpt-4o",
+    "key_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "scope": "global",
     "priority": 5
   }'

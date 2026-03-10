@@ -105,6 +105,7 @@ export function RoutingRuleSheet({
 	const scopeId = watch("scope_id");
 	const provider = watch("provider");
 	const model = watch("model");
+	const keyId = watch("key_id");
 	const fallbacks = watch("fallbacks");
 
 	// Get available providers from configured providers, fallback to providers in rules
@@ -113,6 +114,11 @@ export function RoutingRuleSheet({
 		: Array.from(
 			new Set([...rules.map((r) => r.provider).filter((p) => p !== "")]),
 		);
+
+	// Get keys for the selected provider
+	const availableKeys = provider
+		? (providersData.find((p) => p.name === provider)?.keys ?? [])
+		: [];
 	const availableModels = Array.from(
 		new Set([...rules.map((r) => r.model).filter((m) => m !== "" && m !== undefined)]),
 	) as string[];
@@ -126,6 +132,7 @@ export function RoutingRuleSheet({
 			setValue("cel_expression", editingRule.cel_expression);
 			setValue("provider", editingRule.provider);
 			setValue("model", editingRule.model || "");
+			setValue("key_id", editingRule.key_id || "");
 			setValue("fallbacks", editingRule.fallbacks || []);
 			setValue("scope", editingRule.scope);
 			setValue("scope_id", editingRule.scope_id || "");
@@ -188,6 +195,7 @@ export function RoutingRuleSheet({
 			cel_expression: data.cel_expression,
 			provider: data.provider,
 			model: data.model,
+			key_id: data.key_id || undefined,
 			fallbacks: validFallbacks,
 			scope: data.scope,
 			scope_id: data.scope === "global" ? undefined : (data.scope_id || undefined),
@@ -414,7 +422,7 @@ export function RoutingRuleSheet({
 									Provider
 								</Label>
 								<div className="flex gap-2">
-									<Select value={provider} onValueChange={(value) => setValue("provider", value)}>
+									<Select value={provider} onValueChange={(value) => { setValue("provider", value); setValue("key_id", ""); }}>
 										<SelectTrigger className="flex-1">
 											<SelectValue placeholder="Select provider (optional)" />
 										</SelectTrigger>
@@ -438,7 +446,7 @@ export function RoutingRuleSheet({
 											type="button"
 											variant="outline"
 											size="sm"
-											onClick={() => setValue("provider", "")}
+											onClick={() => { setValue("provider", ""); setValue("key_id", ""); }}
 											className="h-9 px-2"
 											title="Clear provider selection"
 										>
@@ -481,6 +489,40 @@ export function RoutingRuleSheet({
 							</div>
 						</div>
 					</div>
+
+					{/* Key Selector - only shown when a provider is selected */}
+					{provider && availableKeys.length > 0 && (
+						<div className="space-y-2">
+							<Label className="text-sm">API Key</Label>
+							<p className="text-muted-foreground text-xs">Pin a specific key for this provider. Leave unset to use load-balanced key selection.</p>
+							<div className="flex gap-2">
+								<Select value={keyId || ""} onValueChange={(value) => setValue("key_id", value)}>
+									<SelectTrigger className="flex-1">
+										<SelectValue placeholder="Select key (optional)" />
+									</SelectTrigger>
+									<SelectContent>
+										{availableKeys.map((key) => (
+											<SelectItem key={key.id} value={key.id}>
+												{key.name}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+								{keyId && (
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										onClick={() => setValue("key_id", "")}
+										className="h-9 px-2"
+										title="Clear key selection"
+									>
+										<X className="h-4 w-4" />
+									</Button>
+								)}
+							</div>
+						</div>
+					)}
 
 					{/* Fallbacks */}
 					<div className="space-y-3">

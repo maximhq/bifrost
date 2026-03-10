@@ -12,6 +12,7 @@ export interface RoutingRule {
 	cel_expression: string;
 	provider: string;
 	model?: string;
+	key_id?: string;
 	fallbacks?: string[];
 	scope: "global" | "team" | "customer" | "virtual_key";
 	scope_id?: string;
@@ -28,6 +29,7 @@ export interface CreateRoutingRuleRequest {
 	cel_expression?: string;
 	provider?: string;
 	model?: string;
+	key_id?: string;
 	fallbacks?: string[];
 	scope: string;
 	scope_id?: string;
@@ -55,6 +57,7 @@ export interface RoutingRuleFormData {
 	cel_expression: string;
 	provider: string;
 	model: string;
+	key_id: string;
 	fallbacks: string[];
 	scope: string;
 	scope_id: string;
@@ -84,6 +87,7 @@ export const DEFAULT_ROUTING_RULE_FORM_DATA: RoutingRuleFormData = {
 	cel_expression: "",
 	provider: "",
 	model: "",
+	key_id: "",
 	fallbacks: [],
 	scope: RoutingRuleScope.Global,
 	scope_id: "",

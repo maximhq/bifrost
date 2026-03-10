@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddKeyIDToRoutingRules(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4115,6 +4118,32 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddKeyIDToRoutingRules adds the key_id column to the routing_rules table
+// to allow routing rules to pin a specific API key by its UUID.
+func migrationAddKeyIDToRoutingRules(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_key_id_to_routing_rules",
+		Migrate: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if !mg.HasColumn(&tables.TableRoutingRule{}, "key_id") {
+				return mg.AddColumn(&tables.TableRoutingRule{}, "key_id")
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if mg.HasColumn(&tables.TableRoutingRule{}, "key_id") {
+				return mg.DropColumn(&tables.TableRoutingRule{}, "key_id")
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running key_id routing rule migration: %s", err.Error())
 	}
 	return nil
 }

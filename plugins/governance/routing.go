@@ -33,6 +33,7 @@ type ScopeLevel struct {
 type RoutingDecision struct {
 	Provider        string   // Primary provider (e.g., "openai", "azure")
 	Model           string   // Model to use (or empty to use original)
+	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
 	Fallbacks       []string // Fallback chain: ["provider/model", ...]
 	MatchedRuleID   string   // ID of the rule that matched
 	MatchedRuleName string   // Name of the rule that matched
@@ -150,9 +151,14 @@ func (re *RoutingEngine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routi
 					model = routingCtx.Model
 				}
 
+				keyID := ""
+				if rule.KeyID != nil {
+					keyID = *rule.KeyID
+				}
 				decision := &RoutingDecision{
 					Provider:        provider,
 					Model:           model,
+					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
