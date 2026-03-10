@@ -1012,10 +1012,10 @@ func (p *GovernancePlugin) evaluateGovernanceRequest(ctx *schemas.BifrostContext
 	if result.Decision == DecisionAllow && evaluationRequest.VirtualKey != "" {
 		if evaluationRequest.UserID != "" {
 			// User auth present: only use VK for routing/filtering (skip rate limits and budgets)
-			result = p.resolver.EvaluateVirtualKeyFiltering(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, true)
 		} else {
 			// No user auth: full VK governance (routing + limits)
-			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType)
+			result = p.resolver.EvaluateVirtualKeyRequest(ctx, evaluationRequest.VirtualKey, evaluationRequest.Provider, evaluationRequest.Model, requestType, false)
 		}
 	}
 

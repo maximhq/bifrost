@@ -193,6 +193,7 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
