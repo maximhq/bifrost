@@ -57,7 +57,7 @@ func TestNewTokenCache(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	if cache == nil {
 		t.Fatal("NewTokenCache returned nil")
@@ -74,7 +74,7 @@ func TestTokenCache_ClearToken(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	// Manually add a token to the cache
 	key := cacheKey("testClient", "https://auth.example.com")
@@ -101,7 +101,7 @@ func TestTokenCache_ClearToken_NonExistent(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	// Should not panic when clearing non-existent token
 	cache.ClearToken("nonexistent", "https://auth.example.com")
@@ -111,7 +111,7 @@ func TestTokenCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	// Pre-populate cache with a valid token
 	key := cacheKey("testClient", "https://auth.example.com")
@@ -211,7 +211,7 @@ func TestTokenCache_Size(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	// Add multiple tokens
 	for i := 0; i < 10; i++ {
@@ -238,7 +238,7 @@ func TestTokenCache_Cleanup(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	cache := NewTokenCache(client)
+	cache := NewTokenCache(client, 30*time.Second)
 
 	// Add a mix of expired and valid tokens
 	cache.tokens[cacheKey("expired1", "https://auth.example.com")] = &cachedToken{

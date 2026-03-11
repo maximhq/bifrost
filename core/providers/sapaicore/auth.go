@@ -16,10 +16,11 @@ import (
 
 // TokenCache manages OAuth2 token caching for SAP AI Core
 type TokenCache struct {
-	mu     sync.RWMutex
-	tokens map[string]*cachedToken
-	client *fasthttp.Client
-	group  singleflight.Group
+	mu      sync.RWMutex
+	tokens  map[string]*cachedToken
+	client  *fasthttp.Client
+	timeout time.Duration
+	group   singleflight.Group
 }
 
 // cachedToken represents a cached OAuth2 token with expiration
@@ -35,11 +36,12 @@ type tokenResult struct {
 	bifError *schemas.BifrostError
 }
 
-// NewTokenCache creates a new token cache
-func NewTokenCache(client *fasthttp.Client) *TokenCache {
+// NewTokenCache creates a new token cache with the given HTTP request timeout.
+func NewTokenCache(client *fasthttp.Client, timeout time.Duration) *TokenCache {
 	return &TokenCache{
-		tokens: make(map[string]*cachedToken),
-		client: client,
+		tokens:  make(map[string]*cachedToken),
+		client:  client,
+		timeout: timeout,
 	}
 }
 
@@ -144,7 +146,7 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 	req.Header.SetContentType("application/x-www-form-urlencoded")
 	req.SetBodyString(data.Encode())
 
-	if err := tc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+	if err := tc.client.DoTimeout(req, resp, tc.timeout); err != nil {
 		return "", 0, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to fetch oauth2 token from %s", tokenURL),
 			err,

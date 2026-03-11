@@ -20,6 +20,7 @@ type DeploymentCache struct {
 	client      *fasthttp.Client
 	tokenCache  *TokenCache
 	ttl         time.Duration
+	timeout     time.Duration
 	group       singleflight.Group
 }
 
@@ -54,6 +55,7 @@ func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, 
 		client:      client,
 		tokenCache:  tokenCache,
 		ttl:         ttl,
+		timeout:     tokenCache.timeout,
 	}
 }
 
@@ -81,7 +83,7 @@ func (dc *DeploymentCache) GetDeploymentID(
 func (dc *DeploymentCache) resolveDeployment(
 	modelName, clientID, clientSecret, authURL, baseURL, resourceGroup string,
 ) (string, SAPAICoreBackendType, *schemas.BifrostError) {
-	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
+	cacheKey := deploymentCacheKey(clientID, authURL, baseURL, resourceGroup)
 
 	// Try cache first (read lock)
 	dc.mu.RLock()
@@ -91,16 +93,18 @@ func (dc *DeploymentCache) resolveDeployment(
 				dc.mu.RUnlock()
 				return deployment.DeploymentID, deployment.Backend, nil
 			}
-			// Model not found in fresh cache — no need to refetch
+			// Model not found in fresh cache — invalidate to force a refetch
+			// so newly created deployments are discoverable before TTL expires.
 			dc.mu.RUnlock()
-			return "", "", providerUtils.NewBifrostOperationError(
-				fmt.Sprintf("no running deployment found for model: %s", modelName),
-				fmt.Errorf("model not deployed"),
-				schemas.SAPAICore,
-			)
+			dc.mu.Lock()
+			delete(dc.deployments, cacheKey)
+			dc.mu.Unlock()
+		} else {
+			dc.mu.RUnlock()
 		}
+	} else {
+		dc.mu.RUnlock()
 	}
-	dc.mu.RUnlock()
 
 	// Opportunistic cleanup: prune expired entries during cache misses
 	dc.pruneExpired()
@@ -177,7 +181,7 @@ func (dc *DeploymentCache) fetchDeployments(
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("AI-Resource-Group", resourceGroup)
 
-	if err := dc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+	if err := dc.client.DoTimeout(req, resp, dc.timeout); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(
 			"failed to fetch deployments from SAP AI Core",
 			err,
@@ -202,7 +206,7 @@ func (dc *DeploymentCache) fetchDeployments(
 		)
 	}
 
-	// Build model -> deployment mapping
+	// Build model -> deployment mapping (keep first seen for deterministic selection)
 	result := make(map[string]SAPAICoreCachedDeployment)
 	for _, res := range deploymentsResp.Resources {
 		if res.Status != SAPAICoreDeploymentStatusRunning {
@@ -212,10 +216,12 @@ func (dc *DeploymentCache) fetchDeployments(
 		if modelName == "" {
 			continue
 		}
-		result[modelName] = SAPAICoreCachedDeployment{
-			DeploymentID: res.ID,
-			ModelName:    modelName,
-			Backend:      determineBackend(modelName),
+		if _, exists := result[modelName]; !exists {
+			result[modelName] = SAPAICoreCachedDeployment{
+				DeploymentID: res.ID,
+				ModelName:    modelName,
+				Backend:      determineBackend(modelName),
+			}
 		}
 	}
 
@@ -248,7 +254,7 @@ func (dc *DeploymentCache) ListModels(
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("AI-Resource-Group", resourceGroup)
 
-	if err := dc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
+	if err := dc.client.DoTimeout(req, resp, dc.timeout); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(
 			"failed to fetch deployments for model listing",
 			err,
@@ -304,19 +310,19 @@ func (dc *DeploymentCache) ListModels(
 	return models, nil
 }
 
-// ClearCache clears the deployment cache for a specific resource group.
-// If both baseURL and resourceGroup are empty, clears the entire cache.
-func (dc *DeploymentCache) ClearCache(baseURL, resourceGroup string) {
+// ClearCache clears the deployment cache for a specific credential + resource group scope.
+// If all parameters are empty, clears the entire cache.
+func (dc *DeploymentCache) ClearCache(clientID, authURL, baseURL, resourceGroup string) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	if baseURL == "" && resourceGroup == "" {
+	if clientID == "" && authURL == "" && baseURL == "" && resourceGroup == "" {
 		// Clear all cache entries
 		dc.deployments = make(map[string]*cachedDeployments)
 		return
 	}
 
-	cacheKey := deploymentCacheKey(baseURL, resourceGroup)
+	cacheKey := deploymentCacheKey(clientID, authURL, baseURL, resourceGroup)
 	delete(dc.deployments, cacheKey)
 }
 

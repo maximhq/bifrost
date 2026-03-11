@@ -13,41 +13,51 @@ func TestDeploymentCacheKey(t *testing.T) {
 
 	tests := []struct {
 		name          string
+		clientID      string
+		authURL       string
 		baseURL       string
 		resourceGroup string
 		expected      string
 	}{
 		{
 			name:          "basic key generation",
+			clientID:      "client1",
+			authURL:       "https://auth.example.com",
 			baseURL:       "https://api.ai.sap.com",
 			resourceGroup: "default",
-			expected:      "25:https://api.ai.sap.com/v2:default",
+			expected:      "7:client1:36:https://auth.example.com/oauth/token:25:https://api.ai.sap.com/v2:default",
 		},
 		{
 			name:          "with v2 suffix",
+			clientID:      "client1",
+			authURL:       "https://auth.example.com/oauth/token",
 			baseURL:       "https://api.ai.sap.com/v2",
 			resourceGroup: "my-group",
-			expected:      "25:https://api.ai.sap.com/v2:my-group",
+			expected:      "7:client1:36:https://auth.example.com/oauth/token:25:https://api.ai.sap.com/v2:my-group",
 		},
 		{
-			name:          "empty baseURL",
+			name:          "different credentials same baseURL produce different keys",
+			clientID:      "client2",
+			authURL:       "https://auth.example.com",
+			baseURL:       "https://api.ai.sap.com",
+			resourceGroup: "default",
+			expected:      "7:client2:36:https://auth.example.com/oauth/token:25:https://api.ai.sap.com/v2:default",
+		},
+		{
+			name:          "empty fields",
+			clientID:      "",
+			authURL:       "",
 			baseURL:       "",
 			resourceGroup: "default",
-			expected:      "3:/v2:default",
-		},
-		{
-			name:          "empty resourceGroup",
-			baseURL:       "https://api.ai.sap.com",
-			resourceGroup: "",
-			expected:      "25:https://api.ai.sap.com/v2:",
+			expected:      "0::12:/oauth/token:3:/v2:default",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := deploymentCacheKey(tt.baseURL, tt.resourceGroup)
+			result := deploymentCacheKey(tt.clientID, tt.authURL, tt.baseURL, tt.resourceGroup)
 			if result != tt.expected {
-				t.Errorf("deploymentCacheKey(%q, %q) = %q, want %q", tt.baseURL, tt.resourceGroup, result, tt.expected)
+				t.Errorf("deploymentCacheKey(%q, %q, %q, %q) = %q, want %q", tt.clientID, tt.authURL, tt.baseURL, tt.resourceGroup, result, tt.expected)
 			}
 		})
 	}
@@ -57,7 +67,7 @@ func TestNewDeploymentCache(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	if cache == nil {
@@ -81,7 +91,7 @@ func TestNewDeploymentCacheWithTTL(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 
 	tests := []struct {
 		name        string
@@ -134,11 +144,11 @@ func TestDeploymentCache_ClearCache(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	// Manually add a deployment to the cache
-	key := deploymentCacheKey("https://api.ai.sap.com", "default")
+	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 	cache.deployments[key] = &cachedDeployments{
 		modelToDeployment: map[string]SAPAICoreCachedDeployment{
 			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
@@ -152,7 +162,7 @@ func TestDeploymentCache_ClearCache(t *testing.T) {
 	}
 
 	// Clear the cache
-	cache.ClearCache("https://api.ai.sap.com", "default")
+	cache.ClearCache("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 
 	// Verify deployment is removed
 	if _, ok := cache.deployments[key]; ok {
@@ -164,23 +174,23 @@ func TestDeploymentCache_ClearCache_NonExistent(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	// Should not panic when clearing non-existent cache entry
-	cache.ClearCache("https://nonexistent.api.com", "nonexistent")
+	cache.ClearCache("nonexistent", "https://nonexistent.auth.com", "https://nonexistent.api.com", "nonexistent")
 }
 
 func TestDeploymentCache_ClearCache_All(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	// Manually add multiple deployments to the cache
-	key1 := deploymentCacheKey("https://api1.ai.sap.com", "group1")
-	key2 := deploymentCacheKey("https://api2.ai.sap.com", "group2")
+	key1 := deploymentCacheKey("client1", "https://auth1.example.com", "https://api1.ai.sap.com", "group1")
+	key2 := deploymentCacheKey("client2", "https://auth2.example.com", "https://api2.ai.sap.com", "group2")
 
 	cache.deployments[key1] = &cachedDeployments{
 		modelToDeployment: map[string]SAPAICoreCachedDeployment{
@@ -201,11 +211,11 @@ func TestDeploymentCache_ClearCache_All(t *testing.T) {
 	}
 
 	// Clear all cache entries by passing empty strings
-	cache.ClearCache("", "")
+	cache.ClearCache("", "", "", "")
 
 	// Verify all deployments are removed
 	if len(cache.deployments) != 0 {
-		t.Errorf("Expected 0 deployments after ClearCache(\"\", \"\"), got %d", len(cache.deployments))
+		t.Errorf("Expected 0 deployments after ClearCache(\"\", \"\", \"\", \"\"), got %d", len(cache.deployments))
 	}
 }
 
@@ -213,7 +223,7 @@ func TestDeploymentCache_GetDeploymentID_StaticDeployments(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	staticDeployments := map[string]string{
@@ -266,11 +276,11 @@ func TestDeploymentCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
 	// Pre-populate cache
-	key := deploymentCacheKey("https://api.ai.sap.com", "default")
+	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 	cache.deployments[key] = &cachedDeployments{
 		modelToDeployment: map[string]SAPAICoreCachedDeployment{
 			"gpt-4": {DeploymentID: "d123", ModelName: "gpt-4", Backend: SAPAICoreBackendOpenAI},
@@ -297,7 +307,7 @@ func TestDeploymentCache_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cache.ClearCache("https://api.ai.sap.com", "default")
+			cache.ClearCache("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 		}()
 	}
 
@@ -408,10 +418,10 @@ func TestDeploymentCache_TTLExpiration(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, 30*time.Second)
 	cache := NewDeploymentCache(client, tokenCache)
 
-	key := deploymentCacheKey("https://api.ai.sap.com", "default")
+	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 
 	// Test fresh cache entry (should be valid)
 	cache.deployments[key] = &cachedDeployments{

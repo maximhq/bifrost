@@ -13,12 +13,19 @@ const defaultDeploymentCacheTTL = 1 * time.Hour
 const minDeploymentCacheTTL = 1 * time.Minute
 
 // deploymentCacheKey generates a unique key for deployment cache.
+// Includes clientID and authURL so that different credential sets sharing the
+// same baseURL and resourceGroup are isolated in the cache and singleflight.
 // Uses length-prefixed format to avoid collisions when values contain ":"
 // The baseURL is normalized before use so that "https://host", "https://host/",
 // and "https://host/v2" all map to the same cache entry.
-func deploymentCacheKey(baseURL, resourceGroup string) string {
-	normalized := normalizeBaseURL(baseURL)
-	return fmt.Sprintf("%d:%s:%s", len(normalized), normalized, resourceGroup)
+func deploymentCacheKey(clientID, authURL, baseURL, resourceGroup string) string {
+	normalizedBase := normalizeBaseURL(baseURL)
+	normalizedAuth := normalizeAuthURL(authURL)
+	return fmt.Sprintf("%d:%s:%d:%s:%d:%s:%s",
+		len(clientID), clientID,
+		len(normalizedAuth), normalizedAuth,
+		len(normalizedBase), normalizedBase,
+		resourceGroup)
 }
 
 // determineBackend determines the backend type based on model name prefix

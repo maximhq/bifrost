@@ -95,7 +95,7 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 
-	tokenCache := NewTokenCache(client)
+	tokenCache := NewTokenCache(client, time.Second*time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds))
 	deploymentCache := NewDeploymentCache(client, tokenCache)
 	stopCleanup := make(chan struct{})
 
@@ -133,7 +133,7 @@ func (provider *SAPAICoreProvider) Shutdown() {
 		provider.tokenCache.Cleanup()
 	}
 	if provider.deploymentCache != nil {
-		provider.deploymentCache.ClearCache("", "")
+		provider.deploymentCache.ClearCache("", "", "", "")
 	}
 }
 
