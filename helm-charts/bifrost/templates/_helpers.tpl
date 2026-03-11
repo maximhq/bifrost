@@ -254,6 +254,33 @@ false
 {{- $_ := set $client "header_filter_config" $headerFilter }}
 {{- end }}
 {{- end }}
+{{- if .Values.bifrost.client.asyncJobResultTTL }}
+{{- $_ := set $client "async_job_result_ttl" .Values.bifrost.client.asyncJobResultTTL }}
+{{- end }}
+{{- if .Values.bifrost.client.requiredHeaders }}
+{{- $_ := set $client "required_headers" .Values.bifrost.client.requiredHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.loggingHeaders }}
+{{- $_ := set $client "logging_headers" .Values.bifrost.client.loggingHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.allowedHeaders }}
+{{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpAgentDepth }}
+{{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpToolExecutionTimeout }}
+{{- $_ := set $client "mcp_tool_execution_timeout" .Values.bifrost.client.mcpToolExecutionTimeout }}
+{{- end }}
+{{- if .Values.bifrost.client.mcpCodeModeBindingLevel }}
+{{- $_ := set $client "mcp_code_mode_binding_level" .Values.bifrost.client.mcpCodeModeBindingLevel }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpToolSyncInterval" }}
+{{- $_ := set $client "mcp_tool_sync_interval" .Values.bifrost.client.mcpToolSyncInterval }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
+{{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
+{{- end }}
 {{- $_ := set $config "client" $client }}
 {{- end }}
 {{- /* Framework */ -}}
@@ -321,6 +348,12 @@ false
 {{- if .Values.bifrost.governance.routingRules }}
 {{- $_ := set $governance "routing_rules" .Values.bifrost.governance.routingRules }}
 {{- end }}
+{{- if .Values.bifrost.governance.modelConfigs }}
+{{- $_ := set $governance "model_configs" .Values.bifrost.governance.modelConfigs }}
+{{- end }}
+{{- if .Values.bifrost.governance.providers }}
+{{- $_ := set $governance "providers" .Values.bifrost.governance.providers }}
+{{- end }}
 {{- if .Values.bifrost.governance.authConfig }}
 {{- $authConfig := dict }}
 {{- if and .Values.bifrost.governance.authConfig.existingSecret .Values.bifrost.governance.authConfig.usernameKey }}
@@ -343,7 +376,7 @@ false
 {{- $_ := set $governance "auth_config" $authConfig }}
 {{- end }}
 {{- end }}
-{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.auth_config }}
+{{- if or $governance.budgets $governance.rate_limits $governance.customers $governance.teams $governance.virtual_keys $governance.routing_rules $governance.model_configs $governance.providers $governance.auth_config }}
 {{- $_ := set $config "governance" $governance }}
 {{- end }}
 {{- end }}
@@ -376,6 +409,9 @@ false
 {{- $cluster := dict "enabled" true }}
 {{- if .Values.bifrost.cluster.peers }}
 {{- $_ := set $cluster "peers" .Values.bifrost.cluster.peers }}
+{{- end }}
+{{- if .Values.bifrost.cluster.region }}
+{{- $_ := set $cluster "region" .Values.bifrost.cluster.region }}
 {{- end }}
 {{- if .Values.bifrost.cluster.gossip }}
 {{- $gossip := dict }}
@@ -468,6 +504,7 @@ false
 {{- $providers := list }}
 {{- range .Values.bifrost.guardrails.providers }}
 {{- $provider := dict "id" .id "provider_name" .provider_name "policy_name" .policy_name "enabled" .enabled }}
+{{- if .timeout }}{{- $_ := set $provider "timeout" .timeout }}{{- end }}
 {{- if .config }}{{- $_ := set $provider "config" .config }}{{- end }}
 {{- $providers = append $providers $provider }}
 {{- end }}
@@ -657,8 +694,20 @@ false
 {{- if $client.oauth_config_id }}
 {{- $_ := set $cc "oauth_config_id" $client.oauth_config_id }}
 {{- end }}
-{{- if hasKey $client "is_ping_available" }}
-{{- $_ := set $cc "is_ping_available" $client.is_ping_available }}
+{{- if hasKey $client "isPingAvailable" }}
+{{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
+{{- end }}
+{{- if $client.clientId }}
+{{- $_ := set $cc "client_id" $client.clientId }}
+{{- end }}
+{{- if hasKey $client "isCodeModeClient" }}
+{{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
+{{- end }}
+{{- if $client.toolSyncInterval }}
+{{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.toolPricing }}
+{{- $_ := set $cc "tool_pricing" $client.toolPricing }}
 {{- end }}
 {{- $clientConfigs = append $clientConfigs $cc }}
 {{- end }}
@@ -671,9 +720,15 @@ false
 {{- if .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- $_ := set $tmConfig "max_agent_depth" .Values.bifrost.mcp.toolManagerConfig.maxAgentDepth }}
 {{- end }}
+{{- if .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- $_ := set $tmConfig "code_mode_binding_level" .Values.bifrost.mcp.toolManagerConfig.codeModeBindingLevel }}
+{{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}
+{{- end }}
+{{- if .Values.bifrost.mcp.toolSyncInterval }}
+{{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
 {{- end }}
 {{- $_ := set $config "mcp" $mcpConfig }}
 {{- end }}
@@ -689,6 +744,12 @@ false
 {{- $governanceConfig := dict }}
 {{- if hasKey .Values.bifrost.plugins.governance.config "is_vk_mandatory" }}
 {{- $_ := set $governanceConfig "is_vk_mandatory" .Values.bifrost.plugins.governance.config.is_vk_mandatory }}
+{{- end }}
+{{- if .Values.bifrost.plugins.governance.config.required_headers }}
+{{- $_ := set $governanceConfig "required_headers" .Values.bifrost.plugins.governance.config.required_headers }}
+{{- end }}
+{{- if hasKey .Values.bifrost.plugins.governance.config "is_enterprise" }}
+{{- $_ := set $governanceConfig "is_enterprise" .Values.bifrost.plugins.governance.config.is_enterprise }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "governance" "config" $governanceConfig) }}
 {{- end }}
@@ -774,6 +835,15 @@ false
 {{- end }}
 {{- if $inputConfig.metrics_push_interval }}
 {{- $_ := set $otelConfig "metrics_push_interval" $inputConfig.metrics_push_interval }}
+{{- end }}
+{{- if $inputConfig.headers }}
+{{- $_ := set $otelConfig "headers" $inputConfig.headers }}
+{{- end }}
+{{- if $inputConfig.tls_ca_cert }}
+{{- $_ := set $otelConfig "tls_ca_cert" $inputConfig.tls_ca_cert }}
+{{- end }}
+{{- if hasKey $inputConfig "insecure" }}
+{{- $_ := set $otelConfig "insecure" $inputConfig.insecure }}
 {{- end }}
 {{- $plugins = append $plugins (dict "enabled" true "name" "otel" "config" $otelConfig) }}
 {{- end }}

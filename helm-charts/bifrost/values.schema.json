@@ -372,6 +372,10 @@
                 "type": "string"
               },
               "description": "Headers to capture in log metadata"
+            },
+            "hideDeletedVirtualKeysInFilters": {
+              "type": "boolean",
+              "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data"
             }
           },
           "additionalProperties": false
@@ -467,6 +471,11 @@
                 "config": {
                   "type": "object",
                   "properties": {
+                    "custom_labels": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Custom labels to add to all metrics"
+                    },
                     "push_gateway": {
                       "type": "object",
                       "description": "Configuration for pushing metrics to a Prometheus Push Gateway for multi-node cluster deployments",
@@ -533,6 +542,15 @@
                   "properties": {
                     "is_vk_mandatory": {
                       "type": "boolean"
+                    },
+                    "required_headers": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Headers that must be present in requests"
+                    },
+                    "is_enterprise": {
+                      "type": "boolean",
+                      "description": "Enable enterprise mode features"
                     }
                   }
                 }
@@ -677,6 +695,10 @@
                     },
                     "vector_store_namespace": {
                       "type": "string"
+                    },
+                    "default_cache_key": {
+                      "type": "string",
+                      "description": "Default cache key for semantic cache lookups"
                     }
                   }
                 }
@@ -748,6 +770,19 @@
                       "default": 15,
                       "minimum": 1,
                       "maximum": 300
+                    },
+                    "headers": {
+                      "type": "object",
+                      "additionalProperties": { "type": "string" },
+                      "description": "Custom headers for the collector (supports env.VAR_NAME prefix)"
+                    },
+                    "tls_ca_cert": {
+                      "type": "string",
+                      "description": "Path to TLS CA certificate file"
+                    },
+                    "insecure": {
+                      "type": "boolean",
+                      "description": "Skip TLS verification (ignored if tls_ca_cert is set)"
                     }
                   },
                   "if": {
@@ -941,6 +976,9 @@
                   },
                   "budget_id": {
                     "type": "string"
+                  },
+                  "rate_limit_id": {
+                    "type": "string"
                   }
                 },
                 "required": [
@@ -964,6 +1002,9 @@
                     "type": "string"
                   },
                   "budget_id": {
+                    "type": "string"
+                  },
+                  "rate_limit_id": {
                     "type": "string"
                   },
                   "profile": {
@@ -1148,6 +1189,10 @@
               "items": {
                 "type": "string"
               }
+            },
+            "region": {
+              "type": "string",
+              "description": "Region for cluster deployment"
             },
             "gossip": {
               "type": "object",
@@ -1481,6 +1526,11 @@
                   },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "timeout": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Timeout in milliseconds for provider execution"
                   },
                   "config": {
                     "type": "object"
@@ -2547,6 +2597,18 @@
         "toolSyncInterval": {
           "type": "string",
           "description": "Per-client override for tool sync interval"
+        },
+        "isPingAvailable": {
+          "type": "boolean",
+          "description": "Whether the MCP server supports ping"
+        },
+        "toolPricing": {
+          "type": "object",
+          "description": "Tool pricing map (tool name to cost per execution)",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
         }
       },
       "required": [
