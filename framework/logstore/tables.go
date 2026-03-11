@@ -77,55 +77,55 @@ type SearchStats struct {
 // Log represents a complete log entry for a request/response cycle
 // This is the GORM model with appropriate tags
 type Log struct {
-	ID                    string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
-	ParentRequestID       *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
-	Timestamp             time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
-	Object                string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
-	Provider              string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
-	Model                 string    `gorm:"type:varchar(255);index;not null" json:"model"`
-	NumberOfRetries       int       `gorm:"default:0" json:"number_of_retries"`
-	FallbackIndex         int       `gorm:"default:0" json:"fallback_index"`
-	SelectedKeyID         string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
-	SelectedKeyName       string    `gorm:"type:varchar(255)" json:"selected_key_name"`
-	VirtualKeyID          *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
-	VirtualKeyName        *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
-	RoutingRuleID         *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
-	RoutingRuleName       *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
-	InputHistory          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
-	ResponsesInputHistory string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
-	OutputMessage         string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
-	ResponsesOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
-	EmbeddingOutput       string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
-	RerankOutput          string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
-	Params                string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
-	Tools                 string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
-	ToolCalls             string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
-	SpeechInput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
-	TranscriptionInput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
-	ImageGenerationInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
-	VideoGenerationInput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
-	SpeechOutput          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
-	TranscriptionOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
-	ImageGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
-	ListModelsOutput      string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
-	VideoGenerationOutput string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
-	VideoRetrieveOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
-	VideoDownloadOutput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
-	VideoListOutput       string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
-	VideoDeleteOutput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
-	CacheDebug            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
-	Latency               *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	TokenUsage            string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
-	Cost                  *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
-	Status                string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	ErrorDetails          string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
-	Stream                bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
-	ContentSummary        string    `gorm:"type:text" json:"-"`
-	RawRequest            string    `gorm:"type:text" json:"raw_request"`                   // Populated when `send-back-raw-request` is on
-	RawResponse           string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
-	RoutingEngineLogs     string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
-	Metadata              string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
+	ID                     string    `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentRequestID        *string   `gorm:"type:varchar(255)" json:"parent_request_id"`
+	Timestamp              time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;not null" json:"timestamp"`
+	Object                 string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	Provider               string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
+	Model                  string    `gorm:"type:varchar(255);index;not null" json:"model"`
+	NumberOfRetries        int       `gorm:"default:0" json:"number_of_retries"`
+	FallbackIndex          int       `gorm:"default:0" json:"fallback_index"`
+	SelectedKeyID          string    `gorm:"type:varchar(255);index:idx_logs_selected_key_id" json:"selected_key_id"`
+	SelectedKeyName        string    `gorm:"type:varchar(255)" json:"selected_key_name"`
+	VirtualKeyID           *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
+	VirtualKeyName         *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
+	RoutingEnginesUsedStr  *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	RoutingRuleID          *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
+	RoutingRuleName        *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
+	InputHistory           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
+	ResponsesInputHistory  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ResponsesMessage
+	OutputMessage          string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ChatMessage
+	ResponsesOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ResponsesMessage
+	EmbeddingOutput        string    `gorm:"type:text" json:"-"` // JSON serialized [][]float32
+	RerankOutput           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.RerankResult
+	Params                 string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ModelParameters
+	Tools                  string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Tool
+	ToolCalls              string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ToolCall (For backward compatibility, tool calls are now in the content)
+	SpeechInput            string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.SpeechInput
+	TranscriptionInput     string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.TranscriptionInput
+	ImageGenerationInput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.ImageGenerationInput
+	VideoGenerationInput   string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.VideoGenerationInput
+	SpeechOutput           string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostSpeech
+	TranscriptionOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostTranscribe
+	ImageGenerationOutput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostImageGenerationResponse
+	ListModelsOutput       string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.Model
+	VideoGenerationOutput  string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoGenerationResponse
+	VideoRetrieveOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoRetrieveResponse
+	VideoDownloadOutput    string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDownloadResponse
+	VideoListOutput        string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoListResponse
+	VideoDeleteOutput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
+	CacheDebug             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
+	Latency                *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	TokenUsage             string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
+	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
+	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
+	ErrorDetails           string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
+	Stream                 bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ContentSummary         string    `gorm:"type:text" json:"-"`
+	RawRequest             string    `gorm:"type:text" json:"raw_request"`                   // Populated when `send-back-raw-request` is on
+	RawResponse            string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
+	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
+	Metadata               string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
 	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
 
@@ -194,11 +194,6 @@ func (l *Log) BeforeCreate(tx *gorm.DB) error {
 	if l.CreatedAt.IsZero() {
 		l.CreatedAt = time.Now().UTC()
 	}
-	return l.SerializeFields()
-}
-
-// BeforeSave GORM hook to serialize JSON fields
-func (l *Log) BeforeSave(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 
@@ -669,11 +664,6 @@ func (l *MCPToolLog) BeforeCreate(tx *gorm.DB) error {
 	if l.Timestamp.IsZero() {
 		l.Timestamp = time.Now().UTC()
 	}
-	return l.SerializeFields()
-}
-
-// BeforeSave GORM hook to serialize JSON fields
-func (l *MCPToolLog) BeforeSave(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 
