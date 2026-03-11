@@ -13,8 +13,9 @@ import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info, Plus, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { getApiBaseUrl } from "@/lib/utils/port";
+import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
@@ -55,6 +56,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isAzure = providerName === "azure";
 	const isReplicate = providerName === "replicate";
 	const isVLLM = providerName === "vllm";
+	const isCopilot = providerName === "copilot";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
@@ -89,6 +91,20 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 			}
 		}
 	}, [isBedrock, form])
+
+	// Copilot auth type state: 'device_login' or 'manual_token'
+	const [copilotAuthType, setCopilotAuthType] = useState<'device_login' | 'manual_token'>('device_login')
+
+	// Detect copilot auth type from existing form values when editing
+	useEffect(() => {
+		if (form.formState.isDirty) return
+		if (isCopilot) {
+			const apiKey = form.getValues('key.value')?.value
+			if (apiKey && !isRedacted(apiKey)) {
+				setCopilotAuthType('manual_token')
+			}
+		}
+	}, [isCopilot, form])
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
@@ -167,23 +183,22 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for Azure when using Entra ID, and for Bedrock when using IAM Role */}
-			{!isBedrock &&
-				!(isAzure && (azureAuthType === "entra_id" || azureAuthType === "default_credential")) && (
-					<FormField
-						control={control}
-						name={`key.value`}
-						render={({ field }) => (
-							<FormItem>
-								<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
-								<FormControl>
-									<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
-								</FormControl>
-								<FormMessage />
-							</FormItem>
-						)}
-					/>
-				)}
+			{/* Hide API Key field for Azure when using Entra ID, for Bedrock when using IAM Role, and for Copilot when using Device Login */}
+			{!(isAzure && (azureAuthType === 'entra_id' || azureAuthType === 'default_credential')) && !(isBedrock && bedrockAuthType === 'iam_role') && !(isCopilot && copilotAuthType === 'device_login') && (
+				<FormField
+					control={control}
+					name={`key.value`}
+					render={({ field }) => (
+						<FormItem>
+							<FormLabel>API Key {isVertex ? "(Supported only for gemini and fine-tuned models)" : isVLLM ? "(Optional)" : ""}</FormLabel>
+							<FormControl>
+								<EnvVarInput placeholder="API Key or env.MY_KEY" type="text" {...field} />
+							</FormControl>
+							<FormMessage />
+						</FormItem>
+					)}
+				/>
+			)}
 			{!isVLLM && (
 				<FormField
 					control={control}
@@ -556,6 +571,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
+			{isCopilot && (
+				<CopilotDeviceLoginSection control={control} form={form} copilotAuthType={copilotAuthType} setCopilotAuthType={setCopilotAuthType} />
+			)}
 			{isVLLM && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -778,6 +796,287 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Copilot GitHub OAuth device code login section
+function CopilotDeviceLoginSection({
+	control,
+	form,
+	copilotAuthType,
+	setCopilotAuthType,
+}: {
+	control: Control<any>;
+	form: UseFormReturn<any>;
+	copilotAuthType: 'device_login' | 'manual_token';
+	setCopilotAuthType: (v: 'device_login' | 'manual_token') => void;
+}) {
+	const [deviceState, setDeviceState] = useState<{
+		status: 'idle' | 'awaiting_auth' | 'polling' | 'complete' | 'error';
+		userCode?: string;
+		verificationUri?: string;
+		deviceCode?: string;
+		interval?: number;
+		error?: string;
+	}>({ status: 'idle' });
+
+	const [copied, setCopied] = useState(false);
+	const pollingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	// Clean up polling on unmount
+	useEffect(() => {
+		return () => {
+			if (pollingRef.current) clearTimeout(pollingRef.current);
+		};
+	}, []);
+
+	const initiateLogin = useCallback(async () => {
+		setDeviceState({ status: 'awaiting_auth' });
+		try {
+			const baseUrl = getApiBaseUrl();
+			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/initiate`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+			});
+			if (!resp.ok) {
+				const errData = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
+				setDeviceState({ status: 'error', error: errData?.error?.message || 'Failed to start device login' });
+				return;
+			}
+			const data = await resp.json();
+			setDeviceState({
+				status: 'awaiting_auth',
+				userCode: data.user_code,
+				verificationUri: data.verification_uri,
+				deviceCode: data.device_code,
+				interval: data.interval || 5,
+			});
+		} catch (err) {
+			setDeviceState({ status: 'error', error: 'Failed to connect to server' });
+		}
+	}, []);
+
+	const startPolling = useCallback(() => {
+		if (!deviceState.deviceCode || !deviceState.interval) return;
+
+		setDeviceState(prev => ({ ...prev, status: 'polling' }));
+
+		const poll = async () => {
+			try {
+				const baseUrl = getApiBaseUrl();
+				const resp = await fetch(`${baseUrl}/providers/copilot/device-login/poll`, {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ device_code: deviceState.deviceCode }),
+				});
+				if (!resp.ok) {
+					setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
+					return;
+				}
+				const data = await resp.json();
+
+				if (data.status === 'complete' && data.access_token) {
+					// Set the access token as the key value
+					form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true });
+					setDeviceState(prev => ({ ...prev, status: 'complete' }));
+					return;
+				}
+
+				if (data.status === 'expired' || data.status === 'error') {
+					setDeviceState(prev => ({ ...prev, status: 'error', error: data.error || 'Authorization failed' }));
+					return;
+				}
+
+				// Still pending — schedule next poll
+				pollingRef.current = setTimeout(poll, (deviceState.interval || 5) * 1000);
+			} catch {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+			}
+		};
+
+		poll();
+	}, [deviceState.deviceCode, deviceState.interval, form]);
+
+	const copyCode = useCallback(() => {
+		if (deviceState.userCode) {
+			navigator.clipboard.writeText(deviceState.userCode);
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		}
+	}, [deviceState.userCode]);
+
+	const resetFlow = useCallback(() => {
+		if (pollingRef.current) clearTimeout(pollingRef.current);
+		setDeviceState({ status: 'idle' });
+	}, []);
+
+	return (
+		<div className="space-y-4">
+			<Separator className="my-6" />
+			<div className="space-y-2">
+				<FormLabel>Authentication Method</FormLabel>
+				<Tabs value={copilotAuthType} onValueChange={(v) => {
+					setCopilotAuthType(v as 'device_login' | 'manual_token');
+					if (v === 'device_login') {
+						resetFlow();
+					}
+				}}>
+					<TabsList className="grid w-full grid-cols-2">
+						<TabsTrigger data-testid="apikey-copilot-device-login-tab" value="device_login">GitHub Device Login</TabsTrigger>
+						<TabsTrigger data-testid="apikey-copilot-manual-token-tab" value="manual_token">Manual Token</TabsTrigger>
+					</TabsList>
+				</Tabs>
+			</div>
+
+			{copilotAuthType === 'device_login' && (
+				<div className="space-y-4">
+					{deviceState.status === 'idle' && (
+						<>
+							<Alert variant="default">
+								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+								<AlertTitle>GitHub Copilot Authentication</AlertTitle>
+								<AlertDescription>
+									Copilot requires a GitHub OAuth token obtained through the device login flow.
+									Your GitHub account must have an active Copilot subscription.
+								</AlertDescription>
+							</Alert>
+							<Button
+								type="button"
+								data-testid="copilot-device-login-button"
+								onClick={initiateLogin}
+								className="w-full"
+							>
+								Login with GitHub
+							</Button>
+						</>
+					)}
+
+					{(deviceState.status === 'awaiting_auth' || deviceState.status === 'polling') && deviceState.userCode && (
+						<div className="space-y-4">
+							<Alert variant="default">
+								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+								<AlertTitle>Enter this code on GitHub</AlertTitle>
+								<AlertDescription className="space-y-3">
+									<div className="flex items-center gap-3 pt-2">
+										<code className="bg-muted rounded-md px-4 py-2 text-2xl font-bold tracking-widest">
+											{deviceState.userCode}
+										</code>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={copyCode}
+											data-testid="copilot-copy-code-button"
+										>
+											{copied ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+										</Button>
+									</div>
+									<p className="text-sm">
+										Visit{" "}
+										<a
+											href={deviceState.verificationUri}
+											target="_blank"
+											rel="noopener noreferrer"
+											className="text-blue-600 underline hover:text-blue-800 inline-flex items-center gap-1"
+										>
+											{deviceState.verificationUri}
+											<ExternalLink className="h-3 w-3" />
+										</a>
+										{" "}and enter the code above to authorize Bifrost.
+									</p>
+								</AlertDescription>
+							</Alert>
+
+							{deviceState.status === 'awaiting_auth' && (
+								<Button
+									type="button"
+									data-testid="copilot-confirm-auth-button"
+									onClick={startPolling}
+									className="w-full"
+								>
+									I&apos;ve entered the code — check authorization
+								</Button>
+							)}
+
+							{deviceState.status === 'polling' && (
+								<div className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
+									<Loader2 className="h-4 w-4 animate-spin" />
+									Waiting for authorization...
+								</div>
+							)}
+
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={resetFlow}
+								className="w-full"
+							>
+								Cancel and start over
+							</Button>
+						</div>
+					)}
+
+					{deviceState.status === 'complete' && (
+						<Alert variant="default">
+							<CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-600" />
+							<AlertTitle>Authentication successful</AlertTitle>
+							<AlertDescription>
+								GitHub OAuth token has been set. You can now save the provider configuration.
+							</AlertDescription>
+						</Alert>
+					)}
+
+					{deviceState.status === 'error' && (
+						<div className="space-y-3">
+							<Alert variant="destructive">
+								<AlertTitle>Authentication failed</AlertTitle>
+								<AlertDescription>
+									{deviceState.error || 'An unknown error occurred'}
+								</AlertDescription>
+							</Alert>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={initiateLogin}
+								className="w-full"
+								data-testid="copilot-retry-login-button"
+							>
+								Try again
+							</Button>
+						</div>
+					)}
+				</div>
+			)}
+
+			{copilotAuthType === 'manual_token' && (
+				<div className="space-y-2">
+					<Alert variant="default">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Manual Token Entry</AlertTitle>
+						<AlertDescription>
+							Enter an OAuth access token obtained from the GitHub device code flow.
+							Standard GitHub PATs will not work — you must use the device login flow token.
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.value`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>OAuth Access Token</FormLabel>
+								<FormControl>
+									<EnvVarInput placeholder="ghu_xxxxxxxxxxxx or env.GITHUB_COPILOT_TOKEN" type="text" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
 				</div>
 			)}
 		</div>

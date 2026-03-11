@@ -22,6 +22,7 @@ export const KnownProvidersNames = [
 	"replicate",
 	"vllm",
 	"runway",
+	"copilot",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -98,6 +99,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	replicate: "Replicate",
 	vllm: "vLLM",
 	runway: "Runway",
+	copilot: "GitHub Copilot",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

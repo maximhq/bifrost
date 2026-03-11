@@ -1,0 +1,196 @@
+// Package handlers provides HTTP request handlers for the Bifrost HTTP transport.
+// This file contains the Copilot GitHub OAuth device code flow endpoints.
+package handlers
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/fasthttp/router"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
+)
+
+const (
+	// GitHub's Copilot OAuth application client ID
+	copilotClientID = "Iv1.b507a08c87ecfe98"
+
+	// GitHub OAuth endpoints for device code flow
+	githubDeviceCodeURL  = "https://github.com/login/device/code"
+	githubAccessTokenURL = "https://github.com/login/oauth/access_token"
+)
+
+// CopilotHandler manages Copilot-specific HTTP requests like device code flow
+type CopilotHandler struct {
+	httpClient     *http.Client
+	deviceCodeURL  string // GitHub device code endpoint; overridable in tests
+	accessTokenURL string // GitHub access token endpoint; overridable in tests
+}
+
+// maxOAuthResponseBytes caps the body read from GitHub OAuth responses to prevent memory exhaustion.
+const maxOAuthResponseBytes = 64 * 1024
+
+// NewCopilotHandler creates a new Copilot handler instance
+func NewCopilotHandler() *CopilotHandler {
+	return &CopilotHandler{
+		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		deviceCodeURL:  githubDeviceCodeURL,
+		accessTokenURL: githubAccessTokenURL,
+	}
+}
+
+// RegisterRoutes registers all Copilot-specific routes
+func (h *CopilotHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	r.POST("/api/providers/copilot/device-login/initiate", lib.ChainMiddlewares(h.initiateDeviceLogin, middlewares...))
+	r.POST("/api/providers/copilot/device-login/poll", lib.ChainMiddlewares(h.pollDeviceLogin, middlewares...))
+}
+
+// DeviceLoginInitiateResponse is the response from initiating a device login flow
+type DeviceLoginInitiateResponse struct {
+	DeviceCode      string `json:"device_code"`
+	UserCode        string `json:"user_code"`
+	VerificationURI string `json:"verification_uri"`
+	ExpiresIn       int    `json:"expires_in"`
+	Interval        int    `json:"interval"`
+}
+
+// initiateDeviceLogin handles POST /api/providers/copilot/device-login/initiate
+// Starts the GitHub OAuth device code flow by requesting a device code.
+func (h *CopilotHandler) initiateDeviceLogin(ctx *fasthttp.RequestCtx) {
+	body := fmt.Sprintf(`{"client_id": %q, "scope": "read:user"}`, copilotClientID)
+
+	req, err := http.NewRequest(http.MethodPost, h.deviceCodeURL, strings.NewReader(body))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to create device code request")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadGateway, "failed to contact GitHub for device code")
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to read GitHub response")
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		SendError(ctx, resp.StatusCode, fmt.Sprintf("GitHub returned error: %s", string(respBody)))
+		return
+	}
+
+	var deviceResp DeviceLoginInitiateResponse
+	if err := json.Unmarshal(respBody, &deviceResp); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to parse GitHub device code response")
+		return
+	}
+
+	if deviceResp.DeviceCode == "" {
+		SendError(ctx, fasthttp.StatusBadGateway, "GitHub returned empty device code")
+		return
+	}
+
+	SendJSON(ctx, deviceResp)
+}
+
+// DeviceLoginPollRequest is the request body for polling the device login status
+type DeviceLoginPollRequest struct {
+	DeviceCode string `json:"device_code"`
+}
+
+// DeviceLoginPollResponse is returned when polling succeeds with a token
+type DeviceLoginPollResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	Status      string `json:"status"` // "complete", "pending", "expired", "error"
+	Error       string `json:"error,omitempty"`
+}
+
+// pollDeviceLogin handles POST /api/providers/copilot/device-login/poll
+// Polls GitHub to check if the user has completed the device code authorization.
+func (h *CopilotHandler) pollDeviceLogin(ctx *fasthttp.RequestCtx) {
+	var pollReq DeviceLoginPollRequest
+	if err := json.Unmarshal(ctx.PostBody(), &pollReq); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if pollReq.DeviceCode == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "device_code is required")
+		return
+	}
+
+	body := fmt.Sprintf(`{"client_id": %q, "device_code": %q, "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}`,
+		copilotClientID, pollReq.DeviceCode)
+
+	req, err := http.NewRequest(http.MethodPost, h.accessTokenURL, strings.NewReader(body))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to create token request")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadGateway, "failed to contact GitHub for access token")
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthResponseBytes))
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to read GitHub response")
+		return
+	}
+
+	// GitHub returns 200 even for pending/error states, with different JSON shapes
+	var rawResp map[string]interface{}
+	if err := json.Unmarshal(respBody, &rawResp); err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to parse GitHub token response")
+		return
+	}
+
+	// Check for error states (authorization_pending, slow_down, expired_token, etc.)
+	if errField, ok := rawResp["error"].(string); ok {
+		switch errField {
+		case "authorization_pending":
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "pending"})
+		case "slow_down":
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "pending"})
+		case "expired_token":
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "expired", Error: "device code has expired, please restart the flow"})
+		case "access_denied":
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "error", Error: "authorization was denied by the user"})
+		default:
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "error", Error: fmt.Sprintf("GitHub error: %s", errField)})
+		}
+		return
+	}
+
+	// Success — extract access token
+	accessToken, _ := rawResp["access_token"].(string)
+	tokenType, _ := rawResp["token_type"].(string)
+
+	if accessToken == "" {
+		SendError(ctx, fasthttp.StatusBadGateway, "GitHub returned empty access token")
+		return
+	}
+
+	SendJSON(ctx, DeviceLoginPollResponse{
+		AccessToken: accessToken,
+		TokenType:   tokenType,
+		Status:      "complete",
+	})
+}

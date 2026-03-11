@@ -1,0 +1,238 @@
+---
+title: "GitHub Copilot"
+description: "GitHub Copilot provider — OpenAI-compatible API with two-layer OAuth token exchange, dynamic base URL, chat completions, and streaming support"
+icon: "github"
+---
+
+## Overview
+
+GitHub Copilot is an **OpenAI-compatible provider** with a unique **two-layer authentication** mechanism. Bifrost delegates all API calls to the OpenAI provider implementation while handling Copilot's custom token exchange automatically. Key features:
+
+- **OpenAI-compatible API** — Identical request/response format to OpenAI
+- **Two-layer auth** — GitHub OAuth token automatically exchanged for short-lived Copilot JWT
+- **Dynamic base URL** — API endpoint returned by token exchange, cached alongside JWT
+- **Streaming support** — Server-Sent Events with delta-based updates
+- **Tool calling** — Full function definition and execution support
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/chat/completions` |
+| Responses API | ✅ | ✅ | `/chat/completions` |
+| List Models | ✅ | - | `/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): These are not supported by the upstream Copilot API and return `UnsupportedOperationError`.
+</Note>
+
+---
+
+## Authentication
+
+Copilot uses a two-layer token system:
+
+| Layer | Description | Lifetime |
+|-------|-------------|----------|
+| 1 | **GitHub OAuth access token** — obtained via device code flow | Long-lived (until revoked) |
+| 2 | **Copilot JWT** — exchanged from the OAuth token automatically | ~30 minutes |
+
+<Warning>
+Standard GitHub Personal Access Tokens (PATs) **do not work** with Copilot. You must use the GitHub OAuth device code flow to obtain the access token. Your GitHub account must have an active Copilot subscription.
+</Warning>
+
+### Obtaining an OAuth Token
+
+<Tabs>
+  <Tab title="Web UI">
+    The Bifrost UI provides a built-in device login flow:
+    1. Navigate to **Providers → Add Provider → GitHub Copilot**
+    2. Click **Login with GitHub**
+    3. Copy the displayed user code and enter it at the GitHub verification URL
+    4. Click **I've entered the code — check authorization**
+    5. The OAuth token is automatically saved to your provider configuration
+  </Tab>
+  <Tab title="Manual">
+    Run the GitHub device code flow manually with client ID `Iv1.b507a08c87ecfe98`:
+
+    ```bash
+    # 1. Request a device code
+    curl -s -X POST https://github.com/login/device/code \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d '{"client_id": "Iv1.b507a08c87ecfe98", "scope": "read:user"}' | jq .
+
+    # 2. Go to the verification_uri and enter the user_code
+
+    # 3. Poll for the access token
+    curl -s -X POST https://github.com/login/oauth/access_token \
+      -H "Accept: application/json" \
+      -H "Content-Type: application/json" \
+      -d '{"client_id": "Iv1.b507a08c87ecfe98", "device_code": "<DEVICE_CODE>", "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}' | jq .
+    ```
+
+    The resulting `access_token` (format: `ghu_xxxxxxxxxxxx`) goes into `Key.Value`.
+  </Tab>
+</Tabs>
+
+### Runtime Token Exchange
+
+Once configured, Bifrost automatically handles the Copilot JWT exchange at runtime:
+
+1. Provider receives a request
+2. Token manager checks if cached JWT is still valid (with 60s safety margin)
+3. If expired, exchanges OAuth token for a new JWT via `api.github.com/copilot_internal/v2/token`
+4. Caches the JWT, expiry, and dynamic API base URL
+5. Makes the API call with the JWT
+
+No user interaction is required at runtime.
+
+---
+
+## Configuration
+
+<Tabs>
+  <Tab title="config.json">
+    ```json
+    {
+      "providers": {
+        "copilot": {
+          "keys": [
+            {
+              "id": "my-copilot-key",
+              "value": "ghu_xxxxxxxxxxxx",
+              "models": ["gpt-4o", "gpt-4o-mini"],
+              "weight": 1.0
+            }
+          ],
+          "network_config": {
+            "default_request_timeout_in_seconds": 120,
+            "max_retries": 3,
+            "retry_backoff_initial_ms": 1000,
+            "retry_backoff_max_ms": 8000
+          }
+        }
+      }
+    }
+    ```
+
+    Or using an environment variable:
+
+    ```json
+    {
+      "providers": {
+        "copilot": {
+          "keys": [
+            {
+              "id": "my-copilot-key",
+              "value": "env.GITHUB_COPILOT_TOKEN",
+              "models": ["gpt-4o"],
+              "weight": 1.0
+            }
+          ]
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="API">
+    ```bash
+    curl -X POST http://localhost:3000/api/providers \
+      -H "Content-Type: application/json" \
+      -d '{
+        "name": "copilot",
+        "keys": [{
+          "id": "my-copilot-key",
+          "value": "ghu_xxxxxxxxxxxx",
+          "models": ["gpt-4o", "gpt-4o-mini"],
+          "weight": 1.0
+        }]
+      }'
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Usage
+
+### Chat Completions
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-provider: copilot" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+### Streaming
+
+```bash
+curl -X POST http://localhost:3000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-provider: copilot" \
+  -d '{
+    "model": "gpt-4o",
+    "messages": [
+      {"role": "user", "content": "Explain quantum computing"}
+    ],
+    "stream": true
+  }'
+```
+
+### Go SDK
+
+```go
+import (
+    bifrost "github.com/maximhq/bifrost/core"
+    "github.com/maximhq/bifrost/core/schemas"
+)
+
+response, err := client.ChatCompletion(ctx, schemas.BifrostChatRequest{
+    Model:    "gpt-4o",
+    Provider: schemas.Copilot,
+    Messages: []schemas.BifrostMessage{
+        {Role: "user", Content: schemas.StringContent("Hello!")},
+    },
+})
+```
+
+---
+
+## Caveats
+
+<Accordion title="Undocumented API">
+**Severity**: Medium
+
+The Copilot API is not officially documented by GitHub. The endpoint URLs, required headers, and token exchange flow are based on reverse-engineering the VS Code Copilot extension. These may change without notice.
+</Accordion>
+
+<Accordion title="Token Expiry During Long Requests">
+**Severity**: Low
+
+Copilot JWTs expire after ~30 minutes. The token manager checks expiry with a 60-second safety margin before each request. For very long streaming responses, the token could theoretically expire mid-stream, though this is unlikely in practice.
+</Accordion>
+
+<Accordion title="Required Headers">
+**Severity**: Low
+
+Copilot requires specific `editor-version`, `editor-plugin-version`, and `user-agent` headers that mimic VS Code. These are hardcoded in the provider. If GitHub changes header validation, the provider may need updating.
+</Accordion>
+
+<Accordion title="Dynamic Base URL">
+**Severity**: Low
+
+Unlike other providers, Copilot's API base URL is returned dynamically from the token exchange response. The provider caches this alongside the JWT. The fallback URL is `https://api.individual.githubcopilot.com`.
+</Accordion>
