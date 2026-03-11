@@ -50,6 +50,8 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 	return p.store.CreateIfNotExists(ctx, entry)
 }
 
+// applySerializedLogUpdates copies serialized fields from a temporary log entry
+// into the GORM update map, respecting content-logging gates.
 func applySerializedLogUpdates(
 	updates map[string]interface{},
 	entry *logstore.Log,
@@ -117,6 +119,9 @@ func applySerializedLogUpdates(
 	}
 }
 
+// applySerializedStreamingLogUpdates copies serialized streaming fields from a
+// temporary log entry into the GORM update map, respecting content-logging
+// gates.
 func applySerializedStreamingLogUpdates(
 	updates map[string]interface{},
 	entry *logstore.Log,

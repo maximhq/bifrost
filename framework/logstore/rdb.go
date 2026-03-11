@@ -184,6 +184,8 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 	return nil
 }
 
+// BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
+// VALUES update when available and per-row updates for other dialects.
 func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
 	if len(updates) == 0 {
 		return nil
@@ -204,6 +206,8 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]flo
 	})
 }
 
+// serializeLogUpdateEntry serializes parsed Log fields before passing the
+// update payload to GORM. Non-Log payloads are returned unchanged.
 func serializeLogUpdateEntry(entry any) (any, error) {
 	switch v := entry.(type) {
 	case *Log:
@@ -222,6 +226,9 @@ func serializeLogUpdateEntry(entry any) (any, error) {
 	}
 }
 
+// buildBulkUpdateCostPostgresSQL builds a deterministic UPDATE ... FROM
+// (VALUES ...) statement and argument list for a chunk of PostgreSQL log cost
+// updates.
 func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (string, []interface{}) {
 	var sqlBuilder strings.Builder
 	args := make([]interface{}, 0, len(ids)*2)
@@ -244,6 +251,8 @@ func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (s
 	return sqlBuilder.String(), args
 }
 
+// bulkUpdateCostPostgres applies chunked PostgreSQL bulk cost updates to avoid
+// issuing one UPDATE per log row.
 func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]float64) error {
 	ids := make([]string, 0, len(updates))
 	for id := range updates {
@@ -1688,6 +1697,8 @@ func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any
 	return nil
 }
 
+// serializeMCPToolLogUpdateEntry serializes parsed MCP tool log fields before
+// passing the update payload to GORM. Non-MCPToolLog payloads are returned unchanged.
 func serializeMCPToolLogUpdateEntry(entry any) (any, error) {
 	switch v := entry.(type) {
 	case *MCPToolLog:
