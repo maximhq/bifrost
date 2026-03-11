@@ -234,14 +234,20 @@ func (r *BudgetResolver) EvaluateVirtualKeyRequest(ctx *schemas.BifrostContext, 
 		return budgetResult
 	}
 
-	// Find the provider config that matches the request's provider and get its allowed keys
+	// Find the provider config that matches the request's provider and apply key filtering
 	for _, pc := range vk.ProviderConfigs {
-		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
-			includeOnlyKeys := make([]string, 0, len(pc.Keys))
-			for _, dbKey := range pc.Keys {
-				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+		if schemas.ModelProvider(pc.Provider) == provider {
+			if !pc.AllowAllKeys {
+				// Restrict to specific keys (empty slice = no keys allowed)
+				includeOnlyKeys := make([]string, 0, len(pc.Keys))
+				for _, dbKey := range pc.Keys {
+					includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
+			} else {
+				// AllowAllKeys == true: explicitly clear any stale filter from a prior evaluation
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, nil)
 			}
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
 			break
 		}
 	}
@@ -305,12 +311,18 @@ func (r *BudgetResolver) EvaluateVirtualKeyFiltering(ctx *schemas.BifrostContext
 
 	// Set include-only keys for provider config routing
 	for _, pc := range vk.ProviderConfigs {
-		if schemas.ModelProvider(pc.Provider) == provider && len(pc.Keys) > 0 {
-			includeOnlyKeys := make([]string, 0, len(pc.Keys))
-			for _, dbKey := range pc.Keys {
-				includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+		if schemas.ModelProvider(pc.Provider) == provider {
+			if !pc.AllowAllKeys {
+				// Restrict to specific keys (empty slice = no keys allowed)
+				includeOnlyKeys := make([]string, 0, len(pc.Keys))
+				for _, dbKey := range pc.Keys {
+					includeOnlyKeys = append(includeOnlyKeys, dbKey.KeyID)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
+			} else {
+				// AllowAllKeys == true: explicitly clear any stale filter from a prior evaluation
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, nil)
 			}
-			ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, includeOnlyKeys)
 			break
 		}
 	}
