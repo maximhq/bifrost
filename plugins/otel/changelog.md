@@ -1,0 +1,1 @@
+- fix: set responses input messages in gen_ai.input.messages
