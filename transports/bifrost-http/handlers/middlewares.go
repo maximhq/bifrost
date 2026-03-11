@@ -97,8 +97,9 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 							if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
 								msg := errResp.Error.Message
 								const maxErrorMessageLen = 256
-								if len(msg) > maxErrorMessageLen {
-									msg = msg[:maxErrorMessageLen]
+								runes := []rune(msg)
+								if len(runes) > maxErrorMessageLen {
+									msg = string(runes[:maxErrorMessageLen])
 								}
 								logBuilder = logBuilder.Str("error", msg)
 							}
