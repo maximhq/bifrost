@@ -23,9 +23,9 @@ const defaultDeploymentCacheTTL = 1 * time.Hour
 // minDeploymentCacheTTL is the minimum allowed TTL for deployment cache entries
 const minDeploymentCacheTTL = 1 * time.Minute
 
-// openaiReasoningAndGPT5Models is the list of OpenAI models that require special parameter handling.
+// openaiReasoningAndGpt5Models is the list of OpenAI models that require special parameter handling.
 // These models don't support max_tokens and temperature parameters when accessed via SAP AI Core.
-var openaiReasoningAndGPT5Models = []string{
+var openaiReasoningAndGpt5Models = []string{
 	"o1",
 	"o3-mini",
 	"o3",
@@ -33,11 +33,11 @@ var openaiReasoningAndGPT5Models = []string{
 	"gpt-5",
 }
 
-// isOpenAIReasoningOrGPT5Model checks if the model requires special parameter handling.
+// isOpenaiReasoningOrGpt5Model checks if the model requires special parameter handling.
 // These models don't support max_tokens and temperature parameters when accessed via SAP AI Core.
-func isOpenAIReasoningOrGPT5Model(model string) bool {
+func isOpenaiReasoningOrGpt5Model(model string) bool {
 	modelLower := strings.ToLower(model)
-	for _, rm := range openaiReasoningAndGPT5Models {
+	for _, rm := range openaiReasoningAndGpt5Models {
 		if strings.Contains(modelLower, rm) {
 			return true
 		}

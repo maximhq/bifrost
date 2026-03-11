@@ -292,7 +292,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletion(
 
 	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
 	// These models don't accept max_completion_tokens and temperature when accessed via SAP AI Core
-	if isOpenAIReasoningOrGPT5Model(req.Model) && req.Params != nil {
+	if isOpenaiReasoningOrGpt5Model(req.Model) && req.Params != nil {
 		req.Params.MaxCompletionTokens = nil
 		req.Params.Temperature = nil
 	}
@@ -514,7 +514,7 @@ func (provider *SAPAICoreProvider) handleOpenAIChatCompletionStream(
 	}
 
 	// Filter unsupported parameters for reasoning models (o1, o3, gpt-5)
-	if isOpenAIReasoningOrGPT5Model(req.Model) && req.Params != nil {
+	if isOpenaiReasoningOrGpt5Model(req.Model) && req.Params != nil {
 		req.Params.MaxCompletionTokens = nil
 		req.Params.Temperature = nil
 	}
@@ -1146,6 +1146,7 @@ func processVertexSSEStream(
 ) {
 	sseReader := providerUtils.GetSSEDataReader(ctx, bodyStream)
 
+	chatCmplID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 	chunkIndex := -1
 	usage := &schemas.BifrostLLMUsage{}
 	var finishReason *string
@@ -1180,7 +1181,7 @@ func processVertexSSEStream(
 				if part.Text != "" {
 					text := part.Text
 					response := &schemas.BifrostChatResponse{
-						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						ID:      chatCmplID,
 						Object:  "chat.completion.chunk",
 						Created: int(time.Now().Unix()),
 						Model:   model,
@@ -1221,7 +1222,7 @@ func processVertexSSEStream(
 					idx := uint16(toolCallIndex)
 
 					response := &schemas.BifrostChatResponse{
-						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						ID:      chatCmplID,
 						Object:  "chat.completion.chunk",
 						Created: int(time.Now().Unix()),
 						Model:   model,
@@ -1257,18 +1258,19 @@ func processVertexSSEStream(
 					toolCallIndex++
 				}
 			}
+		}
 
-			// Handle finish reason
-			if vertexResp.Candidates[0].FinishReason != "" {
-				fr := vertexResp.Candidates[0].FinishReason
-				// If there were tool calls, override finish reason
-				if toolCallIndex > 0 {
-					fr = "tool_calls"
-				} else {
-					fr = mapVertexFinishReason(fr)
-				}
-				finishReason = &fr
+		// Handle finish reason — outside the Content.Parts check so that
+		// metadata-only final events (no parts) still capture the terminal reason.
+		if len(vertexResp.Candidates) > 0 && vertexResp.Candidates[0].FinishReason != "" {
+			fr := vertexResp.Candidates[0].FinishReason
+			// If there were tool calls, override finish reason
+			if toolCallIndex > 0 {
+				fr = "tool_calls"
+			} else {
+				fr = mapVertexFinishReason(fr)
 			}
+			finishReason = &fr
 		}
 
 		// Handle usage metadata
@@ -1281,7 +1283,7 @@ func processVertexSSEStream(
 
 	// Send final chunk with usage
 	if finishReason != nil || usage.TotalTokens > 0 {
-		finalResponse := providerUtils.CreateBifrostChatCompletionChunkResponse("", usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, model)
+		finalResponse := providerUtils.CreateBifrostChatCompletionChunkResponse(chatCmplID, usage, finishReason, chunkIndex, schemas.ChatCompletionStreamRequest, providerName, model)
 		finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, finalResponse, nil, nil, nil, nil), responseChan)
