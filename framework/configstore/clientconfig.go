@@ -573,6 +573,7 @@ type VirtualKeyProviderConfigHashInput struct {
 	Provider      string
 	Weight        *float64
 	AllowedModels []string
+	AllowAllKeys  bool     // Distinguishes deny-all (false, no KeyIDs) from allow-all (true, no KeyIDs)
 	BudgetID      *string
 	RateLimitID   *string
 	KeyIDs        []string // Only key IDs, not full key objects
@@ -666,6 +667,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 				Provider:      pc.Provider,
 				Weight:        pc.Weight,
 				AllowedModels: sortedAllowedModels,
+				AllowAllKeys:  pc.AllowAllKeys,
 				BudgetID:      pc.BudgetID,
 				RateLimitID:   pc.RateLimitID,
 				KeyIDs:        keyIDs,

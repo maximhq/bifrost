@@ -44,13 +44,27 @@ func (TableVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
 
-// UnmarshalJSON custom unmarshaller to handle both "keys" ([]TableKey) and "allowed_keys" ([]string) formats
+// UnmarshalJSON custom unmarshaller to handle both "keys" ([]TableKey) and "allowed_keys" ([]string) formats.
+//
+// Two formats are supported:
+//   - Config file format: "allowed_keys" field ([]string or absent)
+//   - DB/API format: "allow_all_keys" bool + "keys" []TableKey
+//
+// Absent vs empty semantics for config file format:
+//   - allowed_keys absent       → AllowAllKeys = true  (allow all by default)
+//   - allowed_keys: []          → AllowAllKeys = false (deny all — explicit empty)
+//   - allowed_keys: ["*"]       → AllowAllKeys = true  (explicit allow-all wildcard)
+//   - allowed_keys: ["k1","k2"] → specific keys, AllowAllKeys = false
 func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
-	// Temporary struct to capture all fields including allowed_keys
+	// Temporary struct to capture all fields.
+	// - AllowedKeys uses *[]string so we can distinguish absent (nil) from empty ([]).
+	// - DBAllowAllKeys uses *bool to detect whether "allow_all_keys" is present in JSON
+	//   (DB/API format), shadowing the bool in Alias so we can tell config vs DB format.
 	type Alias TableVirtualKeyProviderConfig
 	type TempProviderConfig struct {
 		Alias
-		AllowedKeys []string `json:"allowed_keys"` // Config file format: array of key names
+		AllowedKeys    *[]string `json:"allowed_keys"`   // Config file format; nil = absent
+		DBAllowAllKeys *bool     `json:"allow_all_keys"` // DB/API format; nil = absent (shadows Alias field)
 	}
 
 	var temp TempProviderConfig
@@ -58,19 +72,37 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Copy all standard fields
+	// Copy all standard fields (AllowAllKeys in Alias will be false because DBAllowAllKeys shadows
+	// the "allow_all_keys" JSON key; we restore the correct value below).
 	*pc = TableVirtualKeyProviderConfig(temp.Alias)
 
-	// If allowed_keys is provided (config file format), convert to Keys or set AllowAllKeys
-	// This takes precedence if Keys is empty but allowed_keys has values
-	if len(temp.AllowedKeys) > 0 && len(pc.Keys) == 0 {
-		// Check for wildcard — ["*"] means allow all keys
-		if len(temp.AllowedKeys) == 1 && temp.AllowedKeys[0] == "*" {
+	if temp.DBAllowAllKeys != nil {
+		// DB/API format: "allow_all_keys" was explicitly present — use it directly.
+		pc.AllowAllKeys = *temp.DBAllowAllKeys
+	} else if len(pc.Keys) == 0 {
+		// Config file format (no "allow_all_keys" JSON field).
+		// Apply absent-vs-empty semantics for allowed_keys.
+		if temp.AllowedKeys == nil {
+			// absent → allow all by default.
+			// DEPRECATED (next major version): absent allowed_keys will mean deny-all, same as [].
+			// Add allowed_keys: ["*"] or list specific keys explicitly in your config.json.
+			logger.Warn("[DEPRECATED] virtual key provider config for provider %q has no allowed_keys in config.json — defaulting to allow all keys. This implicit allow-all will be removed in the next major version. Use allowed_keys: [\"*\"] to allow all keys explicitly, or list specific key names.",
+				pc.Provider)
 			pc.AllowAllKeys = true
 		} else {
-			pc.Keys = make([]TableKey, len(temp.AllowedKeys))
-			for i, keyName := range temp.AllowedKeys {
-				pc.Keys[i] = TableKey{Name: keyName}
+			keys := *temp.AllowedKeys
+			if len(keys) == 0 {
+				// explicit empty [] → deny all (AllowAllKeys = false, Keys = [])
+				pc.AllowAllKeys = false
+			} else if len(keys) == 1 && keys[0] == "*" {
+				// wildcard ["*"] → allow all
+				pc.AllowAllKeys = true
+			} else {
+				// specific key names
+				pc.Keys = make([]TableKey, len(keys))
+				for i, keyName := range keys {
+					pc.Keys[i] = TableKey{Name: keyName}
+				}
 			}
 		}
 	}
@@ -166,12 +198,21 @@ func (TableVirtualKeyMCPConfig) TableName() string {
 
 // UnmarshalJSON custom unmarshaller to handle both "mcp_client_id" (database format)
 // and "mcp_client_name" (config file format) for MCP client references.
+//
+// Absent vs empty semantics for tools_to_execute in config file format:
+//   - tools_to_execute absent → ["*"] (allow all tools for this client by default)
+//   - tools_to_execute: []    → []    (deny all tools for this client — explicit empty)
+//   - tools_to_execute: ["*"] → ["*"] (explicit allow-all wildcard)
+//   - tools_to_execute: ["t"] → ["t"] (specific tools only)
 func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
-	// Temporary struct to capture all fields including mcp_client_name
+	// Temporary struct to capture all fields.
+	// ToolsToExecute uses *[]string to distinguish absent (nil) from empty ([]).
+	// The outer *[]string shadows the []string on Alias for JSON unmarshalling.
 	type Alias TableVirtualKeyMCPConfig
 	type TempMCPConfig struct {
 		Alias
-		MCPClientName string `json:"mcp_client_name"` // Config file format: MCP client name
+		MCPClientName  string    `json:"mcp_client_name"`  // Config file format: MCP client name
+		ToolsToExecute *[]string `json:"tools_to_execute"` // pointer: nil = absent, non-nil = present
 	}
 
 	var temp TempMCPConfig
@@ -179,8 +220,20 @@ func (mc *TableVirtualKeyMCPConfig) UnmarshalJSON(data []byte) error {
 		return err
 	}
 
-	// Copy all standard fields
+	// Copy all standard fields (Alias.ToolsToExecute is nil because the outer *[]string shadows it)
 	*mc = TableVirtualKeyMCPConfig(temp.Alias)
+
+	// Apply absent-vs-empty semantics for tools_to_execute.
+	// DEPRECATED (next major version): absent tools_to_execute will mean deny-all, same as [].
+	// Add tools_to_execute: ["*"] to allow all tools explicitly, or list specific tool names.
+	if temp.ToolsToExecute == nil {
+		// absent → allow all tools for this client by default.
+		logger.Warn("[DEPRECATED] virtual key MCP config for client %q has no tools_to_execute in config.json — defaulting to allow all tools. This implicit allow-all will be removed in the next major version. Use tools_to_execute: [\"*\"] to allow all tools explicitly, or list specific tool names.",
+			temp.MCPClientName)
+		mc.ToolsToExecute = []string{"*"}
+	} else {
+		mc.ToolsToExecute = *temp.ToolsToExecute
+	}
 
 	// Capture mcp_client_name for later resolution to MCPClientID
 	if temp.MCPClientName != "" {
@@ -198,7 +251,7 @@ type TableVirtualKey struct {
 	Value           string                          `gorm:"uniqueIndex:idx_virtual_key_value;type:text;not null" json:"value"` // The virtual key value
 	IsActive        bool                            `gorm:"default:true" json:"is_active"`
 	ProviderConfigs []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
-	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
+	MCPConfigs      []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`      // Empty means no MCP clients allowed (deny-by-default)
 
 	// Foreign key relationships (mutually exclusive: either TeamID or CustomerID, not both)
 	TeamID      *string `gorm:"type:varchar(255);index" json:"team_id,omitempty"`

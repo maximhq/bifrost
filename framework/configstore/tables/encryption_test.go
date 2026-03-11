@@ -12,7 +12,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	gormLogger "gorm.io/gorm/logger"
 )
 
 const testEncryptionKey = "test-encryption-key-for-testing-32bytes"
@@ -25,7 +25,7 @@ func init() {
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	require.NoError(t, err)
 
@@ -1268,9 +1268,9 @@ func TestTableMCPClient_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	db := setupTestDB(t)
 
 	client := &TableMCPClient{
-		ClientID:       "mcp-dis-1",
-		Name:           "disabled-mcp",
-		ConnectionType: "sse",
+		ClientID:         "mcp-dis-1",
+		Name:             "disabled-mcp",
+		ConnectionType:   "sse",
 		ConnectionString: schemas.NewEnvVar("https://mcp.example.com"),
 		Headers: map[string]schemas.EnvVar{
 			"Authorization": *schemas.NewEnvVar("Bearer secret-token"),
@@ -1504,7 +1504,7 @@ func createTestProvider(t *testing.T, db *gorm.DB, name string) uint {
 func trySetupPostgresDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormLogger.Default.LogMode(gormLogger.Silent),
 	})
 	if err != nil {
 		return nil

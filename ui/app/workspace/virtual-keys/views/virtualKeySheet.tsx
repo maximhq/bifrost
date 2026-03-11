@@ -967,7 +967,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			{
 																				label: "Allow All Tools",
 																				value: "*",
-																				description: "Allow all current and future tools (including dynamically fetched ones)",
+																				description: "Allow all current and future tools",
 																			},
 																			...[...availableTools, ...enabledToolsByConfig]
 																				.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)
