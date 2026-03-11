@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -17,13 +18,22 @@ import (
 )
 
 const (
-	// GitHub's Copilot OAuth application client ID
-	copilotClientID = "Iv1.b507a08c87ecfe98"
+	// defaultGithubClientID is the default GitHub OAuth application client ID.
+	// Override via the BIFROST_GITHUB_CLIENT_ID environment variable.
+	defaultGithubClientID = "Iv1.b507a08c87ecfe98"
 
 	// GitHub OAuth endpoints for device code flow
 	githubDeviceCodeURL  = "https://github.com/login/device/code"
 	githubAccessTokenURL = "https://github.com/login/oauth/access_token"
 )
+
+// githubClientID returns the effective OAuth client ID: env var if set, otherwise the default.
+func githubClientID() string {
+	if id := os.Getenv("BIFROST_GITHUB_CLIENT_ID"); id != "" {
+		return id
+	}
+	return defaultGithubClientID
+}
 
 // CopilotHandler manages Copilot-specific HTTP requests like device code flow
 type CopilotHandler struct {
@@ -62,7 +72,7 @@ type DeviceLoginInitiateResponse struct {
 // initiateDeviceLogin handles POST /api/providers/copilot/device-login/initiate
 // Starts the GitHub OAuth device code flow by requesting a device code.
 func (h *CopilotHandler) initiateDeviceLogin(ctx *fasthttp.RequestCtx) {
-	body := fmt.Sprintf(`{"client_id": %q, "scope": "read:user"}`, copilotClientID)
+	body := fmt.Sprintf(`{"client_id": %q, "scope": "read:user"}`, githubClientID())
 
 	req, err := http.NewRequest(http.MethodPost, h.deviceCodeURL, strings.NewReader(body))
 	if err != nil {
@@ -132,7 +142,7 @@ func (h *CopilotHandler) pollDeviceLogin(ctx *fasthttp.RequestCtx) {
 	}
 
 	body := fmt.Sprintf(`{"client_id": %q, "device_code": %q, "grant_type": "urn:ietf:params:oauth:grant-type:device_code"}`,
-		copilotClientID, pollReq.DeviceCode)
+		githubClientID(), pollReq.DeviceCode)
 
 	req, err := http.NewRequest(http.MethodPost, h.accessTokenURL, strings.NewReader(body))
 	if err != nil {

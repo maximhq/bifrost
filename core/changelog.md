@@ -1,4 +1,5 @@
 - feat: add GitHub Copilot provider with two-layer OAuth, device-code flow, and unit tests
+- fix: map Responses API text format to ResponseFormat in ToChatRequest for structured outputs
 - fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
 - fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
 - fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout

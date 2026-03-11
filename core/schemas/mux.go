@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -1059,6 +1060,64 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 		// Handle Verbosity from Text config
 		if brr.Params.Text != nil && brr.Params.Text.Verbosity != nil {
 			bcr.Params.Verbosity = brr.Params.Text.Verbosity
+		}
+
+		// Handle Text.Format → ResponseFormat (json_object / json_schema)
+		if brr.Params.Text != nil && brr.Params.Text.Format != nil {
+			format := brr.Params.Text.Format
+			switch format.Type {
+			case "json_object":
+				var rf interface{} = map[string]interface{}{"type": "json_object"}
+				bcr.Params.ResponseFormat = &rf
+			case "json_schema":
+				// Resolve name: Format.Name > JSONSchema.Name > default
+				name := "response_schema"
+				if format.JSONSchema != nil && format.JSONSchema.Name != nil {
+					name = *format.JSONSchema.Name
+				}
+				if format.Name != nil {
+					name = *format.Name
+				}
+
+				// Resolve strict: Format.Strict > JSONSchema.Strict
+				var strictVal bool
+				if format.JSONSchema != nil && format.JSONSchema.Strict != nil {
+					strictVal = *format.JSONSchema.Strict
+				}
+				if format.Strict != nil {
+					strictVal = *format.Strict
+				}
+
+				// Build the inner schema object
+				var schema interface{} = map[string]interface{}{}
+				if format.JSONSchema != nil {
+					if format.JSONSchema.Schema != nil {
+						schema = *format.JSONSchema.Schema
+					} else {
+						data, err := json.Marshal(format.JSONSchema)
+						if err == nil {
+							var schemaMap map[string]interface{}
+							if err := json.Unmarshal(data, &schemaMap); err == nil {
+								// Remove metadata fields that are not part of the JSON Schema itself
+								delete(schemaMap, "name")
+								delete(schemaMap, "strict")
+								delete(schemaMap, "description")
+								schema = schemaMap
+							}
+						}
+					}
+				}
+
+				var rf interface{} = map[string]interface{}{
+					"type": "json_schema",
+					"json_schema": map[string]interface{}{
+						"name":   name,
+						"strict": strictVal,
+						"schema": schema,
+					},
+				}
+				bcr.Params.ResponseFormat = &rf
+			}
 		}
 	}
 
