@@ -1,5 +1,6 @@
 import { expect, test } from '../../core/fixtures/base.fixture';
 import { createCustomProviderData, createProviderKeyData } from './providers.data';
+import { ProvidersPage } from './pages/providers.page';
 
 // Track created resources for cleanup
 const createdKeys: { provider: string; keyName: string }[] = []
@@ -614,6 +615,125 @@ test.describe('Network Configuration', () => {
     // Restore original value to avoid leaving form dirty
     await providersPage.fillNumberInput(retriesInput, originalValue)
     await providersPage.saveNetworkConfig()
+  })
+})
+
+test.describe('Pricing Overrides', () => {
+  test.beforeEach(async ({ providersPage }) => {
+    await providersPage.goto()
+    await providersPage.selectProvider('openai')
+  })
+
+  test('should display pricing tab', async ({ providersPage }) => {
+    await providersPage.openConfigSheet()
+    const tab = providersPage.page.getByRole('tab', { name: 'Pricing' })
+    await expect(tab).toBeVisible()
+  })
+
+  test('should open pricing configuration', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('pricing')
+
+    // Verify JSON textarea is visible
+    const jsonInput = providersPage.getPricingJsonInput()
+    await expect(jsonInput).toBeVisible()
+
+    // Verify save and reset buttons are visible
+    const saveBtn = providersPage.getPricingSaveBtn()
+    const resetBtn = providersPage.getPricingResetBtn()
+    await expect(saveBtn).toBeVisible()
+    await expect(resetBtn).toBeVisible()
+  })
+
+  test('should add pricing overrides via JSON', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('pricing')
+
+    // Use valid pricing overrides JSON
+    const validPricingJson = JSON.stringify([
+      {
+        model_pattern: 'gpt-4o*',
+        match_type: 'wildcard',
+        request_types: ['chat_completion'],
+        input_cost_per_token: 0.000005,
+        output_cost_per_token: 0.000015,
+      },
+    ], null, 2)
+
+    await providersPage.setPricingOverridesJson(validPricingJson)
+
+    // Save and verify success toast
+    await providersPage.savePricingConfig()
+
+    // Cleanup: Reset to empty array
+    await providersPage.setPricingOverridesJson('[]')
+    await providersPage.savePricingConfig()
+  })
+
+  test('should validate invalid JSON format', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('pricing')
+
+    // Fill textarea with invalid JSON
+    await providersPage.setPricingOverridesJson('{invalid json syntax}')
+
+    // Verify validation error appears (FormMessage shows error)
+    const errorMessage = providersPage.page.getByText('Invalid JSON format or pricing overrides structure')
+    await expect(errorMessage).toBeVisible()
+
+    // Verify save button is disabled when invalid
+    const saveBtn = providersPage.getPricingSaveBtn()
+    await expect(saveBtn).toBeDisabled()
+  })
+
+  test('should validate invalid pricing override structure', async ({ providersPage }) => {
+    await providersPage.selectConfigTab('pricing')
+
+    // Fill textarea with valid JSON but invalid schema (missing required fields)
+    const invalidStructureJson = JSON.stringify([
+      {
+        model_pattern: 'gpt-4o*',
+        // missing match_type, request_types, and cost fields
+      },
+    ], null, 2)
+
+    await providersPage.setPricingOverridesJson(invalidStructureJson)
+
+    // Verify validation error about invalid structure appears
+    const errorMessage = providersPage.page.getByText('Invalid JSON format or pricing overrides structure')
+    await expect(errorMessage).toBeVisible()
+
+    // Verify save button is disabled when invalid
+    const saveBtn = providersPage.getPricingSaveBtn()
+    await expect(saveBtn).toBeDisabled()
+  })
+
+  test('should save and verify pricing overrides persist', async ({ providersPage }) => {
+    const pricingOverride = [
+      {
+        model_pattern: 'test-model-*',
+        match_type: 'wildcard',
+        request_types: ['chat_completion'],
+        input_cost_per_token: 0.000001,
+        output_cost_per_token: 0.000002,
+      },
+    ]
+    const pricingJson = JSON.stringify(pricingOverride, null, 2)
+
+    // First, save the pricing override
+    await providersPage.selectConfigTab('pricing')
+    await providersPage.setPricingOverridesJson(pricingJson)
+    await providersPage.savePricingConfig()
+
+    // Reopen config sheet and select pricing tab
+    await providersPage.selectConfigTab('pricing')
+
+    // Verify the previously saved JSON is still present
+    const jsonInput = providersPage.getPricingJsonInput()
+    const savedValue = await jsonInput.inputValue()
+    const savedJson = JSON.parse(savedValue)
+    expect(savedJson).toEqual(pricingOverride)
+
+    // Cleanup: Reset to empty array
+    await providersPage.setPricingOverridesJson('[]')
+    await providersPage.savePricingConfig()
   })
 })
 

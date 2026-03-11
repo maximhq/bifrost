@@ -352,7 +352,7 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'pricing'): Promise<void> {
     await this.openConfigSheet()
 
     const tabLabels: Record<string, string> = {
@@ -360,6 +360,7 @@ export class ProvidersPage extends BasePage {
       proxy: 'Proxy config',
       performance: 'Performance tuning',
       governance: 'Governance',
+      pricing: 'Pricing',
     }
 
     const tab = this.page.getByRole('tab', { name: tabLabels[tabName] })
@@ -370,12 +371,13 @@ export class ProvidersPage extends BasePage {
   /**
    * Get the save button for the current config tab
    */
-  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance'): Locator {
+  getConfigSaveBtn(configType: 'network' | 'proxy' | 'performance' | 'governance' | 'pricing'): Locator {
     const buttonNames: Record<string, string> = {
       network: 'Save Network Configuration',
       proxy: 'Save Proxy Configuration',
       performance: 'Save Performance Configuration',
       governance: 'Save Governance Configuration',
+      pricing: 'Save Pricing Overrides',
     }
     return this.page.getByRole('button', { name: buttonNames[configType] })
   }
@@ -609,5 +611,58 @@ export class ProvidersPage extends BasePage {
     await this.openConfigSheet()
     const tab = this.page.getByRole('tab', { name: 'Governance' })
     return await tab.isVisible().catch(() => false)
+  }
+
+  // ============================================
+  // Pricing Configuration (Pricing Overrides)
+  // ============================================
+
+  /**
+   * Get pricing overrides JSON textarea input
+   */
+  getPricingJsonInput(): Locator {
+    return this.page.getByTestId('provider-pricing-overrides-json-input')
+  }
+
+  /**
+   * Get pricing overrides reset button
+   */
+  getPricingResetBtn(): Locator {
+    return this.page.getByTestId('provider-pricing-overrides-reset-button')
+  }
+
+  /**
+   * Get pricing overrides save button
+   */
+  getPricingSaveBtn(): Locator {
+    return this.page.getByTestId('provider-pricing-overrides-save-button')
+  }
+
+  /**
+   * Save pricing configuration and wait for success toast
+   */
+  async savePricingConfig(): Promise<void> {
+    const saveBtn = this.getConfigSaveBtn('pricing')
+    await saveBtn.click()
+    await this.waitForSuccessToast()
+  }
+
+  /**
+   * Check if pricing tab is visible
+   */
+  async isPricingTabVisible(): Promise<boolean> {
+    await this.openConfigSheet()
+    const tab = this.page.getByRole('tab', { name: 'Pricing' })
+    return await tab.isVisible().catch(() => false)
+  }
+
+  /**
+   * Set pricing overrides JSON value
+   */
+  async setPricingOverridesJson(json: string): Promise<void> {
+    await this.selectConfigTab('pricing')
+    const input = this.getPricingJsonInput()
+    await input.clear()
+    await input.fill(json)
   }
 }
