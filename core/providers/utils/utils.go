@@ -777,10 +777,9 @@ func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
 		if err := gz.Reset(r); err == nil {
 			return gz, nil
 		}
-		// Reset failed; close before re-pooling so we don't retain a partially
-		// initialized reader state between pool borrowers.
-		_ = gz.Close()
-		gzipReaderPool.Put(gz)
+		// Reset failed; discard the reader. After a failed Reset the internal
+		// decompressor may be nil, making Close() panic (Go 1.26+).
+		// Do not re-pool — let GC reclaim it.
 	}
 	return gzip.NewReader(r)
 }
