@@ -146,7 +146,7 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 
 	if err := tc.client.DoTimeout(req, resp, 30*time.Second); err != nil {
 		return "", 0, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("failed to fetch OAuth2 token from %s", tokenURL),
+			fmt.Sprintf("failed to fetch oauth2 token from %s", tokenURL),
 			err,
 			schemas.SAPAICore,
 		)
@@ -154,8 +154,8 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return "", 0, providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("OAuth2 token request failed with status %d", resp.StatusCode()),
-			fmt.Errorf("HTTP %d", resp.StatusCode()),
+			fmt.Sprintf("oauth2 token request failed with status %d", resp.StatusCode()),
+			fmt.Errorf("http %d", resp.StatusCode()),
 			schemas.SAPAICore,
 		)
 	}
@@ -163,7 +163,7 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 	var tokenResp SAPAICoreTokenResponse
 	if err := sonic.Unmarshal(resp.Body(), &tokenResp); err != nil {
 		return "", 0, providerUtils.NewBifrostOperationError(
-			"failed to parse OAuth2 token response",
+			"failed to parse oauth2 token response",
 			err,
 			schemas.SAPAICore,
 		)
@@ -171,7 +171,7 @@ func (tc *TokenCache) fetchToken(clientID, clientSecret, authURL string) (string
 
 	if tokenResp.AccessToken == "" {
 		return "", 0, providerUtils.NewBifrostOperationError(
-			"OAuth2 token response contains empty access_token",
+			"oauth2 token response contains empty access_token",
 			fmt.Errorf("empty access_token"),
 			schemas.SAPAICore,
 		)

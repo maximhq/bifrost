@@ -21,7 +21,7 @@ func TestDeploymentCacheKey(t *testing.T) {
 			name:          "basic key generation",
 			baseURL:       "https://api.ai.sap.com",
 			resourceGroup: "default",
-			expected:      "22:https://api.ai.sap.com:default",
+			expected:      "25:https://api.ai.sap.com/v2:default",
 		},
 		{
 			name:          "with v2 suffix",
@@ -33,13 +33,13 @@ func TestDeploymentCacheKey(t *testing.T) {
 			name:          "empty baseURL",
 			baseURL:       "",
 			resourceGroup: "default",
-			expected:      "0::default",
+			expected:      "3:/v2:default",
 		},
 		{
 			name:          "empty resourceGroup",
 			baseURL:       "https://api.ai.sap.com",
 			resourceGroup: "",
-			expected:      "22:https://api.ai.sap.com:",
+			expected:      "25:https://api.ai.sap.com/v2:",
 		},
 	}
 
@@ -72,8 +72,8 @@ func TestNewDeploymentCache(t *testing.T) {
 	if cache.tokenCache != tokenCache {
 		t.Error("tokenCache not set correctly")
 	}
-	if cache.ttl != DefaultDeploymentCacheTTL {
-		t.Errorf("expected default TTL of %v, got %v", DefaultDeploymentCacheTTL, cache.ttl)
+	if cache.ttl != defaultDeploymentCacheTTL {
+		t.Errorf("expected default TTL of %v, got %v", defaultDeploymentCacheTTL, cache.ttl)
 	}
 }
 
@@ -96,27 +96,27 @@ func TestNewDeploymentCacheWithTTL(t *testing.T) {
 		{
 			name:        "zero TTL uses default",
 			ttl:         0,
-			expectedTTL: DefaultDeploymentCacheTTL,
+			expectedTTL: defaultDeploymentCacheTTL,
 		},
 		{
 			name:        "negative TTL uses default",
 			ttl:         -1 * time.Hour,
-			expectedTTL: DefaultDeploymentCacheTTL,
+			expectedTTL: defaultDeploymentCacheTTL,
 		},
 		{
 			name:        "very short TTL clamped to minimum",
 			ttl:         1 * time.Second,
-			expectedTTL: MinDeploymentCacheTTL,
+			expectedTTL: minDeploymentCacheTTL,
 		},
 		{
 			name:        "TTL at minimum boundary",
-			ttl:         MinDeploymentCacheTTL,
-			expectedTTL: MinDeploymentCacheTTL,
+			ttl:         minDeploymentCacheTTL,
+			expectedTTL: minDeploymentCacheTTL,
 		},
 		{
 			name:        "TTL just above minimum",
-			ttl:         MinDeploymentCacheTTL + 1*time.Second,
-			expectedTTL: MinDeploymentCacheTTL + 1*time.Second,
+			ttl:         minDeploymentCacheTTL + 1*time.Second,
+			expectedTTL: minDeploymentCacheTTL + 1*time.Second,
 		},
 	}
 
@@ -351,9 +351,9 @@ func TestDetermineBackend(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := DetermineBackend(tt.model)
+			result := determineBackend(tt.model)
 			if result != tt.expected {
-				t.Errorf("DetermineBackend(%q) = %q, want %q", tt.model, result, tt.expected)
+				t.Errorf("determineBackend(%q) = %q, want %q", tt.model, result, tt.expected)
 			}
 		})
 	}

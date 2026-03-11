@@ -21,19 +21,19 @@ func TestCacheKey(t *testing.T) {
 			name:     "basic key generation",
 			clientID: "client123",
 			authURL:  "https://auth.example.com",
-			expected: "9:client123:https://auth.example.com",
+			expected: "9:client123:https://auth.example.com/oauth/token",
 		},
 		{
 			name:     "empty clientID",
 			clientID: "",
 			authURL:  "https://auth.example.com",
-			expected: "0::https://auth.example.com",
+			expected: "0::https://auth.example.com/oauth/token",
 		},
 		{
 			name:     "empty authURL",
 			clientID: "client123",
 			authURL:  "",
-			expected: "9:client123:",
+			expected: "9:client123:/oauth/token",
 		},
 		{
 			name:     "special characters",

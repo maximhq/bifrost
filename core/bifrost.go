@@ -5850,8 +5850,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			return key, nil
 		}
 	}
-	// Check if key skipping is allowed
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// Check if key skipping is allowed (use baseProviderType so custom aliases inherit the restriction)
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return schemas.Key{}, nil
 	}
 	// Get keys for provider

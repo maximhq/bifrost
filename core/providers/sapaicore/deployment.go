@@ -3,7 +3,6 @@ package sapaicore
 import (
 	"fmt"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 
@@ -13,12 +12,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/singleflight"
 )
-
-// DefaultDeploymentCacheTTL is the default TTL for deployment cache entries
-const DefaultDeploymentCacheTTL = 1 * time.Hour
-
-// MinDeploymentCacheTTL is the minimum allowed TTL for deployment cache entries
-const MinDeploymentCacheTTL = 1 * time.Minute
 
 // DeploymentCache manages deployment ID resolution and caching
 type DeploymentCache struct {
@@ -45,16 +38,16 @@ type deploymentFetchResult struct {
 
 // NewDeploymentCache creates a new deployment cache with default TTL
 func NewDeploymentCache(client *fasthttp.Client, tokenCache *TokenCache) *DeploymentCache {
-	return NewDeploymentCacheWithTTL(client, tokenCache, DefaultDeploymentCacheTTL)
+	return NewDeploymentCacheWithTTL(client, tokenCache, defaultDeploymentCacheTTL)
 }
 
 // NewDeploymentCacheWithTTL creates a new deployment cache with a custom TTL.
 // TTL values less than MinDeploymentCacheTTL will be clamped to the minimum.
 func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, ttl time.Duration) *DeploymentCache {
 	if ttl <= 0 {
-		ttl = DefaultDeploymentCacheTTL
-	} else if ttl < MinDeploymentCacheTTL {
-		ttl = MinDeploymentCacheTTL
+		ttl = defaultDeploymentCacheTTL
+	} else if ttl < minDeploymentCacheTTL {
+		ttl = minDeploymentCacheTTL
 	}
 	return &DeploymentCache{
 		deployments: make(map[string]*cachedDeployments),
@@ -62,15 +55,6 @@ func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, 
 		tokenCache:  tokenCache,
 		ttl:         ttl,
 	}
-}
-
-// deploymentCacheKey generates a unique key for deployment cache.
-// Uses length-prefixed format to avoid collisions when values contain ":"
-// The baseURL is normalized before use so that "https://host", "https://host/",
-// and "https://host/v2" all map to the same cache entry.
-func deploymentCacheKey(baseURL, resourceGroup string) string {
-	normalized := normalizeBaseURL(baseURL)
-	return fmt.Sprintf("%d:%s:%s", len(normalized), normalized, resourceGroup)
 }
 
 // GetDeploymentID resolves a model name to a deployment ID
@@ -83,7 +67,7 @@ func (dc *DeploymentCache) GetDeploymentID(
 	// Check static deployments first
 	if staticDeployments != nil {
 		if deploymentID, ok := staticDeployments[modelName]; ok {
-			backend := DetermineBackend(modelName)
+			backend := determineBackend(modelName)
 			return deploymentID, backend, nil
 		}
 	}
@@ -231,7 +215,7 @@ func (dc *DeploymentCache) fetchDeployments(
 		result[modelName] = SAPAICoreCachedDeployment{
 			DeploymentID: res.ID,
 			ModelName:    modelName,
-			Backend:      DetermineBackend(modelName),
+			Backend:      determineBackend(modelName),
 		}
 	}
 
@@ -363,24 +347,4 @@ func (dc *DeploymentCache) pruneExpired() {
 			delete(dc.deployments, key)
 		}
 	}
-}
-
-// DetermineBackend determines the backend type based on model name prefix
-func DetermineBackend(modelName string) SAPAICoreBackendType {
-	if strings.HasPrefix(modelName, "anthropic--") || strings.HasPrefix(modelName, "amazon--") {
-		return SAPAICoreBackendBedrock
-	}
-	if strings.HasPrefix(modelName, "gemini-") {
-		return SAPAICoreBackendVertex
-	}
-	return SAPAICoreBackendOpenAI
-}
-
-// normalizeBaseURL ensures the base URL has the /v2 suffix
-func normalizeBaseURL(baseURL string) string {
-	trimmed := strings.TrimRight(baseURL, "/")
-	if strings.HasSuffix(trimmed, "/v2") {
-		return trimmed
-	}
-	return trimmed + "/v2"
 }
