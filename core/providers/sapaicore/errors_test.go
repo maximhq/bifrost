@@ -254,7 +254,7 @@ func TestParseSAPAICoreError_BedrockTopLevel(t *testing.T) {
 
 	resp.SetStatusCode(400)
 	resp.SetBody([]byte(`{
-		"message": "A]ll model IDs must be provided",
+		"message": "All model IDs must be provided",
 		"__type": "ValidationException"
 	}`))
 
@@ -266,8 +266,8 @@ func TestParseSAPAICoreError_BedrockTopLevel(t *testing.T) {
 	if result.Error == nil {
 		t.Fatal("expected error field to be set")
 	}
-	if result.Error.Message != "A]ll model IDs must be provided" {
-		t.Errorf("expected message 'A]ll model IDs must be provided', got %q", result.Error.Message)
+	if result.Error.Message != "All model IDs must be provided" {
+		t.Errorf("expected message 'All model IDs must be provided', got %q", result.Error.Message)
 	}
 	if result.Error.Type == nil || *result.Error.Type != "ValidationException" {
 		t.Errorf("expected type 'ValidationException', got %v", result.Error.Type)
