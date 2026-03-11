@@ -68,15 +68,16 @@ const defaultCleanupInterval = 5 * time.Minute
 
 // SAPAICoreProvider implements the Provider interface for SAP AI Core.
 type SAPAICoreProvider struct {
-	logger              schemas.Logger
-	client              *fasthttp.Client
-	networkConfig       schemas.NetworkConfig
-	sendBackRawRequest  bool
-	sendBackRawResponse bool
-	tokenCache          *TokenCache
-	deploymentCache     *DeploymentCache
-	stopCleanup         chan struct{}
-	shutdownOnce        sync.Once
+	logger               schemas.Logger
+	client               *fasthttp.Client
+	networkConfig        schemas.NetworkConfig
+	sendBackRawRequest   bool
+	sendBackRawResponse  bool
+	customProviderConfig *schemas.CustomProviderConfig
+	tokenCache           *TokenCache
+	deploymentCache      *DeploymentCache
+	stopCleanup          chan struct{}
+	shutdownOnce         sync.Once
 }
 
 // NewSAPAICoreProvider creates a new SAP AI Core provider instance.
@@ -100,14 +101,15 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	stopCleanup := make(chan struct{})
 
 	provider := &SAPAICoreProvider{
-		logger:              logger,
-		client:              client,
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
-		tokenCache:          tokenCache,
-		deploymentCache:     deploymentCache,
-		stopCleanup:         stopCleanup,
+		logger:               logger,
+		client:               client,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
+		customProviderConfig: config.CustomProviderConfig,
+		tokenCache:           tokenCache,
+		deploymentCache:      deploymentCache,
+		stopCleanup:          stopCleanup,
 	}
 
 	// Start background cache cleanup goroutine
@@ -118,7 +120,7 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 
 // GetProviderKey returns the provider identifier for SAP AI Core.
 func (provider *SAPAICoreProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.SAPAICore
+	return providerUtils.GetProviderName(schemas.SAPAICore, provider.customProviderConfig)
 }
 
 // Shutdown cleans up provider resources including cached tokens and deployments.
@@ -159,12 +161,13 @@ func (provider *SAPAICoreProvider) periodicCleanup() {
 }
 
 // getKeyConfig extracts and validates the SAP AI Core key configuration
-func getKeyConfig(key schemas.Key) (*schemas.SAPAICoreKeyConfig, *schemas.BifrostError) {
+func (provider *SAPAICoreProvider) getKeyConfig(key schemas.Key) (*schemas.SAPAICoreKeyConfig, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
 	if key.SAPAICoreKeyConfig == nil {
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core key configuration is missing",
 			fmt.Errorf("sapaicore_key_config is required"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 
@@ -175,35 +178,35 @@ func getKeyConfig(key schemas.Key) (*schemas.SAPAICoreKeyConfig, *schemas.Bifros
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core ClientID is required",
 			fmt.Errorf("client_id is missing or empty"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 	if config.ClientSecret.GetValue() == "" {
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core ClientSecret is required",
 			fmt.Errorf("client_secret is missing or empty"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 	if config.AuthURL.GetValue() == "" {
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core AuthURL is required",
 			fmt.Errorf("auth_url is missing or empty"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 	if config.BaseURL.GetValue() == "" {
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core BaseURL is required",
 			fmt.Errorf("base_url is missing or empty"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 	if config.ResourceGroup.GetValue() == "" {
 		return nil, providerUtils.NewBifrostOperationError(
 			"SAP AI Core ResourceGroup is required",
 			fmt.Errorf("resource_group is missing or empty"),
-			schemas.SAPAICore,
+			providerName,
 		)
 	}
 
@@ -261,7 +264,7 @@ func (provider *SAPAICoreProvider) ListModels(ctx *schemas.BifrostContext, keys 
 
 	// Use first key for model listing
 	key := keys[0]
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +307,7 @@ func (provider *SAPAICoreProvider) ListModels(ctx *schemas.BifrostContext, keys 
 // ChatCompletion performs a chat completion request to SAP AI Core.
 // It routes the request to the appropriate backend (OpenAI, Bedrock, or Vertex) based on the model.
 func (provider *SAPAICoreProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +529,7 @@ func (provider *SAPAICoreProvider) handleVertexChatCompletion(
 
 // ChatCompletionStream performs a streaming chat completion request to SAP AI Core.
 func (provider *SAPAICoreProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -834,7 +837,7 @@ func (provider *SAPAICoreProvider) TextCompletionStream(_ *schemas.BifrostContex
 func (provider *SAPAICoreProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -885,7 +888,7 @@ func (provider *SAPAICoreProvider) Embedding(ctx *schemas.BifrostContext, key sc
 // Responses performs a Responses API request to SAP AI Core.
 // It routes the request to the appropriate backend (currently only Bedrock) based on the model.
 func (provider *SAPAICoreProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -910,7 +913,7 @@ func (provider *SAPAICoreProvider) Responses(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError(
 			"Responses API is only supported for Anthropic models via Bedrock backend",
 			fmt.Errorf("unsupported backend for Responses API: %s", backend),
-			schemas.SAPAICore,
+			provider.GetProviderKey(),
 		)
 	}
 }
@@ -986,7 +989,7 @@ func (provider *SAPAICoreProvider) handleBedrockResponses(
 // ResponsesStream performs a streaming Responses API request to SAP AI Core.
 // It routes the request to the appropriate backend (currently only Bedrock) based on the model.
 func (provider *SAPAICoreProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	config, err := getKeyConfig(key)
+	config, err := provider.getKeyConfig(key)
 	if err != nil {
 		return nil, err
 	}
@@ -1011,7 +1014,7 @@ func (provider *SAPAICoreProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.NewBifrostOperationError(
 			"ResponsesStream API is only supported for Anthropic models via Bedrock backend",
 			fmt.Errorf("unsupported backend for ResponsesStream API: %s", backend),
-			schemas.SAPAICore,
+			provider.GetProviderKey(),
 		)
 	}
 }
