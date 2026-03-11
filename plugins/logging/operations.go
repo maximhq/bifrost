@@ -59,7 +59,7 @@ func applySerializedLogUpdates(
 	cacheDebug *schemas.BifrostCacheDebug,
 	contentLoggingEnabled bool,
 ) {
-	if data.ChatOutput != nil {
+	if data.ChatOutput != nil && contentLoggingEnabled {
 		updates["output_message"] = entry.OutputMessage
 		updates["content_summary"] = entry.ContentSummary
 	}
@@ -206,12 +206,11 @@ func (p *LoggerPlugin) updateLogEntry(
 	tempEntry := &logstore.Log{}
 	needsSerialization := false
 
-	if data.ChatOutput != nil {
-		tempEntry.OutputMessageParsed = data.ChatOutput
-		needsSerialization = true
-	}
-
 	if contentLoggingEnabled {
+		if data.ChatOutput != nil {
+			tempEntry.OutputMessageParsed = data.ChatOutput
+			needsSerialization = true
+		}
 		if data.ResponsesOutput != nil {
 			tempEntry.ResponsesOutputParsed = data.ResponsesOutput
 			needsSerialization = true

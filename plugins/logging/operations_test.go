@@ -135,6 +135,54 @@ func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
 	}
 }
 
+func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing.T) {
+	store := newTestStore(t)
+	disableContentLogging := true
+	plugin := &LoggerPlugin{
+		store:                 store,
+		logger:                testLogger{},
+		disableContentLogging: &disableContentLogging,
+	}
+
+	requestID := "req-chat-disabled"
+	now := time.Now().UTC()
+	initial := &InitialLogData{
+		Object:   "chat_completion",
+		Provider: "openai",
+		Model:    "gpt-4o-mini",
+	}
+
+	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
+		t.Fatalf("insertInitialLogEntry() error = %v", err)
+	}
+
+	chatText := "assistant output should not be logged"
+	update := &UpdateLogData{
+		Status: "success",
+		ChatOutput: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{
+				ContentStr: &chatText,
+			},
+		},
+	}
+
+	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
+		t.Fatalf("updateLogEntry() error = %v", err)
+	}
+
+	logEntry, err := store.FindByID(context.Background(), requestID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if logEntry.OutputMessage != "" {
+		t.Fatalf("expected output_message to be suppressed, got %q", logEntry.OutputMessage)
+	}
+	if strings.Contains(logEntry.ContentSummary, chatText) {
+		t.Fatalf("expected content summary to suppress chat output, got %q", logEntry.ContentSummary)
+	}
+}
+
 func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
