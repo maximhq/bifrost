@@ -86,6 +86,13 @@ func getWeight(w *float64) float64 {
 	return *w
 }
 
+// isWeightSet returns true if the weight pointer is non-nil, meaning the provider
+// should participate in weighted load balancing. A nil weight means the provider
+// is excluded from weighted routing selection.
+func isWeightSet(w *float64) bool {
+	return w != nil
+}
+
 // filterModelsForVirtualKey filters models based on virtual key's provider configs
 // Returns only models that are allowed by the virtual key's ProviderConfigs
 func (p *GovernancePlugin) filterModelsForVirtualKey(
@@ -99,9 +106,9 @@ func (p *GovernancePlugin) filterModelsForVirtualKey(
 		return []schemas.Model{} // VK not found, return empty list
 	}
 
-	// Empty ProviderConfigs means all models are allowed
+	// Empty ProviderConfigs means no models are allowed (deny-by-default)
 	if len(vk.ProviderConfigs) == 0 {
-		return models
+		return []schemas.Model{}
 	}
 
 	// Filter models based on ProviderConfigs

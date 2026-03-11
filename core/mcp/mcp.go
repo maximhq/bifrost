@@ -21,13 +21,6 @@ const (
 	BifrostMCPClientKey                 = "bifrostInternal" // Key for internal Bifrost client in clientMap
 	MCPLogPrefix                        = "[Bifrost MCP]"   // Consistent logging prefix
 	MCPClientConnectionEstablishTimeout = 30 * time.Second  // Timeout for MCP client connection establishment
-
-	// Context keys for client filtering in requests
-	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
-	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
-	// Request context filtering takes priority over client config - context can override client exclusions.
-	MCPContextKeyIncludeClients schemas.BifrostContextKey = "mcp-include-clients" // Context key for whitelist client filtering
-	MCPContextKeyIncludeTools   schemas.BifrostContextKey = "mcp-include-tools"   // Context key for whitelist tool filtering (Note: toolName should be in "clientName-toolName" format for individual tools, or "clientName-*" for wildcard)
 )
 
 // ============================================================================

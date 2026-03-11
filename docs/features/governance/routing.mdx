@@ -28,8 +28,8 @@ This powerful feature enables key use cases like:
 Virtual Keys can be restricted to use only specific provider/models. When provider/model restrictions are configured, the VK can only access those designated provider/models, providing fine-grained control over which provider/models different users or applications can utilize.
 
 **How It Works:**
-- **No Restrictions** (default): VK can use any available provider/models based on global configuration
-- **With Restrictions**: VK limited to only the specified provider/models with weighted load balancing
+- **No Provider Configs** (default): VK **blocks all providers** (deny-by-default). You must add provider configurations to allow traffic.
+- **With Provider Configs**: VK limited to only the specified provider/models. Configured providers participate in weighted load balancing only if their `weight` is set to a numeric value, while providers with `weight: null` remain configured but are opted out of weighted selection.
 
 **Model Validation:**
 When you configure provider restrictions on a Virtual Key, Bifrost validates that the requested model is allowed for the selected provider:

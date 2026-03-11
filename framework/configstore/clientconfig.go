@@ -565,7 +565,7 @@ type VirtualKeyHashInput struct {
 // VirtualKeyProviderConfigHashInput represents provider config fields for hashing
 type VirtualKeyProviderConfigHashInput struct {
 	Provider      string
-	Weight        float64
+	Weight        *float64
 	AllowedModels []string
 	BudgetID      *string
 	RateLimitID   *string
@@ -658,7 +658,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			sort.Strings(sortedAllowedModels)
 			providerConfigsForHash[i] = VirtualKeyProviderConfigHashInput{
 				Provider:      pc.Provider,
-				Weight:        getWeight(pc.Weight),
+				Weight:        pc.Weight,
 				AllowedModels: sortedAllowedModels,
 				BudgetID:      pc.BudgetID,
 				RateLimitID:   pc.RateLimitID,
