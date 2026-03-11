@@ -215,6 +215,94 @@ func TestParseSAPAICoreError_BedrockFormat(t *testing.T) {
 	}
 }
 
+func TestParseSAPAICoreError_PlatformFormat(t *testing.T) {
+	t.Parallel()
+
+	// SAP AI Core platform errors use top-level fields, no "error" wrapper
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	resp.SetStatusCode(403)
+	resp.SetBody([]byte(`{
+		"message": "Access denied to resource group",
+		"code": "403",
+		"status": "FORBIDDEN"
+	}`))
+
+	result := ParseSAPAICoreError(resp, schemas.ChatCompletionRequest, schemas.SAPAICore, "gpt-4")
+
+	if result == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error field to be set")
+	}
+	if result.Error.Message != "Access denied to resource group" {
+		t.Errorf("expected message 'Access denied to resource group', got %q", result.Error.Message)
+	}
+	if result.Error.Code == nil || *result.Error.Code != "403" {
+		t.Errorf("expected code '403', got %v", result.Error.Code)
+	}
+}
+
+func TestParseSAPAICoreError_BedrockTopLevel(t *testing.T) {
+	t.Parallel()
+
+	// Bedrock errors with top-level message and __type (no "error" wrapper)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	resp.SetStatusCode(400)
+	resp.SetBody([]byte(`{
+		"message": "A]ll model IDs must be provided",
+		"__type": "ValidationException"
+	}`))
+
+	result := ParseSAPAICoreError(resp, schemas.ChatCompletionRequest, schemas.SAPAICore, "anthropic--claude-3-sonnet")
+
+	if result == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error field to be set")
+	}
+	if result.Error.Message != "A]ll model IDs must be provided" {
+		t.Errorf("expected message 'A]ll model IDs must be provided', got %q", result.Error.Message)
+	}
+	if result.Error.Type == nil || *result.Error.Type != "ValidationException" {
+		t.Errorf("expected type 'ValidationException', got %v", result.Error.Type)
+	}
+}
+
+func TestParseSAPAICoreError_PlatformStatusFallback(t *testing.T) {
+	t.Parallel()
+
+	// Platform error with "status" but no "code" — status should map to Code
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	resp.SetStatusCode(404)
+	resp.SetBody([]byte(`{
+		"message": "Deployment not found",
+		"status": "NOT_FOUND"
+	}`))
+
+	result := ParseSAPAICoreError(resp, schemas.ChatCompletionRequest, schemas.SAPAICore, "gpt-4")
+
+	if result == nil {
+		t.Fatal("expected non-nil error")
+	}
+	if result.Error == nil {
+		t.Fatal("expected error field to be set")
+	}
+	if result.Error.Message != "Deployment not found" {
+		t.Errorf("expected message 'Deployment not found', got %q", result.Error.Message)
+	}
+	if result.Error.Code == nil || *result.Error.Code != "NOT_FOUND" {
+		t.Errorf("expected code 'NOT_FOUND', got %v", result.Error.Code)
+	}
+}
+
 func TestParseSAPAICoreError_DifferentRequestTypes(t *testing.T) {
 	t.Parallel()
 

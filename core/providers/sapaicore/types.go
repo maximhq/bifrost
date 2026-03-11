@@ -136,3 +136,30 @@ type SAPAICoreModel struct {
 	ContextLength   int    `json:"context_length,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
+
+// SAPAICoreErrorResponse captures error responses from SAP AI Core across all backend formats.
+// OpenAI format:   {"error": {"message": "...", "type": "...", "code": "...", "param": "..."}}
+// Platform format: {"message": "...", "code": "...", "status": "..."}
+// Bedrock format:  {"message": "...", "__type": "ValidationException"}
+type SAPAICoreErrorResponse struct {
+	// OpenAI-envelope nested error
+	Error *SAPAICoreErrorField `json:"error,omitempty"`
+	// Top-level fields from SAP AI Core platform and Bedrock errors
+	Message string  `json:"message,omitempty"`
+	Type    *string `json:"type,omitempty"`
+	Code    *string `json:"code,omitempty"`
+	Status  *string `json:"status,omitempty"`
+	// Bedrock uses __type for error classification
+	BedrockType *string `json:"__type,omitempty"`
+	// Top-level event_id (OpenAI Responses API)
+	EventID *string `json:"event_id,omitempty"`
+}
+
+// SAPAICoreErrorField represents the nested error object in OpenAI-format responses.
+type SAPAICoreErrorField struct {
+	Message string      `json:"message,omitempty"`
+	Type    *string     `json:"type,omitempty"`
+	Code    *string     `json:"code,omitempty"`
+	Param   interface{} `json:"param,omitempty"`
+	EventID *string     `json:"event_id,omitempty"`
+}
