@@ -154,7 +154,7 @@ func (provider *SAPAICoreProvider) getKeyConfig(key schemas.Key) (*schemas.SAPAI
 // getAuthToken retrieves an auth token from context or fetches a new one
 func (provider *SAPAICoreProvider) getAuthToken(ctx *schemas.BifrostContext, config *schemas.SAPAICoreKeyConfig) (string, *schemas.BifrostError) {
 	// Check for context-provided token first
-	if authToken, ok := ctx.Value(SAPAICoreAuthorizationTokenKey).(string); ok && authToken != "" {
+	if authToken, ok := ctx.Value(sapaicoreAuthorizationTokenKey).(string); ok && authToken != "" {
 		return authToken, nil
 	}
 

@@ -10,8 +10,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// SAPAICoreAuthorizationTokenKey is the context key for passing a pre-fetched SAP AI Core token.
-const SAPAICoreAuthorizationTokenKey schemas.BifrostContextKey = "sapaicore-authorization-token"
+// sapaicoreAuthorizationTokenKey is the context key for passing a pre-fetched SAP AI Core token.
+const sapaicoreAuthorizationTokenKey schemas.BifrostContextKey = "sapaicore-authorization-token"
 
 // defaultCleanupInterval is the interval at which the background goroutine
 // prunes expired entries from the token and deployment caches.
