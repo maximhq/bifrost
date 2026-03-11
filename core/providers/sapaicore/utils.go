@@ -2,15 +2,64 @@ package sapaicore
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
+
+// SAPAICoreAuthorizationTokenKey is the context key for passing a pre-fetched SAP AI Core token.
+const SAPAICoreAuthorizationTokenKey schemas.BifrostContextKey = "sapaicore-authorization-token"
+
+// defaultCleanupInterval is the interval at which the background goroutine
+// prunes expired entries from the token and deployment caches.
+const defaultCleanupInterval = 5 * time.Minute
 
 // defaultDeploymentCacheTTL is the default TTL for deployment cache entries
 const defaultDeploymentCacheTTL = 1 * time.Hour
 
 // minDeploymentCacheTTL is the minimum allowed TTL for deployment cache entries
 const minDeploymentCacheTTL = 1 * time.Minute
+
+// openaiReasoningAndGPT5Models is the list of OpenAI models that require special parameter handling.
+// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core.
+var openaiReasoningAndGPT5Models = []string{
+	"o1",
+	"o3-mini",
+	"o3",
+	"o4-mini",
+	"gpt-5",
+}
+
+// isOpenAIReasoningOrGPT5Model checks if the model requires special parameter handling.
+// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core.
+func isOpenAIReasoningOrGPT5Model(model string) bool {
+	modelLower := strings.ToLower(model)
+	for _, rm := range openaiReasoningAndGPT5Models {
+		if strings.Contains(modelLower, rm) {
+			return true
+		}
+	}
+	return false
+}
+
+// releaseStreamingResponseNoDrain releases a streaming response without draining the body stream.
+// Use this for binary EventStream protocols (like AWS EventStream) where:
+// 1. The stream has been fully consumed up to io.EOF
+// 2. Draining would block because the protocol doesn't send additional data after the final event
+// This skips the drain step that can cause the connection to hang on certain streaming protocols.
+func releaseStreamingResponseNoDrain(resp *fasthttp.Response, logger schemas.Logger) {
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		if closer, ok := bodyStream.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				logger.Warn("failed to close streaming response body: %v", err)
+			}
+		}
+	}
+	fasthttp.ReleaseResponse(resp)
+}
 
 // deploymentCacheKey generates a unique key for deployment cache.
 // Includes clientID and authURL so that different credential sets sharing the

@@ -1,5 +1,26 @@
 package sapaicore
 
+import (
+	"sync"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// SAPAICoreProvider implements the Provider interface for SAP AI Core.
+type SAPAICoreProvider struct {
+	logger               schemas.Logger
+	client               *fasthttp.Client
+	networkConfig        schemas.NetworkConfig
+	sendBackRawRequest   bool
+	sendBackRawResponse  bool
+	customProviderConfig *schemas.CustomProviderConfig
+	tokenCache           *TokenCache
+	deploymentCache      *DeploymentCache
+	stopCleanup          chan struct{}
+	shutdownOnce         sync.Once
+}
+
 // SAPAICoreAPIVersion is the default API version for SAP AI Core OpenAI-compatible endpoints
 const SAPAICoreAPIVersion = "2024-12-01-preview"
 

@@ -4,14 +4,11 @@
 package sapaicore
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -20,65 +17,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
-
-// SAPAICoreAuthorizationTokenKey is the context key for passing a pre-fetched SAP AI Core token.
-const SAPAICoreAuthorizationTokenKey schemas.BifrostContextKey = "sapaicore-authorization-token"
-
-// openaiReasoningAndGPT5Models is the list of OpenAI models that require special parameter handling
-// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core
-var openaiReasoningAndGPT5Models = []string{
-	"o1",
-	"o3-mini",
-	"o3",
-	"o4-mini",
-	"gpt-5",
-}
-
-// isOpenAIReasoningOrGPT5Model checks if the model requires special parameter handling
-// These models don't support max_tokens and temperature parameters when accessed via SAP AI Core
-func isOpenAIReasoningOrGPT5Model(model string) bool {
-	modelLower := strings.ToLower(model)
-	for _, rm := range openaiReasoningAndGPT5Models {
-		if strings.Contains(modelLower, rm) {
-			return true
-		}
-	}
-	return false
-}
-
-// releaseStreamingResponseNoDrain releases a streaming response without draining the body stream.
-// Use this for binary EventStream protocols (like AWS EventStream) where:
-// 1. The stream has been fully consumed up to io.EOF
-// 2. Draining would block because the protocol doesn't send additional data after the final event
-// This skips the drain step that can cause the connection to hang on certain streaming protocols.
-func releaseStreamingResponseNoDrain(resp *fasthttp.Response, logger schemas.Logger) {
-	if bodyStream := resp.BodyStream(); bodyStream != nil {
-		if closer, ok := bodyStream.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				logger.Warn("failed to close streaming response body: %v", err)
-			}
-		}
-	}
-	fasthttp.ReleaseResponse(resp)
-}
-
-// defaultCleanupInterval is the interval at which the background goroutine
-// prunes expired entries from the token and deployment caches.
-const defaultCleanupInterval = 5 * time.Minute
-
-// SAPAICoreProvider implements the Provider interface for SAP AI Core.
-type SAPAICoreProvider struct {
-	logger               schemas.Logger
-	client               *fasthttp.Client
-	networkConfig        schemas.NetworkConfig
-	sendBackRawRequest   bool
-	sendBackRawResponse  bool
-	customProviderConfig *schemas.CustomProviderConfig
-	tokenCache           *TokenCache
-	deploymentCache      *DeploymentCache
-	stopCleanup          chan struct{}
-	shutdownOnce         sync.Once
-}
 
 // NewSAPAICoreProvider creates a new SAP AI Core provider instance.
 func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*SAPAICoreProvider, error) {
@@ -1206,9 +1144,7 @@ func processVertexSSEStream(
 	model string,
 	logger schemas.Logger,
 ) {
-	scanner := bufio.NewScanner(bodyStream)
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 10*1024*1024)
+	sseReader := providerUtils.GetSSEDataReader(ctx, bodyStream)
 
 	chunkIndex := -1
 	usage := &schemas.BifrostLLMUsage{}
@@ -1216,138 +1152,130 @@ func processVertexSSEStream(
 	startTime := time.Now()
 	toolCallIndex := 0
 
-	for scanner.Scan() {
+	for {
 		if ctx.Err() != nil {
 			return
 		}
 
-		line := scanner.Text()
-		if line == "" || strings.HasPrefix(line, ":") {
+		jsonData, readErr := sseReader.ReadDataLine()
+		if readErr != nil {
+			if readErr != io.EOF {
+				logger.Warn("vertex SSE reader error: %v", readErr)
+			}
+			break
+		}
+
+		var vertexResp VertexGenerateContentResponse
+		if err := sonic.Unmarshal(jsonData, &vertexResp); err != nil {
+			logger.Warn("failed to parse Vertex stream event: %v", err)
 			continue
 		}
 
-		if strings.HasPrefix(line, "data: ") {
-			jsonData := strings.TrimPrefix(line, "data: ")
+		// Convert to Bifrost response
+		if len(vertexResp.Candidates) > 0 && len(vertexResp.Candidates[0].Content.Parts) > 0 {
+			chunkIndex++
 
-			var vertexResp VertexGenerateContentResponse
-			if err := sonic.Unmarshal([]byte(jsonData), &vertexResp); err != nil {
-				logger.Warn("Failed to parse Vertex stream event: %v", err)
-				continue
-			}
-
-			// Convert to Bifrost response
-			if len(vertexResp.Candidates) > 0 && len(vertexResp.Candidates[0].Content.Parts) > 0 {
-				chunkIndex++
-
-				for _, part := range vertexResp.Candidates[0].Content.Parts {
-					// Handle text content
-					if part.Text != "" {
-						text := part.Text
-						response := &schemas.BifrostChatResponse{
-							ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-							Object:  "chat.completion.chunk",
-							Created: int(time.Now().Unix()),
-							Model:   model,
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											Content: &text,
-										},
+			for _, part := range vertexResp.Candidates[0].Content.Parts {
+				// Handle text content
+				if part.Text != "" {
+					text := part.Text
+					response := &schemas.BifrostChatResponse{
+						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						Object:  "chat.completion.chunk",
+						Created: int(time.Now().Unix()),
+						Model:   model,
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
+										Content: &text,
 									},
 								},
 							},
-						}
-
-						response.ExtraFields.Provider = providerName
-						response.ExtraFields.ModelRequested = model
-						response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
-						response.ExtraFields.ChunkIndex = chunkIndex
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+						},
 					}
 
-					// Handle function calls
-					if part.FunctionCall != nil {
-						// Serialize args to JSON string
-						argsJSON := "{}"
-						if part.FunctionCall.Args != nil {
-							if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
-								argsJSON = string(argsBytes)
-							}
+					response.ExtraFields.Provider = providerName
+					response.ExtraFields.ModelRequested = model
+					response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					response.ExtraFields.ChunkIndex = chunkIndex
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+				}
+
+				// Handle function calls
+				if part.FunctionCall != nil {
+					// Serialize args to JSON string
+					argsJSON := "{}"
+					if part.FunctionCall.Args != nil {
+						if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
+							argsJSON = string(argsBytes)
 						}
+					}
 
-						// Generate a tool call ID
-						toolCallID := fmt.Sprintf("call_%s_%d", model, toolCallIndex)
-						toolCallType := "function"
-						funcName := part.FunctionCall.Name
-						idx := uint16(toolCallIndex)
+					// Generate a tool call ID
+					toolCallID := fmt.Sprintf("call_%s_%d", model, toolCallIndex)
+					toolCallType := "function"
+					funcName := part.FunctionCall.Name
+					idx := uint16(toolCallIndex)
 
-						response := &schemas.BifrostChatResponse{
-							ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-							Object:  "chat.completion.chunk",
-							Created: int(time.Now().Unix()),
-							Model:   model,
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: &schemas.ChatStreamResponseChoiceDelta{
-											ToolCalls: []schemas.ChatAssistantMessageToolCall{
-												{
-													Index: idx,
-													Type:  &toolCallType,
-													ID:    &toolCallID,
-													Function: schemas.ChatAssistantMessageToolCallFunction{
-														Name:      &funcName,
-														Arguments: argsJSON,
-													},
+					response := &schemas.BifrostChatResponse{
+						ID:      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
+						Object:  "chat.completion.chunk",
+						Created: int(time.Now().Unix()),
+						Model:   model,
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
+										ToolCalls: []schemas.ChatAssistantMessageToolCall{
+											{
+												Index: idx,
+												Type:  &toolCallType,
+												ID:    &toolCallID,
+												Function: schemas.ChatAssistantMessageToolCallFunction{
+													Name:      &funcName,
+													Arguments: argsJSON,
 												},
 											},
 										},
 									},
 								},
 							},
-						}
-
-						response.ExtraFields.Provider = providerName
-						response.ExtraFields.ModelRequested = model
-						response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
-						response.ExtraFields.ChunkIndex = chunkIndex
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
-
-						toolCallIndex++
+						},
 					}
-				}
 
-				// Handle finish reason
-				if vertexResp.Candidates[0].FinishReason != "" {
-					fr := vertexResp.Candidates[0].FinishReason
-					// If there were tool calls, override finish reason
-					if toolCallIndex > 0 {
-						fr = "tool_calls"
-					} else {
-						fr = mapVertexFinishReason(fr)
-					}
-					finishReason = &fr
+					response.ExtraFields.Provider = providerName
+					response.ExtraFields.ModelRequested = model
+					response.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+					response.ExtraFields.ChunkIndex = chunkIndex
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan)
+
+					toolCallIndex++
 				}
 			}
 
-			// Handle usage metadata
-			if vertexResp.UsageMetadata != nil {
-				usage.PromptTokens = vertexResp.UsageMetadata.PromptTokenCount
-				usage.CompletionTokens = vertexResp.UsageMetadata.CandidatesTokenCount
-				usage.TotalTokens = vertexResp.UsageMetadata.TotalTokenCount
+			// Handle finish reason
+			if vertexResp.Candidates[0].FinishReason != "" {
+				fr := vertexResp.Candidates[0].FinishReason
+				// If there were tool calls, override finish reason
+				if toolCallIndex > 0 {
+					fr = "tool_calls"
+				} else {
+					fr = mapVertexFinishReason(fr)
+				}
+				finishReason = &fr
 			}
 		}
-	}
 
-	// Check for scanner errors (I/O errors, buffer overflow, etc.)
-	if err := scanner.Err(); err != nil {
-		if ctx.Err() == nil { // Only log if not cancelled
-			logger.Warn("Vertex SSE scanner error: %v", err)
+		// Handle usage metadata
+		if vertexResp.UsageMetadata != nil {
+			usage.PromptTokens = vertexResp.UsageMetadata.PromptTokenCount
+			usage.CompletionTokens = vertexResp.UsageMetadata.CandidatesTokenCount
+			usage.TotalTokens = vertexResp.UsageMetadata.TotalTokenCount
 		}
 	}
 

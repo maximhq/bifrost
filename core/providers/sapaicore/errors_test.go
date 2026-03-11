@@ -84,6 +84,8 @@ func TestParseSAPAICoreError_StatusCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			resp := fasthttp.AcquireResponse()
 			defer fasthttp.ReleaseResponse(resp)
 
@@ -315,6 +317,8 @@ func TestParseSAPAICoreError_DifferentRequestTypes(t *testing.T) {
 
 	for _, reqType := range requestTypes {
 		t.Run(string(reqType), func(t *testing.T) {
+			t.Parallel()
+
 			resp := fasthttp.AcquireResponse()
 			defer fasthttp.ReleaseResponse(resp)
 
