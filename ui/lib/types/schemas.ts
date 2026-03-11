@@ -589,6 +589,7 @@ export const coreConfigSchema = z.object({
 	mcp_agent_depth: z.number().min(1).default(10),
 	mcp_tool_execution_timeout: z.number().min(1).default(30),
 	mcp_code_mode_binding_level: z.enum(["server", "tool"]).default("server"),
+	mcp_disable_auto_tool_inject: z.boolean().default(false),
 });
 
 // Bifrost config schema

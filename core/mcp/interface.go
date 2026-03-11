@@ -22,7 +22,9 @@ type MCPManagerInterface interface {
 	// ExecuteToolCall executes a single tool call and returns the result
 	ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)
 
-	// UpdateToolManagerConfig updates the configuration for the tool manager
+	// UpdateToolManagerConfig updates the configuration for the tool manager.
+	// DisableAutoToolInject in the config controls auto injection — pass the
+	// current value whenever only other fields change so it is never silently reset.
 	UpdateToolManagerConfig(config *schemas.MCPToolManagerConfig)
 
 	// Agent Mode Operations
