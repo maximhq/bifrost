@@ -2527,9 +2527,16 @@
         "proxy_config": {
           "$ref": "#/$defs/proxy_config"
         },
+        "send_back_raw_request": {
+          "type": "boolean",
+          "description": "Include raw request in BifrostResponse (default: false)"
+        },
         "send_back_raw_response": {
           "type": "boolean",
           "description": "Include raw response in BifrostResponse (default: false)"
+        },
+        "custom_provider_config": {
+          "$ref": "#/$defs/custom_provider_config"
         },
         "pricing_overrides": {
           "type": "array",

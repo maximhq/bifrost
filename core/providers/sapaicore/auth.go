@@ -46,7 +46,19 @@ func NewTokenCache(client *fasthttp.Client) *TokenCache {
 // cacheKey generates a unique key for the token cache based on auth config.
 // Uses length-prefixed format to avoid collisions when values contain ":"
 func cacheKey(clientID, authURL string) string {
-	return fmt.Sprintf("%d:%s:%s", len(clientID), clientID, authURL)
+	normalized := normalizeAuthURL(authURL)
+	return fmt.Sprintf("%d:%s:%s", len(clientID), clientID, normalized)
+}
+
+// normalizeAuthURL canonicalizes the auth URL so different forms of the same
+// endpoint (e.g. "https://host", "https://host/", "https://host/oauth/token")
+// produce the same cache key.
+func normalizeAuthURL(authURL string) string {
+	u := strings.TrimRight(authURL, "/")
+	if !strings.HasSuffix(u, "/oauth/token") {
+		u += "/oauth/token"
+	}
+	return u
 }
 
 // GetToken retrieves a valid token from cache or fetches a new one.

@@ -11,6 +11,7 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/singleflight"
 )
 
 // DefaultDeploymentCacheTTL is the default TTL for deployment cache entries
@@ -26,12 +27,20 @@ type DeploymentCache struct {
 	client      *fasthttp.Client
 	tokenCache  *TokenCache
 	ttl         time.Duration
+	group       singleflight.Group
 }
 
 // cachedDeployments holds cached deployment data for a resource group
 type cachedDeployments struct {
 	modelToDeployment map[string]SAPAICoreCachedDeployment // model name -> deployment info
 	fetchedAt         time.Time
+}
+
+// deploymentFetchResult carries the fetch result for singleflight return.
+// Since BifrostError doesn't implement the error interface, we pass it through the result.
+type deploymentFetchResult struct {
+	deployments map[string]SAPAICoreCachedDeployment
+	bifError    *schemas.BifrostError
 }
 
 // NewDeploymentCache creates a new deployment cache with default TTL
@@ -57,8 +66,11 @@ func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, 
 
 // deploymentCacheKey generates a unique key for deployment cache.
 // Uses length-prefixed format to avoid collisions when values contain ":"
+// The baseURL is normalized before use so that "https://host", "https://host/",
+// and "https://host/v2" all map to the same cache entry.
 func deploymentCacheKey(baseURL, resourceGroup string) string {
-	return fmt.Sprintf("%d:%s:%s", len(baseURL), baseURL, resourceGroup)
+	normalized := normalizeBaseURL(baseURL)
+	return fmt.Sprintf("%d:%s:%s", len(normalized), normalized, resourceGroup)
 }
 
 // GetDeploymentID resolves a model name to a deployment ID
@@ -80,7 +92,8 @@ func (dc *DeploymentCache) GetDeploymentID(
 	return dc.resolveDeployment(modelName, clientID, clientSecret, authURL, baseURL, resourceGroup)
 }
 
-// resolveDeployment fetches and caches deployments, then returns the deployment ID for the model
+// resolveDeployment fetches and caches deployments, then returns the deployment ID for the model.
+// Uses singleflight to coalesce concurrent refresh requests for the same cache key.
 func (dc *DeploymentCache) resolveDeployment(
 	modelName, clientID, clientSecret, authURL, baseURL, resourceGroup string,
 ) (string, SAPAICoreBackendType, *schemas.BifrostError) {
@@ -94,6 +107,13 @@ func (dc *DeploymentCache) resolveDeployment(
 				dc.mu.RUnlock()
 				return deployment.DeploymentID, deployment.Backend, nil
 			}
+			// Model not found in fresh cache — no need to refetch
+			dc.mu.RUnlock()
+			return "", "", providerUtils.NewBifrostOperationError(
+				fmt.Sprintf("no running deployment found for model: %s", modelName),
+				fmt.Errorf("model not deployed"),
+				schemas.SAPAICore,
+			)
 		}
 	}
 	dc.mu.RUnlock()
@@ -101,57 +121,42 @@ func (dc *DeploymentCache) resolveDeployment(
 	// Opportunistic cleanup: prune expired entries during cache misses
 	dc.pruneExpired()
 
-	// Short write-lock check, then release before external I/O
-	dc.mu.Lock()
-	if cached, ok := dc.deployments[cacheKey]; ok {
-		if time.Since(cached.fetchedAt) < dc.ttl {
-			if deployment, ok := cached.modelToDeployment[modelName]; ok {
-				dc.mu.Unlock()
-				return deployment.DeploymentID, deployment.Backend, nil
+	// Use singleflight to coalesce concurrent fetches for the same cache key.
+	result, _, _ := dc.group.Do(cacheKey, func() (interface{}, error) {
+		// Double-check cache (another goroutine may have just refreshed)
+		dc.mu.RLock()
+		if cached, ok := dc.deployments[cacheKey]; ok {
+			if time.Since(cached.fetchedAt) < dc.ttl {
+				dc.mu.RUnlock()
+				return &deploymentFetchResult{deployments: cached.modelToDeployment}, nil
 			}
-			// Model not found in fresh cache
-			dc.mu.Unlock()
-			return "", "", providerUtils.NewBifrostOperationError(
-				fmt.Sprintf("no running deployment found for model: %s", modelName),
-				fmt.Errorf("model not deployed"),
-				schemas.SAPAICore,
-			)
 		}
-	}
-	dc.mu.Unlock()
+		dc.mu.RUnlock()
 
-	// Fetch deployments from API without holding lock
-	deployments, err := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
-	if err != nil {
-		return "", "", err
-	}
-
-	// Re-lock to publish result
-	dc.mu.Lock()
-	defer dc.mu.Unlock()
-
-	// Double-check: another goroutine may have refreshed while we were fetching
-	if cached, ok := dc.deployments[cacheKey]; ok {
-		if time.Since(cached.fetchedAt) < dc.ttl {
-			if deployment, ok := cached.modelToDeployment[modelName]; ok {
-				return deployment.DeploymentID, deployment.Backend, nil
-			}
-			return "", "", providerUtils.NewBifrostOperationError(
-				fmt.Sprintf("no running deployment found for model: %s", modelName),
-				fmt.Errorf("model not deployed"),
-				schemas.SAPAICore,
-			)
+		// Fetch deployments from API
+		deployments, fetchErr := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
+		if fetchErr != nil {
+			return &deploymentFetchResult{bifError: fetchErr}, nil
 		}
-	}
 
-	// Cache the results
-	dc.deployments[cacheKey] = &cachedDeployments{
-		modelToDeployment: deployments,
-		fetchedAt:         time.Now(),
+		// Cache the results
+		dc.mu.Lock()
+		dc.deployments[cacheKey] = &cachedDeployments{
+			modelToDeployment: deployments,
+			fetchedAt:         time.Now(),
+		}
+		dc.mu.Unlock()
+
+		return &deploymentFetchResult{deployments: deployments}, nil
+	})
+
+	fr := result.(*deploymentFetchResult)
+	if fr.bifError != nil {
+		return "", "", fr.bifError
 	}
 
 	// Look up the requested model
-	if deployment, ok := deployments[modelName]; ok {
+	if deployment, ok := fr.deployments[modelName]; ok {
 		return deployment.DeploymentID, deployment.Backend, nil
 	}
 

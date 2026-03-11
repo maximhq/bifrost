@@ -91,9 +91,10 @@ func providerRequiresKey(providerKey schemas.ModelProvider, customConfig *schema
 }
 
 // canProviderKeyValueBeEmpty returns true if the given provider allows the API key to be empty.
-// Some providers like Vertex, Bedrock, SAP AI Core have their credentials in additional key configs.
+// Some providers like Vertex, Bedrock have their credentials in additional key configs.
+// SAP AI Core and Azure are handled separately via hasSAPAICoreCredentials and hasAzureEntraIDCredentials.
 func CanProviderKeyValueBeEmpty(providerKey schemas.ModelProvider) bool {
-	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure || providerKey == schemas.SAPAICore
+	return providerKey == schemas.Vertex || providerKey == schemas.Bedrock || providerKey == schemas.VLLM || providerKey == schemas.Azure
 }
 
 // hasAzureEntraIDCredentials checks if an Azure key has Entra ID (Service Principal) credentials configured.
@@ -108,6 +109,21 @@ func hasAzureEntraIDCredentials(providerType schemas.ModelProvider, key schemas.
 		key.AzureKeyConfig.ClientID.GetValue() != "" &&
 		key.AzureKeyConfig.ClientSecret.GetValue() != "" &&
 		key.AzureKeyConfig.TenantID.GetValue() != ""
+}
+
+// hasSAPAICoreCredentials checks if a SAP AI Core key has valid OAuth2 credentials configured.
+// This allows SAP AI Core keys to have an empty API key value when the key config contains
+// the required client_id, client_secret, auth_url, base_url, and resource_group fields.
+func hasSAPAICoreCredentials(providerType schemas.ModelProvider, key schemas.Key) bool {
+	if providerType != schemas.SAPAICore || key.SAPAICoreKeyConfig == nil {
+		return false
+	}
+	cfg := key.SAPAICoreKeyConfig
+	return cfg.ClientID.GetValue() != "" &&
+		cfg.ClientSecret.GetValue() != "" &&
+		cfg.AuthURL.GetValue() != "" &&
+		cfg.BaseURL.GetValue() != "" &&
+		cfg.ResourceGroup.GetValue() != ""
 }
 
 func isKeySkippingAllowed(providerKey schemas.ModelProvider) bool {
