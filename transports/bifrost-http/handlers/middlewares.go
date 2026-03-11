@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -66,6 +67,43 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 					Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
 				if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
 					logBuilder = logBuilder.Str("trace_id", traceID)
+				}
+				// Extract model from request body for JSON inference endpoints only
+				if strings.HasPrefix(string(ctx.RequestURI()), "/v1/") {
+					if ct := string(ctx.Request.Header.ContentType()); strings.HasPrefix(ct, "application/json") {
+						if body := ctx.PostBody(); len(body) > 0 {
+							var partial struct {
+								Model string `json:"model"`
+							}
+							if json.Unmarshal(body, &partial) == nil && partial.Model != "" {
+								logBuilder = logBuilder.Str("model", partial.Model)
+							}
+						}
+					}
+				}
+				// Extract error message from JSON response body on 4xx/5xx
+				if statusCode >= 400 {
+					if ct := string(ctx.Response.Header.Peek("Content-Type")); strings.HasPrefix(ct, "application/json") {
+						if respBody := ctx.Response.Body(); len(respBody) > 0 {
+							const maxErrorBodyBytes = 4096
+							if len(respBody) > maxErrorBodyBytes {
+								respBody = respBody[:maxErrorBodyBytes]
+							}
+							var errResp struct {
+								Error struct {
+									Message string `json:"message"`
+								} `json:"error"`
+							}
+							if json.Unmarshal(respBody, &errResp) == nil && errResp.Error.Message != "" {
+								msg := errResp.Error.Message
+								const maxErrorMessageLen = 256
+								if len(msg) > maxErrorMessageLen {
+									msg = msg[:maxErrorMessageLen]
+								}
+								logBuilder = logBuilder.Str("error", msg)
+							}
+						}
+					}
 				}
 				logBuilder.Send()
 			}()
