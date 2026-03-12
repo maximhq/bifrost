@@ -262,7 +262,10 @@ type ProviderOverride struct {
 	// Key is the API credential for this request. If nil, key-pool selection applies normally.
 	Key *Key `json:"key,omitempty"`
 	// BaseURL overrides NetworkConfig.BaseURL for this request.
-	// Should not have a trailing slash (e.g. "https://eu.api.openai.com/v1").
+	// Provide the schema, host, and port only -- no path prefix.
+	// Bifrost appends the provider's full default path (e.g. "/v1/chat/completions").
+	// Example: "https://eu.api.openai.com" (not "https://eu.api.openai.com/v1").
+	// Use RequestPathOverrides in CustomProviderConfig to change the path suffix.
 	BaseURL string `json:"base_url,omitempty"`
 	// BaseProviderType specifies the API dialect to use when the provider name set via
 	// UpdateProvider is not a built-in provider (e.g. "my-tenant-openai").

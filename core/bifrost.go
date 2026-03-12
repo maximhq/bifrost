@@ -3652,7 +3652,16 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 	}
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
-	if err != nil || config == nil {
+	if err != nil {
+		// A real error from GetConfigForProvider (e.g. I/O or parse failure) must never
+		// silently fall through to auto-init: the provider may be configured but temporarily
+		// unreadable, and spinning up a default queue would bypass its network/concurrency
+		// settings and send traffic with wrong configuration.
+		return nil, fmt.Errorf("failed to get config for provider: %v", err)
+	}
+	if config == nil {
+		// No static config entry exists. Auto-init if the plugin has provided enough
+		// information, or fail with a clear message.
 		baseConfig := &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
@@ -3671,8 +3680,6 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 			// Well-known provider with no static config: auto-initialise using its own dialect.
 			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s with default config (no static config found)", providerKey))
 			config = baseConfig
-		case err != nil:
-			return nil, fmt.Errorf("failed to get config for provider: %v", err)
 		default:
 			return nil, fmt.Errorf("config is nil for provider %s", providerKey)
 		}
