@@ -24,6 +24,12 @@ var reservedKeys = []any{
 	BifrostContextKeySkipKeySelection,
 	BifrostContextKeyURLPath,
 	BifrostContextKeyDeferTraceCompletion,
+	// BifrostContextKeyProviderOverride is intentionally excluded from reservedKeys.
+	// Bifrost itself writes to this key (via ctx.SetValue) inside tryRequest and
+	// tryStreamRequest after each PreLLMHook run. Adding it here would cause those
+	// internal writes to be silently dropped when blockRestrictedWrites is enabled,
+	// breaking the override mechanism. Plugin developers should use req.Update* methods;
+	// any direct ctx.SetValue for this key is overwritten by Bifrost before it is read.
 }
 
 // BifrostContext is a custom context.Context implementation that tracks user-set values.

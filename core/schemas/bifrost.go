@@ -243,6 +243,10 @@ const (
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
+	// BifrostContextKeyProviderOverride is used internally by Bifrost to pass per-request
+	// credential and URL overrides from BifrostRequest to the provider layer.
+	// Plugin developers should use req.UpdateAPIKey / req.UpdateProviderBaseURL instead.
+	BifrostContextKeyProviderOverride BifrostContextKey = "bifrost-provider-override"
 )
 
 const (
@@ -250,6 +254,23 @@ const (
 	// used by transport guards when no enterprise threshold is present on context.
 	DefaultLargePayloadRequestThresholdBytes = 10 * 1024 * 1024 // 10MB
 )
+
+// ProviderOverride carries per-request credential, URL, and dialect overrides injected by
+// plugin hooks. It is used internally by Bifrost; plugin developers should not construct it
+// directly. Use req.Update* methods instead.
+type ProviderOverride struct {
+	// Key is the API credential for this request. If nil, key-pool selection applies normally.
+	Key *Key `json:"key,omitempty"`
+	// BaseURL overrides NetworkConfig.BaseURL for this request.
+	// Should not have a trailing slash (e.g. "https://eu.api.openai.com/v1").
+	BaseURL string `json:"base_url,omitempty"`
+	// BaseProviderType specifies the API dialect to use when the provider name set via
+	// UpdateProvider is not a built-in provider (e.g. "my-tenant-openai").
+	// Must be a supported built-in provider (e.g. schemas.OpenAI, schemas.Anthropic).
+	// When set, Bifrost auto-initialises the provider at runtime without requiring a
+	// static config entry — enabling fully arbitrary provider names in multi-tenant scenarios.
+	BaseProviderType ModelProvider `json:"base_provider_type,omitempty"`
+}
 
 // RoutingEngine constants
 const (
@@ -342,6 +363,11 @@ type BifrostRequest struct {
 	ContainerFileContentRequest  *BifrostContainerFileContentRequest
 	ContainerFileDeleteRequest   *BifrostContainerFileDeleteRequest
 	PassthroughRequest           *BifrostPassthroughRequest
+
+	// ProviderOverride holds per-request credential and URL overrides set via
+	// UpdateAPIKey and UpdateProviderBaseURL. It is read by Bifrost internally and
+	// should not be set directly; use the Update* methods instead.
+	ProviderOverride *ProviderOverride
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
@@ -500,6 +526,48 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoDeleteRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
+	case br.FileUploadRequest != nil:
+		br.FileUploadRequest.Provider = provider
+	case br.FileListRequest != nil:
+		br.FileListRequest.Provider = provider
+	case br.FileRetrieveRequest != nil:
+		br.FileRetrieveRequest.Provider = provider
+	case br.FileDeleteRequest != nil:
+		br.FileDeleteRequest.Provider = provider
+	case br.FileContentRequest != nil:
+		br.FileContentRequest.Provider = provider
+	case br.BatchCreateRequest != nil:
+		br.BatchCreateRequest.Provider = provider
+	case br.BatchListRequest != nil:
+		br.BatchListRequest.Provider = provider
+	case br.BatchRetrieveRequest != nil:
+		br.BatchRetrieveRequest.Provider = provider
+	case br.BatchCancelRequest != nil:
+		br.BatchCancelRequest.Provider = provider
+	case br.BatchResultsRequest != nil:
+		br.BatchResultsRequest.Provider = provider
+	case br.BatchDeleteRequest != nil:
+		br.BatchDeleteRequest.Provider = provider
+	case br.ContainerCreateRequest != nil:
+		br.ContainerCreateRequest.Provider = provider
+	case br.ContainerListRequest != nil:
+		br.ContainerListRequest.Provider = provider
+	case br.ContainerRetrieveRequest != nil:
+		br.ContainerRetrieveRequest.Provider = provider
+	case br.ContainerDeleteRequest != nil:
+		br.ContainerDeleteRequest.Provider = provider
+	case br.ContainerFileCreateRequest != nil:
+		br.ContainerFileCreateRequest.Provider = provider
+	case br.ContainerFileListRequest != nil:
+		br.ContainerFileListRequest.Provider = provider
+	case br.ContainerFileRetrieveRequest != nil:
+		br.ContainerFileRetrieveRequest.Provider = provider
+	case br.ContainerFileContentRequest != nil:
+		br.ContainerFileContentRequest.Provider = provider
+	case br.ContainerFileDeleteRequest != nil:
+		br.ContainerFileDeleteRequest.Provider = provider
+	case br.PassthroughRequest != nil:
+		br.PassthroughRequest.Provider = provider
 	}
 }
 
@@ -529,6 +597,30 @@ func (br *BifrostRequest) SetModel(model string) {
 		br.ImageVariationRequest.Model = model
 	case br.VideoGenerationRequest != nil:
 		br.VideoGenerationRequest.Model = model
+	case br.FileUploadRequest != nil:
+		br.FileUploadRequest.Model = &model
+	case br.FileListRequest != nil:
+		br.FileListRequest.Model = &model
+	case br.FileRetrieveRequest != nil:
+		br.FileRetrieveRequest.Model = &model
+	case br.FileDeleteRequest != nil:
+		br.FileDeleteRequest.Model = &model
+	case br.FileContentRequest != nil:
+		br.FileContentRequest.Model = &model
+	case br.BatchCreateRequest != nil:
+		br.BatchCreateRequest.Model = &model
+	case br.BatchListRequest != nil:
+		br.BatchListRequest.Model = &model
+	case br.BatchRetrieveRequest != nil:
+		br.BatchRetrieveRequest.Model = &model
+	case br.BatchCancelRequest != nil:
+		br.BatchCancelRequest.Model = &model
+	case br.BatchResultsRequest != nil:
+		br.BatchResultsRequest.Model = &model
+	case br.BatchDeleteRequest != nil:
+		br.BatchDeleteRequest.Model = &model
+	case br.PassthroughRequest != nil:
+		br.PassthroughRequest.Model = model
 	}
 }
 
@@ -590,6 +682,62 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.RawRequestBody = rawRequestBody
 	}
+}
+
+// UpdateProvider sets the provider for this request. It is equivalent to changing the
+// Provider field on the underlying request type but works regardless of request type.
+// If provider is empty, the request's existing provider is used unchanged.
+// For providers not in static config, pair with UpdateBaseProviderType to specify the
+// API dialect; well-known providers (e.g. OpenAI, Gemini) auto-initialise without it.
+func (br *BifrostRequest) UpdateProvider(provider ModelProvider) error {
+	if provider == "" {
+		return nil
+	}
+	br.SetProvider(provider)
+	return nil
+}
+
+// UpdateModel sets the model for this request. It is equivalent to changing the Model
+// field on the underlying request type but works regardless of request type.
+func (br *BifrostRequest) UpdateModel(model string) error {
+	if model == "" {
+		return nil
+	}
+	br.SetModel(model)
+	return nil
+}
+
+// UpdateAPIKey sets a per-request API credential, bypassing the key pool for this request.
+// This is the recommended way for plugins to inject dynamic credentials at request time.
+func (br *BifrostRequest) UpdateAPIKey(key Key) {
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.Key = &key
+}
+
+// UpdateProviderBaseURL overrides the provider's base URL for this request, enabling
+// routing to geo-specific or tenant-specific endpoints (e.g. "https://eu.api.openai.com").
+// The URL should not have a trailing slash.
+func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.BaseURL = baseURL
+}
+
+// UpdateBaseProviderType sets the API dialect for this request when the provider name
+// (set via UpdateProvider) is not a built-in provider. This allows arbitrary provider
+// names to be used without a static config entry, as long as a supported dialect is
+// specified (e.g. schemas.OpenAI for any OpenAI-compatible endpoint).
+func (br *BifrostRequest) UpdateBaseProviderType(bt ModelProvider) {
+	if bt == "" {
+		return
+	}
+	if br.ProviderOverride == nil {
+		br.ProviderOverride = &ProviderOverride{}
+	}
+	br.ProviderOverride.BaseProviderType = bt
 }
 
 type MCPRequestType string

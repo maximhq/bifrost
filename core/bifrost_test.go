@@ -2,7 +2,10 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -590,6 +593,27 @@ func BenchmarkIsRateLimitError(b *testing.B) {
 	}
 }
 
+// mockOpenAIChatResponse returns a minimal valid OpenAI chat completion JSON body for use in test servers.
+func mockOpenAIChatResponse(model string) []byte {
+	resp := map[string]any{
+		"id":     "chatcmpl-test",
+		"object": "chat.completion",
+		"model":  model,
+		"choices": []map[string]any{
+			{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "hello"},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8,
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return b
+}
+
 // Mock Account implementation for testing UpdateProvider
 type MockAccount struct {
 	mu      sync.RWMutex
@@ -1171,3 +1195,468 @@ func TestUpdateProvider_ProviderSliceIntegrity(t *testing.T) {
 	})
 }
 
+// nilConfigAccount wraps MockAccount but returns (nil, nil) from GetConfigForProvider
+// for providers not in static config, mirroring production Account implementations that
+// allow getProviderQueue to auto-initialise dynamically-configurable providers.
+// Use this in tests that exercise the auto-init code path.
+type nilConfigAccount struct {
+	*MockAccount
+}
+
+func (a *nilConfigAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	cfg, err := a.MockAccount.GetConfigForProvider(provider)
+	if err != nil {
+		// Provider not in static config — signal auto-init is allowed.
+		return nil, nil
+	}
+	return cfg, nil
+}
+
+// TestProviderOverride verifies that the req.UpdateAPIKey / req.UpdateProviderBaseURL /
+// req.UpdateProvider methods injected by a plugin PreLLMHook cause Bifrost to use the
+// supplied credential and endpoint instead of the statically configured values. This is
+// the mechanism that enables data-residency routing: a plugin resolves the user's geo
+// constraint from their JWT and calls the Update* methods at request time.
+func TestProviderOverride(t *testing.T) {
+	t.Run("KeyAndBaseURLAreOverridden", func(t *testing.T) {
+		// Verifies that UpdateAPIKey and UpdateProviderBaseURL in a PreLLMHook cause Bifrost
+		// to use the injected key and URL rather than the statically configured values.
+		const overrideKey = "sk-override-eu-key"
+
+		var (
+			capturedAuth string
+			capturedHost string
+			capturedPath string
+		)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			capturedHost = r.Host
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		// Static provider points at a sentinel URL that must NOT be called.
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, "http://static-should-not-be-called.invalid/v1")
+
+		// Plugin calls UpdateAPIKey + UpdateProviderBaseURL — simulating what a
+		// data-residency-aware hook does after reading the user's JWT claims.
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL+"/v1")},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		wantAuth := "Bearer " + overrideKey
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+		wantHost := strings.TrimPrefix(server.URL, "http://")
+		if capturedHost != wantHost {
+			t.Errorf("Host header: got %q, want %q", capturedHost, wantHost)
+		}
+		// BaseURL is server.URL+"/v1"; Bifrost appends the provider default path "/v1/chat/completions".
+		if capturedPath != "/v1/v1/chat/completions" {
+			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/v1/chat/completions")
+		}
+	})
+
+	t.Run("StaticConfigUsedWhenNoOverride", func(t *testing.T) {
+		// Without a plugin override the static key and URL from account config must be used.
+		var capturedAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, server.URL+"/v1")
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		// Static key from MockAccount.AddProviderWithBaseURL is "sk-test-openai".
+		wantAuth := "Bearer sk-test-openai"
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+	})
+
+	t.Run("ProviderAutoInitWithoutConfig", func(t *testing.T) {
+		// Verifies the dynamicallyConfigurableProviders fallback in getProviderQueue:
+		// a standard provider (OpenAI) should be auto-initialised on first use even when
+		// no static config entry exists. The plugin supplies key and URL via Update* methods.
+		const overrideKey = "sk-auto-init-key"
+
+		var capturedAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		// Empty account — no providers registered at all. nilConfigAccount returns (nil, nil)
+		// for unregistered providers so getProviderQueue can auto-init OpenAI.
+		account := &nilConfigAccount{NewMockAccount()}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL+"/v1")},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed (provider should auto-init): %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		wantAuth := "Bearer " + overrideKey
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+	})
+
+	t.Run("DialectSwitchViaUpdateProvider", func(t *testing.T) {
+		// Verifies that req.UpdateProvider in a PreLLMHook switches the wire dialect.
+		// The incoming request declares Provider=Anthropic; the plugin calls
+		// req.UpdateProvider(OpenAI), redirecting to the OpenAI queue and hitting
+		// overrideServer rather than sentinelServer.
+		const overrideKey = "sk-dialect-switch-key"
+
+		var sentinelHit bool
+		sentinelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			sentinelHit = true
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer sentinelServer.Close()
+
+		var capturedAuth string
+		overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer overrideServer.Close()
+
+		// Anthropic → sentinel (must never be contacted after dialect switch).
+		// OpenAI is absent from static config; nilConfigAccount returns (nil, nil) for it
+		// so getProviderQueue can auto-init the OpenAI queue.
+		account := &nilConfigAccount{NewMockAccount()}
+		account.AddProviderWithBaseURL(schemas.Anthropic, 2, 100, sentinelServer.URL)
+
+		// Plugin switches provider, key, and base URL.
+		plugin := newProviderSwitchPlugin(schemas.OpenAI, overrideKey, overrideServer.URL+"/v1")
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{plugin},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-sonnet-20241022",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest failed: %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil response")
+		}
+		if sentinelHit {
+			t.Error("Anthropic sentinel server was called; dialect was not switched to OpenAI")
+		}
+		wantAuth := "Bearer " + overrideKey
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+	})
+
+	// ArbitraryProviderViaBaseProviderType verifies that a provider name not present in
+	// any static config and not in dynamicallyConfigurableProviders can still be used
+	// when the plugin specifies a BaseProviderType (dialect) via UpdateBaseProviderType.
+	// This is the multi-tenant use case: "my-org-openai" routes through the OpenAI dialect.
+	t.Run("ArbitraryProviderViaBaseProviderType", func(t *testing.T) {
+		const arbitraryKey = "sk-arbitrary-tenant-key"
+		var capturedAuth string
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(mockOpenAIChatResponse("gpt-4o"))
+		}))
+		defer server.Close()
+
+		// Empty account — "my-org-openai" is not registered anywhere. nilConfigAccount
+		// returns (nil, nil) for unregistered providers (including the resolved "openai"
+		// base type) so getProviderQueue can auto-init it.
+		account := &nilConfigAccount{NewMockAccount()}
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin("my-org-openai", schemas.OpenAI, arbitraryKey, server.URL+"/v1")},
+		})
+		if err != nil {
+			t.Fatalf("Init() error = %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.ModelProvider("my-org-openai"),
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionRequest() error = %v", bifrostErr)
+		}
+		if resp == nil {
+			t.Fatal("expected non-nil chat response")
+		}
+
+		wantAuth := "Bearer " + arbitraryKey
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+	})
+}
+
+// keyBaseURLPlugin is a test helper plugin that injects a static API key and base URL
+// via req.UpdateAPIKey and req.UpdateProviderBaseURL on every request.
+type keyBaseURLPlugin struct {
+	key, baseURL string
+}
+
+func newKeyBaseURLPlugin(key, baseURL string) *keyBaseURLPlugin {
+	return &keyBaseURLPlugin{key: key, baseURL: baseURL}
+}
+
+func (p *keyBaseURLPlugin) GetName() string { return "key-base-url-test-plugin" }
+func (p *keyBaseURLPlugin) Cleanup() error  { return nil }
+func (p *keyBaseURLPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+	req.UpdateProviderBaseURL(p.baseURL)
+	return req, nil, nil
+}
+func (p *keyBaseURLPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// arbitraryProviderPlugin is a test helper plugin that routes a request to a provider name
+// that is not in static config and not in dynamicallyConfigurableProviders, by setting a
+// BaseProviderType (dialect) alongside credentials and base URL.
+type arbitraryProviderPlugin struct {
+	providerName schemas.ModelProvider
+	baseType     schemas.ModelProvider
+	key, baseURL string
+}
+
+func newArbitraryProviderPlugin(providerName, baseType schemas.ModelProvider, key, baseURL string) *arbitraryProviderPlugin {
+	return &arbitraryProviderPlugin{providerName: providerName, baseType: baseType, key: key, baseURL: baseURL}
+}
+
+func (p *arbitraryProviderPlugin) GetName() string { return "arbitrary-provider-test-plugin" }
+func (p *arbitraryProviderPlugin) Cleanup() error  { return nil }
+func (p *arbitraryProviderPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req.UpdateProvider(p.providerName) //nolint:errcheck
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+	req.UpdateProviderBaseURL(p.baseURL)
+	req.UpdateBaseProviderType(p.baseType)
+	return req, nil, nil
+}
+func (p *arbitraryProviderPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// providerSwitchPlugin is a test helper plugin that switches the provider dialect and
+// injects credentials, using UpdateProvider, UpdateAPIKey, and UpdateProviderBaseURL.
+type providerSwitchPlugin struct {
+	provider     schemas.ModelProvider
+	key, baseURL string
+}
+
+func newProviderSwitchPlugin(provider schemas.ModelProvider, key, baseURL string) *providerSwitchPlugin {
+	return &providerSwitchPlugin{provider: provider, key: key, baseURL: baseURL}
+}
+
+func (p *providerSwitchPlugin) GetName() string { return "provider-switch-test-plugin" }
+func (p *providerSwitchPlugin) Cleanup() error  { return nil }
+func (p *providerSwitchPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req.UpdateProvider(p.provider) //nolint:errcheck
+	req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.key)})
+	req.UpdateProviderBaseURL(p.baseURL)
+	return req, nil, nil
+}
+func (p *providerSwitchPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestFallbackToUnconfiguredProvider verifies that prepareFallbackRequest allows
+// dynamically-configurable providers (e.g. OpenAI, Anthropic) to be used as fallback
+// destinations even when they have no static config entry. A plugin injects credentials
+// via req.UpdateProvider / UpdateAPIKey / UpdateProviderBaseURL when it detects FallbackIndex > 0.
+//
+// Before the fix, prepareFallbackRequest called GetConfigForProvider and bailed out for
+// any provider not in the static config, so the fallback was silently skipped and the
+// primary error was returned instead. After the fix, dynamically-configurable providers
+// are let through and getProviderQueue auto-initialises them.
+func TestFallbackToUnconfiguredProvider(t *testing.T) {
+	const fallbackKey = "sk-fallback-openai-key"
+
+	// primaryServer always returns 429 to force fallback routing.
+	primaryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer primaryServer.Close()
+
+	// fallbackServer accepts the request and returns a valid response.
+	var fallbackCapturedAuth string
+	fallbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCapturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(mockOpenAIChatResponse("gpt-4o-mini"))
+	}))
+	defer fallbackServer.Close()
+
+	// Account has only the primary (Anthropic) configured. The fallback (OpenAI) is absent;
+	// nilConfigAccount returns (nil, nil) for it so getProviderQueue auto-inits it.
+	account := &nilConfigAccount{NewMockAccount()}
+	account.AddProviderWithBaseURL(schemas.Anthropic, 10, 100, primaryServer.URL)
+
+	// plugin swaps in fallback credentials via ProviderOverride when FallbackIndex > 0.
+	plugin := &fallbackOverridePlugin{
+		fallbackKey:     fallbackKey,
+		fallbackBaseURL: fallbackServer.URL + "/v1",
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins: []schemas.LLMPlugin{plugin},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-3-5-sonnet-20241022",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		Fallbacks: []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+		},
+	})
+
+	if bifrostErr != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", bifrostErr)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response from fallback")
+	}
+	wantAuth := "Bearer " + fallbackKey
+	if fallbackCapturedAuth != wantAuth {
+		t.Errorf("fallback Authorization header: got %q, want %q", fallbackCapturedAuth, wantAuth)
+	}
+}
+
+// fallbackOverridePlugin is a minimal LLMPlugin that injects per-request provider
+// credentials via the req.Update* methods. On the primary attempt (FallbackIndex == 0)
+// it does nothing — the request uses static account config. On fallback attempts it
+// calls UpdateProvider, UpdateAPIKey, and UpdateProviderBaseURL for the fallback provider.
+type fallbackOverridePlugin struct {
+	fallbackKey     string
+	fallbackBaseURL string
+}
+
+func (p *fallbackOverridePlugin) GetName() string { return "fallback-override-test-plugin" }
+func (p *fallbackOverridePlugin) Cleanup() error  { return nil }
+
+func (p *fallbackOverridePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	if idx > 0 {
+		req.UpdateProvider(schemas.OpenAI) //nolint:errcheck
+		req.UpdateAPIKey(schemas.Key{Value: *schemas.NewEnvVar(p.fallbackKey)})
+		req.UpdateProviderBaseURL(p.fallbackBaseURL)
+	}
+	return req, nil, nil
+}
+
+func (p *fallbackOverridePlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
