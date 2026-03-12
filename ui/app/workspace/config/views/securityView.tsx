@@ -266,6 +266,7 @@ export default function SecurityView() {
 								target="_blank"
 								rel="noopener noreferrer"
 								className="text-primary underline"
+								data-testid="security-virtual-keys-docs-link"
 							>
 								documentation
 							</Link>{" "}

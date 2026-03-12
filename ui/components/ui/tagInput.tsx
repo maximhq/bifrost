@@ -51,6 +51,7 @@ export const TagInput = React.forwardRef<HTMLInputElement, TagInputProps>(({ cla
 				<Badge key={tag} variant="secondary" className="bg-accent dark:bg-card flex items-center gap-1">
 					{tag}
 					<button
+						aria-label={`Remove ${tag}`}
 						type="button"
 						className="ring-offset-background focus:ring-ring cursor-pointer rounded-full outline-none focus:ring-2 focus:ring-offset-2"
 						onClick={() => removeTag(tag)}

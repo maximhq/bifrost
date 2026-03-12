@@ -189,6 +189,12 @@ func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.Bifro
 	return ch
 }
 
+// clearCtxForFallback clears the ctx values which are not applicable for fallback requests.
+func clearCtxForFallback(ctx *schemas.BifrostContext) {
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
+	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
+}
+
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
 	m := make(map[schemas.ModelProvider]struct{}, len(schemas.SupportedBaseProviders))
 	for _, p := range schemas.SupportedBaseProviders {

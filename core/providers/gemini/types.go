@@ -848,6 +848,18 @@ type GenerationConfig struct {
 	TopK *int `json:"topK,omitempty"`
 	// Optional. If specified, nucleus sampling will be used.
 	TopP *float64 `json:"topP,omitempty"`
+	// Optional. Image generation configuration.
+	ImageConfig *GeminiImageConfig `json:"imageConfig,omitempty"`
+}
+
+// GeminiImageConfig represents image generation configuration within GenerationConfig.
+type GeminiImageConfig struct {
+	// AspectRatio controls the aspect ratio of generated images.
+	// Valid values: "1:1", "3:4", "4:3", "9:16", "16:9"
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// ImageSize controls the resolution of generated images.
+	// Valid values: "1k", "2k", "4k"
+	ImageSize string `json:"imageSize,omitempty"`
 }
 
 // ModelSelectionConfig represents configuration for model selection.

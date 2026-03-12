@@ -573,6 +573,34 @@ TableKey:
 
 # Routing Rules schemas
 
+RoutingTarget:
+  type: object
+  description: A single weighted routing target within a routing rule
+  required:
+    - weight
+  dependentRequired:
+    key_id:
+      - provider
+  properties:
+    provider:
+      type: string
+      description: Target provider (omit or empty to use the incoming request provider)
+      nullable: true
+    model:
+      type: string
+      description: Target model (omit or empty to use the incoming request model)
+      nullable: true
+    key_id:
+      type: string
+      description: UUID of the API key to pin for this target (omit for load-balanced key selection)
+      nullable: true
+    weight:
+      type: number
+      format: double
+      exclusiveMinimum: 0
+      description: Probability weight for this target (must be > 0; all target weights in a rule must sum to 1, e.g. 0.7 + 0.3 = 1.0)
+      example: 0.5
+
 RoutingRule:
   type: object
   description: CEL-based routing rule for intelligent request routing
@@ -592,14 +620,11 @@ RoutingRule:
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
-    provider:
-      type: string
-      description: Target provider (empty string uses incoming request provider)
-      nullable: true
-    model:
-      type: string
-      description: Target model (empty string uses incoming request model)
-      nullable: true
+    targets:
+      type: array
+      description: Weighted routing targets; weights must sum to 1; target is selected probabilistically at request time
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:
@@ -655,6 +680,7 @@ CreateRoutingRuleRequest:
     - cel_expression
     - scope
     - priority
+    - targets
   properties:
     name:
       type: string
@@ -668,14 +694,12 @@ CreateRoutingRuleRequest:
     cel_expression:
       type: string
       description: CEL expression for matching
-    provider:
-      type: string
-      description: Target provider (optional, empty uses incoming)
-      nullable: true
-    model:
-      type: string
-      description: Target model (optional, empty uses incoming)
-      nullable: true
+    targets:
+      type: array
+      minItems: 1
+      description: Weighted routing targets; weights must sum to 1; target is selected probabilistically at request time
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:
@@ -719,7 +743,7 @@ CreateRoutingRuleRequest:
 
 UpdateRoutingRuleRequest:
   type: object
-  description: Request to update a routing rule
+  description: Request to update a routing rule (all fields optional; providing `targets` replaces all existing targets)
   properties:
     name:
       type: string
@@ -729,12 +753,12 @@ UpdateRoutingRuleRequest:
       type: boolean
     cel_expression:
       type: string
-    provider:
-      type: string
-      nullable: true
-    model:
-      type: string
-      nullable: true
+    targets:
+      type: array
+      minItems: 1
+      description: Replaces all existing targets when provided; weights must sum to 1
+      items:
+        $ref: '#/RoutingTarget'
     fallbacks:
       type: array
       items:

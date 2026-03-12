@@ -3917,6 +3917,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		bifrost.logger.Debug(fmt.Sprintf("trying fallback provider %s with model %s", fallback.Provider, fallback.Model))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
+		clearCtxForFallback(ctx)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -4030,6 +4031,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	for i, fallback := range fallbacks {
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, i+1)
 		ctx.SetValue(schemas.BifrostContextKeyFallbackRequestID, uuid.New().String())
+		clearCtxForFallback(ctx)
 
 		// Start span for fallback attempt
 		tracer := bifrost.getTracer()
@@ -6058,7 +6060,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 						return key, nil
 					}
 				}
-				return schemas.Key{}, fmt.Errorf("no key found with id %q for provider: %v", keyID, providerKey)
+				return schemas.Key{}, fmt.Errorf("no supported key found with id %q for provider: %v and model: %s", keyID, providerKey, model)
 			}
 		}
 		if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
@@ -6068,7 +6070,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 						return key, nil
 					}
 				}
-				return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", keyName, providerKey)
+				return schemas.Key{}, fmt.Errorf("no supported key found with name %q for provider: %v and model: %s", keyName, providerKey, model)
 			}
 		}
 	}

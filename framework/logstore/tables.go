@@ -89,7 +89,7 @@ type Log struct {
 	SelectedKeyName        string    `gorm:"type:varchar(255)" json:"selected_key_name"`
 	VirtualKeyID           *string   `gorm:"type:varchar(255);index:idx_logs_virtual_key_id" json:"virtual_key_id"`
 	VirtualKeyName         *string   `gorm:"type:varchar(255)" json:"virtual_key_name"`
-	RoutingEnginesUsedStr   *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
+	RoutingEnginesUsedStr  *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"` // Comma-separated routing engines
 	RoutingRuleID          *string   `gorm:"type:varchar(255);index:idx_logs_routing_rule_id" json:"routing_rule_id"`
 	RoutingRuleName        *string   `gorm:"type:varchar(255)" json:"routing_rule_name"`
 	InputHistory           string    `gorm:"type:text" json:"-"` // JSON serialized []schemas.ChatMessage
@@ -196,11 +196,6 @@ func (l *Log) BeforeCreate(tx *gorm.DB) error {
 	if l.CreatedAt.IsZero() {
 		l.CreatedAt = time.Now().UTC()
 	}
-	return l.SerializeFields()
-}
-
-// BeforeSave GORM hook to serialize JSON fields
-func (l *Log) BeforeSave(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 
@@ -671,11 +666,6 @@ func (l *MCPToolLog) BeforeCreate(tx *gorm.DB) error {
 	if l.Timestamp.IsZero() {
 		l.Timestamp = time.Now().UTC()
 	}
-	return l.SerializeFields()
-}
-
-// BeforeSave GORM hook to serialize JSON fields
-func (l *MCPToolLog) BeforeSave(tx *gorm.DB) error {
 	return l.SerializeFields()
 }
 

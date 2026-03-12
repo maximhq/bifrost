@@ -168,7 +168,10 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
-// Handles pagination automatically by following nextPageToken until all models are retrieved.
+//
+// The logic is:
+// 1. If deployments or allowedModels are configured, return those (no API call needed)
+// 2. Otherwise, fetch from the publishers.models.list API endpoint (Model Garden)
 func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 
@@ -176,16 +179,21 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewConfigurationError("vertex key config is not set", providerName)
 	}
 
-	projectID := key.VertexKeyConfig.ProjectID
-	if projectID.GetValue() == "" {
-		return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
-	}
-
 	region := key.VertexKeyConfig.Region.GetValue()
 	if region == "" {
 		return nil, providerUtils.NewConfigurationError("region is not set in key config", providerName)
 	}
 
+	deployments := key.VertexKeyConfig.Deployments
+	allowedModels := key.Models
+
+	// If deployments or allowedModels are configured, return those directly without API call
+	// Skip this fast path when Unfiltered is set so the full Vertex catalog can be retrieved
+	if !request.Unfiltered && (len(deployments) > 0 || len(allowedModels) > 0) {
+		return buildResponseFromConfig(deployments, allowedModels), nil
+	}
+
+	// No deployments configured - fetch from Model Garden API
 	var host string
 	if region == "global" {
 		host = "aiplatform.googleapis.com"
@@ -193,8 +201,8 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		host = fmt.Sprintf("%s-aiplatform.googleapis.com", region)
 	}
 
-	// Accumulate all models from paginated requests
-	var allModels []VertexModel
+	// Accumulate all publisher models from paginated requests
+	var allPublisherModels []VertexPublisherModel
 	var rawRequests []interface{}
 	var rawResponses []interface{}
 	pageToken := ""
@@ -209,73 +217,104 @@ func (provider *VertexProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewBifrostOperationError("error getting token (api key auth not supported for list models)", err, schemas.Vertex)
 	}
 
-	// Loop through all pages until no nextPageToken is returned
-	for {
-		// Build URL with pagination parameters
-		requestURL := fmt.Sprintf("https://%s/v1/projects/%s/locations/%s/models?pageSize=%d", host, projectID.GetValue(), region, MaxPageSize)
-		if pageToken != "" {
-			requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
-		}
-
-		// Create HTTP request for listing models
-		req := fasthttp.AcquireRequest()
-		resp := fasthttp.AcquireResponse()
-		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
-
-		req.Header.SetMethod(http.MethodGet)
-		req.SetRequestURI(requestURL)
-		req.Header.SetContentType("application/json")
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
-
-		_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
-
-		// Handle error response
-		if resp.StatusCode() != fasthttp.StatusOK {
-			if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
-				removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+	// Iterate over all supported Vertex publishers to include Google, Anthropic, and Mistral models
+	publishers := []string{"google", "anthropic", "mistralai"}
+	for _, publisher := range publishers {
+		pageToken = ""
+		// Loop through all pages until no nextPageToken is returned
+		for {
+			// Build URL for publishers.models.list endpoint (Model Garden)
+			// Format: https://{region}-aiplatform.googleapis.com/v1beta1/publishers/{publisher}/models
+			requestURL := fmt.Sprintf("https://%s/v1beta1/publishers/%s/models?pageSize=%d", host, publisher, MaxPageSize)
+			if pageToken != "" {
+				requestURL = fmt.Sprintf("%s&pageToken=%s", requestURL, url.QueryEscape(pageToken))
 			}
 
-			var errorResp VertexError
-			if err := sonic.Unmarshal(resp.Body(), &errorResp); err != nil {
-				return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
+			// Create HTTP request for listing models
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+
+			req.Header.SetMethod(http.MethodGet)
+			req.SetRequestURI(requestURL)
+			req.Header.SetContentType("application/json")
+			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
+			_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+			if bifrostErr != nil {
+				fasthttp.ReleaseRequest(req)
+				fasthttp.ReleaseResponse(resp)
+				// Non-Google publishers may not be available in all regions; skip on error
+				if publisher != "google" {
+					break
+				}
+				return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 			}
-			return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, resp.StatusCode(), schemas.Vertex, nil, nil), nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
+			ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
-		// Parse Vertex's response
-		var vertexResponse VertexListModelsResponse
-		rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
-		if bifrostErr != nil {
-			return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, resp.Body(), provider.sendBackRawRequest, provider.sendBackRawResponse)
-		}
-		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-			rawRequests = append(rawRequests, rawRequest)
-		}
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			rawResponses = append(rawResponses, rawResponse)
-		}
+			// Handle error response
+			if resp.StatusCode() != fasthttp.StatusOK {
+				if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
+					removeVertexClient(key.VertexKeyConfig.AuthCredentials.GetValue())
+				}
 
-		// Accumulate models from this page
-		allModels = append(allModels, vertexResponse.Models...)
+				// Non-Google publishers may not be available in all regions;
+				// skip only on 403/404 which indicate regional unavailability.
+				// Surface other errors (401, 429, 5xx) so they aren't silently swallowed.
+				if publisher != "google" && (resp.StatusCode() == fasthttp.StatusForbidden || resp.StatusCode() == fasthttp.StatusNotFound) {
+					fasthttp.ReleaseRequest(req)
+					fasthttp.ReleaseResponse(resp)
+					break
+				}
 
-		// Check if there are more pages
-		if vertexResponse.NextPageToken == "" {
-			break
+				respBody := append([]byte(nil), resp.Body()...)
+				statusCode := resp.StatusCode()
+				fasthttp.ReleaseRequest(req)
+				fasthttp.ReleaseResponse(resp)
+
+				var errorResp VertexError
+				if err := sonic.Unmarshal(respBody, &errorResp); err != nil {
+					return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err, schemas.Vertex), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+				}
+				return nil, providerUtils.EnrichError(ctx, providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, schemas.Vertex, nil, nil), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			}
+
+			// Parse Vertex's publisher models response
+			var vertexResponse VertexListPublisherModelsResponse
+			rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(resp.Body(), &vertexResponse, nil, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+			if bifrostErr != nil {
+				respBody := append([]byte(nil), resp.Body()...)
+				fasthttp.ReleaseRequest(req)
+				fasthttp.ReleaseResponse(resp)
+				return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+			}
+			if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+				rawRequests = append(rawRequests, rawRequest)
+			}
+			if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+				rawResponses = append(rawResponses, rawResponse)
+			}
+
+			// Accumulate models from this page
+			allPublisherModels = append(allPublisherModels, vertexResponse.PublisherModels...)
+
+			fasthttp.ReleaseRequest(req)
+			fasthttp.ReleaseResponse(resp)
+
+			// Check if there are more pages
+			if vertexResponse.NextPageToken == "" {
+				break
+			}
+			pageToken = vertexResponse.NextPageToken
 		}
-		pageToken = vertexResponse.NextPageToken
 	}
 
 	// Create aggregated response from all pages
-	aggregatedResponse := &VertexListModelsResponse{
-		Models: allModels,
+	aggregatedResponse := &VertexListPublisherModelsResponse{
+		PublisherModels: allPublisherModels,
 	}
-	response := aggregatedResponse.ToBifrostListModelsResponse(key.Models, key.VertexKeyConfig.Deployments, request.Unfiltered)
+
+	response := aggregatedResponse.ToBifrostListModelsResponse(nil, request.Unfiltered)
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		response.ExtraFields.RawRequest = rawRequests

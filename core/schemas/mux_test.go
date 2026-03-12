@@ -319,3 +319,143 @@ func TestToBifrostResponsesStreamResponse_PopulatesFinalDoneTextAndCompletedOutp
 		t.Fatalf("expected completed output text %q, got %q", "Hello world", *msg.Content.ContentBlocks[0].Text)
 	}
 }
+
+func TestToBifrostResponsesResponse_MapsLengthToIncomplete(t *testing.T) {
+	length := string(BifrostFinishReasonLength)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &length},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "incomplete" {
+		t.Fatalf("expected status %q, got %q", "incomplete", *resp.Status)
+	}
+	if resp.IncompleteDetails == nil {
+		t.Fatal("expected incomplete_details to be set")
+	}
+	if resp.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatalf("expected incomplete_details.reason %q, got %q", "max_output_tokens", resp.IncompleteDetails.Reason)
+	}
+}
+
+func TestToBifrostResponsesResponse_MapsToolCallsToCompleted(t *testing.T) {
+	toolCalls := string(BifrostFinishReasonToolCalls)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &toolCalls},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "completed" {
+		t.Fatalf("expected status %q, got %q", "completed", *resp.Status)
+	}
+	if resp.IncompleteDetails != nil {
+		t.Fatal("expected incomplete_details to be nil")
+	}
+}
+
+func TestToBifrostResponsesResponse_PrioritizesLengthAcrossChoices(t *testing.T) {
+	stop := string(BifrostFinishReasonStop)
+	length := string(BifrostFinishReasonLength)
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &stop},
+			{FinishReason: &length},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil || resp.Status == nil {
+		t.Fatal("expected status to be set")
+	}
+	if *resp.Status != "incomplete" {
+		t.Fatalf("expected status %q, got %q", "incomplete", *resp.Status)
+	}
+	if resp.IncompleteDetails == nil || resp.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatal("expected max_output_tokens incomplete_details")
+	}
+}
+
+func TestToBifrostResponsesResponse_UnknownFinishReasonLeavesStatusUnset(t *testing.T) {
+	unknown := "content_filter"
+	resp := (&BifrostChatResponse{
+		Choices: []BifrostResponseChoice{
+			{FinishReason: &unknown},
+		},
+	}).ToBifrostResponsesResponse()
+
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.Status != nil {
+		t.Fatalf("expected status to be nil, got %q", *resp.Status)
+	}
+	if resp.IncompleteDetails != nil {
+		t.Fatal("expected incomplete_details to be nil")
+	}
+}
+
+func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	makeChunk := func(role *string, content *string, finishReason *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason: finishReason,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role:    role,
+							Content: content,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	role := string(ChatMessageRoleAssistant)
+	part := "Hello"
+	length := string(BifrostFinishReasonLength)
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, makeChunk(&role, nil, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, &part, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, makeChunk(nil, nil, &length).ToBifrostResponsesStreamResponse(state)...)
+
+	var completed *BifrostResponsesStreamResponse
+	var incomplete *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		if evt == nil {
+			continue
+		}
+		if evt.Type == ResponsesStreamResponseTypeCompleted {
+			completed = evt
+		}
+		if evt.Type == ResponsesStreamResponseTypeIncomplete {
+			incomplete = evt
+		}
+	}
+
+	if completed != nil {
+		t.Fatal("did not expect response.completed for finish_reason=length")
+	}
+	if incomplete == nil || incomplete.Response == nil {
+		t.Fatal("expected response.incomplete with response payload")
+	}
+	if incomplete.Response.Status == nil || *incomplete.Response.Status != "incomplete" {
+		t.Fatal("expected terminal response status to be incomplete")
+	}
+	if incomplete.Response.IncompleteDetails == nil || incomplete.Response.IncompleteDetails.Reason != "max_output_tokens" {
+		t.Fatal("expected incomplete_details.reason to be max_output_tokens")
+	}
+}

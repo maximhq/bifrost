@@ -1373,6 +1373,35 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "routing_target": {
+      "type": "object",
+      "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target provider name (e.g., 'openai', 'azure'). Omit to use the incoming request provider"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target model name. Omit to use the incoming request model"
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional API key UUID to pin for this target. Omit for load-balanced key selection"
+        },
+        "weight": {
+          "type": "number",
+          "description": "Probability weight for this target (must be > 0). All weights in a rule must sum to 1",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": ["weight"],
+      "additionalProperties": false
+    },
     "routing_rule": {
       "type": "object",
       "description": "Routing rule for dynamic provider/model selection",
@@ -1398,14 +1427,16 @@
           "type": "string",
           "description": "CEL (Common Expression Language) expression for rule evaluation"
         },
-        "provider": {
-          "type": "string",
-          "description": "Target provider name (e.g., 'openai', 'azure'). Empty means use original provider"
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Weighted routing targets. Weights must sum to 1. Omit provider or model to use the incoming request value.",
+          "items": {
+            "$ref": "#/$defs/routing_target"
+          }
         },
-        "model": {
-          "type": "string",
-          "description": "Target model name. Empty means use original model"
-        },
+        "provider": false,
+        "model": false,
         "fallbacks": {
           "type": "array",
           "description": "Fallback provider chain in order",
@@ -1434,7 +1465,7 @@
           "additionalProperties": true
         }
       },
-      "required": ["id", "name"],
+      "required": ["id", "name", "targets"],
       "additionalProperties": false
     },
     "virtual_key_provider_config": {

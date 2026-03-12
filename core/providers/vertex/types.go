@@ -171,6 +171,43 @@ type VertexModelLabels struct {
 	TuneType                         string `json:"tune-type"`
 }
 
+// ================================ Publisher Model Types ================================
+// These types are for the publishers.models.list endpoint (Model Garden)
+
+type VertexPublisherModel struct {
+	Name           string                          `json:"name"`
+	VersionID      string                          `json:"versionId"`
+	OpenSourceCategory string                      `json:"openSourceCategory"`
+	LaunchStage    string                          `json:"launchStage"`
+	VersionState   string                          `json:"versionState"`
+	PublisherModelTemplate string                  `json:"publisherModelTemplate"`
+	SupportedActions *VertexPublisherModelActions  `json:"supportedActions"`
+}
+
+type VertexPublisherModelActions struct {
+	OpenGenerationAIStudio      *VertexPublisherModelURI `json:"openGenerationAiStudio"`
+	OpenGenie                   *VertexPublisherModelURI `json:"openGenie"`
+	OpenPromptTuningPipeline    *VertexPublisherModelURI `json:"openPromptTuningPipeline"`
+	OpenNotebook                *VertexPublisherModelURI `json:"openNotebook"`
+	OpenFineTuningPipeline      *VertexPublisherModelURI `json:"openFineTuningPipeline"`
+	Deploy                      *VertexPublisherModelDeploy `json:"deploy"`
+	OpenEvaluationPipeline      *VertexPublisherModelURI `json:"openEvaluationPipeline"`
+}
+
+type VertexPublisherModelURI struct {
+	URI string `json:"uri"`
+}
+
+type VertexPublisherModelDeploy struct {
+	ModelDisplayName string `json:"modelDisplayName"`
+	Title            string `json:"title"`
+}
+
+type VertexListPublisherModelsResponse struct {
+	PublisherModels []VertexPublisherModel `json:"publisherModels"`
+	NextPageToken   string                 `json:"nextPageToken"`
+}
+
 // ==================== ERROR TYPES ====================
 // VertexValidationError represents validation errors
 // returned by the Vertex Mistral endpoint

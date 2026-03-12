@@ -509,6 +509,10 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 			cohereToolCall := chunk.Delta.Message.ToolCalls.CohereToolCallObject
 			toolCall := schemas.ChatAssistantMessageToolCall{}
 
+			if chunk.Index != nil {
+				toolCall.Index = uint16(*chunk.Index)
+			}
+
 			if cohereToolCall.ID != nil {
 				toolCall.ID = cohereToolCall.ID
 			}

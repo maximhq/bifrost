@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const bulkUpdateCostChunkSize = 500
 
 // RDBLogStore represents a log store that uses a SQLite database.
 type RDBLogStore struct {
@@ -166,7 +169,12 @@ func (s *RDBLogStore) Ping(ctx context.Context) error {
 
 // Update updates a log entry in the database.
 func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
-	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(entry)
+	serializedEntry, err := serializeLogUpdateEntry(entry)
+	if err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Model(&Log{}).Where("id = ?", id).Updates(serializedEntry)
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -176,15 +184,87 @@ func (s *RDBLogStore) Update(ctx context.Context, id string, entry any) error {
 	return nil
 }
 
+// BulkUpdateCost updates log costs in bulk, using a PostgreSQL-specific batched
+// VALUES update when available and per-row updates for other dialects.
 func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]float64) error {
 	if len(updates) == 0 {
 		return nil
+	}
+
+	if s.db.Dialector.Name() == "postgres" {
+		return s.bulkUpdateCostPostgres(ctx, updates)
 	}
 
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for id, cost := range updates {
 			costValue := cost
 			if err := tx.Model(&Log{}).Where("id = ?", id).Update("cost", costValue).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// serializeLogUpdateEntry serializes parsed Log fields before passing the
+// update payload to GORM. Non-Log payloads are returned unchanged.
+func serializeLogUpdateEntry(entry any) (any, error) {
+	switch v := entry.(type) {
+	case *Log:
+		if err := v.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case Log:
+		copyEntry := v
+		if err := copyEntry.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return copyEntry, nil
+	default:
+		return entry, nil
+	}
+}
+
+// buildBulkUpdateCostPostgresSQL builds a deterministic UPDATE ... FROM
+// (VALUES ...) statement and argument list for a chunk of PostgreSQL log cost
+// updates.
+func buildBulkUpdateCostPostgresSQL(ids []string, updates map[string]float64) (string, []interface{}) {
+	var sqlBuilder strings.Builder
+	args := make([]interface{}, 0, len(ids)*2)
+
+	sqlBuilder.WriteString("UPDATE logs SET cost = v.cost FROM (VALUES ")
+	for i, id := range ids {
+		if i > 0 {
+			sqlBuilder.WriteString(",")
+		}
+		argOffset := i * 2
+		sqlBuilder.WriteString("($")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 1))
+		sqlBuilder.WriteString("::text,$")
+		sqlBuilder.WriteString(strconv.Itoa(argOffset + 2))
+		sqlBuilder.WriteString("::float8)")
+		args = append(args, id, updates[id])
+	}
+	sqlBuilder.WriteString(") AS v(id, cost) WHERE logs.id = v.id")
+
+	return sqlBuilder.String(), args
+}
+
+// bulkUpdateCostPostgres applies chunked PostgreSQL bulk cost updates to avoid
+// issuing one UPDATE per log row.
+func (s *RDBLogStore) bulkUpdateCostPostgres(ctx context.Context, updates map[string]float64) error {
+	ids := make([]string, 0, len(updates))
+	for id := range updates {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for start := 0; start < len(ids); start += bulkUpdateCostChunkSize {
+			end := min(start+bulkUpdateCostChunkSize, len(ids))
+			query, args := buildBulkUpdateCostPostgresSQL(ids[start:end], updates)
+			if err := tx.Exec(query, args...).Error; err != nil {
 				return err
 			}
 		}
@@ -1602,7 +1682,12 @@ func (s *RDBLogStore) FindMCPToolLog(ctx context.Context, id string) (*MCPToolLo
 
 // UpdateMCPToolLog updates an MCP tool log entry in the database.
 func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any) error {
-	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(entry)
+	serializedEntry, err := serializeMCPToolLogUpdateEntry(entry)
+	if err != nil {
+		return err
+	}
+
+	tx := s.db.WithContext(ctx).Model(&MCPToolLog{}).Where("id = ?", id).Updates(serializedEntry)
 	if tx.Error != nil {
 		return tx.Error
 	}
@@ -1610,6 +1695,26 @@ func (s *RDBLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry any
 		return ErrNotFound
 	}
 	return nil
+}
+
+// serializeMCPToolLogUpdateEntry serializes parsed MCP tool log fields before
+// passing the update payload to GORM. Non-MCPToolLog payloads are returned unchanged.
+func serializeMCPToolLogUpdateEntry(entry any) (any, error) {
+	switch v := entry.(type) {
+	case *MCPToolLog:
+		if err := v.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case MCPToolLog:
+		copyEntry := v
+		if err := copyEntry.SerializeFields(); err != nil {
+			return nil, err
+		}
+		return copyEntry, nil
+	default:
+		return entry, nil
+	}
 }
 
 // SearchMCPToolLogs searches for MCP tool logs in the database.
