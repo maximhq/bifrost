@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from "crypto";
-import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, readFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, readFileSync, appendFileSync, renameSync, unlinkSync } from "fs";
+import { homedir } from "os";
+import { dirname, join } from "path";
 import { Readable } from "stream";
+import { createInterface } from "readline";
 
 const BASE_URL = "https://downloads.getmaxim.ai";
 
@@ -34,16 +34,9 @@ function parseCliVersion() {
 			console.error("--cli-version requires a value");
 			process.exit(1);
 		}
-
-		// Remove the cli-version arguments from args array so they don't get passed to the binary
-		if (versionArg.includes("=")) {
-			args.splice(versionArgIndex, 1);
-		} else {
-			args.splice(versionArgIndex, 2);
-		}
 	}
 
-	return { version: validateCliVersion(cliVersion), remainingArgs: args };
+	return validateCliVersion(cliVersion);
 }
 
 // Validate CLI version format
@@ -63,7 +56,7 @@ function validateCliVersion(version) {
 	process.exit(1);
 }
 
-const { version: VERSION, remainingArgs } = parseCliVersion();
+const VERSION = parseCliVersion();
 
 function getPlatformArchAndBinary() {
 	const platform = process.platform;
@@ -150,24 +143,6 @@ async function downloadBinary(url, dest) {
 	chmodSync(dest, 0o755);
 }
 
-// Returns the os cache directory path for storing binaries
-// Linux: $XDG_CACHE_HOME or ~/.cache
-// macOS: ~/Library/Caches
-// Windows: %LOCALAPPDATA% or %USERPROFILE%\AppData\Local
-function cacheDir() {
-	if (process.platform === "linux") {
-		return process.env.XDG_CACHE_HOME || join(process.env.HOME || "", ".cache");
-	}
-	if (process.platform === "darwin") {
-		return join(process.env.HOME || "", "Library", "Caches");
-	}
-	if (process.platform === "win32") {
-		return process.env.LOCALAPPDATA || join(process.env.USERPROFILE || "", "AppData", "Local");
-	}
-	console.error(`Unsupported platform/arch: ${process.platform}/${process.arch}`);
-	process.exit(1);
-}
-
 // Check if a specific version exists on the download server
 async function checkVersionExists(version, platformDir, archDir, binaryName) {
 	const url = `${BASE_URL}/bifrost-cli/${version}/${platformDir}/${archDir}/${binaryName}`;
@@ -215,6 +190,78 @@ function formatBytes(bytes) {
 	return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
 }
 
+// Detect the user's shell and return the RC file path and the PATH export line
+function getShellConfig() {
+	const home = homedir();
+	const shell = (process.env.SHELL || "").toLowerCase();
+
+	if (process.platform === "win32") {
+		return null; // Windows — manual PATH setup
+	}
+
+	if (shell.endsWith("/fish") || shell.endsWith("/fish.exe")) {
+		return {
+			rcFile: join(home, ".config", "fish", "config.fish"),
+			exportLine: "fish_add_path $HOME/.bifrost/bin",
+			shellName: "fish",
+		};
+	}
+
+	if (shell.endsWith("/zsh")) {
+		return {
+			rcFile: join(home, ".zshrc"),
+			exportLine: 'export PATH="$HOME/.bifrost/bin:$PATH"',
+			shellName: "zsh",
+		};
+	}
+
+	if (shell.endsWith("/bash") || shell.endsWith("/bash.exe")) {
+		const rcFiles =
+			process.platform === "darwin"
+				? [join(home, ".bash_profile"), join(home, ".bashrc")]
+				: [join(home, ".bashrc")];
+		return {
+			rcFile: rcFiles[0],
+			extraRcFiles: rcFiles.slice(1),
+			exportLine: 'export PATH="$HOME/.bifrost/bin:$PATH"',
+			shellName: "bash",
+		};
+	}
+
+	return null;
+}
+
+// Check if the PATH export line is already present in the given file
+function hasPathLine(filePath) {
+	if (!existsSync(filePath)) return false;
+	try {
+		const content = readFileSync(filePath, "utf-8");
+		return content.includes(".bifrost/bin");
+	} catch {
+		return false;
+	}
+}
+
+// Prompt the user with a yes/no question
+async function promptYesNo(question) {
+	if (!process.stdin.isTTY || !process.stdout.isTTY) {
+		return false;
+	}
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	return new Promise((resolve) => {
+		rl.question(question, (answer) => {
+			rl.close();
+			const normalized = (answer || "").trim().toLowerCase();
+			resolve(normalized === "" || normalized === "y" || normalized === "yes");
+		});
+	});
+}
+
+function printStartMessage(message) {
+	console.log(`\n${message}`);
+	console.log(`Enter 'bifrost' when you're ready to start the CLI.`);
+}
+
 async function main() {
 	const { platformDir, archDir, binaryName } = getPlatformArchAndBinary();
 
@@ -241,67 +288,76 @@ async function main() {
 		namedVersion = VERSION;
 	}
 
-	const downloadUrl = `${BASE_URL}/bifrost-cli/${VERSION}/${platformDir}/${archDir}/${binaryName}`;
+	const downloadUrl = `${BASE_URL}/bifrost-cli/${namedVersion}/${platformDir}/${archDir}/${binaryName}`;
 
-	// Use cache for named versions, tmpdir for latest
-	const useCache = namedVersion !== "latest";
-	const bifrostBinDir = useCache ? join(cacheDir(), "bifrost-cli", namedVersion, "bin") : tmpdir();
+	// Install to ~/.bifrost/bin/
+	const installDir = join(homedir(), ".bifrost", "bin");
+	mkdirSync(installDir, { recursive: true });
+	const binaryPath = join(installDir, binaryName);
 
-	// For non-cached downloads, use a unique filename to avoid race conditions
-	const uniqueSuffix = useCache ? "" : `-${process.pid}-${Date.now()}`;
-
-	// If the binary directory doesn't exist, create it
+	// Download to a temp file, verify, then atomically replace
+	const tempBinaryPath = `${binaryPath}.download-${process.pid}-${Date.now()}`;
 	try {
-		if (useCache && !existsSync(bifrostBinDir)) {
-			mkdirSync(bifrostBinDir, { recursive: true });
-		}
-	} catch (mkdirError) {
-		console.error(`❌ Failed to create directory ${bifrostBinDir}:`, mkdirError.message);
-		process.exit(1);
+		await downloadBinary(downloadUrl, tempBinaryPath);
+
+		const checksumUrl = `${BASE_URL}/bifrost-cli/${namedVersion}/${platformDir}/${archDir}/${binaryName}.sha256`;
+		await verifyChecksum(tempBinaryPath, checksumUrl);
+		renameSync(tempBinaryPath, binaryPath);
+	} catch (err) {
+		try { unlinkSync(tempBinaryPath); } catch {}
+		throw err;
+	}
+	console.log(`✅ Installed bifrost to ${binaryPath}`);
+
+	// Shell PATH setup
+	const shellConfig = getShellConfig();
+
+	if (!shellConfig) {
+		// Windows — print manual instructions
+		console.log(`\nTo complete installation, add the following directory to your PATH:`);
+		console.log(`  ${installDir}`);
+		console.log(`\nYou can do this in System Settings > Environment Variables.`);
+		printStartMessage("The installer won't start Bifrost automatically.");
+		return;
 	}
 
-	const binaryPath = join(bifrostBinDir, `${binaryName}${uniqueSuffix}`);
+	// Check if PATH is already configured
+	const allRcFiles = [shellConfig.rcFile, ...(shellConfig.extraRcFiles || [])];
+	const missingRcFiles = allRcFiles.filter((rcFile) => !hasPathLine(rcFile));
 
-	if (!useCache || !existsSync(binaryPath)) {
-		await downloadBinary(downloadUrl, binaryPath);
-		console.log(`✅ Downloaded CLI binary to ${binaryPath}`);
-
-		// Verify checksum of the downloaded binary
-		const checksumUrl = `${BASE_URL}/bifrost-cli/${VERSION}/${platformDir}/${archDir}/${binaryName}.sha256`;
-		await verifyChecksum(binaryPath, checksumUrl);
+	if (missingRcFiles.length === 0) {
+		console.log(`\n✅ PATH already configured for bifrost.`);
+		printStartMessage("The installer won't start Bifrost automatically.");
+		return;
 	}
 
-	// Execute the CLI binary
-	try {
-		execFileSync(binaryPath, remainingArgs, { stdio: "inherit" });
-	} catch (execError) {
-		if (execError.status !== undefined) {
-			process.exit(execError.status);
-		}
+	// Prompt user to add PATH
+	const rcDisplayName = shellConfig.rcFile.startsWith(homedir()) ? shellConfig.rcFile.slice(homedir().length + 1) : shellConfig.rcFile.split("/").pop();
+	const shouldAdd = await promptYesNo(`\nAdd bifrost to your PATH in ~/${rcDisplayName}? [Y/n] `);
 
-		console.error(`❌ Failed to start Bifrost CLI. Error:`, execError.message);
-
-		if (execError.code) {
-			console.error(`Error code: ${execError.code}`);
-		}
-		if (execError.errno) {
-			console.error(`System error: ${execError.errno}`);
-		}
-		if (execError.signal) {
-			console.error(`Signal: ${execError.signal}`);
-		}
-
-		// For specific Linux issues, show diagnostic info
-		if (process.platform === "linux" && (execError.code === "ENOENT" || execError.code === "ETXTBSY")) {
-			console.error(`\n💡 This appears to be a Linux compatibility issue.`);
-			console.error(`   The binary may be incompatible with your Linux distribution.`);
-		}
-
-		process.exit(execError.status || 1);
+	if (!shouldAdd) {
+		console.log(`\nSkipped PATH setup. You can manually add this to your shell config:`);
+		console.log(`  ${shellConfig.exportLine}`);
+		printStartMessage("After updating your PATH, start Bifrost manually.");
+		return;
 	}
+
+	// Append the export line to RC file(s)
+	for (const rcFile of missingRcFiles) {
+		try {
+			mkdirSync(dirname(rcFile), { recursive: true });
+			appendFileSync(rcFile, `\n# Added by bifrost installer\n${shellConfig.exportLine}\n`);
+			console.log(`✅ Added PATH to ${rcFile}`);
+		} catch (err) {
+			console.error(`⚠️ Failed to update ${rcFile}: ${err.message}`);
+		}
+	}
+
+	const rcRelative = shellConfig.rcFile.startsWith(homedir()) ? shellConfig.rcFile.slice(homedir().length + 1) : shellConfig.rcFile.split("/").pop();
+	printStartMessage(`Run 'source ~/${rcRelative}' or open a new terminal first.`);
 }
 
 main().catch((error) => {
-	console.error(`❌ Failed to bootstrap Bifrost CLI: ${error.message}`);
+	console.error(`❌ Failed to install Bifrost CLI: ${error.message}`);
 	process.exit(1);
 });

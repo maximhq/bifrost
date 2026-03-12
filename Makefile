@@ -216,7 +216,7 @@ build: build-ui ## Build bifrost-http binary
 build-cli: ## Build bifrost CLI binary
 	@echo "$(GREEN)Building bifrost CLI...$(NC)"
 	@mkdir -p ./tmp
-	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -o ../tmp/bifrost .
+	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -ldflags "-X main.version=v0.1.1-dev" -o ../tmp/bifrost .
 	@echo "$(GREEN)Built: tmp/bifrost$(NC)"
 
 _build-with-docker: # Internal target for Docker-based cross-compilation

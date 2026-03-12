@@ -25,7 +25,8 @@ echo "🚀 Releasing bifrost CLI v$VERSION..."
 
 # Validate CLI build
 echo "🔨 Validating CLI build..."
-(cd "$REPO_ROOT/cli" && go build ./...)
+COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo 'unknown')}"
+(cd "$REPO_ROOT/cli" && go build -ldflags "-X main.version=v${VERSION} -X main.commit=${COMMIT}" ./...)
 echo "✅ CLI build validation successful"
 
 # Build CLI executables
