@@ -1315,8 +1315,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Handler:            handlers.SecurityHeadersMiddleware()(handlers.CorsMiddleware(s.Config)(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     1024 * 64, // 64kb
-		// Stream request bodies to reduce pre-buffering for large payload routes.
-		StreamRequestBody: true,
 	}
 	return nil
 }

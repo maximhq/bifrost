@@ -802,36 +802,6 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 	}
 }
 
-// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
-var gzipReaderPool = sync.Pool{
-	New: func() any {
-		return &gzip.Reader{}
-	},
-}
-
-// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
-// or creates a new one if the pool is empty or reset fails.
-func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
-	if v := gzipReaderPool.Get(); v != nil {
-		gz := v.(*gzip.Reader)
-		if err := gz.Reset(r); err == nil {
-			return gz, nil
-		}
-		// Reset failed; discard the reader. After a failed Reset the internal
-		// decompressor may be nil, making Close() panic (Go 1.26+).
-		// Do not re-pool — let GC reclaim it.
-	}
-	return gzip.NewReader(r)
-}
-
-// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
-func ReleaseGzipReader(gz *gzip.Reader) {
-	if gz != nil {
-		_ = gz.Close()
-		gzipReaderPool.Put(gz)
-	}
-}
-
 // decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
 // with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
 // header so downstream consumers don't double-decompress. Returns original reader

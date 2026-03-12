@@ -2,8 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"compress/flate"
-	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -14,8 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/andybalholm/brotli"
-	"github.com/klauspost/compress/zstd"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -118,41 +115,120 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 }
 
 // RequestDecompressionMiddleware transparently decompresses compressed request bodies.
-// Request bodies are decompressed with streaming readers before entering handler pipelines.
+// Two paths based on compressed Content-Length:
+//   - Large or chunked (CL > threshold or CL unknown): streaming decompression via
+//     SetBodyStream, avoiding full body materialization. Uses pooled gzip readers
+//     matching the response-side pattern in core/providers/utils.
+//   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
+//     with decompression bomb protection via MaxRequestBodySizeMB.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			if len(ctx.Request.Header.ContentEncoding()) > 0 {
-				maxRequestBodyBytes := 0
-				if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-					maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
-				}
+			if len(ctx.Request.Header.ContentEncoding()) == 0 {
+				next(ctx)
+				return
+			}
 
-				body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
-				if errors.Is(err, errRequestBodyTooLarge) {
-					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
-					return
-				}
+			if shouldStreamDecompress(config, ctx) {
+				cleanup, applied, err := streamingDecompress(ctx)
 				if err != nil {
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
 				}
-
-				ctx.Request.SetBodyRaw(body)
-				ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
-				ctx.Request.Header.Del(fasthttp.HeaderContentLength)
+				if applied {
+					next(ctx)
+					cleanup()
+					return
+				}
+				// No body stream available (StreamRequestBody not enabled) — fall
+				// through to the buffered decompression path below.
 			}
+
+			// Buffered path: small compressed request — materialize fully.
+			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
+			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			}
+
+			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+			if errors.Is(err, errRequestBodyTooLarge) {
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				return
+			}
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
+				return
+			}
+
+			ctx.Request.SetBodyRaw(body)
+			ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
+			ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 			next(ctx)
 		}
 	}
 }
 
+// shouldStreamDecompress returns true when the compressed request body should
+// use streaming decompression rather than full materialization. Uses the
+// config threshold (set by enterprise from LargePayloadConfig.RequestThresholdBytes)
+// or falls back to DefaultLargePayloadRequestThresholdBytes.
+// Chunked requests (unknown size) always stream to be safe.
+func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
+	contentLength := ctx.Request.Header.ContentLength()
+	// Chunked transfer encoding: fasthttp reports -1. Size unknown, stream to be safe.
+	if contentLength < 0 {
+		return true
+	}
+	var threshold int64 = schemas.DefaultLargePayloadRequestThresholdBytes
+	if config != nil && config.StreamingDecompressThreshold > 0 {
+		threshold = config.StreamingDecompressThreshold
+	}
+	return int64(contentLength) > threshold
+}
+
+// streamingDecompress wraps the request body stream with a streaming decompression
+// reader, avoiding full body materialization for large compressed requests.
+// Returns (cleanup, applied, err):
+//   - applied=true: body stream was wrapped; caller must invoke cleanup after the
+//     handler chain completes and the body is fully consumed.
+//   - applied=false: no body stream available (StreamRequestBody not enabled on the
+//     server). Caller should fall back to the buffered decompression path.
+func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool, err error) {
+	bodyStream := ctx.RequestBodyStream()
+	if bodyStream == nil {
+		return func() {}, false, nil
+	}
+
+	encoding := strings.ToLower(strings.TrimSpace(
+		string(ctx.Request.Header.ContentEncoding()),
+	))
+
+	decompReader, cleanup, err := newDecompressReader(bodyStream, encoding)
+	if err != nil {
+		return nil, false, err
+	}
+
+	ctx.Request.SetBodyStream(decompReader, -1)
+	ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
+	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
+
+	return cleanup, true, nil
+}
+
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
 
 func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
-	reader, cleanup, err := requestBodyDecoder(req)
-	if err != nil {
-		return nil, err
+	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
+	bodyReader := bytes.NewReader(req.Body())
+
+	var reader io.Reader = bodyReader
+	cleanup := func() {}
+	if encoding != "" {
+		var err error
+		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer cleanup()
 
@@ -171,33 +247,34 @@ func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) 
 	return body, nil
 }
 
-func requestBodyDecoder(req *fasthttp.Request) (io.Reader, func(), error) {
-	bodyReader := bytes.NewReader(req.Body())
-	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
-	if encoding == "" {
-		return bodyReader, func() {}, nil
-	}
-
+// newDecompressReader wraps r with a decompression reader for the given encoding.
+// All encodings use pooled readers from core/providers/utils. The returned cleanup
+// function must be called when the reader is no longer needed.
+func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error) {
 	switch encoding {
 	case "gzip":
-		gz, err := gzip.NewReader(bodyReader)
+		gz, err := providerUtils.AcquireGzipReader(r)
 		if err != nil {
-			return nil, func() {}, err
+			return nil, nil, err
 		}
-		return gz, func() { _ = gz.Close() }, nil
+		return gz, func() { providerUtils.ReleaseGzipReader(gz) }, nil
 	case "deflate":
-		zr := flate.NewReader(bodyReader)
-		return zr, func() { _ = zr.Close() }, nil
-	case "br":
-		return brotli.NewReader(bodyReader), func() {}, nil
-	case "zstd":
-		decoder, err := zstd.NewReader(bodyReader, zstd.WithDecoderConcurrency(1))
+		fr, err := providerUtils.AcquireFlateReader(r)
 		if err != nil {
-			return nil, func() {}, err
+			return nil, nil, err
 		}
-		return decoder, func() { decoder.Close() }, nil
+		return fr, func() { providerUtils.ReleaseFlateReader(fr) }, nil
+	case "br":
+		br := providerUtils.AcquireBrotliReader(r)
+		return br, func() { providerUtils.ReleaseBrotliReader(br) }, nil
+	case "zstd":
+		dec, err := providerUtils.AcquireZstdDecoder(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return dec, func() { providerUtils.ReleaseZstdDecoder(dec) }, nil
 	default:
-		return nil, func() {}, fmt.Errorf("%w: %q", fasthttp.ErrContentEncodingUnsupported, encoding)
+		return nil, nil, fmt.Errorf("%w: %q", fasthttp.ErrContentEncodingUnsupported, encoding)
 	}
 }
 
@@ -314,7 +391,10 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
 	// because the large-payload-mode flag is only set later inside the handler hook.
 	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
-		if int64(ctx.Request.Header.ContentLength()) > threshold {
+		cl := int64(ctx.Request.Header.ContentLength())
+		// Skip body copy when CL exceeds threshold OR CL is unknown (streaming/
+		// chunked, e.g. after streaming decompression deletes the header).
+		if cl > threshold || cl < 0 {
 			return
 		}
 	}

@@ -17,7 +17,7 @@ import {
 	Globe,
 	KeyRound,
 	Landmark,
-	Layers,
+	HardDriveUpload,
 	LayoutGrid,
 	LogOut,
 	Logs,
@@ -708,7 +708,7 @@ export default function AppSidebar() {
 								{
 									title: "Large Payload",
 									url: "/workspace/config/large-payload",
-									icon: Layers,
+									icon: HardDriveUpload,
 									description: "Large payload streaming optimization",
 									hasAccess: hasSettingsAccess,
 								},

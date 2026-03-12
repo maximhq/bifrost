@@ -697,31 +697,6 @@ func TestCheckAndDecodeBody_PooledGzip(t *testing.T) {
 	}
 }
 
-// TestAcquireReleaseGzipReader verifies the pool acquire/release cycle works correctly.
-func TestAcquireReleaseGzipReader(t *testing.T) {
-	testData := []byte(`test data for gzip pool`)
-	compressed := gzipCompress(testData)
-
-	for i := 0; i < 10; i++ {
-		reader := bytes.NewReader(compressed)
-		gz, err := AcquireGzipReader(reader)
-		if err != nil {
-			t.Fatalf("iteration %d: AcquireGzipReader() error: %v", i, err)
-		}
-
-		decompressed, err := io.ReadAll(gz)
-		if err != nil {
-			t.Fatalf("iteration %d: ReadAll() error: %v", i, err)
-		}
-
-		if string(decompressed) != string(testData) {
-			t.Errorf("iteration %d: got %q, want %q", i, string(decompressed), string(testData))
-		}
-
-		ReleaseGzipReader(gz)
-	}
-}
-
 // TestCheckAndDecodeBody_Concurrent verifies no data races with concurrent access.
 func TestCheckAndDecodeBody_Concurrent(t *testing.T) {
 	testData := []byte(`{"concurrent":"test"}`)

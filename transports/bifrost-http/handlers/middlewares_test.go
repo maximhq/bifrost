@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/zlib"
 	"compress/gzip"
+	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
 	"strings"
@@ -1416,6 +1417,293 @@ func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 
 	if !nextCalled {
 		t.Fatal("next handler was not called — body exactly at limit should pass")
+	}
+}
+
+// --- Streaming decompression path tests ---
+
+func TestShouldStreamDecompress(t *testing.T) {
+	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
+	tests := []struct {
+		name            string
+		contentLength   int
+		customThreshold int64 // 0 means no custom threshold (use default)
+		want            bool
+	}{
+		{"chunked (CL=-1)", -1, 0, true},
+		{"empty body (CL=0)", 0, 0, false},
+		{"small body", 100, 0, false},
+		{"at default threshold", defaultThreshold, 0, false},
+		{"above default threshold", defaultThreshold + 1, 0, true},
+		// Custom enterprise threshold (1MB) — body at 2MB should stream.
+		{"above custom threshold", 2 * 1024 * 1024, 1 * 1024 * 1024, true},
+		// Custom enterprise threshold (20MB) — body at default 10MB+1 should NOT stream.
+		{"below custom threshold", defaultThreshold + 1, 20 * 1024 * 1024, false},
+		// Chunked always streams regardless of custom threshold.
+		{"chunked with custom threshold", -1, 50 * 1024 * 1024, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &lib.Config{}
+			if tt.customThreshold > 0 {
+				cfg.StreamingDecompressThreshold = tt.customThreshold
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("Content-Encoding", "gzip")
+			if tt.contentLength >= 0 {
+				ctx.Request.Header.SetContentLength(tt.contentLength)
+			} else {
+				// Simulate chunked: set body stream with unknown size
+				ctx.Request.SetBodyStream(bytes.NewReader(nil), -1)
+			}
+			if got := shouldStreamDecompress(cfg, ctx); got != tt.want {
+				t.Errorf("shouldStreamDecompress() = %v, want %v (CL=%d, threshold=%d)", got, tt.want, tt.contentLength, tt.customThreshold)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_ChunkedGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked: SetBodyStream with size -1 triggers the streaming path
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		// Content-Encoding should be cleared
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		// Body should be correctly decompressed
+		body := ctx.Request.Body()
+		if string(body) != string(plainBody) {
+			t.Errorf("decompressed body mismatch: got %d bytes, want %d bytes", len(body), len(plainBody))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_AllEncodings(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	testCases := []struct {
+		name     string
+		encoding string
+		encode   func([]byte) ([]byte, error)
+	}{
+		{name: "gzip", encoding: "gzip", encode: gzipCompress},
+		{name: "deflate", encoding: "deflate", encode: deflateCompress},
+		{name: "brotli", encoding: "br", encode: brotliCompress},
+		{name: "zstd", encoding: "zstd", encode: zstdCompress},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			compressedBody, err := tc.encode(plainBody)
+			if err != nil {
+				t.Fatalf("failed to encode body: %v", err)
+			}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+			// Use chunked (-1) to trigger streaming path regardless of compressed size
+			ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), -1)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+				body := ctx.Request.Body()
+				if string(body) != string(plainBody) {
+					t.Fatalf("expected decompressed body, got %q", string(body))
+				}
+			}
+
+			handler := RequestDecompressionMiddleware(config)(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatal("next handler was not called")
+			}
+			if got := string(ctx.Request.Header.Peek("Content-Encoding")); got != "" {
+				t.Fatalf("expected content-encoding to be cleared, got %q", got)
+			}
+		})
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_InvalidBody(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// Chunked with invalid gzip data → streaming path → error
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("not-a-valid-gzip-payload")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for invalid compressed payload")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_UnsupportedEncoding(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "snappy")
+	ctx.Request.SetBodyStream(bytes.NewReader([]byte("whatever")), -1)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if nextCalled {
+		t.Fatal("next handler should not be called for unsupported encoding")
+	}
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", ctx.Response.StatusCode())
+	}
+}
+
+func TestRequestDecompressionMiddleware_BufferedPath_SmallGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 10,
+		},
+	}
+
+	plainBody := []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}`)
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	// Verify compressed body is below threshold (should use buffered path)
+	if int64(len(compressedBody)) > schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skip("compressed body unexpectedly exceeds threshold")
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	// SetBodyRaw with known small Content-Length → buffered path
+	ctx.Request.SetBodyRaw(compressedBody)
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if string(ctx.Request.Body()) != string(plainBody) {
+			t.Fatalf("expected decompressed body, got %q", string(ctx.Request.Body()))
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
+	}
+}
+
+func TestRequestDecompressionMiddleware_StreamingPath_LargeGzip(t *testing.T) {
+	config := &lib.Config{
+		ClientConfig: configstore.ClientConfig{
+			MaxRequestBodySizeMB: 100,
+		},
+	}
+
+	// Random bytes are incompressible — compressed size ≈ input size + gzip overhead.
+	bodySize := int(schemas.DefaultLargePayloadRequestThresholdBytes) + 1024*1024
+	plainBody := make([]byte, bodySize)
+	if _, err := cryptoRand.Read(plainBody); err != nil {
+		t.Fatalf("failed to generate random data: %v", err)
+	}
+	compressedBody, err := gzipCompress(plainBody)
+	if err != nil {
+		t.Fatalf("failed to gzip: %v", err)
+	}
+
+	if int64(len(compressedBody)) <= schemas.DefaultLargePayloadRequestThresholdBytes {
+		t.Skipf("compressed body %d bytes is below threshold %d",
+			len(compressedBody), schemas.DefaultLargePayloadRequestThresholdBytes)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", "gzip")
+	ctx.Request.Header.SetContentLength(len(compressedBody))
+	ctx.Request.SetBodyStream(bytes.NewReader(compressedBody), len(compressedBody))
+
+	nextCalled := false
+	next := func(ctx *fasthttp.RequestCtx) {
+		nextCalled = true
+		if ce := string(ctx.Request.Header.Peek("Content-Encoding")); ce != "" {
+			t.Errorf("expected Content-Encoding to be cleared, got %q", ce)
+		}
+		body := ctx.Request.Body()
+		if len(body) != len(plainBody) {
+			t.Errorf("decompressed body length: got %d, want %d", len(body), len(plainBody))
+		}
+		if !bytes.Equal(body, plainBody) {
+			t.Error("decompressed body content does not match original")
+		}
+	}
+
+	handler := RequestDecompressionMiddleware(config)(next)
+	handler(ctx)
+
+	if !nextCalled {
+		t.Fatal("next handler was not called")
 	}
 }
 
