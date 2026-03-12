@@ -249,6 +249,7 @@ type ChatAudioParameters struct {
 
 // Not in OpenAI's spec, but needed to support extra parameters for reasoning.
 type ChatReasoning struct {
+	Enabled   *bool   `json:"enabled,omitempty"`    // Explicitly enable or disable reasoning (required by OpenRouter to disable reasoning for some models)
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 }
