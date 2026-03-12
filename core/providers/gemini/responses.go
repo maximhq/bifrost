@@ -2842,6 +2842,20 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 	var contents []Content
 	var systemInstruction *Content
 
+	// Build a map from callID → function name by scanning function_call messages.
+	callIDToName := make(map[string]string)
+	for i := range messages {
+		m := &messages[i]
+		if m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCall &&
+			m.ResponsesToolMessage != nil &&
+			m.ResponsesToolMessage.CallID != nil &&
+			m.ResponsesToolMessage.Name != nil {
+			if name := strings.TrimSpace(*m.ResponsesToolMessage.Name); name != "" {
+				callIDToName[*m.ResponsesToolMessage.CallID] = name
+			}
+		}
+	}
+
 	// Track consecutive function call output messages to group them for parallel function calling
 	// According to Gemini docs, all function responses must be in a single message
 	var pendingFunctionResponseParts []*Part
@@ -2980,10 +2994,12 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						responseMap["output"] = *msg.Content.ContentStr
 					}
 
-					// Prefer the declared tool name; fallback to CallID if the name is absent
+					// Prefer the declared tool name; fallback to callIDToName lookup, then raw CallID
 					funcName := ""
 					if msg.ResponsesToolMessage.Name != nil && strings.TrimSpace(*msg.ResponsesToolMessage.Name) != "" {
 						funcName = *msg.ResponsesToolMessage.Name
+					} else if name, ok := callIDToName[*msg.ResponsesToolMessage.CallID]; ok && strings.TrimSpace(name) != "" {
+						funcName = name
 					} else {
 						funcName = *msg.ResponsesToolMessage.CallID
 					}

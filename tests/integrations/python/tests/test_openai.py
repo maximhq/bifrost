@@ -3659,7 +3659,9 @@ class TestOpenAIIntegration:
             model=format_provider_model(provider, model),
             tools=[{
                 "type": "web_search",
-                "allowed_domains": ["wikipedia.org", "en.wikipedia.org"]
+                "filters": {
+                    "allowed_domains": ["wikipedia.org", "en.wikipedia.org"]
+                }
             }],
             input="What is machine learning use web search tool?",
             include=["web_search_call.action.sources"],
