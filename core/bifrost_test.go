@@ -943,8 +943,9 @@ func TestUpdateProvider(t *testing.T) {
 			t.Errorf("Expected error when updating non-existent provider, got nil")
 		}
 
-		// Verify error message
-		expectedErrMsg := "failed to get updated config for provider anthropic"
+		// Verify error message -- MockAccount returns (nil, nil) for unconfigured providers
+		// per the Account interface contract, so *Bifrost.UpdateProvider hits the nil-config branch.
+		expectedErrMsg := "config is nil for provider anthropic"
 		if err != nil && !strings.Contains(err.Error(), expectedErrMsg) {
 			t.Errorf("Expected error containing '%s', got: %v", expectedErrMsg, err)
 		}
@@ -1617,6 +1618,113 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 	wantAuth := "Bearer " + fallbackKey
 	if fallbackCapturedAuth != wantAuth {
 		t.Errorf("fallback Authorization header: got %q, want %q", fallbackCapturedAuth, wantAuth)
+	}
+}
+
+// TestBifrostRequestClone verifies that Clone returns an independent copy: mutations
+// to scalar fields (Provider, Model) and ProviderOverride on the clone do not affect
+// the original, and vice versa.
+func TestBifrostRequestClone(t *testing.T) {
+	key := schemas.Key{Value: *schemas.NewEnvVar("sk-original")}
+	original := &schemas.BifrostRequest{
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-3-5-sonnet-20241022",
+		},
+		ProviderOverride: &schemas.ProviderOverride{Key: &key, BaseURL: "https://original.example.com"},
+	}
+
+	clone := original.Clone()
+
+	// Mutate clone provider, model, and override pointer
+	clone.SetProvider(schemas.OpenAI)
+	_ = clone.UpdateModel("gpt-4o")
+	clone.ProviderOverride = nil
+
+	// Original provider and model must be unchanged
+	origP, origM, _ := original.GetRequestFields()
+	if origP != schemas.Anthropic {
+		t.Errorf("original provider mutated: got %s, want %s", origP, schemas.Anthropic)
+	}
+	if origM != "claude-3-5-sonnet-20241022" {
+		t.Errorf("original model mutated: got %s, want %s", origM, "claude-3-5-sonnet-20241022")
+	}
+
+	// Original ProviderOverride pointer must still be set
+	if original.ProviderOverride == nil {
+		t.Error("original ProviderOverride was nilled through clone")
+	}
+
+	// Clone must have the new values
+	cloneP, cloneM, _ := clone.GetRequestFields()
+	if cloneP != schemas.OpenAI {
+		t.Errorf("clone provider not updated: got %s, want %s", cloneP, schemas.OpenAI)
+	}
+	if cloneM != "gpt-4o" {
+		t.Errorf("clone model not updated: got %s, want %s", cloneM, "gpt-4o")
+	}
+	if clone.ProviderOverride != nil {
+		t.Error("clone ProviderOverride should be nil after explicit assignment")
+	}
+
+	// Verify that mutating a ProviderOverride struct field on the clone does not
+	// affect the original (Clone deep-copies the ProviderOverride struct itself).
+	clone2 := original.Clone()
+	clone2.ProviderOverride.BaseURL = "https://mutated.example.com"
+	if original.ProviderOverride.BaseURL == "https://mutated.example.com" {
+		t.Error("original ProviderOverride.BaseURL was mutated through clone")
+	}
+	if clone2.ProviderOverride.BaseURL != "https://mutated.example.com" {
+		t.Errorf("clone2 ProviderOverride.BaseURL not updated: got %s", clone2.ProviderOverride.BaseURL)
+	}
+}
+
+// TestPrepareFallbackRequest_DoesNotAliasOriginal is a regression test for the shallow-copy
+// bug: without Clone, SetProvider/SetModel on a fallback request would mutate the shared
+// inner struct pointer and corrupt subsequent fallback preparations from the same original.
+func TestPrepareFallbackRequest_DoesNotAliasOriginal(t *testing.T) {
+	account := NewMockAccount()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bf, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(func() { bf.Shutdown() })
+
+	const originalModel = "claude-3-5-sonnet-20241022"
+	content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+	req := &schemas.BifrostRequest{
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Anthropic,
+			Model:    originalModel,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		},
+	}
+
+	// First fallback: explicit model
+	fb0 := bf.prepareFallbackRequest(req, schemas.Fallback{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	p0, m0, _ := fb0.GetRequestFields()
+	if p0 != schemas.OpenAI || m0 != "gpt-4o" {
+		t.Errorf("fallback[0]: got (%s, %s), want (%s, gpt-4o)", p0, m0, schemas.OpenAI)
+	}
+
+	// Original must be untouched after first fallback preparation
+	origP, origM, _ := req.GetRequestFields()
+	if origP != schemas.Anthropic || origM != originalModel {
+		t.Errorf("original mutated by fallback[0]: got (%s, %s), want (%s, %s)", origP, origM, schemas.Anthropic, originalModel)
+	}
+
+	// Second fallback: empty model -- must preserve original model, not inherit gpt-4o
+	fb1 := bf.prepareFallbackRequest(req, schemas.Fallback{Provider: schemas.Gemini, Model: ""})
+	p1, m1, _ := fb1.GetRequestFields()
+	if p1 != schemas.Gemini {
+		t.Errorf("fallback[1] provider: got %s, want %s", p1, schemas.Gemini)
+	}
+	if m1 != originalModel {
+		t.Errorf("fallback[1] model: got %q, want %q (must not inherit fallback[0] model)", m1, originalModel)
 	}
 }
 
