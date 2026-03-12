@@ -156,6 +156,10 @@ export const baseApi = createApi({
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",
+		"Folders",
+		"Prompts",
+		"Versions",
+		"Sessions",
 	],
 	endpoints: () => ({}),
 });

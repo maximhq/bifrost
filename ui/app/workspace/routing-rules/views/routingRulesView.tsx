@@ -62,7 +62,12 @@ export function RoutingRulesView() {
 					<p className="text-muted-foreground text-sm">Manage CEL-based routing rules for intelligent request routing across providers</p>
 				</div>
 				{canCreate && (
-					<Button onClick={handleCreateNew} disabled={isLoading} className="gap-2">
+					<Button
+						data-testid="create-routing-rule-btn"
+						onClick={handleCreateNew}
+						disabled={isLoading}
+						className="gap-2"
+					>
 						<Plus className="h-4 w-4" />
 						<span className="hidden sm:inline">New Rule</span>
 					</Button>

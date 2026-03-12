@@ -116,16 +116,18 @@ type Log struct {
 	VideoDeleteOutput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
 	Latency                *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
-	TokenUsage             string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.LLMUsage
-	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                                                                // Cost in dollars (total cost of the request - includes cache lookup cost)
+	TokenUsage             string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
+	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
-	ErrorDetails           string    `gorm:"type:text" json:"-"`                                                                         // JSON serialized *schemas.BifrostError
-	Stream                 bool      `gorm:"default:false" json:"stream"`                                                                // true if this was a streaming response
+	ErrorDetails           string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.BifrostError
+	Stream                 bool      `gorm:"default:false" json:"stream"`                   // true if this was a streaming response
 	ContentSummary         string    `gorm:"type:text" json:"-"`
-	RawRequest             string    `gorm:"type:text" json:"raw_request"`                   // Populated when `send-back-raw-request` is on
-	RawResponse            string    `gorm:"type:text" json:"raw_response"`                  // Populated when `send-back-raw-response` is on
-	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"` // Formatted routing engine decision logs
-	Metadata               string    `gorm:"type:text" json:"-"`                             // JSON serialized map[string]interface{}
+	RawRequest             string    `gorm:"type:text" json:"raw_request"`                        // Populated when `send-back-raw-request` is on
+	RawResponse            string    `gorm:"type:text" json:"raw_response"`                       // Populated when `send-back-raw-response` is on
+	PassthroughRequestBody  string    `gorm:"type:text" json:"passthrough_request_body,omitempty"`  // Raw body for passthrough requests (UTF-8)
+	PassthroughResponseBody string    `gorm:"type:text" json:"passthrough_response_body,omitempty"` // Raw body for passthrough responses (UTF-8)
+	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`       // Formatted routing engine decision logs
+	Metadata               string    `gorm:"type:text" json:"-"`                                  // JSON serialized map[string]interface{}
 	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request"`
 	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response"`
 

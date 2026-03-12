@@ -72,6 +72,10 @@ const (
 //   - Any header starting with 'x-bf-eh-' is collected and added to the map stored under schemas.BifrostContextKeyExtraHeaders
 //   - The prefix is stripped, the remainder is lower-cased, and duplicate names append values
 //   - This allows callers to send arbitrary context metadata without needing to extend the public schema
+//
+// 8. Session Stickiness Headers:
+//   - x-bf-session-id: Session identifier for key binding (reuse same key across requests)
+//   - x-bf-session-ttl: Per-request TTL override (duration string e.g. "30m" or seconds integer)
 
 // Parameters:
 //   - ctx: The FastHTTP request context containing the original headers
@@ -87,7 +91,8 @@ const (
 //	bifrostCtx, cancel := ConvertToBifrostContext(fastCtx, true, nil)
 //	defer cancel() // Ensure cleanup
 //	// bifrostCtx now contains propagated header values including Prometheus metrics,
-//	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings, and extra headers
+//	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
+//	// session stickiness, and extra headers
 
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, headerFilterConfig *configstoreTables.GlobalHeaderFilterConfig) (*schemas.BifrostContext, context.CancelFunc) {
 	// Reuse a shared request-scoped context when available.
@@ -151,8 +156,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		// prevent auth/key overrides via x-bf-eh-*
 		"x-api-key":      true,
 		"x-goog-api-key": true,
-		"x-bf-api-key":   true,
-		"x-bf-vk":        true,
+		"x-bf-api-key":    true,
+		"x-bf-api-key-id": true,
+		"x-bf-vk":         true,
 	}
 
 	// shouldAllowHeader determines if a header should be forwarded based on
@@ -279,6 +285,12 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 			}
 			return true
 		}
+		if keyStr == "x-bf-api-key-id" {
+			if keyID := strings.TrimSpace(string(value)); keyID != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, keyID)
+			}
+			return true
+		}
 		// Handle cache key header (x-bf-cache-key)
 		if keyStr == "x-bf-cache-key" {
 			bifrostCtx.SetValue(semanticcache.CacheKey, string(value))
@@ -329,6 +341,29 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, hea
 		if keyStr == "x-bf-cache-no-store" {
 			if valueStr := string(value); valueStr == "true" {
 				bifrostCtx.SetValue(semanticcache.CacheNoStoreKey, true)
+			}
+			return true
+		}
+		// Session stickiness: session ID for key binding
+		if keyStr == "x-bf-session-id" {
+			if valueStr := strings.TrimSpace(string(value)); valueStr != "" {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionID, valueStr)
+			}
+			return true
+		}
+		// Session stickiness: per-request TTL override (duration string or seconds integer)
+		if keyStr == "x-bf-session-ttl" {
+			valueStr := strings.TrimSpace(string(value))
+			var ttlDuration time.Duration
+			var err error
+			if ttlDuration, err = time.ParseDuration(valueStr); err != nil {
+				if seconds, parseErr := strconv.Atoi(valueStr); parseErr == nil && seconds > 0 {
+					ttlDuration = time.Duration(seconds) * time.Second
+					err = nil
+				}
+			}
+			if err == nil && ttlDuration > 0 {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySessionTTL, ttlDuration)
 			}
 			return true
 		}

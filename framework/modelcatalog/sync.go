@@ -224,6 +224,9 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 		if err := mc.checkAndSyncPricing(ctx); err != nil {
 			mc.logger.Error("background pricing sync failed: %v", err)
 		}
+		if err := mc.checkAndSyncModelParameters(ctx); err != nil {
+			mc.logger.Error("background model parameters sync failed: %v", err)
+		}
 		return
 	}
 	lock, err := mc.distributedLockManager.NewLock("model_catalog_pricing_sync")
@@ -238,6 +241,9 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 	defer lock.Unlock(ctx)
 	if err := mc.checkAndSyncPricing(ctx); err != nil {
 		mc.logger.Error("background pricing sync failed: %v", err)
+	}
+	if err := mc.checkAndSyncModelParameters(ctx); err != nil {
+		mc.logger.Error("background model parameters sync failed: %v", err)
 	}
 }
 
@@ -257,3 +263,123 @@ func (mc *ModelCatalog) syncWorker(ctx context.Context) {
 		}
 	}
 }
+
+// --- Model Parameters sync ---
+
+// checkAndSyncModelParameters determines if model parameters data needs to be synced and performs the sync if needed.
+func (mc *ModelCatalog) checkAndSyncModelParameters(ctx context.Context) error {
+	if mc.configStore == nil {
+		return nil
+	}
+
+	needsSync, reason := mc.shouldSyncModelParameters(ctx)
+	if needsSync {
+		mc.logger.Debug("model parameters sync needed: %s", reason)
+		return mc.syncModelParameters(ctx)
+	}
+
+	return nil
+}
+
+// shouldSyncModelParameters determines if model parameters data should be synced
+func (mc *ModelCatalog) shouldSyncModelParameters(ctx context.Context) (bool, string) {
+	config, err := mc.configStore.GetConfig(ctx, ConfigLastParamsSyncKey)
+	if err != nil {
+		return true, "no previous model parameters sync record found"
+	}
+
+	lastSync, err := time.Parse(time.RFC3339, config.Value)
+	if err != nil {
+		mc.logger.Warn("invalid last model parameters sync timestamp: %v", err)
+		return true, "corrupted sync timestamp"
+	}
+
+	if time.Since(lastSync) >= mc.getPricingSyncInterval() {
+		return true, "sync interval elapsed"
+	}
+
+	return false, "sync not needed"
+}
+
+// syncModelParameters syncs model parameters data from URL into memory cache
+func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
+	mc.logger.Debug("model-parameters-sync: starting model parameters synchronization")
+
+	paramsData, err := mc.loadModelParametersFromURL(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to load model parameters from URL: %w", err)
+	}
+
+	// Persist to database if config store is available
+	if mc.configStore != nil {
+		err = mc.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+			for model, data := range paramsData {
+				params := &configstoreTables.TableModelParameters{
+					Model: model,
+					Data:  string(data),
+				}
+				if err := mc.configStore.UpsertModelParameters(ctx, params, tx); err != nil {
+					return fmt.Errorf("failed to upsert model parameters for model %s: %w", model, err)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("model-parameters-sync: failed to sync model parameters to database: %w", err)
+		}
+	}
+
+	// Update in-memory cache
+	mc.paramsMu.Lock()
+	mc.modelParametersData = paramsData
+	mc.paramsMu.Unlock()
+
+	// Update last sync time if config store is available
+	if mc.configStore != nil {
+		config := &configstoreTables.TableGovernanceConfig{
+			Key:   ConfigLastParamsSyncKey,
+			Value: time.Now().Format(time.RFC3339),
+		}
+		if err := mc.configStore.UpdateConfig(ctx, config); err != nil {
+			mc.logger.Warn("model-parameters-sync: failed to update last model parameters sync time: %v", err)
+		}
+	}
+
+	mc.logger.Info("model-parameters-sync: successfully synced %d model parameters records", len(paramsData))
+	return nil
+}
+
+// loadModelParametersFromURL loads model parameters data from the remote URL
+func (mc *ModelCatalog) loadModelParametersFromURL(ctx context.Context) (map[string]json.RawMessage, error) {
+	client := &http.Client{}
+	client.Timeout = DefaultModelParametersTimeout
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, DefaultModelParametersURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HTTP request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download model parameters data: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to download model parameters data: HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read model parameters response: %w", err)
+	}
+
+	var paramsData map[string]json.RawMessage
+	if err := json.Unmarshal(data, &paramsData); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal model parameters data: %w", err)
+	}
+
+	mc.logger.Debug("model-parameters-sync: successfully downloaded and parsed %d model parameters records", len(paramsData))
+	return paramsData, nil
+}
+
+

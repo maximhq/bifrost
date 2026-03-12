@@ -228,10 +228,22 @@ export interface ResetUsageRequest {
 	model?: string;
 }
 
+// Query params
+export interface GetVirtualKeysParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
+	team_id?: string;
+}
+
 // Response types
 export interface GetVirtualKeysResponse {
 	virtual_keys: VirtualKey[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetTeamsResponse {

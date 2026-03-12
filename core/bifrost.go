@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 
 	"github.com/maximhq/bifrost/core/mcp"
@@ -81,6 +82,7 @@ type Bifrost struct {
 	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
 	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector         schemas.KeySelector                 // Custom key selector function
+	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -200,6 +202,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keySelector:    config.KeySelector,
 		oauth2Provider: config.OAuth2Provider,
 		logger:         config.Logger,
+		kvStore:        config.KVStore,
 	}
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
@@ -1868,6 +1871,47 @@ func (bifrost *Bifrost) BatchCancelRequest(ctx *schemas.BifrostContext, req *sch
 	return response.BatchCancelResponse, nil
 }
 
+// BatchDeleteRequest deletes a batch job.
+func (bifrost *Bifrost) BatchDeleteRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchDeleteRequest) (*schemas.BifrostBatchDeleteResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch delete request is nil",
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for batch delete request",
+			},
+		}
+	}
+	if req.BatchID == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "batch_id is required for batch delete request",
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.BatchDeleteRequest
+	bifrostReq.BatchDeleteRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.BatchDeleteResponse, nil
+}
+
 // BatchResultsRequest retrieves results from a completed batch job.
 func (bifrost *Bifrost) BatchResultsRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -2130,6 +2174,64 @@ func (bifrost *Bifrost) FileContentRequest(ctx *schemas.BifrostContext, req *sch
 		return nil, err
 	}
 	return response.FileContentResponse, nil
+}
+
+func (bifrost *Bifrost) Passthrough(
+	ctx *schemas.BifrostContext,
+	provider schemas.ModelProvider,
+	req *schemas.BifrostPassthroughRequest,
+) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if req == nil {
+		sc := fasthttp.StatusBadRequest
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: "passthrough request is nil"},
+		}
+	}
+
+	req.Provider = provider
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.PassthroughRequest
+	bifrostReq.PassthroughRequest = req
+
+	resp, bifrostErr := bifrost.handleRequest(ctx, bifrostReq)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp == nil || resp.PassthroughResponse == nil {
+		sc := fasthttp.StatusBadGateway
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: "provider returned nil passthrough response"},
+		}
+	}
+	return resp.PassthroughResponse, nil
+}
+
+func (bifrost *Bifrost) PassthroughStream(
+	ctx *schemas.BifrostContext,
+	provider schemas.ModelProvider,
+	req *schemas.BifrostPassthroughRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if req == nil {
+		sc := fasthttp.StatusBadRequest
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			Error:          &schemas.ErrorField{Message: "passthrough request is nil"},
+		}
+	}
+
+	req.Provider = provider
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.PassthroughStreamRequest
+	bifrostReq.PassthroughRequest = req
+
+	return bifrost.handleStreamRequest(ctx, bifrostReq)
 }
 
 // ExecuteChatMCPTool executes an MCP tool call and returns the result as a chat message.
@@ -4982,6 +5084,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.BatchCancelResponse = batchCancelResponse
+	case schemas.BatchDeleteRequest:
+		batchDeleteResponse, bifrostError := provider.BatchDelete(req.Context, keys, req.BifrostRequest.BatchDeleteRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.BatchDeleteResponse = batchDeleteResponse
 	case schemas.BatchResultsRequest:
 		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest)
 		if bifrostError != nil {
@@ -5042,6 +5150,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 			return nil, bifrostError
 		}
 		response.ContainerFileDeleteResponse = containerFileDeleteResponse
+	case schemas.PassthroughRequest:
+		passthroughResponse, bifrostError := provider.Passthrough(req.Context, key, req.BifrostRequest.PassthroughRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.PassthroughResponse = passthroughResponse
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -5076,6 +5190,8 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, r
 		return provider.ImageGenerationStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageGenerationRequest)
 	case schemas.ImageEditStreamRequest:
 		return provider.ImageEditStream(req.Context, postHookRunner, key, req.BifrostRequest.ImageEditRequest)
+	case schemas.PassthroughStreamRequest:
+		return provider.PassthroughStream(req.Context, postHookRunner, key, req.BifrostRequest.PassthroughRequest)
 	default:
 		_, model, _ := req.BifrostRequest.GetRequestFields()
 		return nil, &schemas.BifrostError{
@@ -5671,6 +5787,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.BatchListRequest = nil
 	req.BatchRetrieveRequest = nil
 	req.BatchCancelRequest = nil
+	req.BatchDeleteRequest = nil
 	req.BatchResultsRequest = nil
 	req.ContainerCreateRequest = nil
 	req.ContainerListRequest = nil
@@ -5681,6 +5798,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.ContainerFileRetrieveRequest = nil
 	req.ContainerFileContentRequest = nil
 	req.ContainerFileDeleteRequest = nil
+	req.PassthroughRequest = nil
 }
 
 // getBifrostRequest gets a BifrostRequest from the pool
@@ -5869,7 +5987,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 
 	// Skip model check conditions
 	// We can improve these conditions in the future
-	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType))) || requestType == schemas.ListModelsRequest
+	skipModelCheck := (model == "" && (isFileRequestType(requestType) || isBatchRequestType(requestType) || isContainerRequestType(requestType) || isModellessVideoRequestType(requestType) || isPassthroughRequestType(requestType))) || requestType == schemas.ListModelsRequest
 	if skipModelCheck {
 		// When skipping model check: just verify keys are enabled and have values
 		for _, k := range keys {
@@ -5931,24 +6049,105 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 		return schemas.Key{}, fmt.Errorf("no keys found that support model: %s", model)
 	}
 
-	var requestedKeyName string
+	// Key ID takes priority over key name when both are present
 	if ctx != nil {
-		if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
-			requestedKeyName = strings.TrimSpace(keyName)
-		}
-	}
-
-	if requestedKeyName != "" {
-		for _, key := range supportedKeys {
-			if key.Name == requestedKeyName {
-				return key, nil
+		if keyID, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok {
+			if keyID = strings.TrimSpace(keyID); keyID != "" {
+				for _, key := range supportedKeys {
+					if key.ID == keyID {
+						return key, nil
+					}
+				}
+				return schemas.Key{}, fmt.Errorf("no key found with id %q for provider: %v", keyID, providerKey)
 			}
 		}
-		return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", requestedKeyName, providerKey)
+		if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+			if keyName = strings.TrimSpace(keyName); keyName != "" {
+				for _, key := range supportedKeys {
+					if key.Name == keyName {
+						return key, nil
+					}
+				}
+				return schemas.Key{}, fmt.Errorf("no key found with name %q for provider: %v", keyName, providerKey)
+			}
+		}
 	}
 
 	if len(supportedKeys) == 1 {
 		return supportedKeys[0], nil
+	}
+
+	// Session stickiness: on the first request for a session ID, the randomly
+	// selected key is persisted in the KV store. Subsequent requests reuse it as
+	// long as the key remains valid. The sticky-key lookup/selection in this block
+	// occurs before executeRequestWithRetries, so the same sticky key is
+	// intentionally applied for the entire session including all retry attempts—
+	// the selected key is persisted in KV and reused across retries rather than
+	// re-selected on each attempt.
+	sessionID := ""
+	if ctx != nil {
+		if id, ok := ctx.Value(schemas.BifrostContextKeySessionID).(string); ok && id != "" {
+			sessionID = id
+		}
+	}
+
+	fallbackIndex := 0
+	if ctx != nil {
+		fallbackIndex, _ = ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	}
+	stickinessActive := sessionID != "" && bifrost.kvStore != nil && fallbackIndex == 0
+
+	if stickinessActive {
+		kvKey := buildSessionKey(providerKey, sessionID, model)
+		ttl, _ := ctx.Value(schemas.BifrostContextKeySessionTTL).(time.Duration)
+		if ttl <= 0 {
+			ttl = schemas.DefaultSessionStickyTTL
+		}
+
+		// Try to retrieve existing cached key
+		if cachedKey, found, stale := getCachedKeyFromStore(bifrost.kvStore, kvKey, supportedKeys); found {
+			// Refresh TTL so active sessions do not expire.
+			err := bifrost.kvStore.SetWithTTL(kvKey, cachedKey.ID, ttl)
+			if err != nil {
+				bifrost.logger.Warn("error setting session cache for provider=%s key_id=%s: %s", providerKey, cachedKey.ID, err.Error())
+			}
+			return cachedKey, nil
+		} else if stale {
+			if _, err := bifrost.kvStore.Delete(kvKey); err != nil {
+				bifrost.logger.Warn("error deleting stale session cache for provider=%s: %s", providerKey, err.Error())
+			}
+		}
+
+		// No cached key found (or stale entry deleted), select a new one
+		selectedKey, err := bifrost.keySelector(ctx, supportedKeys, providerKey, model)
+		if err != nil {
+			return schemas.Key{}, err
+		}
+
+		// Atomically set the key only if not already set (first-write-wins)
+		wasSet, err := bifrost.kvStore.SetNXWithTTL(kvKey, selectedKey.ID, ttl)
+		if err != nil {
+			bifrost.logger.Warn("error setting session cache for provider=%s key_id=%s: %s", providerKey, selectedKey.ID, err.Error())
+			return selectedKey, nil
+		}
+
+		if wasSet {
+			return selectedKey, nil
+		}
+
+		// Another concurrent request won the race, re-read the current key
+		if currentKey, found, stale := getCachedKeyFromStore(bifrost.kvStore, kvKey, supportedKeys); found {
+			return currentKey, nil
+		} else if stale {
+			if _, err := bifrost.kvStore.Delete(kvKey); err != nil {
+				bifrost.logger.Warn("error deleting stale session cache for provider=%s: %s", providerKey, err.Error())
+			}
+			return selectedKey, nil
+		}
+
+		// Fallback: if we can't read the current key, use what we selected
+		// (shouldn't happen in normal operation, but defensive)
+		return selectedKey, nil
 	}
 
 	selectedKey, err := bifrost.keySelector(ctx, supportedKeys, providerKey, model)
@@ -5957,7 +6156,40 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 	}
 
 	return selectedKey, nil
+}
 
+// getCachedKeyFromStore retrieves a key ID from the KV store and looks it up in supportedKeys.
+// Returns the matching Key, found (true if key exists in supportedKeys), and stale (true if
+// KV contains an ID but it is not in supportedKeys—caller should delete before SetNXWithTTL).
+func getCachedKeyFromStore(kvStore schemas.KVStore, kvKey string, supportedKeys []schemas.Key) (schemas.Key, bool, bool) {
+	raw, err := kvStore.Get(kvKey)
+	if err != nil {
+		return schemas.Key{}, false, false
+	}
+
+	var cachedKeyID string
+	switch v := raw.(type) {
+	case string:
+		cachedKeyID = v
+	case []byte:
+		var s string
+		if err := sonic.Unmarshal(v, &s); err == nil {
+			cachedKeyID = s
+		} else {
+			cachedKeyID = string(v)
+		}
+	}
+
+	if cachedKeyID != "" {
+		for _, k := range supportedKeys {
+			if k.ID == cachedKeyID {
+				return k, true, false
+			}
+		}
+		return schemas.Key{}, false, true
+	}
+
+	return schemas.Key{}, false, false
 }
 
 func WeightedRandomKeySelector(ctx *schemas.BifrostContext, keys []schemas.Key, providerKey schemas.ModelProvider, model string) (schemas.Key, error) {

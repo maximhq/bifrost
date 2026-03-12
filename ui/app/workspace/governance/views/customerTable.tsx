@@ -165,6 +165,7 @@ export default function CustomersTable({ customers, teams, virtualKeys }: Custom
 									return (
 										<TableRow
 											key={customer.id}
+											data-testid={`customer-row-${customer.name}`}
 											className={cn("group transition-colors", isExhausted && "bg-red-500/5 hover:bg-red-500/10")}
 										>
 											<TableCell className="max-w-[200px] py-4">

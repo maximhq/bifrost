@@ -296,6 +296,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4116,5 +4119,167 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
 	}
+	return nil
+}
+
+// migrationAddPromptRepoTables adds the prompt repository tables (folders, prompts, versions, sessions)
+func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_repo_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Create folders table
+			if !migrator.HasTable(&tables.TableFolder{}) {
+				if err := migrator.CreateTable(&tables.TableFolder{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompts table
+			if !migrator.HasTable(&tables.TablePrompt{}) {
+				if err := migrator.CreateTable(&tables.TablePrompt{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_versions table
+			if !migrator.HasTable(&tables.TablePromptVersion{}) {
+				if err := migrator.CreateTable(&tables.TablePromptVersion{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_version_messages table
+			if !migrator.HasTable(&tables.TablePromptVersionMessage{}) {
+				if err := migrator.CreateTable(&tables.TablePromptVersionMessage{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_sessions table
+			if !migrator.HasTable(&tables.TablePromptSession{}) {
+				if err := migrator.CreateTable(&tables.TablePromptSession{}); err != nil {
+					return err
+				}
+			}
+
+			// Create prompt_session_messages table
+			if !migrator.HasTable(&tables.TablePromptSessionMessage{}) {
+				if err := migrator.CreateTable(&tables.TablePromptSessionMessage{}); err != nil {
+					return err
+				}
+			}
+
+			// Apply schema updates (indexes, constraints) to existing tables
+			if err := tx.AutoMigrate(
+				&tables.TablePromptVersion{},
+				&tables.TablePromptSession{},
+			); err != nil {
+				return err
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			// Drop tables in reverse order (respecting foreign key constraints)
+			if err := migrator.DropTable(&tables.TablePromptSessionMessage{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePromptSession{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePromptVersionMessage{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePromptVersion{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TablePrompt{}); err != nil {
+				return err
+			}
+			if err := migrator.DropTable(&tables.TableFolder{}); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running prompt repo tables migration: %s", err.Error())
+	}
+
+	// Add prompt_id column to prompt message tables
+	m = migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_prompt_id_to_prompt_message_tables",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePromptVersionMessage{}, "prompt_id") {
+				if err := migrator.AddColumn(&tables.TablePromptVersionMessage{}, "PromptID"); err != nil {
+					return err
+				}
+			}
+
+			if !migrator.HasColumn(&tables.TablePromptSessionMessage{}, "prompt_id") {
+				if err := migrator.AddColumn(&tables.TablePromptSessionMessage{}, "PromptID"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TablePromptVersionMessage{}, "prompt_id") {
+				if err := migrator.DropColumn(&tables.TablePromptVersionMessage{}, "prompt_id"); err != nil {
+					return err
+				}
+			}
+			if migrator.HasColumn(&tables.TablePromptSessionMessage{}, "prompt_id") {
+				if err := migrator.DropColumn(&tables.TablePromptSessionMessage{}, "prompt_id"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_prompt_id_to_prompt_message_tables migration: %s", err.Error())
+	}
+
+	m = migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_parameters_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&tables.TableModelParameters{}) {
+				if err := migrator.CreateTable(&tables.TableModelParameters{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&tables.TableModelParameters{}) {
+				if err := migrator.DropTable(&tables.TableModelParameters{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
+	}
+
 	return nil
 }

@@ -985,7 +985,6 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 	}
-
 	// Handle response_format to response_schema conversion
 	if params.ResponseFormat != nil {
 		formatMap, ok := (*params.ResponseFormat).(map[string]interface{})
@@ -1006,7 +1005,6 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			}
 		}
 	}
-
 	if params.ExtraParams != nil {
 		if topK, ok := params.ExtraParams["top_k"]; ok {
 			if val, success := schemas.SafeExtractInt(topK); success {
@@ -1021,7 +1019,21 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.ResponseJSONSchema = responseJsonSchema
 		}
 	}
-
+	// Mapping logprobs to generation config
+	if params.LogProbs != nil {
+		config.ResponseLogprobs = *params.LogProbs
+	}
+	// Mapping top_logprobs to generation config
+	if params.TopLogProbs != nil {
+		topLogProbs := *params.TopLogProbs
+		if topLogProbs > 20 {
+			topLogProbs = 20
+		}
+		if topLogProbs > 0 {
+			config.ResponseLogprobs = true
+			config.Logprobs = schemas.Ptr(int32(topLogProbs))
+		}
+	}
 	return config
 }
 
@@ -1354,8 +1366,11 @@ func toFloat64(v interface{}) (float64, bool) {
 }
 
 // convertToolChoiceToToolConfig converts Bifrost tool choice to Gemini tool config
-func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) ToolConfig {
-	config := ToolConfig{}
+func convertToolChoiceToToolConfig(toolChoice *schemas.ChatToolChoice) *ToolConfig {
+	if toolChoice == nil || (toolChoice.ChatToolChoiceStr == nil && toolChoice.ChatToolChoiceStruct == nil) {
+		return nil
+	}
+	config := &ToolConfig{}
 	functionCallingConfig := FunctionCallingConfig{}
 
 	if toolChoice.ChatToolChoiceStr != nil {
@@ -2360,4 +2375,40 @@ func downloadImageFromURL(ctx context.Context, imageURL string) (string, error) 
 	imageCopy := append([]byte(nil), body...)
 
 	return encodeBytesToBase64String(imageCopy), nil
+}
+
+// tokenToBytes converts a token string to its UTF-8 byte representation as []int
+func tokenToBytes(token string) []int {
+	bytes := []byte(token)
+	result := make([]int, len(bytes))
+	for i, b := range bytes {
+		result[i] = int(b)
+	}
+	return result
+}
+
+// ConvertGeminiLogprobsResultToBifrost converts a Gemini LogprobsResult to Bifrost BifrostLogProbs
+func ConvertGeminiLogprobsResultToBifrost(result *LogprobsResult) *schemas.BifrostLogProbs {
+	if result == nil || len(result.ChosenCandidates) == 0 {
+		return nil
+	}
+
+	content := make([]schemas.ContentLogProb, len(result.ChosenCandidates))
+	for i, chosen := range result.ChosenCandidates {
+		content[i] = schemas.ContentLogProb{
+			Token:   chosen.Token,
+			LogProb: float64(chosen.LogProbability),
+			Bytes:   tokenToBytes(chosen.Token),
+		}
+		if i < len(result.TopCandidates) && result.TopCandidates[i] != nil {
+			for _, tc := range result.TopCandidates[i].Candidates {
+				content[i].TopLogProbs = append(content[i].TopLogProbs, schemas.LogProb{
+					Token:   tc.Token,
+					LogProb: float64(tc.LogProbability),
+					Bytes:   tokenToBytes(tc.Token),
+				})
+			}
+		}
+	}
+	return &schemas.BifrostLogProbs{Content: content}
 }

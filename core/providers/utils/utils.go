@@ -5,10 +5,10 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -323,6 +323,46 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
+// It merges with any existing TLSConfig (e.g., from ConfigureProxy).
+func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	if !networkConfig.InsecureSkipVerify && networkConfig.CACertPEM == "" {
+		return client
+	}
+
+	tlsConfig := client.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+
+	if networkConfig.InsecureSkipVerify {
+		logger.Warn("insecure_skip_verify is enabled for provider — TLS certificate verification is disabled. Not recommended for production.")
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	if networkConfig.CACertPEM != "" {
+		caTLSConfig, err := createTLSConfigWithCA(networkConfig.CACertPEM)
+		if err != nil {
+			logger.Warn("Failed to configure custom CA certificate for provider: %v", err)
+		} else {
+			if tlsConfig.RootCAs != nil {
+				tlsConfig.RootCAs = tlsConfig.RootCAs.Clone()
+				// Merge: append network CA to existing pool (e.g. from proxy)
+				if !tlsConfig.RootCAs.AppendCertsFromPEM([]byte(networkConfig.CACertPEM)) {
+					logger.Warn("Failed to append CA certificate to existing TLS config")
+				}
+			} else {
+				tlsConfig.RootCAs = caTLSConfig.RootCAs
+			}
+		}
+	}
+
+	client.TLSConfig = tlsConfig
+	return client
+}
+
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies.
 var hopByHopHeaders = map[string]bool{
 	"connection":          true,
@@ -350,34 +390,34 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
 // These are transport-level headers that don't apply when re-serving the response.
 var providerResponseFilterHeaders = map[string]bool{
-	"content-length":                    true,
-	"content-encoding":                  true,
-	"transfer-encoding":                 true,
-	"connection":                        true,
-	"keep-alive":                        true,
-	"proxy-connection":                  true,
-	"proxy-authenticate":                true,
-	"proxy-authorization":               true,
-	"authorization":                     true,
-	"cookie":                            true,
-	"set-cookie":                        true,
-	"set-cookie2":                       true,
-	"www-authenticate":                  true,
-	"te":                                true,
-	"trailer":                           true,
-	"upgrade":                           true,
-	"host":                              true,
-	"date":                              true,
-	"server":                            true,
-	"alt-svc":                           true,
-	"strict-transport-security":         true,
-	"content-type":                      true,
-	"access-control-allow-origin":       true,
-	"access-control-allow-methods":      true,
-	"access-control-allow-headers":      true,
-	"access-control-expose-headers":     true,
-	"access-control-allow-credentials":  true,
-	"access-control-max-age":            true,
+	"content-length":                   true,
+	"content-encoding":                 true,
+	"transfer-encoding":                true,
+	"connection":                       true,
+	"keep-alive":                       true,
+	"proxy-connection":                 true,
+	"proxy-authenticate":               true,
+	"proxy-authorization":              true,
+	"authorization":                    true,
+	"cookie":                           true,
+	"set-cookie":                       true,
+	"set-cookie2":                      true,
+	"www-authenticate":                 true,
+	"te":                               true,
+	"trailer":                          true,
+	"upgrade":                          true,
+	"host":                             true,
+	"date":                             true,
+	"server":                           true,
+	"alt-svc":                          true,
+	"strict-transport-security":        true,
+	"content-type":                     true,
+	"access-control-allow-origin":      true,
+	"access-control-allow-methods":     true,
+	"access-control-allow-headers":     true,
+	"access-control-expose-headers":    true,
+	"access-control-allow-credentials": true,
+	"access-control-max-age":           true,
 }
 
 // ExtractProviderResponseHeaders extracts and filters response headers from a
@@ -777,10 +817,9 @@ func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
 		if err := gz.Reset(r); err == nil {
 			return gz, nil
 		}
-		// Reset failed; close before re-pooling so we don't retain a partially
-		// initialized reader state between pool borrowers.
-		_ = gz.Close()
-		gzipReaderPool.Put(gz)
+		// Reset failed; discard the reader. After a failed Reset the internal
+		// decompressor may be nil, making Close() panic (Go 1.26+).
+		// Do not re-pool — let GC reclaim it.
 	}
 	return gzip.NewReader(r)
 }
@@ -1280,6 +1319,16 @@ func compactRawJSON(data []byte) json.RawMessage {
 func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, jsonBody []byte) {
 	if len(jsonBody) > 0 {
 		extraFields.RawRequest = compactRawJSON(jsonBody)
+	}
+}
+
+// ParseAndSetRawRequestIfJSON parses the request body if it's JSON and sets the raw request in the extra fields.
+func ParseAndSetRawRequestIfJSON(fasthttpReq *fasthttp.Request, extraFields *schemas.BifrostResponseExtraFields) {
+	extraFields.RawRequest = nil
+	contentType := strings.ToLower(string(fasthttpReq.Header.ContentType()))
+	if strings.Contains(contentType, "application/json") {
+		body := append([]byte(nil), fasthttpReq.Body()...)
+		ParseAndSetRawRequest(extraFields, body)
 	}
 }
 

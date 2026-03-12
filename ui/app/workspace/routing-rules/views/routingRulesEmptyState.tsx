@@ -13,7 +13,7 @@ interface RoutingRulesEmptyStateProps {
 
 export function RoutingRulesEmptyState({ onAddClick, canCreate = true }: RoutingRulesEmptyStateProps) {
 	return (
-		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center">
+		<div className="flex min-h-[80vh] w-full flex-col items-center justify-center gap-4 py-16 text-center" data-testid="routing-rules-empty-state">
 			<div className="text-muted-foreground">
 				<Route className="h-[5.5rem] w-[5.5rem]" strokeWidth={1} />
 			</div>
@@ -35,7 +35,7 @@ export function RoutingRulesEmptyState({ onAddClick, canCreate = true }: Routing
 					</Button>
 					<Button
 						aria-label="Create your first routing rule"
-						data-testid="routing-rules-empty-new-rule"
+						data-testid="create-routing-rule-btn"
 						onClick={onAddClick}
 						disabled={!canCreate}
 					>

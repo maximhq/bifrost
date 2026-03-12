@@ -14,6 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// VirtualKeyQueryParams holds pagination, filtering, and search parameters for virtual key queries.
+type VirtualKeyQueryParams struct {
+	Limit      int
+	Offset     int
+	Search     string
+	CustomerID string
+	TeamID     string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -71,6 +80,7 @@ type ConfigStore interface {
 
 	// Governance config CRUD
 	GetVirtualKeys(ctx context.Context) ([]tables.TableVirtualKey, error)
+	GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error)
 	GetRedactedVirtualKeys(ctx context.Context, ids []string) ([]tables.TableVirtualKey, error) // leave ids empty to get all
 	GetVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
 	GetVirtualKeyByValue(ctx context.Context, value string) (*tables.TableVirtualKey, error)
@@ -167,6 +177,10 @@ type ConfigStore interface {
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
+	// Model parameters
+	GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error)
+	UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error
+
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
 	GetKeysByProvider(ctx context.Context, provider string) ([]tables.TableKey, error)
@@ -214,6 +228,35 @@ type ConfigStore interface {
 
 	// Not found retry wrapper
 	RetryOnNotFound(ctx context.Context, fn func(ctx context.Context) (any, error), maxRetries int, retryDelay time.Duration) (any, error)
+
+	// Prompt Repository - Folders
+	GetFolders(ctx context.Context) ([]tables.TableFolder, error)
+	GetFolderByID(ctx context.Context, id string) (*tables.TableFolder, error)
+	CreateFolder(ctx context.Context, folder *tables.TableFolder) error
+	UpdateFolder(ctx context.Context, folder *tables.TableFolder) error
+	DeleteFolder(ctx context.Context, id string) error
+
+	// Prompt Repository - Prompts
+	GetPrompts(ctx context.Context, folderID *string) ([]tables.TablePrompt, error)
+	GetPromptByID(ctx context.Context, id string) (*tables.TablePrompt, error)
+	CreatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	UpdatePrompt(ctx context.Context, prompt *tables.TablePrompt) error
+	DeletePrompt(ctx context.Context, id string) error
+
+	// Prompt Repository - Versions
+	GetPromptVersions(ctx context.Context, promptID string) ([]tables.TablePromptVersion, error)
+	GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error)
+	GetLatestPromptVersion(ctx context.Context, promptID string) (*tables.TablePromptVersion, error)
+	CreatePromptVersion(ctx context.Context, version *tables.TablePromptVersion) error
+	DeletePromptVersion(ctx context.Context, id uint) error
+
+	// Prompt Repository - Sessions
+	GetPromptSessions(ctx context.Context, promptID string) ([]tables.TablePromptSession, error)
+	GetPromptSessionByID(ctx context.Context, id uint) (*tables.TablePromptSession, error)
+	CreatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	UpdatePromptSession(ctx context.Context, session *tables.TablePromptSession) error
+	RenamePromptSession(ctx context.Context, id uint, name string) error
+	DeletePromptSession(ctx context.Context, id uint) error
 
 	// DB returns the underlying database connection.
 	DB() *gorm.DB

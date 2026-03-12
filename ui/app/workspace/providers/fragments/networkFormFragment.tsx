@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { HeadersTable } from "@/components/ui/headersTable";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
@@ -70,6 +72,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
+				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
+				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
 			},
 		},
 	});
@@ -99,6 +103,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: data.network_config?.max_retries ?? 0,
 				retry_backoff_initial: data.network_config?.retry_backoff_initial ?? 500,
 				retry_backoff_max: data.network_config?.retry_backoff_max ?? 10000,
+				insecure_skip_verify: data.network_config?.insecure_skip_verify ?? false,
+				ca_cert_pem: data.network_config?.ca_cert_pem?.trim() || undefined,
 			},
 		};
 		updateProvider(updatedProvider)
@@ -125,6 +131,8 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 				max_retries: provider.network_config?.max_retries ?? DefaultNetworkConfig.max_retries,
 				retry_backoff_initial: provider.network_config?.retry_backoff_initial ?? DefaultNetworkConfig.retry_backoff_initial,
 				retry_backoff_max: provider.network_config?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
+				insecure_skip_verify: provider.network_config?.insecure_skip_verify ?? DefaultNetworkConfig.insecure_skip_verify,
+				ca_cert_pem: provider.network_config?.ca_cert_pem ?? DefaultNetworkConfig.ca_cert_pem,
 			},
 		});
 	}, [form, provider.name, provider.network_config]);
@@ -302,6 +310,55 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 								</FormItem>
 							)}
 						/>
+						<div className="space-y-4 rounded-lg border p-4">
+							<h4 className="text-sm font-medium">TLS / Certificate</h4>
+							<FormField
+								control={form.control}
+								name="network_config.insecure_skip_verify"
+								render={({ field }) => (
+									<FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
+										<div className="space-y-0.5">
+											<FormLabel>Skip TLS verification</FormLabel>
+											<FormDescription>
+												Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments.
+											</FormDescription>
+										</div>
+										<FormControl>
+											<Switch
+												checked={field.value ?? false}
+												onCheckedChange={field.onChange}
+												disabled={!hasUpdateProviderAccess}
+												data-testid="network-config-insecure-skip-verify"
+											/>
+										</FormControl>
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={form.control}
+								name="network_config.ca_cert_pem"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>CA Certificate (PEM) (Optional)</FormLabel>
+										<FormControl>
+											<Textarea
+												placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+												className="font-mono text-xs"
+												rows={6}
+												{...field}
+												value={field.value || ""}
+												disabled={!hasUpdateProviderAccess}
+												data-testid="network-config-ca-cert-pem"
+											/>
+										</FormControl>
+										<FormDescription>
+											PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)
+										</FormDescription>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</div>
 					</div>
 				</div>
 

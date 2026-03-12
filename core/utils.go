@@ -3,6 +3,8 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -223,7 +225,7 @@ func IsKeylessProvider(providerKey schemas.ModelProvider) bool {
 
 // IsStreamRequestType returns true if the given request type is a stream request.
 func IsStreamRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest
+	return reqType == schemas.TextCompletionStreamRequest || reqType == schemas.ChatCompletionStreamRequest || reqType == schemas.ResponsesStreamRequest || reqType == schemas.SpeechStreamRequest || reqType == schemas.TranscriptionStreamRequest || reqType == schemas.ImageGenerationStreamRequest || reqType == schemas.ImageEditStreamRequest || reqType == schemas.PassthroughStreamRequest
 }
 
 func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, error) {
@@ -240,7 +242,7 @@ func GetTracerFromContext(ctx *schemas.BifrostContext) (schemas.Tracer, string, 
 
 // isBatchRequestType returns true if the given request type is a batch API operation.
 func isBatchRequestType(reqType schemas.RequestType) bool {
-	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchResultsRequest
+	return reqType == schemas.BatchCreateRequest || reqType == schemas.BatchListRequest || reqType == schemas.BatchRetrieveRequest || reqType == schemas.BatchCancelRequest || reqType == schemas.BatchDeleteRequest || reqType == schemas.BatchResultsRequest
 }
 
 // isFileRequestType returns true if the given request type is a file API operation.
@@ -266,6 +268,11 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	default:
 		return false
 	}
+}
+
+// isPassthroughRequestType returns true if the given request type is a passthrough request.
+func isPassthroughRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
 }
 
 // IsFinalChunk returns true if the given context is a final chunk.
@@ -474,4 +481,20 @@ func sanitizeSpanName(name string) string {
 // IsCodemodeTool returns true if the given tool name is a codemode tool.
 func IsCodemodeTool(toolName string) bool {
 	return mcp.IsCodeModeTool(toolName)
+}
+
+// hashSHA256 returns a deterministic hex-encoded SHA-256 hash of the input.
+func hashSHA256(value string) string {
+	h := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(h[:])
+}
+
+func buildSessionKey(providerKey schemas.ModelProvider, sessionID string, model string) string {
+	// Hash session ID to prevent PII leakage and ensure bounded key size
+	hashedSessionID := hashSHA256(sessionID)
+	discriminator := model
+	if discriminator == "" {
+		discriminator = "__modelless__"
+	}
+	return "session:" + string(providerKey) + ":" + hashedSessionID + ":" + hashSHA256(discriminator)
 }

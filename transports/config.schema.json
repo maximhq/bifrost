@@ -1876,6 +1876,7 @@
             "batch_list": { "type": "boolean" },
             "batch_retrieve": { "type": "boolean" },
             "batch_cancel": { "type": "boolean" },
+            "batch_delete": { "type": "boolean" },
             "batch_results": { "type": "boolean" },
             "file_upload": { "type": "boolean" },
             "file_list": { "type": "boolean" },
@@ -1890,7 +1891,9 @@
             "container_file_list": { "type": "boolean" },
             "container_file_retrieve": { "type": "boolean" },
             "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" }
+            "container_file_delete": { "type": "boolean" },
+            "passthrough": { "type": "boolean" },
+            "passthrough_stream": { "type": "boolean" }
           },
           "additionalProperties": false
         },
@@ -1939,6 +1942,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "Maximum retry backoff in milliseconds"
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
         }
       },
       "additionalProperties": false
@@ -2509,6 +2520,19 @@
         "tool_sync_interval": {
           "type": "string",
           "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+        },
+        "is_ping_available": {
+          "type": "boolean",
+          "description": "Whether the MCP server supports ping for health checks (default: true)",
+          "default": true
+        },
+        "tool_pricing": {
+          "type": "object",
+          "description": "Tool pricing map (tool name to cost per execution)",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
         }
       },
       "required": [
@@ -3209,6 +3233,11 @@
               "enabled": {
                 "type": "boolean",
                 "description": "Whether this provider config is enabled"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Timeout in milliseconds for provider execution"
               },
               "config": {
                 "type": "object",

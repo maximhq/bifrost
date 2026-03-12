@@ -53,6 +53,8 @@ type NetworkConfig struct {
 	MaxRetries                     int               `json:"max_retries"`                        // Maximum number of retries
 	RetryBackoffInitial            time.Duration     `json:"retry_backoff_initial"`              // Initial backoff duration (stored as nanoseconds, JSON as milliseconds)
 	RetryBackoffMax                time.Duration     `json:"retry_backoff_max"`                  // Maximum backoff duration (stored as nanoseconds, JSON as milliseconds)
+	InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`     // Disables TLS certificate verification for provider connections
+	CACertPEM                      string            `json:"ca_cert_pem,omitempty"`              // PEM-encoded CA certificate to trust for provider endpoint connections
 }
 
 // UnmarshalJSON customizes JSON unmarshaling for NetworkConfig.
@@ -67,6 +69,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 	}
 
 	var alias NetworkConfigAlias
@@ -79,6 +83,8 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
+	nc.InsecureSkipVerify = alias.InsecureSkipVerify
+	nc.CACertPEM = alias.CACertPEM
 
 	// Convert milliseconds to time.Duration (nanoseconds)
 	// Only convert if value is greater than 0
@@ -104,6 +110,8 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		MaxRetries                     int               `json:"max_retries"`
 		RetryBackoffInitial            int64             `json:"retry_backoff_initial"` // milliseconds in JSON
 		RetryBackoffMax                int64             `json:"retry_backoff_max"`     // milliseconds in JSON
+		InsecureSkipVerify             bool              `json:"insecure_skip_verify,omitempty"`
+		CACertPEM                      string            `json:"ca_cert_pem,omitempty"`
 	}
 
 	alias := NetworkConfigAlias{
@@ -114,9 +122,23 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 		// Convert time.Duration (nanoseconds) to milliseconds
 		RetryBackoffInitial: int64(nc.RetryBackoffInitial / time.Millisecond),
 		RetryBackoffMax:     int64(nc.RetryBackoffMax / time.Millisecond),
+		InsecureSkipVerify:  nc.InsecureSkipVerify,
+		CACertPEM:           nc.CACertPEM,
 	}
 
 	return json.Marshal(alias)
+}
+
+// Redacted returns a redacted copy of the network configuration with CACertPEM masked.
+func (nc *NetworkConfig) Redacted() *NetworkConfig {
+	if nc == nil {
+		return nil
+	}
+	redacted := *nc
+	if nc.CACertPEM != "" {
+		redacted.CACertPEM = "<REDACTED>"
+	}
+	return &redacted
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.
@@ -217,6 +239,7 @@ type AllowedRequests struct {
 	BatchList             bool `json:"batch_list"`
 	BatchRetrieve         bool `json:"batch_retrieve"`
 	BatchCancel           bool `json:"batch_cancel"`
+	BatchDelete           bool `json:"batch_delete"`
 	BatchResults          bool `json:"batch_results"`
 	FileUpload            bool `json:"file_upload"`
 	FileList              bool `json:"file_list"`
@@ -232,6 +255,8 @@ type AllowedRequests struct {
 	ContainerFileRetrieve bool `json:"container_file_retrieve"`
 	ContainerFileContent  bool `json:"container_file_content"`
 	ContainerFileDelete   bool `json:"container_file_delete"`
+	Passthrough           bool `json:"passthrough"`
+	PassthroughStream     bool `json:"passthrough_stream"`
 }
 
 // IsOperationAllowed checks if a specific operation is allowed
@@ -299,6 +324,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.BatchRetrieve
 	case BatchCancelRequest:
 		return ar.BatchCancel
+	case BatchDeleteRequest:
+		return ar.BatchDelete
 	case BatchResultsRequest:
 		return ar.BatchResults
 	case FileUploadRequest:
@@ -329,6 +356,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.ContainerFileContent
 	case ContainerFileDeleteRequest:
 		return ar.ContainerFileDelete
+	case PassthroughRequest:
+		return ar.Passthrough
+	case PassthroughStreamRequest:
+		return ar.PassthroughStream
 	default:
 		return false // Default to not allowed for unknown operations
 	}
@@ -521,6 +552,8 @@ type Provider interface {
 	BatchRetrieve(ctx *BifrostContext, keys []Key, request *BifrostBatchRetrieveRequest) (*BifrostBatchRetrieveResponse, *BifrostError)
 	// BatchCancel cancels a batch job
 	BatchCancel(ctx *BifrostContext, keys []Key, request *BifrostBatchCancelRequest) (*BifrostBatchCancelResponse, *BifrostError)
+	// BatchDelete deletes a batch job
+	BatchDelete(ctx *BifrostContext, keys []Key, request *BifrostBatchDeleteRequest) (*BifrostBatchDeleteResponse, *BifrostError)
 	// BatchResults retrieves results from a completed batch job
 	BatchResults(ctx *BifrostContext, keys []Key, request *BifrostBatchResultsRequest) (*BifrostBatchResultsResponse, *BifrostError)
 	// FileUpload uploads a file to the provider
@@ -551,4 +584,8 @@ type Provider interface {
 	ContainerFileContent(ctx *BifrostContext, keys []Key, request *BifrostContainerFileContentRequest) (*BifrostContainerFileContentResponse, *BifrostError)
 	// ContainerFileDelete deletes a file from a container
 	ContainerFileDelete(ctx *BifrostContext, keys []Key, request *BifrostContainerFileDeleteRequest) (*BifrostContainerFileDeleteResponse, *BifrostError)
+	// Passthrough executes a non-streaming passthrough; body is fully buffered.
+	Passthrough(ctx *BifrostContext, key Key, req *BifrostPassthroughRequest) (*BifrostPassthroughResponse, *BifrostError)
+	// PassthroughStream executes a streaming passthrough, forwarding raw response bytes as BifrostStreamChunks.
+	PassthroughStream(ctx *BifrostContext, postHookRunner PostHookRunner, key Key, req *BifrostPassthroughRequest) (chan *BifrostStreamChunk, *BifrostError)
 }

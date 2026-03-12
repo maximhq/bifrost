@@ -92,7 +92,7 @@ install-junit-viewer: ## Install junit-viewer for HTML report generation (if not
 				echo "$(YELLOW)You can install it manually: npm install -g junit-viewer$(NC)"; \
 				exit 0; \
 			fi; \
-		fi \
+		fi; \
 	else \
 		echo "$(YELLOW)CI environment detected, skipping junit-viewer installation$(NC)"; \
 	fi
@@ -350,7 +350,7 @@ test: install-gotestsum ## Run tests for bifrost-http
 			echo ""; \
 			echo "$(YELLOW)junit-viewer not installed. Install with: make install-junit-viewer$(NC)"; \
 			echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
-		fi \
+		fi; \
 	else \
 		echo ""; \
 		echo "$(CYAN)JUnit XML report: $(TEST_REPORTS_DIR)/bifrost-http.xml$(NC)"; \
@@ -398,7 +398,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -426,7 +426,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -454,7 +454,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../../../$$REPORT_FILE \
-					-- -v -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
+					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
 			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
@@ -473,7 +473,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				echo ""; \
 				echo "$(CYAN)JUnit XML report: $$REPORT_FILE$(NC)"; \
 			fi; \
-		fi \
+		fi; \
 	else \
 		if [ -n "$(TESTCASE)" ]; then \
 			echo "$(RED)Error: TESTCASE requires PROVIDER to be specified$(NC)"; \
@@ -489,7 +489,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
 					--junitfile=../$$REPORT_FILE \
-					-- -v -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
+					-- -v -timeout 20m -run ".*$(PATTERN).*" ./providers/... || TEST_FAILED=1; \
 			fi; \
 		else \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all.xml"; \

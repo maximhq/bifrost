@@ -364,7 +364,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	// We reload the plugin if its enabled, otherwise we stop it
 	if request.Enabled {
-		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config); err != nil {			
+		if err := h.pluginsLoader.ReloadPlugin(ctx, name, request.Path, request.Config); err != nil {
 			logger.Error("failed to load plugin: %v", err)
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to load: %v", err))
 			return
@@ -374,7 +374,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		if err := h.pluginsLoader.RemovePlugin(ctx, name); err != nil {
 			if !errors.Is(err, plugins.ErrPluginNotFound) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Plugin updated in database but failed to stop: %v", err))
-				return	
+				return
 			}
 			// If not found then we don't need to do anything
 		}

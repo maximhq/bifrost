@@ -1,7 +1,7 @@
 import { ResponsesMessage, ResponsesMessageContentBlock } from "@/lib/types/logs"
-import { CodeEditor } from "./codeEditor"
 import { isJson, cleanJson } from "@/lib/utils/validation"
 import CollapsibleBox from "./collapsibleBox"
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface LogResponsesMessageViewProps {
 	messages: ResponsesMessage[]

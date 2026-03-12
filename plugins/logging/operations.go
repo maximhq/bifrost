@@ -43,6 +43,7 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		RoutingEnginesUsed:          routingEnginesUsed,
 		MetadataParsed:              data.Metadata,
 		VideoGenerationInputParsed:  data.VideoGenerationInput,
+		PassthroughRequestBody:      data.PassthroughRequestBody,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
@@ -694,6 +695,15 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		}
 		if result.ImageGenerationResponse != nil {
 			entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
+		}
+		if result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
+			entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
+		}
+	}
+
+	if result.PassthroughResponse != nil {
+		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
+			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
 	}
 }

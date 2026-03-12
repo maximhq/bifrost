@@ -264,8 +264,12 @@ type ProviderConfig struct {
 // Redacted returns a redacted copy of the provider configuration.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
 	// Create redacted config with same structure but redacted values
+	var redactedNetworkConfig *schemas.NetworkConfig
+	if p.NetworkConfig != nil {
+		redactedNetworkConfig = p.NetworkConfig.Redacted()
+	}
 	redactedConfig := ProviderConfig{
-		NetworkConfig:            p.NetworkConfig,
+		NetworkConfig:            redactedNetworkConfig,
 		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,

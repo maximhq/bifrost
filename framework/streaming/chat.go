@@ -414,6 +414,23 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		}
 		data.FinishReason = lastChunk.FinishReason
 	}
+	// Merge LogProbs from all chunks
+	if len(accumulator.ChatStreamChunks) > 0 {
+		var mergedLogProbs *schemas.BifrostLogProbs
+		for _, chunk := range accumulator.ChatStreamChunks {
+			if chunk.LogProbs != nil {
+				if mergedLogProbs == nil {
+					mergedLogProbs = &schemas.BifrostLogProbs{}
+				}
+				mergedLogProbs.Content = append(mergedLogProbs.Content, chunk.LogProbs.Content...)
+				mergedLogProbs.Refusal = append(mergedLogProbs.Refusal, chunk.LogProbs.Refusal...)
+				if chunk.LogProbs.TextCompletionLogProb != nil {
+					mergedLogProbs.TextCompletionLogProb = chunk.LogProbs.TextCompletionLogProb
+				}
+			}
+		}
+		data.LogProbs = mergedLogProbs
+	}
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ChatStreamChunks) > 0 {
 		// Sort chunks by chunk index
@@ -470,6 +487,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 					Content: deltaCopy,
 				}
 				chunk.FinishReason = choice.FinishReason
+				chunk.LogProbs = choice.LogProbs
 			}
 		}
 		// Extract token usage
@@ -492,6 +510,7 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 				// Deep copy delta to prevent shared data mutation between chunks
 				chunk.Delta = deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
 				chunk.FinishReason = choice.FinishReason
+				chunk.LogProbs = choice.LogProbs
 			}
 		}
 		// Extract token usage

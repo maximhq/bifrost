@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { BifrostTranscribe, TranscriptionInput } from "@/lib/types/logs";
 import { Clock, FileAudio, Mic } from "lucide-react";
 import AudioPlayer from "./audioPlayer";
-import { CodeEditor } from "./codeEditor";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface TranscriptionViewProps {
 	transcriptionInput?: TranscriptionInput;

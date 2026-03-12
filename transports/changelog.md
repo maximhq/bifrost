@@ -1,0 +1,5 @@
+- fix: preserve original audio filename in transcription requests
+- fix: async jobs stuck in "processing" on marshal failure now correctly transition to "failed"
+- feat: adds attachment support in Maxim plugin
+- feat: add x-bf-api-key-id header support for explicit key selection by ID, with priority over x-bf-api-key name selection
+- fix: streaming tool call indices for multiple parallel tool calls in chat completions stream

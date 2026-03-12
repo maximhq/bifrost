@@ -32,7 +32,6 @@ import { Clipboard, MoreVertical, Trash2 } from "lucide-react";
 import moment from "moment";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
-import { CodeEditor } from "../views/codeEditor";
 import CollapsibleBox from "../views/collapsibleBox";
 import ImageView from "../views/imageView";
 import LogChatMessageView from "../views/logChatMessageView";
@@ -41,6 +40,7 @@ import LogResponsesMessageView from "../views/logResponsesMessageView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
 import VideoView from "../views/videoView";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 const formatJsonSafe = (str: string | undefined): string => {
 	try {
@@ -56,6 +56,10 @@ interface LogDetailSheetProps {
 	onOpenChange: (open: boolean) => void;
 	handleDelete: (log: LogEntry) => void;
 }
+
+// Helper to detect passthrough operations
+const isPassthroughOperation = (object: string) =>
+	object === "passthrough" || object === "passthrough_stream";
 
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
@@ -88,8 +92,19 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	// Guard against stale data: only use fullLog if it belongs to the currently opened log entry.
 	const rawRequest = fullLog?.id === log.id ? fullLog.raw_request : log.raw_request;
 	const rawResponse = fullLog?.id === log.id ? fullLog.raw_response : log.raw_response;
+	const passthroughRequestBody = fullLog?.id === log.id ? fullLog.passthrough_request_body : log.passthrough_request_body;
+	const passthroughResponseBody = fullLog?.id === log.id ? fullLog.passthrough_response_body : log.passthrough_response_body;
 
 	const isContainer = isContainerOperation(log.object);
+	const isPassthrough = isPassthroughOperation(log.object);
+	const passthroughParams = isPassthrough
+		? (log.params as {
+				method?: string;
+				path?: string;
+				raw_query?: string;
+				status_code?: number;
+		  })
+		: null;
 
 	// Taking out tool call
 	let toolsParameter = null;
@@ -276,15 +291,45 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</>
 							)}
 
+							{/* Display passthrough params (method, path, raw_query, status_code) */}
+							{passthroughParams && (
+								<>
+									{passthroughParams.method && (
+										<LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />
+									)}
+									{passthroughParams.path && (
+										<LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />
+									)}
+									{passthroughParams.raw_query && (
+										<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
+									)}
+									{(passthroughParams.status_code ?? 0) !== 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Status Code"
+											value={passthroughParams.status_code}
+										/>
+									)}
+								</>
+							)}
+
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
 								Object.entries(log.params)
-									.filter(([key]) => key !== "tools" && key !== "instructions" && key !== "audio")
+									.filter(([key]) => {
+										const passthroughKeys = ["method", "path", "raw_query", "status_code"];
+										return (
+											key !== "tools" &&
+											key !== "instructions" &&
+											key !== "audio" &&
+											!(isPassthrough && passthroughKeys.includes(key))
+										);
+									})
 									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
 					</div>
-					{log.status === "success" && !isContainer && (
+					{log.status === "success" && !isContainer && !isPassthrough && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
@@ -570,6 +615,36 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					</CollapsibleBox>
 				)}
 
+				{/* Passthrough request body */}
+				{isPassthrough && passthroughRequestBody && (() => {
+					return (
+						<CollapsibleBox title="Request Body" 									onCopy={() => {
+							try {
+								return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+							} catch {
+								return passthroughRequestBody || "";
+							}
+						}}>
+							<CodeEditor
+								className="z-0 w-full"
+								shouldAdjustInitialHeight={true}
+								maxHeight={450}
+								wrap={true}
+								code={(() => {
+									try {
+										return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+									} catch {
+										return passthroughRequestBody || "";
+									}
+								})()}
+								lang="json"
+								readonly={true}
+								options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							/>
+						</CollapsibleBox>
+					);
+				})()}
+
 				{/* Show conversation history for chat/text completions */}
 				{log.input_history && log.input_history.length > 1 && (
 					<>
@@ -659,6 +734,36 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									/>
 								</CollapsibleBox>
 							</>
+						)}
+						{/* Passthrough response body */}
+						{isPassthrough && passthroughResponseBody && (
+							<CollapsibleBox
+								title="Response Body"
+								onCopy={() => {
+									try {
+										return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+									} catch {
+										return passthroughResponseBody || "";
+									}
+								}}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={(() => {
+										try {
+											return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+										} catch {
+											return passthroughResponseBody || "";
+										}
+									})()}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
+							</CollapsibleBox>
 						)}
 						{rawRequest && (
 							<>

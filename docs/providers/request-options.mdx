@@ -12,6 +12,9 @@ Bifrost provides request options that control behavior, enable features, and pas
 |-------------|--------|------|-------------|
 | `BifrostContextKeyVirtualKey` | `x-bf-vk` | `string` | Virtual key identifier for governance |
 | `BifrostContextKeyAPIKeyName` | `x-bf-api-key` | `string` | Explicit API key name selection |
+| `BifrostContextKeyAPIKeyID` | `x-bf-api-key-id` | `string` | Explicit API key ID selection (takes priority over name) |
+| `BifrostContextKeySessionID` | `x-bf-session-id` | `string` | Session ID for key stickiness (requires KV store) |
+| `BifrostContextKeySessionTTL` | `x-bf-session-ttl` | `time.Duration` | Session-to-key cache TTL (duration string or seconds) |
 | `BifrostContextKeyRequestID` | `x-request-id` | `string` | Custom request ID for tracking |
 | `BifrostContextKeySendBackRawResponse` | `x-bf-send-back-raw-response` | `bool` | Include raw provider response |
 | `BifrostContextKeyPassthroughExtraParams` | `x-bf-passthrough-extra-params` | `bool` | Enable passthrough for extra parameters |
@@ -76,11 +79,50 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 Virtual keys can also be passed via `Authorization: Bearer vk-*`, `x-api-key: vk-*`, or `x-goog-api-key: vk-*` headers when the value starts with the virtual key prefix.
 </Note>
 
-### API Key Name Selection
+### API Key Selection
 
-**Context Key:** `BifrostContextKeyAPIKeyName`  
-**Header:** `x-bf-api-key`  
-**Type:** `string`  
+Bifrost supports selecting a specific key by **ID** or **name**. When both are present, ID takes priority.
+
+#### By ID
+
+**Context Key:** `BifrostContextKeyAPIKeyID`
+**Header:** `x-bf-api-key-id`
+**Type:** `string`
+**Required:** No
+
+Explicitly select a key by its unique ID. Takes priority over name selection when both are provided.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-api-key-id: key-uuid-1234' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyID, "key-uuid-1234")
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+#### By Name
+
+**Context Key:** `BifrostContextKeyAPIKeyName`
+**Header:** `x-bf-api-key`
+**Type:** `string`
 **Required:** No
 
 Explicitly select a named API key from your configured keys.
@@ -101,6 +143,86 @@ curl --location 'http://localhost:8080/v1/chat/completions' \
 ```go
 ctx := context.Background()
 ctx = context.WithValue(ctx, schemas.BifrostContextKeyAPIKeyName, "premium-key")
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Session Stickiness (Session ID)
+
+**Context Key:** `BifrostContextKeySessionID`  
+**Header:** `x-bf-session-id`  
+**Type:** `string`  
+**Required:** No
+
+Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
+
+On the first request for a session ID, Bifrost selects a key and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid.
+
+**Retry and Fallback Behavior:**
+- **Retries**: Session stickiness persists across retry attempts. If a request fails and is retried, the same sticky key is used.
+- **Fallbacks**: When falling back to a different provider (e.g., from OpenAI to Anthropic), session stickiness is disabled and a new key is selected for the fallback provider. This ensures availability when the primary provider's keys are exhausted or failing.
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-session-id: user-123-session-abc' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+
+response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
+    Provider: schemas.OpenAI,
+    Model:    "gpt-4o-mini",
+    Input:    messages,
+})
+```
+</Tab>
+</Tabs>
+
+### Session TTL
+
+**Context Key:** `BifrostContextKeySessionTTL`  
+**Header:** `x-bf-session-ttl`  
+**Type:** `time.Duration` (header value: duration string like `"30m"` or `"1h"`, or seconds as integer)  
+**Required:** No
+
+Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses 1 hour. The TTL is refreshed on each request so active sessions do not expire.
+
+Accepts duration strings (`"30s"`, `"5m"`, `"1h"`) or plain numbers (treated as seconds).
+
+<Tabs>
+<Tab title="Gateway (cURL)">
+```bash
+curl --location 'http://localhost:8080/v1/chat/completions' \
+--header 'x-bf-session-id: user-123-session-abc' \
+--header 'x-bf-session-ttl: 30m' \
+--header 'Content-Type: application/json' \
+--data '{
+    "model": "openai/gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello!"}]
+}'
+```
+</Tab>
+<Tab title="Go SDK">
+```go
+ctx := context.Background()
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+ctx = context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
 
 response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostChatRequest{
     Provider: schemas.OpenAI,

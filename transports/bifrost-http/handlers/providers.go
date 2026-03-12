@@ -97,6 +97,7 @@ func (h *ProviderHandler) RegisterRoutes(r *router.Router, middlewares ...schema
 	r.DELETE("/api/providers/{provider}", lib.ChainMiddlewares(h.deleteProvider, middlewares...))
 	r.GET("/api/keys", lib.ChainMiddlewares(h.listKeys, middlewares...))
 	r.GET("/api/models", lib.ChainMiddlewares(h.listModels, middlewares...))
+	r.GET("/api/models/parameters", lib.ChainMiddlewares(h.getModelParameters, middlewares...))
 	r.GET("/api/models/base", lib.ChainMiddlewares(h.listBaseModels, middlewares...))
 }
 
@@ -448,6 +449,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
+	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
+	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
+		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
@@ -696,6 +701,33 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	SendJSON(ctx, response)
+}
+
+// getModelParameters handles GET /api/models/parameters - Get model parameters for a specific model
+// Query parameters:
+//   - model: The model name to get parameters for (required)
+func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
+	modelParam := string(ctx.QueryArgs().Peek("model"))
+	if modelParam == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "model query parameter is required")
+		return
+	}
+
+	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+		return
+	}
+
+	data := modelCatalog.GetModelParametersData(modelParam)
+	if data == nil {
+		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+		return
+	}
+
+	ctx.SetContentType("application/json")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	ctx.SetBody(data)
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions

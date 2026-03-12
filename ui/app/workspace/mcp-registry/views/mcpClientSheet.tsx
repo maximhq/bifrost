@@ -1,7 +1,6 @@
 "use client";
 
 import { Fragment } from "react";
-import { CodeEditor } from "@/app/workspace/logs/views/codeEditor";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -23,6 +22,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDown, ChevronRight, Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface MCPClientSheetProps {
 	mcpClient: MCPClient;
