@@ -694,13 +694,30 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 // for use in prepareFallbackRequest, which only writes Provider and Model, never
 // the content. ProviderOverride is also deep-copied so the caller can nil or replace
 // it without aliasing the original.
+// Clone returns a copy of the request suitable for use in prepareFallbackRequest.
+//
+// What IS independently copied:
+//   - ProviderOverride struct (so niling it on the clone does not affect the original)
+//   - The one active inner request struct (so SetProvider/UpdateModel writes to the
+//     clone's Provider/Model scalars without aliasing the original's inner pointer)
+//
+// What is NOT deep-copied, and why:
+//   - Slice and map fields inside the inner request struct (e.g. Input []ChatMessage,
+//     Tools []Tool, Fallbacks []Fallback, ExtraParams map[string]interface{}).
+//     These share the same underlying array/map with the original.
+//     This is intentional: Clone() exists only to let prepareFallbackRequest write
+//     routing metadata (Provider, Model) independently per fallback attempt.
+//     Plugin hooks MUST NOT mutate content fields (messages, tools, metadata);
+//     they may only rewrite routing metadata through the Update* methods.
+//     Deep-copying content across all 35 request types would add significant
+//     complexity and per-fallback heap allocation for no practical benefit.
+//   - ProviderOverride.Key (pointer): safe to share because prepareFallbackRequest
+//     immediately nils ProviderOverride after Clone(), and hooks create a fresh one
+//     via req.UpdateAPIKey if needed.
 func (br *BifrostRequest) Clone() BifrostRequest {
 	clone := *br
 	if br.ProviderOverride != nil {
 		ovr := *br.ProviderOverride // copies BaseURL and BaseProviderType by value
-		// Key is a pointer and is not deep-copied; its value is safe to share because
-		// prepareFallbackRequest immediately nils ProviderOverride after Clone() and
-		// hooks then create a fresh ProviderOverride via req.UpdateAPIKey if needed.
 		clone.ProviderOverride = &ovr
 	}
 	switch {

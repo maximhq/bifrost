@@ -3667,9 +3667,12 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}
 		switch {
-		case override != nil && override.BaseProviderType != "":
-			// Arbitrary provider name with an explicit dialect: auto-initialise using the
-			// specified base type so no static config entry is required.
+		case override != nil && override.BaseProviderType != "" && !slices.Contains(dynamicallyConfigurableProviders, providerKey):
+			// Arbitrary (non-built-in) provider name with an explicit dialect: auto-initialise
+			// using the specified base type so no static config entry is required.
+			// The built-in provider check prevents BaseProviderType from retargeting a
+			// well-known provider key (e.g. providerKey="openai", BaseProviderType="anthropic")
+			// which would initialise the openai queue with the wrong adapter.
 			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s as %s dialect (no static config found)", providerKey, override.BaseProviderType))
 			baseConfig.CustomProviderConfig = &schemas.CustomProviderConfig{
 				BaseProviderType:  override.BaseProviderType,
@@ -4202,8 +4205,9 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return nil, bifrostErr
 	}
 
-	// Provider comes from the request; UpdateProvider (called by hooks) sets it via SetProvider.
-	provider, _, _ := preReq.GetRequestFields()
+	// Provider and model come from the request after hook rewrites.
+	// UpdateProvider/UpdateModel (called by hooks) set them via SetProvider/SetModel.
+	provider, model, _ := preReq.GetRequestFields()
 
 	// Wire request-level key/URL overrides into context for key selection and URL construction.
 	// Clear any leftover from a previous attempt first so each attempt starts fresh.
@@ -4486,8 +4490,9 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 		return nil, bifrostErr
 	}
 
-	// Provider comes from the request; UpdateProvider (called by hooks) sets it via SetProvider.
-	provider, _, _ := preReq.GetRequestFields()
+	// Provider and model come from the request after hook rewrites.
+	// UpdateProvider/UpdateModel (called by hooks) set them via SetProvider/SetModel.
+	provider, model, _ := preReq.GetRequestFields()
 
 	// Wire request-level key/URL overrides into context for key selection and URL construction.
 	// Clear any leftover from a previous attempt first so each attempt starts fresh.
