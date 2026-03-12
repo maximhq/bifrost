@@ -1457,8 +1457,8 @@ func TestProviderOverride(t *testing.T) {
 		}
 		t.Cleanup(func() { bf.Shutdown() })
 
-		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
 		resp, bifrostErr := bf.ChatCompletionRequest(reqCtx, &schemas.BifrostChatRequest{
 			Provider: schemas.ModelProvider("my-org-openai"),
 			Model:    "gpt-4o",

@@ -5947,9 +5947,28 @@ func (bifrost *Bifrost) releaseMCPRequest(req *schemas.BifrostMCPRequest) {
 	bifrost.mcpRequestPool.Put(req)
 }
 
+// getOverrideKey returns the explicit API key from a ProviderOverride stored in ctx,
+// or nil when no override key is present. Used to short-circuit key-pool selection
+// in all key-selection helpers so that UpdateAPIKey pre-hooks work for every
+// request type (chat, list-models, batch, file operations).
+func getOverrideKey(ctx *schemas.BifrostContext) *schemas.Key {
+	if ctx == nil {
+		return nil
+	}
+	override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride)
+	if !ok || override == nil || override.Key == nil {
+		return nil
+	}
+	return override.Key
+}
+
 // getAllSupportedKeys retrieves all valid keys for a ListModels request.
 // allowing the provider to aggregate results from multiple keys.
 func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider) ([]schemas.Key, error) {
+	// Honor a per-request key injected by a plugin via UpdateAPIKey.
+	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+		return []schemas.Key{*overrideKey}, nil
+	}
 	// Check if key has been set in the context explicitly
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
@@ -5993,6 +6012,10 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 // For batch operations, only keys with UseForBatchAPI enabled are included.
 // Model filtering: if model is specified and key has model restrictions, only include if model is in list.
 func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, baseProviderType schemas.ModelProvider, model *string, isBatchOp bool) ([]schemas.Key, error) {
+	// Honor a per-request key injected by a plugin via UpdateAPIKey.
+	if overrideKey := getOverrideKey(ctx); overrideKey != nil {
+		return []schemas.Key{*overrideKey}, nil
+	}
 	// Check if key has been set in the context explicitly
 	if ctx != nil {
 		key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)

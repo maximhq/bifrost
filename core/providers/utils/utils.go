@@ -521,20 +521,25 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 	// as a complete absolute URL, bypassing the provider's static NetworkConfig.BaseURL.
 	// Respect RequestPathOverrides for the path suffix when configured.
 	if override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride); ok && override != nil && override.BaseURL != "" {
-		path := defaultPath
-		if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
-			if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok && strings.TrimSpace(raw) != "" {
-				path = strings.TrimSpace(raw)
-				// If the path override is itself an absolute URL, return it directly.
-				if u, err := url.Parse(path); err == nil && u != nil && u.IsAbs() && u.Host != "" {
-					return path, true
+		// Require BaseURL to be absolute (scheme + host). A relative or malformed BaseURL
+		// would produce a silently wrong concatenated URL; reject it here to surface the
+		// misconfiguration clearly via transport-level errors.
+		if u, err := url.Parse(override.BaseURL); err == nil && u != nil && u.IsAbs() && u.Host != "" {
+			path := defaultPath
+			if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
+				if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok && strings.TrimSpace(raw) != "" {
+					path = strings.TrimSpace(raw)
+					// If the path override is itself an absolute URL, return it directly.
+					if pu, perr := url.Parse(path); perr == nil && pu != nil && pu.IsAbs() && pu.Host != "" {
+						return path, true
+					}
 				}
 			}
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			return strings.TrimRight(override.BaseURL, "/") + path, true
 		}
-		if !strings.HasPrefix(path, "/") {
-			path = "/" + path
-		}
-		return strings.TrimRight(override.BaseURL, "/") + path, true
 	}
 
 	// If path override set in custom provider config, return it.
