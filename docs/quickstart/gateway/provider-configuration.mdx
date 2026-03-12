@@ -146,6 +146,10 @@ Each key in a provider needs to have a unique name.
 **Kubernetes DNS (only for custom endpoint):** When running in Kubernetes, use fully qualified domain names (FQDN) like `http://<service>.<namespace>.svc.cluster.local:8000` for cross-namespace custom endpoints. Short names like `http://<service>:8000` only work within the same namespace.
 </Tip>
 
+<Tip>
+**Air-gapped or self-signed certificates:** If your custom provider uses HTTPS with a self-signed or internal CA certificate, add `"insecure_skip_verify": true` or `"ca_cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"` to `network_config`. See [Custom Providers - TLS](../../providers/custom-providers#tls-for-self-signed-or-internal-certificates) for details.
+</Tip>
+
 ## Making Requests
 
 Once providers are configured, you can make requests to any specific provider. This example shows how to send a request directly to OpenAI's GPT-4o Mini model. Bifrost handles the provider-specific API formatting automatically.
@@ -1253,6 +1257,7 @@ curl --location 'http://localhost:8080/api/providers' \
 - In IAM role authentication, if both `access_key` and `secret_key` are empty, Bifrost uses IAM role authentication from the environment.
 - `arn` is required for URL formation - `deployments` mapping is ignored without it.
 - When using `arn` + `deployments`, Bifrost uses model profiles; otherwise forms path with incoming model name directly.
+- **ARN vs deployments**: Put the ARN prefix in `arn` and the model/inference profile resource ID only in `deployments` — never the full ARN in deployments. See [How to Use ARNs and Application Inference Profiles](/providers/supported-providers/bedrock#how-to-use-arns-and-application-inference-profiles) for details.
 
 ### Google Vertex
 

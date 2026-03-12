@@ -6,7 +6,8 @@ on:
     branches:
       - main
     paths:
-      - 'npx/package.json'
+      - 'npx/bifrost/package.json'
+      - 'npx/bifrost-cli/package.json'
 
 # Prevent concurrent runs for the same trigger
 concurrency:
@@ -36,21 +37,20 @@ jobs:
             echo "should-skip=false" >> $GITHUB_OUTPUT
           fi
 
-  publish:
+  publish-bifrost:
     needs: [check-skip]
     if: needs.check-skip.outputs.should-skip != 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write      
+      contents: write
       id-token: write # Required for npm provenance
     steps:
-      # Checkout the repository
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           fetch-tags: true
 
-      # Set up Node.js environment
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -58,58 +58,82 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: "npm"
           cache-dependency-path: |
-            npx/package-lock.json
+            npx/bifrost/package-lock.json
 
-      # Extract and validate version from package.json
+      - name: Check if bifrost package.json changed
+        id: check-bifrost
+        run: |
+          if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -q '^npx/bifrost/package.json$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract version from package.json
+        if: steps.check-bifrost.outputs.changed == 'true'
         id: extract-version
         run: ./.github/workflows/scripts/extract-npx-version.sh
 
-      # Install dependencies (if any)
       - name: Install dependencies
-        working-directory: npx
+        if: steps.check-bifrost.outputs.changed == 'true'
+        working-directory: npx/bifrost
         run: npm ci
 
-      # Run tests (if any exist)
       - name: Run tests
-        working-directory: npx
+        if: steps.check-bifrost.outputs.changed == 'true'
+        working-directory: npx/bifrost
         run: |
           if [ -f "package.json" ] && npm run | grep -q "test"; then
-            echo "🧪 Running tests..."
+            echo "Running tests..."
             npm test
           else
-            echo "⏭️ No tests found, skipping..."
+            echo "No tests found, skipping..."
           fi
 
-      # Publish to npm
       - name: Publish to npm
-        working-directory: npx
+        if: steps.check-bifrost.outputs.changed == 'true'
+        working-directory: npx/bifrost
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION="${{ steps.extract-version.outputs.version }}"
-          echo "📦 Publishing @maximhq/bifrost@${VERSION} to npm..."
+          echo "Publishing @maximhq/bifrost@${VERSION} to npm..."
           if npm view @maximhq/bifrost@"${VERSION}" version >/dev/null 2>&1; then
-            echo "ℹ️ @maximhq/bifrost@${VERSION} already exists on npm. Skipping publish."
+            echo "@maximhq/bifrost@${VERSION} already exists on npm. Skipping publish."
+            exit 0
+          fi
+          
+          # Try OIDC (Trusted Publishing) first - no token needed
+          echo "Attempting publish with OIDC (Trusted Publishing)..."
+          if npm publish --provenance --access public 2>&1; then
+            echo "Published successfully with OIDC!"
+            exit 0
+          fi
+          
+          # Fallback to NPM_TOKEN if OIDC fails
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "OIDC failed, falling back to NPM_TOKEN..."
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            npm publish --access public
           else
-            npm publish --provenance --access public
+            echo "OIDC failed and no NPM_TOKEN available"
+            exit 1
           fi
 
-      # Configure Git for tagging
       - name: Configure Git
+        if: steps.check-bifrost.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # Create GitHub release
       - name: Create GitHub Release
+        if: steps.check-bifrost.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/workflows/scripts/create-npx-release.sh "${{ steps.extract-version.outputs.version }}" "${{ steps.extract-version.outputs.full-tag }}"
 
-      # Discord notification
       - name: Discord Notification
-        if: always()
+        if: always() && steps.check-bifrost.outputs.changed == 'true'
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
@@ -117,16 +141,144 @@ jobs:
           COMMIT_AUTHOR="$(git log -1 --pretty=%an || true)"
           if [ -n "$COMMIT_AUTHOR" ]; then AUTHOR="$COMMIT_AUTHOR"; fi
           if [ "${{ job.status }}" = "success" ]; then
-            TITLE="📦 **NPX Package Published**"
-            STATUS="✅ Success"
+            TITLE="**NPX Package Published**"
+            STATUS="Success"
             VERSION_LINE="**Version**: \`${{ steps.extract-version.outputs.version }}\`"
             PACKAGE_LINE="**Package**: \`@maximhq/bifrost\`"
             NPM_LINK="**[View on npm](https://www.npmjs.com/package/@maximhq/bifrost)**"
             MESSAGE="$TITLE\n**Status**: $STATUS\n$VERSION_LINE\n$PACKAGE_LINE\n$NPM_LINK\n**Tag**: \`${{ steps.extract-version.outputs.full-tag }}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           else
-            TITLE="📦 **NPX Package Publish Failed**"
-            STATUS="❌ Failed"
+            TITLE="**NPX Package Publish Failed**"
+            STATUS="Failed"
             MESSAGE="$TITLE\n**Status**: $STATUS\n**Tag**: \`${{ steps.extract-version.outputs.full-tag }}\`\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          fi
+          payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
+          curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"
+
+  publish-bifrost-cli:
+    needs: [check-skip]
+    if: needs.check-skip.outputs.should-skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # Required for npm provenance
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Check if bifrost-cli package.json changed
+        id: check-cli
+        run: |
+          if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" | grep -q '^npx/bifrost-cli/package.json$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract version
+        if: steps.check-cli.outputs.changed == 'true'
+        id: extract-version
+        run: |
+          VERSION=$(jq -r '.version' npx/bifrost-cli/package.json)
+          if [[ -z "$VERSION" ]] || [[ "$VERSION" == "null" ]]; then
+            echo "Failed to extract version from npx/bifrost-cli/package.json"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "full-tag=npx/bifrost-cli/v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Extracted bifrost-cli version: ${VERSION}"
+
+      - name: Publish to npm
+        if: steps.check-cli.outputs.changed == 'true'
+        working-directory: npx/bifrost-cli
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="${{ steps.extract-version.outputs.version }}"
+          echo "Publishing @maximhq/bifrost-cli@${VERSION} to npm..."
+          if npm view @maximhq/bifrost-cli@"${VERSION}" version >/dev/null 2>&1; then
+            echo "@maximhq/bifrost-cli@${VERSION} already exists on npm. Skipping publish."
+            exit 0
+          fi
+          
+          # Try OIDC (Trusted Publishing) first - no token needed
+          echo "Attempting publish with OIDC (Trusted Publishing)..."
+          if npm publish --provenance --access public 2>&1; then
+            echo "Published successfully with OIDC!"
+            exit 0
+          fi
+          
+          # Fallback to NPM_TOKEN if OIDC fails
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "OIDC failed, falling back to NPM_TOKEN..."
+            export NODE_AUTH_TOKEN="$NPM_TOKEN"
+            npm publish --access public
+          else
+            echo "OIDC failed and no NPM_TOKEN available"
+            exit 1
+          fi
+
+      - name: Configure Git
+        if: steps.check-cli.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create GitHub Release
+        if: steps.check-cli.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.extract-version.outputs.version }}"
+          FULL_TAG="${{ steps.extract-version.outputs.full-tag }}"
+          PRERELEASE_FLAG=""
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          if gh release view "$FULL_TAG" >/dev/null 2>&1; then
+            echo "Release $FULL_TAG already exists. Skipping."
+            exit 0
+          fi
+          if ! git rev-parse "$FULL_TAG" >/dev/null 2>&1; then
+            git tag "$FULL_TAG"
+            git push origin "$FULL_TAG"
+          fi
+          gh release create "$FULL_TAG" \
+            --title "Bifrost CLI v$VERSION" \
+            --notes "## Bifrost CLI v$VERSION
+
+          Install or run via npx:
+
+          \`\`\`bash
+          npx -y @maximhq/bifrost-cli
+          \`\`\`
+
+          - [View on npm](https://www.npmjs.com/package/@maximhq/bifrost-cli)
+          - [Documentation](https://docs.getbifrost.ai/quickstart/cli/getting-started)" \
+            --latest=false \
+            ${PRERELEASE_FLAG}
+
+      - name: Discord Notification
+        if: always() && steps.check-cli.outputs.changed == 'true'
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          AUTHOR="${{ github.actor }}"
+          COMMIT_AUTHOR="$(git log -1 --pretty=%an || true)"
+          if [ -n "$COMMIT_AUTHOR" ]; then AUTHOR="$COMMIT_AUTHOR"; fi
+          if [ "${{ job.status }}" = "success" ]; then
+            MESSAGE="**NPX Bifrost CLI Published**\n**Status**: Success\n**Version**: \`${{ steps.extract-version.outputs.version }}\`\n**Package**: \`@maximhq/bifrost-cli\`\n**[View on npm](https://www.npmjs.com/package/@maximhq/bifrost-cli)**\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
+          else
+            MESSAGE="**NPX Bifrost CLI Publish Failed**\n**Status**: Failed\n**Commit**: \`${{ github.sha }}\`\n**Author**: ${AUTHOR}\n**[View Workflow Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**"
           fi
           payload="$(jq -n --arg content "$MESSAGE" '{content:$content}')"
           curl -sS -H "Content-Type: application/json" -d "$payload" "$DISCORD_WEBHOOK"

@@ -40,6 +40,7 @@ func NewNebiusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	// Set default BaseURL if not provided
 	if config.NetworkConfig.BaseURL == "" {
 		config.NetworkConfig.BaseURL = "https://api.tokenfactory.nebius.com"
@@ -306,7 +307,9 @@ func (provider *NebiusProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		return nil, bifrostErr
 	}
 
-	req.SetBody(jsonData)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Nebius) {
+		req.SetBody(jsonData)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)

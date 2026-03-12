@@ -4,11 +4,11 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/fasthttp/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -190,7 +190,7 @@ func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
 		Payload:   logEntry,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal log entry: %v", err)
 		return
@@ -229,7 +229,7 @@ func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) 
 		Payload:   logEntry,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal MCP log entry: %v", err)
 		return
@@ -249,7 +249,7 @@ func (h *WebSocketHandler) BroadcastUpdatesToClients(tags []string) {
 		Tags: tags,
 	}
 
-	data, err := json.Marshal(message)
+	data, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal store update: %v", err)
 		return
@@ -269,7 +269,7 @@ func (h *WebSocketHandler) BroadcastEvent(eventType string, data interface{}) {
 		Data: data,
 	}
 
-	bytes, err := json.Marshal(message)
+	bytes, err := sonic.Marshal(message)
 	if err != nil {
 		logger.Error("failed to marshal event %s: %v", eventType, err)
 		return

@@ -1128,7 +1128,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		ImageTokens       int `json:"image_tokens,omitempty"`
 		CachedReadTokens  int `json:"cached_read_tokens,omitempty"`
 		CachedWriteTokens int `json:"cached_write_tokens,omitempty"`
-		CachedTokens      int `json:"cached_tokens,omitempty"`
+		CachedTokens      int `json:"cached_tokens"`
 	}
 	return Marshal(raw{
 		TextTokens:        d.TextTokens,

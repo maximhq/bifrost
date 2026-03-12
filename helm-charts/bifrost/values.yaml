@@ -194,6 +194,15 @@ bifrost:
     headerFilterConfig:
       allowlist: []
       denylist: []
+    # asyncJobResultTTL: 3600       # Default TTL for async job results in seconds
+    # requiredHeaders: []            # Headers that must be present on every request
+    # loggingHeaders: []             # Headers to capture in log metadata
+    # allowedHeaders: []             # Additional allowed headers for CORS and WebSocket
+    # mcpAgentDepth: 10              # Maximum depth for MCP agent mode tool execution
+    # mcpToolExecutionTimeout: 30    # Timeout for individual MCP tool execution in seconds
+    # mcpCodeModeBindingLevel: ""    # Code mode binding level (server or tool)
+    # mcpToolSyncInterval: 0         # Global tool sync interval in minutes (0 = disabled)
+    # hideDeletedVirtualKeysInFilters: false  # Omit deleted virtual keys from logs/MCP filter data
 
   # Framework configuration
   framework:
@@ -303,10 +312,12 @@ bifrost:
       #     command: "/path/to/mcp/server"
       #     args: []
       #     envs: []
+    # toolSyncInterval: "10m"   # Global tool sync interval (Go duration)
     # Tool manager configuration
     toolManagerConfig:
       toolExecutionTimeout: 30
       maxAgentDepth: 10
+      # codeModeBindingLevel: ""  # Code mode binding level (server or tool)
 
   # Plugins configuration
   plugins:
@@ -452,6 +463,18 @@ bifrost:
       #   mcp_configs:
       #     - mcp_client_id: 1
       #       tools_to_execute: ["tool1", "tool2"]
+    modelConfigs: []
+      # - id: "model-config-1"
+      #   model_name: "gpt-4o"
+      #   provider: "openai"
+      #   budget_id: "budget-1"
+      #   rate_limit_id: "rate-limit-1"
+    providers: []
+      # - name: "openai"
+      #   budget_id: "budget-1"
+      #   rate_limit_id: "rate-limit-1"
+      #   send_back_raw_request: false
+      #   send_back_raw_response: false
     routingRules: []
       # - id: "route-1"
       #   name: "Route to Azure"
@@ -477,6 +500,7 @@ bifrost:
   # Cluster mode configuration for distributed deployments
   cluster:
     enabled: false
+    # region: ""               # Region identifier for cluster
     peers: []
       # - "bifrost-0.bifrost-headless:7946"
       # - "bifrost-1.bifrost-headless:7946"

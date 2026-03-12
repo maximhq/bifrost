@@ -139,6 +139,11 @@
           },
           "description": "Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries."
         },
+        "hide_deleted_virtual_keys_in_filters": {
+          "type": "boolean",
+          "description": "When true, deleted virtual keys are omitted from logs and MCP logs filter data.",
+          "default": false
+        },
         "allowed_headers": {
           "type": "array",
           "items": {
@@ -1934,6 +1939,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "Maximum retry backoff in milliseconds"
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
         }
       },
       "additionalProperties": false
@@ -2504,6 +2517,19 @@
         "tool_sync_interval": {
           "type": "string",
           "description": "Per-client override for tool sync interval (Go duration, e.g. '10m', '1h', 0 = use global, negative = disabled)"
+        },
+        "is_ping_available": {
+          "type": "boolean",
+          "description": "Whether the MCP server supports ping for health checks (default: true)",
+          "default": true
+        },
+        "tool_pricing": {
+          "type": "object",
+          "description": "Tool pricing map (tool name to cost per execution)",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
         }
       },
       "required": [
@@ -3204,6 +3230,11 @@
               "enabled": {
                 "type": "boolean",
                 "description": "Whether this provider config is enabled"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Timeout in milliseconds for provider execution"
               },
               "config": {
                 "type": "object",

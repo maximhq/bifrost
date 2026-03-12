@@ -3,7 +3,6 @@
 package utils
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -46,19 +45,6 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
-}
-
-const (
-	sseInitialBufSize = 8 * 1024        // 8KB — sufficient for >99.9% of SSE lines
-	sseMaxBufSize     = 10 * 1024 * 1024 // 10MB — allow large tokens (tool calls, audio)
-)
-
-// NewSSEScanner creates a bufio.Scanner configured for SSE stream parsing.
-// Uses a small initial buffer (8KB) that auto-grows up to 10MB for rare large tokens.
-func NewSSEScanner(reader io.Reader) *bufio.Scanner {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, sseInitialBufSize), sseMaxBufSize)
-	return scanner
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).
@@ -337,6 +323,46 @@ func createTLSConfigWithCA(caCertPEM string) (*tls.Config, error) {
 	}, nil
 }
 
+// ConfigureTLS applies TLS settings from NetworkConfig to the fasthttp client.
+// It merges with any existing TLSConfig (e.g., from ConfigureProxy).
+func ConfigureTLS(client *fasthttp.Client, networkConfig schemas.NetworkConfig, logger schemas.Logger) *fasthttp.Client {
+	if !networkConfig.InsecureSkipVerify && networkConfig.CACertPEM == "" {
+		return client
+	}
+
+	tlsConfig := client.TLSConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+
+	if networkConfig.InsecureSkipVerify {
+		logger.Warn("insecure_skip_verify is enabled for provider — TLS certificate verification is disabled. Not recommended for production.")
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	if networkConfig.CACertPEM != "" {
+		caTLSConfig, err := createTLSConfigWithCA(networkConfig.CACertPEM)
+		if err != nil {
+			logger.Warn("Failed to configure custom CA certificate for provider: %v", err)
+		} else {
+			if tlsConfig.RootCAs != nil {
+				tlsConfig.RootCAs = tlsConfig.RootCAs.Clone()
+				// Merge: append network CA to existing pool (e.g. from proxy)
+				if !tlsConfig.RootCAs.AppendCertsFromPEM([]byte(networkConfig.CACertPEM)) {
+					logger.Warn("Failed to append CA certificate to existing TLS config")
+				}
+			} else {
+				tlsConfig.RootCAs = caTLSConfig.RootCAs
+			}
+		}
+	}
+
+	client.TLSConfig = tlsConfig
+	return client
+}
+
 // hopByHopHeaders are HTTP/1.1 headers that must not be forwarded by proxies.
 var hopByHopHeaders = map[string]bool{
 	"connection":          true,
@@ -534,6 +560,340 @@ type RequestBodyWithExtraParams interface {
 
 type RequestBodyConverter func() (RequestBodyWithExtraParams, error)
 
+// IsLargePayloadPassthroughEnabled returns true when large payload mode has already
+// prepared an upstream body reader in context.
+func IsLargePayloadPassthroughEnabled(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool)
+	if !ok || !isLargePayload {
+		return false
+	}
+	reader, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	return ok && reader != nil
+}
+
+// ApplyLargePayloadRequestBody applies the request body reader from context to the
+// outgoing provider request. Returns true when a streaming body was applied.
+func ApplyLargePayloadRequestBody(ctx context.Context, req *fasthttp.Request) bool {
+	return ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, "")
+}
+
+const largePayloadModelRewriteScanBytes = 256 * 1024
+
+// ApplyLargePayloadRequestBodyWithModelNormalization applies the streaming body
+// reader from context and optionally rewrites prefixed model values for JSON
+// passthrough requests (for example "openai/gpt-5" -> "gpt-5").
+// This preserves low-memory streaming while keeping large-payload behavior
+// aligned with the normal parsed path that strips provider prefixes.
+func ApplyLargePayloadRequestBodyWithModelNormalization(
+	ctx context.Context,
+	req *fasthttp.Request,
+	defaultProvider schemas.ModelProvider,
+) bool {
+	if req == nil || !IsLargePayloadPassthroughEnabled(ctx) {
+		return false
+	}
+
+	bodyReader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	bodySize := -1
+	if contentLength, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadContentLength).(int); ok {
+		bodySize = contentLength
+	}
+
+	if contentType, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadContentType).(string); ok && contentType != "" {
+		ctLower := strings.ToLower(contentType)
+		if metadata, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMetadata).(*schemas.LargePayloadMetadata); ok && metadata != nil {
+			if rawModel := strings.TrimSpace(metadata.Model); rawModel != "" && defaultProvider != "" {
+				_, normalizedModel := schemas.ParseModelString(rawModel, defaultProvider)
+				if normalizedModel != "" && normalizedModel != rawModel {
+					if strings.Contains(ctLower, "application/json") {
+						rewrittenReader, sizeDelta := RewriteLargePayloadModelInJSONPrefix(bodyReader, rawModel, normalizedModel)
+						bodyReader = rewrittenReader
+						if bodySize >= 0 {
+							bodySize += sizeDelta
+						}
+					} else if strings.Contains(ctLower, "multipart/form-data") {
+						rewrittenReader, sizeDelta := RewriteLargePayloadModelInMultipartPrefix(bodyReader, rawModel, normalizedModel)
+						bodyReader = rewrittenReader
+						if bodySize >= 0 {
+							bodySize += sizeDelta
+						}
+					}
+				}
+			}
+		}
+		req.Header.SetContentType(contentType)
+	}
+	req.SetBodyStream(bodyReader, bodySize)
+	return true
+}
+
+// RewriteLargePayloadModelInJSONPrefix reads the first 256KB of a streaming body,
+// rewrites the "model" JSON value from fromModel to toModel, and returns a
+// combined reader (rewritten prefix + remaining stream) with the size delta.
+func RewriteLargePayloadModelInJSONPrefix(reader io.Reader, fromModel, toModel string) (io.Reader, int) {
+	if reader == nil || fromModel == "" || toModel == "" || fromModel == toModel {
+		return reader, 0
+	}
+	prefix := make([]byte, largePayloadModelRewriteScanBytes)
+	n, err := io.ReadFull(reader, prefix)
+	if n == 0 && err != nil {
+		return reader, 0
+	}
+	prefix = prefix[:n]
+
+	rewrittenPrefix, changed := rewriteJSONModelValue(prefix, fromModel, toModel)
+	if !changed {
+		return io.MultiReader(bytes.NewReader(prefix), reader), 0
+	}
+	return io.MultiReader(bytes.NewReader(rewrittenPrefix), reader), len(rewrittenPrefix) - len(prefix)
+}
+
+func rewriteJSONModelValue(data []byte, fromModel, toModel string) ([]byte, bool) {
+	if len(data) == 0 || fromModel == "" || toModel == "" || fromModel == toModel {
+		return data, false
+	}
+	pattern := []byte(`"model"`)
+	searchFrom := 0
+	for {
+		match := bytes.Index(data[searchFrom:], pattern)
+		if match < 0 {
+			return data, false
+		}
+		idx := searchFrom + match + len(pattern)
+
+		for idx < len(data) && (data[idx] == ' ' || data[idx] == '\t' || data[idx] == '\r' || data[idx] == '\n') {
+			idx++
+		}
+		if idx >= len(data) || data[idx] != ':' {
+			searchFrom += match + len(pattern)
+			continue
+		}
+		idx++
+		for idx < len(data) && (data[idx] == ' ' || data[idx] == '\t' || data[idx] == '\r' || data[idx] == '\n') {
+			idx++
+		}
+		if idx >= len(data) || data[idx] != '"' {
+			searchFrom += match + len(pattern)
+			continue
+		}
+
+		valueStart := idx + 1
+		valueEnd := valueStart
+		escaped := false
+		for valueEnd < len(data) {
+			ch := data[valueEnd]
+			if escaped {
+				escaped = false
+				valueEnd++
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				valueEnd++
+				continue
+			}
+			if ch == '"' {
+				break
+			}
+			valueEnd++
+		}
+		if valueEnd >= len(data) {
+			return data, false
+		}
+
+		if string(data[valueStart:valueEnd]) != fromModel {
+			searchFrom = valueEnd + 1
+			continue
+		}
+
+		rewritten := make([]byte, 0, len(data)-len(fromModel)+len(toModel))
+		rewritten = append(rewritten, data[:valueStart]...)
+		rewritten = append(rewritten, toModel...)
+		rewritten = append(rewritten, data[valueEnd:]...)
+		return rewritten, true
+	}
+}
+
+// RewriteLargePayloadModelInMultipartPrefix reads the first 256KB of a streaming
+// multipart body, finds the model form field value, and rewrites it from fromModel
+// to toModel. The model field appears early in multipart bodies (typically the first
+// form field), so scanning the prefix is sufficient.
+func RewriteLargePayloadModelInMultipartPrefix(reader io.Reader, fromModel, toModel string) (io.Reader, int) {
+	if reader == nil || fromModel == "" || toModel == "" || fromModel == toModel {
+		return reader, 0
+	}
+	prefix := make([]byte, largePayloadModelRewriteScanBytes)
+	n, err := io.ReadFull(reader, prefix)
+	if n == 0 && err != nil {
+		return reader, 0
+	}
+	prefix = prefix[:n]
+
+	// In multipart, the model value appears as:
+	//   ...name="model"\r\n\r\nopenai/whisper-1\r\n--boundary...
+	// A direct byte replacement of fromModel→toModel in the prefix is safe because
+	// the model string (e.g. "openai/whisper-1") is unique within the form metadata.
+	from := []byte(fromModel)
+	to := []byte(toModel)
+	if idx := bytes.Index(prefix, from); idx >= 0 {
+		rewritten := make([]byte, 0, len(prefix)-len(from)+len(to))
+		rewritten = append(rewritten, prefix[:idx]...)
+		rewritten = append(rewritten, to...)
+		rewritten = append(rewritten, prefix[idx+len(from):]...)
+		return io.MultiReader(bytes.NewReader(rewritten), reader), len(rewritten) - len(prefix)
+	}
+	return io.MultiReader(bytes.NewReader(prefix), reader), 0
+}
+
+// DrainLargePayloadRemainder drains any unread bytes from the large payload reader.
+// This is useful for request types that may receive an upstream response before the
+// incoming client upload is fully consumed (for example, lightweight preflight APIs).
+// Example failure this prevents: fronting proxy returns 502/broken-pipe when backend
+// responds early while client is still uploading a large body.
+func DrainLargePayloadRemainder(ctx context.Context) {
+	if !IsLargePayloadPassthroughEnabled(ctx) {
+		return
+	}
+	bodyReader, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadReader).(io.Reader)
+	if bodyReader == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, bodyReader)
+}
+
+// CloneFastHTTPClientConfig creates a fresh fasthttp.Client by copying only
+// config fields from base.
+// Never copy fasthttp.Client by value: it contains internal pools and locks.
+// Example failure this prevents: parallel load regressions with unexpected buffering
+// behavior after `cloned := *base` copies of active clients.
+func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
+	if base == nil {
+		return &fasthttp.Client{}
+	}
+
+	return &fasthttp.Client{
+		Transport:                     base.Transport,
+		DialTimeout:                   base.DialTimeout,
+		Dial:                          base.Dial,
+		TLSConfig:                     base.TLSConfig,
+		RetryIf:                       base.RetryIf, // nolint:staticcheck
+		RetryIfErr:                    base.RetryIfErr,
+		ConfigureClient:               base.ConfigureClient,
+		Name:                          base.Name,
+		MaxConnsPerHost:               base.MaxConnsPerHost,
+		MaxIdleConnDuration:           base.MaxIdleConnDuration,
+		MaxConnDuration:               base.MaxConnDuration,
+		MaxIdemponentCallAttempts:     base.MaxIdemponentCallAttempts,
+		ReadBufferSize:                base.ReadBufferSize,
+		WriteBufferSize:               base.WriteBufferSize,
+		ReadTimeout:                   base.ReadTimeout,
+		WriteTimeout:                  base.WriteTimeout,
+		MaxResponseBodySize:           base.MaxResponseBodySize,
+		MaxConnWaitTimeout:            base.MaxConnWaitTimeout,
+		ConnPoolStrategy:              base.ConnPoolStrategy,
+		NoDefaultUserAgentHeader:      base.NoDefaultUserAgentHeader,
+		DialDualStack:                 base.DialDualStack,
+		DisableHeaderNamesNormalizing: base.DisableHeaderNamesNormalizing,
+		DisablePathNormalizing:        base.DisablePathNormalizing,
+		StreamResponseBody:            base.StreamResponseBody,
+	}
+}
+
+// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
+var gzipReaderPool = sync.Pool{
+	New: func() any {
+		return &gzip.Reader{}
+	},
+}
+
+// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
+// or creates a new one if the pool is empty or reset fails.
+func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
+	if v := gzipReaderPool.Get(); v != nil {
+		gz := v.(*gzip.Reader)
+		if err := gz.Reset(r); err == nil {
+			return gz, nil
+		}
+		// Reset failed; discard the reader. After a failed Reset the internal
+		// decompressor may be nil, making Close() panic (Go 1.26+).
+		// Do not re-pool — let GC reclaim it.
+	}
+	return gzip.NewReader(r)
+}
+
+// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
+func ReleaseGzipReader(gz *gzip.Reader) {
+	if gz != nil {
+		_ = gz.Close()
+		gzipReaderPool.Put(gz)
+	}
+}
+
+// decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
+// with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
+// header so downstream consumers don't double-decompress. Returns original reader
+// unchanged if not gzip-encoded or if gzip reader creation fails.
+func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
+	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
+	if !strings.Contains(ce, "gzip") {
+		return nil, stream, false
+	}
+	gz, err := AcquireGzipReader(stream)
+	if err != nil {
+		ReleaseGzipReader(gz)
+		return nil, stream, false
+	}
+	resp.Header.Del("Content-Encoding")
+	return gz, gz, true
+}
+
+// DecompressStreamBody returns a reader for consuming the response body, with
+// on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
+// object is NOT modified (no SetBodyStream call), so the original requestStream
+// remains live for proper cleanup by ReleaseStreamingResponse. Clears the
+// Content-Encoding header to prevent double-decompression.
+//
+// Returns:
+//   - io.Reader: the reader to use for scanning (gzip reader if gzip-encoded,
+//     original body stream otherwise).
+//   - func(): cleanup function that releases the gzip reader back to the pool.
+//     Must be called (typically via defer) after streaming is complete.
+func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
+	bodyStream := resp.BodyStream()
+	if bodyStream == nil {
+		// Return an empty reader instead of nil to prevent panics in callers
+		// that pass the reader to bufio.NewScanner without nil checks.
+		return bytes.NewReader(nil), func() {}
+	}
+	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
+	if !wasGzip {
+		return bodyStream, func() {}
+	}
+	return decompressed, func() {
+		ReleaseGzipReader(gz)
+	}
+}
+
+// DrainNonSSEStreamResponse checks if the upstream response is a Server-Sent Events stream.
+// If not SSE, drains the body to io.Discard to prevent bufio.Scanner buffer bloat on
+// non-line-delimited data. Returns true if body was drained (caller should skip scanner).
+// We intentionally do not touch valid SSE bodies here: callers must continue reading from
+// the reader returned by DecompressStreamBody, and draining SSE in this helper would consume
+// the stream before the scanner/manual event loop starts.
+func DrainNonSSEStreamResponse(resp *fasthttp.Response) bool {
+	ct := strings.ToLower(string(resp.Header.ContentType()))
+	if strings.Contains(ct, "text/event-stream") {
+		return false
+	}
+	if bodyStream := resp.BodyStream(); bodyStream != nil {
+		_, _ = io.Copy(io.Discard, bodyStream)
+	}
+	return true
+}
+
 // MergeExtraParams merges extraParams into jsonMap, handling nested maps recursively.
 func MergeExtraParams(jsonMap map[string]interface{}, extraParams map[string]interface{}) {
 	for k, v := range extraParams {
@@ -661,6 +1021,10 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 
 // CheckContextAndGetRequestBody checks if the raw request body should be used, and returns it if it exists.
 func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGetter, requestConverter RequestBodyConverter, providerType schemas.ModelProvider) ([]byte, *schemas.BifrostError) {
+	if IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
 	rawBody, ok := CheckAndGetRawRequestBody(ctx, request)
 	if !ok {
 		convertedBody, err := requestConverter()
@@ -2163,78 +2527,4 @@ func CheckAndSetDefaultProvider(ctx *schemas.BifrostContext, defaultProvider sch
 		return defaultProvider
 	}
 	return defaultProvider
-}
-
-// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
-var gzipReaderPool = sync.Pool{
-	New: func() any {
-		return &gzip.Reader{}
-	},
-}
-
-// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
-// or creates a new one if the pool is empty or reset fails.
-func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
-	if v := gzipReaderPool.Get(); v != nil {
-		gz := v.(*gzip.Reader)
-		if err := gz.Reset(r); err == nil {
-			return gz, nil
-		}
-		// Reset failed, return to pool to avoid leaking
-		gzipReaderPool.Put(gz)
-	}
-	return gzip.NewReader(r)
-}
-
-// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
-func ReleaseGzipReader(gz *gzip.Reader) {
-	if gz != nil {
-		gz.Close()
-		gzipReaderPool.Put(gz)
-	}
-}
-
-// decompressBodyStreamIfGzip checks Content-Encoding for gzip and wraps the stream
-// with on-the-fly decompression using a pooled gzip.Reader. Clears Content-Encoding
-// header so downstream consumers don't double-decompress. Returns original reader
-// unchanged if not gzip-encoded or if gzip reader creation fails.
-func decompressBodyStreamIfGzip(resp *fasthttp.Response, stream io.Reader) (*gzip.Reader, io.Reader, bool) {
-	ce := strings.ToLower(strings.TrimSpace(string(resp.Header.Peek("Content-Encoding"))))
-	if !strings.Contains(ce, "gzip") {
-		return nil, stream, false
-	}
-	gz, err := AcquireGzipReader(stream)
-	if err != nil {
-		ReleaseGzipReader(gz)
-		return nil, stream, false
-	}
-	resp.Header.Del("Content-Encoding")
-	return gz, gz, true
-}
-
-// DecompressStreamBody returns a reader for consuming the response body, with
-// on-the-fly gzip decompression when Content-Encoding indicates gzip. The response
-// object is NOT modified (no SetBodyStream call), so the original requestStream
-// remains live for proper cleanup by ReleaseStreamingResponse. Clears the
-// Content-Encoding header to prevent double-decompression.
-//
-// Returns:
-//   - io.Reader: the reader to use for scanning (gzip reader if gzip-encoded,
-//     original body stream otherwise).
-//   - func(): cleanup function that releases the gzip reader back to the pool.
-//     Must be called (typically via defer) after streaming is complete.
-func DecompressStreamBody(resp *fasthttp.Response) (io.Reader, func()) {
-	bodyStream := resp.BodyStream()
-	if bodyStream == nil {
-		// Return an empty reader instead of nil to prevent panics in callers
-		// that pass the reader to bufio.NewScanner without nil checks.
-		return bytes.NewReader(nil), func() {}
-	}
-	gz, decompressed, wasGzip := decompressBodyStreamIfGzip(resp, bodyStream)
-	if !wasGzip {
-		return bodyStream, func() {}
-	}
-	return decompressed, func() {
-		ReleaseGzipReader(gz)
-	}
 }

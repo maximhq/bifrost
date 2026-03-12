@@ -3,11 +3,11 @@
 package replicate
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -48,6 +48,7 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	if config.NetworkConfig.BaseURL == "" {
@@ -122,7 +123,9 @@ func createPrediction(
 	}
 	providerUtils.SetExtraHeaders(ctx, req, headersToUse, nil)
 
-	req.SetBody(jsonBody)
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Replicate) {
+		req.SetBody(jsonBody)
+	}
 
 	// Make request
 	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
@@ -563,6 +566,13 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 	// Store provider response headers in context for transport layer
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -591,13 +601,12 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 		lastChunkTime := startTime
 		chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := providerUtils.NewSSEScanner(reader)
+		// Setup SSE event reader for event+data format
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 
-		var currentEvent ReplicateSSEEvent
 		messageID := prediction.ID
 
-		for scanner.Scan() {
+		for {
 			// Check for context cancellation
 			select {
 			case <-ctx.Done():
@@ -605,171 +614,148 @@ func (provider *ReplicateProvider) TextCompletionStream(ctx *schemas.BifrostCont
 			default:
 			}
 
-			line := scanner.Text()
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					// If context was cancelled/timed out, let defer handle it
+					if ctx.Err() != nil {
+						return
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading stream: %v", readErr)
+					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+				}
+				break
+			}
 
-			// Skip comment lines
-			if strings.HasPrefix(line, ":") {
+			eventData := string(eventDataBytes)
+			if eventType == "" && eventData == "" {
 				continue
 			}
 
-			// Empty line indicates end of event
-			if line == "" {
-				if currentEvent.Event == "" && currentEvent.Data == "" {
-					continue
-				}
-
-				// Process the complete event
-				switch currentEvent.Event {
-				case "output":
-					// Accumulate content from data field
-					if currentEvent.Data != "" {
-						// Create a streaming chunk with text completion response
-						text := currentEvent.Data
-						response := &schemas.BifrostTextCompletionResponse{
-							ID:     messageID,
-							Model:  request.Model,
-							Object: "text_completion",
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
-										Text: &text,
-									},
+			// Process the complete event
+			switch eventType {
+			case "output":
+				// Accumulate content from data field
+				if eventData != "" {
+					// Create a streaming chunk with text completion response
+					text := eventData
+					response := &schemas.BifrostTextCompletionResponse{
+						ID:     messageID,
+						Model:  request.Model,
+						Object: "text_completion",
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
+									Text: &text,
 								},
 							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.TextCompletionStreamRequest,
-								Provider:       provider.GetProviderKey(),
-								ModelRequested: request.Model,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-
-						// Set raw response if enabled (per-chunk event as JSON string)
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							if eventJSON, err := sonic.Marshal(currentEvent); err == nil {
-								response.ExtraFields.RawResponse = string(eventJSON)
-							}
-						}
-
-						lastChunkTime = time.Now()
-						chunkIndex++
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-							providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil, nil),
-							responseChan)
-					}
-
-				case "done":
-					// Parse done event data
-					var doneData ReplicateDoneEvent
-					if currentEvent.Data != "" && currentEvent.Data != "{}" {
-						if err := sonic.Unmarshal([]byte(currentEvent.Data), &doneData); err != nil {
-							provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
-						}
-					}
-
-					// Check for cancellation or error
-					switch doneData.Reason {
-					case "canceled":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction was canceled",
-							fmt.Errorf("stream ended: prediction canceled"),
-							provider.GetProviderKey(),
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							RequestType:    schemas.TextCompletionStreamRequest,
 							Provider:       provider.GetProviderKey(),
 							ModelRequested: request.Model,
-							RequestType:    schemas.TextCompletionStreamRequest,
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-						// Explicitly close the body stream to terminate connection to Replicate
-						resp.CloseBodyStream()
-						return
-
-					case "error":
-						errorMsg := "prediction failed"
-						if doneData.Output != nil {
-							errorMsg = fmt.Sprintf("prediction failed: %v", doneData.Output)
-						}
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							errorMsg,
-							fmt.Errorf("stream ended with error"),
-							provider.GetProviderKey(),
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.TextCompletionStreamRequest,
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-						// Explicitly close the body stream to terminate connection to Replicate
-						resp.CloseBodyStream()
-						return
+							ChunkIndex:     chunkIndex,
+							Latency:        time.Since(lastChunkTime).Milliseconds(),
+						},
 					}
 
-					// Send final chunk with finish reason
-					finishReason := schemas.Ptr("stop")
-					finalResponse := providerUtils.CreateBifrostTextCompletionChunkResponse(
-						messageID,
-						nil, // usage - not available in done event
-						finishReason,
-						chunkIndex,
-						schemas.TextCompletionStreamRequest,
-						provider.GetProviderKey(),
-						request.Model,
-					)
-
-					// Set raw request if enabled
-					if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-						providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
+					// Set raw response if enabled (per-chunk event as JSON string)
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
+						if eventJSON, err := sonic.Marshal(rawEvent); err == nil {
+							response.ExtraFields.RawResponse = string(eventJSON)
+						}
 					}
 
-					finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+					lastChunkTime = time.Now()
+					chunkIndex++
 
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(finalResponse, nil, nil, nil, nil, nil),
+						providerUtils.GetBifrostResponseForStreamResponse(response, nil, nil, nil, nil, nil),
 						responseChan)
+				}
+
+			case "done":
+				// Parse done event data
+				var doneData ReplicateDoneEvent
+				if eventData != "" && eventData != "{}" {
+					if err := sonic.Unmarshal(eventDataBytes, &doneData); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
+					}
+				}
+
+				// Check for cancellation or error
+				switch doneData.Reason {
+				case "canceled":
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"prediction was canceled",
+						fmt.Errorf("stream ended: prediction canceled"),
+						provider.GetProviderKey(),
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						RequestType:    schemas.TextCompletionStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					// Explicitly close the body stream to terminate connection to Replicate
+					resp.CloseBodyStream()
+					return
+
+				case "error":
+					errorMsg := "prediction failed"
+					if doneData.Output != nil {
+						errorMsg = fmt.Sprintf("prediction failed: %v", doneData.Output)
+					}
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						errorMsg,
+						fmt.Errorf("stream ended with error"),
+						provider.GetProviderKey(),
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						RequestType:    schemas.TextCompletionStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					// Explicitly close the body stream to terminate connection to Replicate
 					resp.CloseBodyStream()
 					return
 				}
 
-				// Reset event for next one
-				currentEvent = ReplicateSSEEvent{}
-				continue
-			}
+				// Send final chunk with finish reason
+				finishReason := schemas.Ptr("stop")
+				finalResponse := providerUtils.CreateBifrostTextCompletionChunkResponse(
+					messageID,
+					nil, // usage - not available in done event
+					finishReason,
+					chunkIndex,
+					schemas.TextCompletionStreamRequest,
+					provider.GetProviderKey(),
+					request.Model,
+				)
 
-			// Parse SSE fields
-			if after, ok := strings.CutPrefix(line, "event: "); ok {
-				currentEvent.Event = strings.TrimSpace(after)
-			} else if after, ok := strings.CutPrefix(line, "data: "); ok {
-				// For multiline data, append with newline
-				if currentEvent.Data != "" {
-					currentEvent.Data += "\n"
+				// Set raw request if enabled
+				if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+					providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
 				}
-				currentEvent.Data += after
-			} else if after, ok := strings.CutPrefix(line, "id: "); ok {
-				currentEvent.ID = strings.TrimSpace(after)
-			}
-		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {
+				finalResponse.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(finalResponse, nil, nil, nil, nil, nil),
+					responseChan)
+				resp.CloseBodyStream()
 				return
 			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn("Error reading stream: %v", err)
-			enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-			return
 		}
 	}()
 
@@ -949,6 +935,13 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 	// Store provider response headers in context for transport layer
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -977,13 +970,12 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 		lastChunkTime := startTime
 		chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := providerUtils.NewSSEScanner(reader)
+		// Setup SSE event reader for event+data format
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 
-		var currentEvent ReplicateSSEEvent
 		messageID := prediction.ID
 
-		for scanner.Scan() {
+		for {
 			// Check for context cancellation
 			select {
 			case <-ctx.Done():
@@ -991,134 +983,49 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 			default:
 			}
 
-			line := scanner.Text()
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					// If context was cancelled/timed out, let defer handle it
+					if ctx.Err() != nil {
+						return
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading stream: %v", readErr)
+					enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+				}
+				break
+			}
 
-			// Skip comment lines
-			if strings.HasPrefix(line, ":") {
+			eventData := string(eventDataBytes)
+			if eventType == "" && eventData == "" {
 				continue
 			}
 
-			// Empty line indicates end of event
-			if line == "" {
-				if currentEvent.Event == "" && currentEvent.Data == "" {
-					continue
-				}
-
-				// Process the complete event
-				switch currentEvent.Event {
-				case "output":
-					// Accumulate content from data field
-					if currentEvent.Data != "" {
-						// Create a streaming chunk
-						content := currentEvent.Data
-						role := string(schemas.ChatMessageRoleAssistant)
-						delta := &schemas.ChatStreamResponseChoiceDelta{
-							Content: &content,
-							Role:    &role,
-						}
-
-						response := &schemas.BifrostChatResponse{
-							ID:      messageID,
-							Model:   request.Model,
-							Object:  "chat.completion.chunk",
-							Created: int(time.Now().Unix()),
-							Choices: []schemas.BifrostResponseChoice{
-								{
-									Index: 0,
-									ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-										Delta: delta,
-									},
-								},
-							},
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								RequestType:    schemas.ChatCompletionStreamRequest,
-								Provider:       provider.GetProviderKey(),
-								ModelRequested: request.Model,
-								ChunkIndex:     chunkIndex,
-								Latency:        time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-
-						// Set raw response if enabled (per-chunk event as JSON string)
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							if eventJSON, err := sonic.Marshal(currentEvent); err == nil {
-								response.ExtraFields.RawResponse = string(eventJSON)
-							}
-						}
-
-						lastChunkTime = time.Now()
-						chunkIndex++
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-							providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil),
-							responseChan)
+			// Process the complete event
+			switch eventType {
+			case "output":
+				// Accumulate content from data field
+				if eventData != "" {
+					// Create a streaming chunk
+					content := eventData
+					role := string(schemas.ChatMessageRoleAssistant)
+					delta := &schemas.ChatStreamResponseChoiceDelta{
+						Content: &content,
+						Role:    &role,
 					}
 
-				case "done":
-					// Parse done event data
-					var doneData ReplicateDoneEvent
-					if currentEvent.Data != "" && currentEvent.Data != "{}" {
-						if err := sonic.Unmarshal([]byte(currentEvent.Data), &doneData); err != nil {
-							provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
-						}
-					}
-
-					// Check for cancellation or error
-					switch doneData.Reason {
-					case "canceled":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction was canceled",
-							fmt.Errorf("stream ended: prediction canceled"),
-							provider.GetProviderKey(),
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.ChatCompletionStreamRequest,
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-						// Explicitly close the body stream to terminate connection to Replicate
-						resp.CloseBodyStream()
-						return
-
-					case "error":
-						errorMsg := "prediction failed"
-						if doneData.Output != nil {
-							errorMsg = fmt.Sprintf("prediction failed: %v", doneData.Output)
-						}
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							errorMsg,
-							fmt.Errorf("stream ended with error"),
-							provider.GetProviderKey(),
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       provider.GetProviderKey(),
-							ModelRequested: request.Model,
-							RequestType:    schemas.ChatCompletionStreamRequest,
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-						// Explicitly close the body stream to terminate connection to Replicate
-						resp.CloseBodyStream()
-						return
-					}
-
-					// Send final chunk with finish reason
-					finishReason := "stop"
-					finalResponse := &schemas.BifrostChatResponse{
+					response := &schemas.BifrostChatResponse{
 						ID:      messageID,
 						Model:   request.Model,
 						Object:  "chat.completion.chunk",
 						Created: int(time.Now().Unix()),
 						Choices: []schemas.BifrostResponseChoice{
 							{
-								Index:        0,
-								FinishReason: &finishReason,
+								Index: 0,
 								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-									Delta: &schemas.ChatStreamResponseChoiceDelta{},
+									Delta: delta,
 								},
 							},
 						},
@@ -1127,53 +1034,115 @@ func (provider *ReplicateProvider) ChatCompletionStream(ctx *schemas.BifrostCont
 							Provider:       provider.GetProviderKey(),
 							ModelRequested: request.Model,
 							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(startTime).Milliseconds(),
+							Latency:        time.Since(lastChunkTime).Milliseconds(),
 						},
 					}
 
-					// Set raw request if enabled
-					if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
-						providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
+					// Set raw response if enabled (per-chunk event as JSON string)
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						rawEvent := ReplicateSSEEvent{Event: eventType, Data: eventData}
+						if eventJSON, err := sonic.Marshal(rawEvent); err == nil {
+							response.ExtraFields.RawResponse = string(eventJSON)
+						}
 					}
 
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					lastChunkTime = time.Now()
+					chunkIndex++
+
 					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, finalResponse, nil, nil, nil, nil),
+						providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil),
 						responseChan)
+				}
+
+			case "done":
+				// Parse done event data
+				var doneData ReplicateDoneEvent
+				if eventData != "" && eventData != "{}" {
+					if err := sonic.Unmarshal(eventDataBytes, &doneData); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
+					}
+				}
+
+				// Check for cancellation or error
+				switch doneData.Reason {
+				case "canceled":
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"prediction was canceled",
+						fmt.Errorf("stream ended: prediction canceled"),
+						provider.GetProviderKey(),
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						RequestType:    schemas.ChatCompletionStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					// Explicitly close the body stream to terminate connection to Replicate
+					resp.CloseBodyStream()
+					return
+
+				case "error":
+					errorMsg := "prediction failed"
+					if doneData.Output != nil {
+						errorMsg = fmt.Sprintf("prediction failed: %v", doneData.Output)
+					}
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						errorMsg,
+						fmt.Errorf("stream ended with error"),
+						provider.GetProviderKey(),
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						RequestType:    schemas.ChatCompletionStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					// Explicitly close the body stream to terminate connection to Replicate
 					resp.CloseBodyStream()
 					return
 				}
 
-				// Reset event for next one
-				currentEvent = ReplicateSSEEvent{}
-				continue
-			}
-
-			// Parse SSE fields
-			if after, ok := strings.CutPrefix(line, "event: "); ok {
-				currentEvent.Event = strings.TrimSpace(after)
-			} else if after, ok := strings.CutPrefix(line, "data: "); ok {
-				// For multiline data, append with newline
-				if currentEvent.Data != "" {
-					currentEvent.Data += "\n"
+				// Send final chunk with finish reason
+				finishReason := "stop"
+				finalResponse := &schemas.BifrostChatResponse{
+					ID:      messageID,
+					Model:   request.Model,
+					Object:  "chat.completion.chunk",
+					Created: int(time.Now().Unix()),
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index:        0,
+							FinishReason: &finishReason,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{},
+							},
+						},
+					},
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ChatCompletionStreamRequest,
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(startTime).Milliseconds(),
+					},
 				}
-				currentEvent.Data += after
-			} else if after, ok := strings.CutPrefix(line, "id: "); ok {
-				currentEvent.ID = strings.TrimSpace(after)
-			}
-		}
 
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {
+				// Set raw request if enabled
+				if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+					providerUtils.ParseAndSetRawRequest(&finalResponse.ExtraFields, jsonData)
+				}
+
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, finalResponse, nil, nil, nil, nil),
+					responseChan)
+				resp.CloseBodyStream()
 				return
 			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn("Error reading stream: %v", err)
-			enrichedErr := providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-			return
 		}
 	}()
 
@@ -1391,6 +1360,13 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		return nil, providerUtils.EnrichError(ctx, parseReplicateError(body, resp.StatusCode()), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -1426,7 +1402,7 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			return
 		}
 
-		scanner := bufio.NewScanner(reader)
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 		startTime := time.Now()
 		sequenceNumber := 0
 		messageID := prediction.ID
@@ -1445,19 +1421,39 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 		sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 		sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-		// Parse SSE events
-		currentEvent := ReplicateSSEEvent{}
-
-		for scanner.Scan() {
+		for {
 			if ctx.Err() != nil {
 				return
 			}
 
-			line := scanner.Text()
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					if ctx.Err() != nil {
+						return
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading stream: %v", readErr)
+					bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, readErr, provider.GetProviderKey())
 
-			// Empty line indicates end of event
-			if line == "" {
-				if currentEvent.Event != "" {
+					// Include accumulated raw responses in error
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
+						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					}
+
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					return
+				}
+				break
+			}
+
+			currentEvent := ReplicateSSEEvent{
+				Event: eventType,
+				Data:  string(eventDataBytes),
+			}
+
+			if currentEvent.Event != "" {
 					// Process the event
 					switch currentEvent.Event {
 					case "output":
@@ -1766,41 +1762,6 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 						return
 					}
 				}
-
-				// Reset event for next one
-				currentEvent = ReplicateSSEEvent{}
-				continue
-			}
-
-			// Parse SSE fields
-			if after, ok := strings.CutPrefix(line, "event: "); ok {
-				currentEvent.Event = strings.TrimSpace(after)
-			} else if after, ok := strings.CutPrefix(line, "data: "); ok {
-				// For multiline data, append with newline
-				if currentEvent.Data != "" {
-					currentEvent.Data += "\n"
-				}
-				currentEvent.Data += after
-			}
-		}
-
-		// Handle scanner errors
-		if err := scanner.Err(); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn("Error reading stream: %v", err)
-			bifrostErr := providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err, provider.GetProviderKey())
-
-			// Include accumulated raw responses in error
-			if sendBackRawResponse && len(rawResponseChunks) > 0 {
-				bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-			}
-
-			enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-			return
 		}
 	}()
 
@@ -2013,6 +1974,13 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 	// Store provider response headers in context for transport layer
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -2041,209 +2009,141 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 		lastChunkTime := startTime
 		chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := providerUtils.NewSSEScanner(reader)
+		// Setup SSE event reader for event+data format
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 
-		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk
 		var lastB64Data string
 		var lastOutputFormat string
 		// Accumulate all raw response chunks for complete stream history
 		var rawResponseChunks []interface{}
 
-		for scanner.Scan() {
+		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
 
-			line := scanner.Text()
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					if ctx.Err() != nil {
+						return
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn(fmt.Sprintf("Error reading SSE stream: %v", readErr))
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, provider.logger)
+				}
+				break
+			}
 
-			// Skip comment lines
-			if strings.HasPrefix(line, ":") {
+			eventData := string(eventDataBytes)
+			if eventType == "" && eventData == "" {
 				continue
 			}
 
-			// Empty line indicates end of event
-			if line == "" {
-				if currentEvent.Event == "" && currentEvent.Data == "" {
+			// Process the complete event
+			switch eventType {
+			case "output":
+				// Check if data is a data URI (image) or plain text
+				var b64Data, outputFormat string
+				if strings.HasPrefix(eventData, "data:") {
+					// Parse image data from data URI
+					var mimeType string
+					b64Data, mimeType = parseDataURIImage(eventData)
+
+					// Extract output format from MIME type
+					if mimeType != "" {
+						// Convert "image/webp" to "webp"
+						parts := strings.Split(mimeType, "/")
+						if len(parts) == 2 {
+							outputFormat = parts[1]
+						}
+					}
+				} else {
+					// For non-data-URI output (e.g., text), store as-is
+					// This shouldn't happen for image generation but handle it gracefully
+					provider.logger.Debug(fmt.Sprintf("Received non-data-URI output: %s", eventData[:min(100, len(eventData))]))
+					// Skip non-image output for image generation
 					continue
 				}
 
-				// Process the complete event
-				switch currentEvent.Event {
-				case "output":
-					// Check if data is a data URI (image) or plain text
-					var b64Data, outputFormat string
-					if strings.HasPrefix(currentEvent.Data, "data:") {
-						// Parse image data from data URI
-						var mimeType string
-						b64Data, mimeType = parseDataURIImage(currentEvent.Data)
+				// Create chunk
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type:         schemas.ImageGenerationEventTypePartial,
+					Index:        0, // Single image for now
+					ChunkIndex:   chunkIndex,
+					B64JSON:      b64Data,
+					CreatedAt:    time.Now().Unix(),
+					OutputFormat: outputFormat,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
 
-						// Extract output format from MIME type
-						if mimeType != "" {
-							// Convert "image/webp" to "webp"
-							parts := strings.Split(mimeType, "/")
-							if len(parts) == 2 {
-								outputFormat = parts[1]
-							}
-						}
-					} else {
-						// For non-data-URI output (e.g., text), store as-is
-						// This shouldn't happen for image generation but handle it gracefully
-						provider.logger.Debug(fmt.Sprintf("Received non-data-URI output: %s", currentEvent.Data[:min(100, len(currentEvent.Data))]))
-						// Skip non-image output for image generation
-						currentEvent = ReplicateSSEEvent{}
-						continue
+				// Accumulate raw response chunks if enabled
+				if sendBackRawResponse {
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+				}
+
+				// Track last image data for final chunk
+				lastB64Data = b64Data
+				lastOutputFormat = outputFormat
+
+				lastChunkTime = time.Now()
+				chunkIndex++
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan)
+
+			case "done":
+				// Parse done event data
+				var doneData ReplicateDoneEvent
+				if eventData != "" && eventData != "{}" {
+					if err := sonic.Unmarshal(eventDataBytes, &doneData); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
 					}
+				}
 
-					// Create chunk
-					chunk := &schemas.BifrostImageGenerationStreamResponse{
-						Type:         schemas.ImageGenerationEventTypePartial,
-						Index:        0, // Single image for now
-						ChunkIndex:   chunkIndex,
-						B64JSON:      b64Data,
-						CreatedAt:    time.Now().Unix(),
-						OutputFormat: outputFormat,
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:    schemas.ImageGenerationStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(lastChunkTime).Milliseconds(),
-						},
-					}
-
-					// Accumulate raw response chunks if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
-					// Track last image data for final chunk
-					lastB64Data = b64Data
-					lastOutputFormat = outputFormat
-
-					lastChunkTime = time.Now()
-					chunkIndex++
-
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
-						responseChan)
-
-				case "done":
-					// Parse done event data
-					var doneData ReplicateDoneEvent
-					if currentEvent.Data != "" && currentEvent.Data != "{}" {
-						if err := sonic.Unmarshal([]byte(currentEvent.Data), &doneData); err != nil {
-							provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
-						}
-					}
-
-					// Check for cancellation or error
-					switch doneData.Reason {
-					case "canceled":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction was canceled",
-							fmt.Errorf("stream ended: prediction canceled"),
-							providerName,
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						}
-						// Include accumulated raw responses in error
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-						return
-					case "error":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction failed",
-							fmt.Errorf("stream ended with error"),
-							providerName,
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						}
-						// Include accumulated raw responses in error
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-						return
-					}
-
-					// Send completion chunk (success case when reason is empty or not present)
-					finalChunk := &schemas.BifrostImageGenerationStreamResponse{
-						Type:         schemas.ImageGenerationEventTypeCompleted,
-						Index:        0,
-						ChunkIndex:   chunkIndex,
-						B64JSON:      lastB64Data,      // Include last image data
-						OutputFormat: lastOutputFormat, // Include output format
-						CreatedAt:    time.Now().Unix(),
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:    schemas.ImageGenerationStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(startTime).Milliseconds(),
-						},
-					}
-
-					// Set raw request only on final chunk if enabled
-					if sendBackRawRequest {
-						providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
-					}
-
-					// Set accumulated raw responses on final chunk if enabled
-					if sendBackRawResponse {
-						// Append the final done event to the accumulated chunks
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-						finalChunk.ExtraFields.RawResponse = rawResponseChunks
-					}
-
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, finalChunk),
-						responseChan)
-					return
-
-				case "error":
-					// Parse error event data
-					var errorData ReplicateErrorEvent
-					errorMsg := "stream error"
-
-					if currentEvent.Data != "" {
-						if err := sonic.Unmarshal([]byte(currentEvent.Data), &errorData); err != nil {
-							provider.logger.Warn(fmt.Sprintf("Failed to parse error event data: %v", err))
-							// Fallback to raw data
-							errorMsg = currentEvent.Data
-						} else if errorData.Detail != "" {
-							errorMsg = errorData.Detail
-						}
-					}
-
-					bifrostErr := &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: errorMsg,
-						},
-						ExtraFields: schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageGenerationStreamRequest,
-						},
+				// Check for cancellation or error
+				switch doneData.Reason {
+				case "canceled":
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"prediction was canceled",
+						fmt.Errorf("stream ended: prediction canceled"),
+						providerName,
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
 					}
 					// Include accumulated raw responses in error
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
+						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+					return
+				case "error":
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"prediction failed",
+						fmt.Errorf("stream ended with error"),
+						providerName,
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					}
+					// Include accumulated raw responses in error
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
 						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
 					}
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
@@ -2251,29 +2151,76 @@ func (provider *ReplicateProvider) ImageGenerationStream(ctx *schemas.BifrostCon
 					return
 				}
 
-				// Reset current event after processing
-				currentEvent = ReplicateSSEEvent{}
-				continue
-			}
+				// Send completion chunk (success case when reason is empty or not present)
+				finalChunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type:         schemas.ImageGenerationEventTypeCompleted,
+					Index:        0,
+					ChunkIndex:   chunkIndex,
+					B64JSON:      lastB64Data,      // Include last image data
+					OutputFormat: lastOutputFormat, // Include output format
+					CreatedAt:    time.Now().Unix(),
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageGenerationStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(startTime).Milliseconds(),
+					},
+				}
 
-			// Parse SSE field
-			if strings.HasPrefix(line, "event: ") {
-				currentEvent.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			} else if strings.HasPrefix(line, "data:") {
-				currentEvent.Data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			} else if strings.HasPrefix(line, "id:") {
-				currentEvent.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
-			}
-		}
+				// Set raw request only on final chunk if enabled
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
+				}
 
-		// Check for scanner errors
-		if err := scanner.Err(); err != nil {
-			if ctx.Err() != nil {
+				// Set accumulated raw responses on final chunk if enabled
+				if sendBackRawResponse {
+					// Append the final done event to the accumulated chunks
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+					finalChunk.ExtraFields.RawResponse = rawResponseChunks
+				}
+
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, finalChunk),
+					responseChan)
+				return
+
+			case "error":
+				// Parse error event data
+				var errorData ReplicateErrorEvent
+				errorMsg := "stream error"
+
+				if eventData != "" {
+					if err := sonic.Unmarshal(eventDataBytes, &errorData); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse error event data: %v", err))
+						// Fallback to raw data
+						errorMsg = eventData
+					} else if errorData.Detail != "" {
+						errorMsg = errorData.Detail
+					}
+				}
+
+				bifrostErr := &schemas.BifrostError{
+					IsBifrostError: false,
+					Error: &schemas.ErrorField{
+						Message: errorMsg,
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageGenerationStreamRequest,
+					},
+				}
+				// Include accumulated raw responses in error
+				if sendBackRawResponse {
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+					bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 				return
 			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			provider.logger.Warn(fmt.Sprintf("Error reading SSE stream: %v", err))
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ImageGenerationStreamRequest, providerName, request.Model, provider.logger)
 		}
 	}()
 
@@ -2457,6 +2404,13 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 	// Store provider response headers in context for transport layer
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 
+	// Large payload streaming passthrough — pipe raw upstream SSE to client
+	if providerUtils.SetupStreamingPassthrough(ctx, resp) {
+		responseChan := make(chan *schemas.BifrostStreamChunk)
+		close(responseChan)
+		return responseChan, nil
+	}
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -2485,183 +2439,138 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 		lastChunkTime := startTime
 		chunkIndex := 0
 
-		// Setup scanner to read SSE stream
-		scanner := providerUtils.NewSSEScanner(reader)
+		// Setup SSE event reader for event+data format
+		sseReader := providerUtils.GetSSEEventReader(ctx, reader)
 
-		var currentEvent ReplicateSSEEvent
 		// Track last image data for final chunk
 		var lastB64Data string
 		var lastOutputFormat string
 		// Accumulate all raw response chunks for complete stream history
 		var rawResponseChunks []interface{}
 
-		for scanner.Scan() {
+		for {
 			select {
 			case <-ctx.Done():
 				return
 			default:
 			}
 
-			line := scanner.Text()
+			eventType, eventDataBytes, readErr := sseReader.ReadEvent()
+			if readErr != nil {
+				if readErr != io.EOF {
+					if errors.Is(readErr, context.Canceled) {
+						return
+					}
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"stream read error",
+						readErr,
+						providerName,
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageEditStreamRequest,
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+				}
+				break
+			}
 
-			// Skip comment lines
-			if strings.HasPrefix(line, ":") {
+			eventData := string(eventDataBytes)
+			if eventType == "" && eventData == "" {
 				continue
 			}
 
-			// Empty line indicates end of event
-			if line == "" {
-				if currentEvent.Event == "" && currentEvent.Data == "" {
+			// Process the complete event
+			switch eventType {
+			case "output":
+				// Check if data is a data URI (image) or plain text
+				var b64Data, outputFormat string
+				if strings.HasPrefix(eventData, "data:") {
+					// Parse image data from data URI
+					var mimeType string
+					b64Data, mimeType = parseDataURIImage(eventData)
+
+					// Extract output format from MIME type
+					if mimeType != "" {
+						// Convert "image/webp" to "webp"
+						parts := strings.Split(mimeType, "/")
+						if len(parts) == 2 {
+							outputFormat = parts[1]
+						}
+					}
+				} else {
+					// For non-data-URI output, skip for image edit
+					provider.logger.Debug(fmt.Sprintf("Received non-data-URI output: %s", eventData[:min(100, len(eventData))]))
 					continue
 				}
 
-				// Process the complete event
-				switch currentEvent.Event {
-				case "output":
-					// Check if data is a data URI (image) or plain text
-					var b64Data, outputFormat string
-					if strings.HasPrefix(currentEvent.Data, "data:") {
-						// Parse image data from data URI
-						var mimeType string
-						b64Data, mimeType = parseDataURIImage(currentEvent.Data)
+				// Create chunk (use ImageEditEventTypePartial)
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type:         schemas.ImageEditEventTypePartial,
+					Index:        0,
+					ChunkIndex:   chunkIndex,
+					B64JSON:      b64Data,
+					CreatedAt:    time.Now().Unix(),
+					OutputFormat: outputFormat,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageEditStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
 
-						// Extract output format from MIME type
-						if mimeType != "" {
-							// Convert "image/webp" to "webp"
-							parts := strings.Split(mimeType, "/")
-							if len(parts) == 2 {
-								outputFormat = parts[1]
-							}
-						}
-					} else {
-						// For non-data-URI output, skip for image edit
-						provider.logger.Debug(fmt.Sprintf("Received non-data-URI output: %s", currentEvent.Data[:min(100, len(currentEvent.Data))]))
-						currentEvent = ReplicateSSEEvent{}
-						continue
+				// Accumulate raw response chunks if enabled
+				if sendBackRawResponse {
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+				}
+
+				// Track last image data for final chunk
+				lastB64Data = b64Data
+				lastOutputFormat = outputFormat
+
+				lastChunkTime = time.Now()
+				chunkIndex++
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan)
+
+			case "done":
+				// Parse done event data
+				var doneData ReplicateDoneEvent
+				if eventData != "" && eventData != "{}" {
+					if err := sonic.Unmarshal(eventDataBytes, &doneData); err != nil {
+						provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
 					}
+				}
 
-					// Create chunk (use ImageEditEventTypePartial)
-					chunk := &schemas.BifrostImageGenerationStreamResponse{
-						Type:         schemas.ImageEditEventTypePartial,
-						Index:        0,
-						ChunkIndex:   chunkIndex,
-						B64JSON:      b64Data,
-						CreatedAt:    time.Now().Unix(),
-						OutputFormat: outputFormat,
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:    schemas.ImageEditStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(lastChunkTime).Milliseconds(),
-						},
-					}
-
-					// Accumulate raw response chunks if enabled
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-					}
-
-					// Track last image data for final chunk
-					lastB64Data = b64Data
-					lastOutputFormat = outputFormat
-
-					lastChunkTime = time.Now()
-					chunkIndex++
-
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
-						responseChan)
-
-				case "done":
-					// Parse done event data
-					var doneData ReplicateDoneEvent
-					if currentEvent.Data != "" && currentEvent.Data != "{}" {
-						if err := sonic.Unmarshal([]byte(currentEvent.Data), &doneData); err != nil {
-							provider.logger.Warn(fmt.Sprintf("Failed to parse done event data: %v", err))
-						}
-					}
-
-					// Check for cancellation or error
-					switch doneData.Reason {
-					case "canceled":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction was canceled",
-							fmt.Errorf("stream ended: prediction canceled"),
-							providerName,
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
-						}
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-						return
-					case "error":
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							"prediction failed",
-							fmt.Errorf("stream ended with error"),
-							providerName,
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							RequestType:    schemas.ImageEditStreamRequest,
-						}
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-						}
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
-						return
-					}
-
-					// Send completion chunk (success case)
-					finalChunk := &schemas.BifrostImageGenerationStreamResponse{
-						Type:         schemas.ImageEditEventTypeCompleted,
-						Index:        0,
-						ChunkIndex:   chunkIndex,
-						B64JSON:      lastB64Data,
-						CreatedAt:    time.Now().Unix(),
-						OutputFormat: lastOutputFormat,
-						ExtraFields: schemas.BifrostResponseExtraFields{
-							RequestType:    schemas.ImageEditStreamRequest,
-							Provider:       providerName,
-							ModelRequested: request.Model,
-							ChunkIndex:     chunkIndex,
-							Latency:        time.Since(startTime).Milliseconds(),
-						},
-					}
-
-					if sendBackRawRequest {
-						providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
-					}
-					if sendBackRawResponse {
-						rawResponseChunks = append(rawResponseChunks, currentEvent)
-						finalChunk.ExtraFields.RawResponse = rawResponseChunks
-					}
-
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, finalChunk),
-						responseChan)
-					return
-
-				case "error":
-					// Parse error event
-					var errorData ReplicateErrorEvent
-					if err := sonic.Unmarshal([]byte(currentEvent.Data), &errorData); err != nil {
-						provider.logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
-						errorData.Detail = currentEvent.Data
-					}
-
+				// Check for cancellation or error
+				switch doneData.Reason {
+				case "canceled":
 					bifrostErr := providerUtils.NewBifrostOperationError(
-						"stream error",
-						fmt.Errorf("%s", errorData.Detail),
+						"prediction was canceled",
+						fmt.Errorf("stream ended: prediction canceled"),
+						providerName,
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						RequestType:    schemas.ImageEditStreamRequest,
+					}
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
+						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					}
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
+					return
+				case "error":
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						"prediction failed",
+						fmt.Errorf("stream ended with error"),
 						providerName,
 					)
 					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
@@ -2677,38 +2586,63 @@ func (provider *ReplicateProvider) ImageEditStream(ctx *schemas.BifrostContext, 
 					return
 				}
 
-				// Reset for next event
-				currentEvent = ReplicateSSEEvent{}
-				continue
-			}
+				// Send completion chunk (success case)
+				finalChunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type:         schemas.ImageEditEventTypeCompleted,
+					Index:        0,
+					ChunkIndex:   chunkIndex,
+					B64JSON:      lastB64Data,
+					CreatedAt:    time.Now().Unix(),
+					OutputFormat: lastOutputFormat,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						RequestType:    schemas.ImageEditStreamRequest,
+						Provider:       providerName,
+						ModelRequested: request.Model,
+						ChunkIndex:     chunkIndex,
+						Latency:        time.Since(startTime).Milliseconds(),
+					},
+				}
 
-			// Parse SSE field
-			if strings.HasPrefix(line, "event:") {
-				currentEvent.Event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			} else if strings.HasPrefix(line, "data:") {
-				currentEvent.Data = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			} else if strings.HasPrefix(line, "id:") {
-				currentEvent.ID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
-			}
-		}
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&finalChunk.ExtraFields, jsonData)
+				}
+				if sendBackRawResponse {
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+					finalChunk.ExtraFields.RawResponse = rawResponseChunks
+				}
 
-		// Check for scanner errors
-		if err := scanner.Err(); err != nil {
-			if errors.Is(err, context.Canceled) {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, finalChunk),
+					responseChan)
+				return
+
+			case "error":
+				// Parse error event
+				var errorData ReplicateErrorEvent
+				if err := sonic.Unmarshal(eventDataBytes, &errorData); err != nil {
+					provider.logger.Warn(fmt.Sprintf("Failed to parse error event: %v", err))
+					errorData.Detail = eventData
+				}
+
+				bifrostErr := providerUtils.NewBifrostOperationError(
+					"stream error",
+					fmt.Errorf("%s", errorData.Detail),
+					providerName,
+				)
+				bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+					Provider:       providerName,
+					ModelRequested: request.Model,
+					RequestType:    schemas.ImageEditStreamRequest,
+				}
+				if sendBackRawResponse {
+					rawResponseChunks = append(rawResponseChunks, ReplicateSSEEvent{Event: eventType, Data: eventData})
+					bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 				return
 			}
-			bifrostErr := providerUtils.NewBifrostOperationError(
-				"stream read error",
-				err,
-				providerName,
-			)
-			bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
-				Provider:       providerName,
-				ModelRequested: request.Model,
-				RequestType:    schemas.ImageEditStreamRequest,
-			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger)
 		}
 	}()
 

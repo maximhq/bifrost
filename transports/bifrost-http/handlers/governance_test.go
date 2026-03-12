@@ -1,0 +1,167 @@
+package handlers
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/valyala/fasthttp"
+)
+
+// mockGovernanceManagerForVK embeds the interface so unimplemented methods panic.
+// Only GetGovernanceData is needed for the getVirtualKeys handler path.
+type mockGovernanceManagerForVK struct {
+	GovernanceManager
+}
+
+func (m *mockGovernanceManagerForVK) GetGovernanceData() *governance.GovernanceData {
+	return nil
+}
+
+// mockConfigStoreForVK embeds the interface so unimplemented methods panic.
+// Only GetVirtualKeysPaginated is called in the non-from_memory path.
+type mockConfigStoreForVK struct {
+	configstore.ConfigStore
+}
+
+func (m *mockConfigStoreForVK) GetVirtualKeysPaginated(_ context.Context, _ configstore.VirtualKeyQueryParams) ([]configstoreTables.TableVirtualKey, int64, error) {
+	return nil, 0, nil
+}
+
+// TestGetVirtualKeys_PaginatedEndpoint_ResponseShape verifies the JSON response
+// from the paginated virtual keys endpoint contains all expected fields.
+func TestGetVirtualKeys_PaginatedEndpoint_ResponseShape(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore:       &mockConfigStoreForVK{},
+		governanceManager: &mockGovernanceManagerForVK{},
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/governance/virtual-keys?limit=10&offset=0")
+
+	h.getVirtualKeys(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected status 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+
+	// Assert expected fields exist with correct types
+	requiredFields := []struct {
+		key      string
+		wantType string
+	}{
+		{"virtual_keys", "array"},
+		{"total_count", "number"},
+		{"count", "number"},
+		{"limit", "number"},
+		{"offset", "number"},
+	}
+
+	for _, f := range requiredFields {
+		val, ok := resp[f.key]
+		if !ok {
+			t.Errorf("response missing required field %q", f.key)
+			continue
+		}
+		switch f.wantType {
+		case "array":
+			if _, ok := val.([]interface{}); !ok {
+				// nil decodes as nil, which is fine — JSON null for empty array
+				if val != nil {
+					t.Errorf("field %q: expected array, got %T", f.key, val)
+				}
+			}
+		case "number":
+			if _, ok := val.(float64); !ok {
+				t.Errorf("field %q: expected number, got %T", f.key, val)
+			}
+		}
+	}
+
+	// Verify no unexpected extra top-level fields
+	allowedKeys := map[string]bool{
+		"virtual_keys": true,
+		"total_count":  true,
+		"count":        true,
+		"limit":        true,
+		"offset":       true,
+	}
+	for key := range resp {
+		if !allowedKeys[key] {
+			t.Errorf("unexpected field %q in response", key)
+		}
+	}
+}
+
+// TestGetVirtualKeys_PaginatedEndpoint_QueryParams verifies query parameters are
+// parsed and reflected in the response.
+func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	h := &GovernanceHandler{
+		configStore:       &mockConfigStoreForVK{},
+		governanceManager: &mockGovernanceManagerForVK{},
+	}
+
+	tests := []struct {
+		name       string
+		uri        string
+		wantLimit  float64
+		wantOffset float64
+	}{
+		{
+			name:       "explicit limit and offset",
+			uri:        "/api/governance/virtual-keys?limit=10&offset=5",
+			wantLimit:  10,
+			wantOffset: 5,
+		},
+		{
+			name:       "no params uses defaults",
+			uri:        "/api/governance/virtual-keys",
+			wantLimit:  0,
+			wantOffset: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("GET")
+			ctx.Request.SetRequestURI(tt.uri)
+
+			h.getVirtualKeys(ctx)
+
+			if ctx.Response.StatusCode() != 200 {
+				t.Fatalf("expected status 200, got %d", ctx.Response.StatusCode())
+			}
+
+			var resp map[string]interface{}
+			if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+				t.Fatalf("failed to parse JSON: %v", err)
+			}
+
+			if got := resp["limit"].(float64); got != tt.wantLimit {
+				t.Errorf("limit: got %v, want %v", got, tt.wantLimit)
+			}
+			if got := resp["offset"].(float64); got != tt.wantOffset {
+				t.Errorf("offset: got %v, want %v", got, tt.wantOffset)
+			}
+		})
+	}
+}
+
+// Ensure mockLogger satisfies schemas.Logger (already defined in middlewares_test.go
+// but we reference it here — same package, so no redeclaration needed).
+var _ schemas.Logger = (*mockLogger)(nil)

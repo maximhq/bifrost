@@ -38,30 +38,31 @@ func getWeight(w *float64) float64 {
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
-		DropExcessRequests:      config.DropExcessRequests,
-		InitialPoolSize:         config.InitialPoolSize,
-		EnableLogging:           config.EnableLogging,
-		DisableContentLogging:   config.DisableContentLogging,
-		DisableDBPingsInHealth:  config.DisableDBPingsInHealth,
-		LogRetentionDays:        config.LogRetentionDays,
-		EnforceAuthOnInference:  config.EnforceAuthOnInference,
-		EnforceGovernanceHeader: config.EnforceGovernanceHeader,
-		EnforceSCIMAuth:         config.EnforceSCIMAuth,
-		AllowDirectKeys:         config.AllowDirectKeys,
-		PrometheusLabels:        config.PrometheusLabels,
-		AllowedOrigins:          config.AllowedOrigins,
-		AllowedHeaders:          config.AllowedHeaders,
-		MaxRequestBodySizeMB:    config.MaxRequestBodySizeMB,
-		EnableLiteLLMFallbacks:  config.EnableLiteLLMFallbacks,
-		MCPAgentDepth:           config.MCPAgentDepth,
-		MCPToolExecutionTimeout: config.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel: config.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:     config.MCPToolSyncInterval,
-		AsyncJobResultTTL:       config.AsyncJobResultTTL,
-		RequiredHeaders:         config.RequiredHeaders,
-		LoggingHeaders:          config.LoggingHeaders,
-		HeaderFilterConfig:      config.HeaderFilterConfig,
-		ConfigHash:              config.ConfigHash,
+		DropExcessRequests:              config.DropExcessRequests,
+		InitialPoolSize:                 config.InitialPoolSize,
+		EnableLogging:                   config.EnableLogging,
+		DisableContentLogging:           config.DisableContentLogging,
+		DisableDBPingsInHealth:          config.DisableDBPingsInHealth,
+		LogRetentionDays:                config.LogRetentionDays,
+		EnforceAuthOnInference:          config.EnforceAuthOnInference,
+		EnforceGovernanceHeader:         config.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                 config.EnforceSCIMAuth,
+		AllowDirectKeys:                 config.AllowDirectKeys,
+		PrometheusLabels:                config.PrometheusLabels,
+		AllowedOrigins:                  config.AllowedOrigins,
+		AllowedHeaders:                  config.AllowedHeaders,
+		MaxRequestBodySizeMB:            config.MaxRequestBodySizeMB,
+		EnableLiteLLMFallbacks:          config.EnableLiteLLMFallbacks,
+		MCPAgentDepth:                   config.MCPAgentDepth,
+		MCPToolExecutionTimeout:         config.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:         config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:             config.MCPToolSyncInterval,
+		AsyncJobResultTTL:               config.AsyncJobResultTTL,
+		RequiredHeaders:                 config.RequiredHeaders,
+		LoggingHeaders:                  config.LoggingHeaders,
+		HideDeletedVirtualKeysInFilters: config.HideDeletedVirtualKeysInFilters,
+		HeaderFilterConfig:              config.HeaderFilterConfig,
+		ConfigHash:                      config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -203,30 +204,31 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		return nil, err
 	}
 	return &ClientConfig{
-		DropExcessRequests:      dbConfig.DropExcessRequests,
-		InitialPoolSize:         dbConfig.InitialPoolSize,
-		PrometheusLabels:        dbConfig.PrometheusLabels,
-		EnableLogging:           dbConfig.EnableLogging,
-		DisableContentLogging:   dbConfig.DisableContentLogging,
-		DisableDBPingsInHealth:  dbConfig.DisableDBPingsInHealth,
-		LogRetentionDays:        dbConfig.LogRetentionDays,
-		EnforceAuthOnInference:  dbConfig.EnforceAuthOnInference,
-		EnforceGovernanceHeader: dbConfig.EnforceGovernanceHeader,
-		EnforceSCIMAuth:         dbConfig.EnforceSCIMAuth,
-		AllowDirectKeys:         dbConfig.AllowDirectKeys,
-		AllowedOrigins:          dbConfig.AllowedOrigins,
-		AllowedHeaders:          dbConfig.AllowedHeaders,
-		MaxRequestBodySizeMB:    dbConfig.MaxRequestBodySizeMB,
-		EnableLiteLLMFallbacks:  dbConfig.EnableLiteLLMFallbacks,
-		MCPAgentDepth:           dbConfig.MCPAgentDepth,
-		MCPToolExecutionTimeout: dbConfig.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel: dbConfig.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:     dbConfig.MCPToolSyncInterval,
-		AsyncJobResultTTL:       dbConfig.AsyncJobResultTTL,
-		RequiredHeaders:         dbConfig.RequiredHeaders,
-		LoggingHeaders:          dbConfig.LoggingHeaders,
-		HeaderFilterConfig:      dbConfig.HeaderFilterConfig,
-		ConfigHash:              dbConfig.ConfigHash,
+		DropExcessRequests:              dbConfig.DropExcessRequests,
+		InitialPoolSize:                 dbConfig.InitialPoolSize,
+		PrometheusLabels:                dbConfig.PrometheusLabels,
+		EnableLogging:                   dbConfig.EnableLogging,
+		DisableContentLogging:           dbConfig.DisableContentLogging,
+		DisableDBPingsInHealth:          dbConfig.DisableDBPingsInHealth,
+		LogRetentionDays:                dbConfig.LogRetentionDays,
+		EnforceAuthOnInference:          dbConfig.EnforceAuthOnInference,
+		EnforceGovernanceHeader:         dbConfig.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                 dbConfig.EnforceSCIMAuth,
+		AllowDirectKeys:                 dbConfig.AllowDirectKeys,
+		AllowedOrigins:                  dbConfig.AllowedOrigins,
+		AllowedHeaders:                  dbConfig.AllowedHeaders,
+		MaxRequestBodySizeMB:            dbConfig.MaxRequestBodySizeMB,
+		EnableLiteLLMFallbacks:          dbConfig.EnableLiteLLMFallbacks,
+		MCPAgentDepth:                   dbConfig.MCPAgentDepth,
+		MCPToolExecutionTimeout:         dbConfig.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:         dbConfig.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:             dbConfig.MCPToolSyncInterval,
+		AsyncJobResultTTL:               dbConfig.AsyncJobResultTTL,
+		RequiredHeaders:                 dbConfig.RequiredHeaders,
+		LoggingHeaders:                  dbConfig.LoggingHeaders,
+		HideDeletedVirtualKeysInFilters: dbConfig.HideDeletedVirtualKeysInFilters,
+		HeaderFilterConfig:              dbConfig.HeaderFilterConfig,
+		ConfigHash:                      dbConfig.ConfigHash,
 	}, nil
 }
 
@@ -1275,6 +1277,49 @@ func (s *RDBConfigStore) DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) 
 	return txDB.WithContext(ctx).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&tables.TableModelPricing{}).Error
 }
 
+// MODEL PARAMETERS METHODS
+
+// GetModelParameters retrieves model parameters for a specific model.
+func (s *RDBConfigStore) GetModelParameters(ctx context.Context, model string) (*tables.TableModelParameters, error) {
+	var params tables.TableModelParameters
+	if err := s.db.WithContext(ctx).Where("model = ?", model).First(&params).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &params, nil
+}
+
+// UpsertModelParameters inserts or updates model parameters for a specific model.
+func (s *RDBConfigStore) UpsertModelParameters(ctx context.Context, params *tables.TableModelParameters, tx ...*gorm.DB) error {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.db
+	}
+	db := txDB.WithContext(ctx)
+
+	var existing tables.TableModelParameters
+	err := db.Where("model = ?", params.Model).First(&existing).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err := db.Create(params).Error; err != nil {
+				return s.parseGormError(err)
+			}
+			return nil
+		}
+		return s.parseGormError(err)
+	}
+
+	params.ID = existing.ID
+	if err := db.Save(params).Error; err != nil {
+		return s.parseGormError(err)
+	}
+	return nil
+}
+
 // PLUGINS METHODS
 
 func (s *RDBConfigStore) GetPlugins(ctx context.Context) ([]*tables.TablePlugin, error) {
@@ -1446,6 +1491,70 @@ func (s *RDBConfigStore) GetVirtualKeys(ctx context.Context) ([]tables.TableVirt
 		return nil, err
 	}
 	return virtualKeys, nil
+}
+
+// GetVirtualKeysPaginated retrieves virtual keys with pagination, filtering, and search support.
+func (s *RDBConfigStore) GetVirtualKeysPaginated(ctx context.Context, params VirtualKeyQueryParams) ([]tables.TableVirtualKey, int64, error) {
+	// Build base query with filters
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableVirtualKey{})
+
+	// Virtual keys are either customer-scoped or team-scoped, never both.
+	// When both filters are provided, use OR to match keys belonging to either.
+	if params.CustomerID != "" && params.TeamID != "" {
+		baseQuery = baseQuery.Where("(customer_id = ? OR team_id = ?)", params.CustomerID, params.TeamID)
+	} else if params.CustomerID != "" {
+		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
+	} else if params.TeamID != "" {
+		baseQuery = baseQuery.Where("team_id = ?", params.TeamID)
+	}
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	// Get total count before pagination
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// Apply pagination defaults
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	offset := params.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Fetch with preloads and pagination
+	var virtualKeys []tables.TableVirtualKey
+	if err := baseQuery.
+		Preload("Team").
+		Preload("Team.Customer").
+		Preload("Customer").
+		Preload("Budget").
+		Preload("RateLimit").
+		Preload("ProviderConfigs").
+		Preload("ProviderConfigs.Budget").
+		Preload("ProviderConfigs.RateLimit").
+		Preload("ProviderConfigs.Keys", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id, name, key_id, models_json, provider")
+		}).
+		Preload("MCPConfigs").
+		Preload("MCPConfigs.MCPClient").
+		Order("created_at ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&virtualKeys).Error; err != nil {
+		return nil, 0, err
+	}
+	return virtualKeys, totalCount, nil
 }
 
 // GetVirtualKey retrieves a virtual key from the database.

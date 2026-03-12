@@ -3,10 +3,13 @@ package modelcatalog
 import "time"
 
 const (
-	DefaultPricingSyncInterval = 24 * time.Hour
-	ConfigLastPricingSyncKey   = "LastModelPricingSync"
-	DefaultPricingURL          = "https://getbifrost.ai/datasheet"
-	DefaultPricingTimeout      = 45 * time.Second
+	DefaultPricingSyncInterval    = 24 * time.Hour
+	ConfigLastPricingSyncKey      = "LastModelPricingSync"
+	ConfigLastParamsSyncKey       = "LastModelParametersSync"
+	DefaultPricingURL             = "https://getbifrost.ai/datasheet"
+	DefaultModelParametersURL     = "https://getbifrost.ai/datasheet/model-parameters"
+	DefaultPricingTimeout         = 45 * time.Second
+	DefaultModelParametersTimeout = 45 * time.Second
 )
 
 // Config is the model pricing configuration.

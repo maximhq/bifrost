@@ -34,6 +34,7 @@ export default function LoggingView() {
 			localConfig.enable_logging !== config.enable_logging ||
 			localConfig.disable_content_logging !== config.disable_content_logging ||
 			localConfig.log_retention_days !== config.log_retention_days ||
+			localConfig.hide_deleted_virtual_keys_in_filters !== config.hide_deleted_virtual_keys_in_filters ||
 			JSON.stringify(localConfig.logging_headers || []) !== JSON.stringify(config.logging_headers || [])
 		);
 	}, [config, localConfig]);
@@ -155,6 +156,24 @@ export default function LoggingView() {
 						/>
 					</div>
 				)}
+
+				<div className="flex items-center justify-between space-x-2 rounded-lg border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="hide-deleted-virtual-keys-in-filters" className="text-sm font-medium">
+							Do Not Show Deleted VirtualKeys In Filters
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, deleted virtual keys are excluded from Virtual Keys filter options in Logs, Dashboard, and MCP Logs.
+						</p>
+					</div>
+					<Switch
+						id="hide-deleted-virtual-keys-in-filters"
+						data-testid="hide-deleted-virtual-keys-in-filters-switch"
+						size="md"
+						checked={localConfig.hide_deleted_virtual_keys_in_filters}
+						onCheckedChange={(checked) => handleConfigChange("hide_deleted_virtual_keys_in_filters", checked)}
+					/>
+				</div>
 
 				{/* Logging Headers */}
 				{localConfig.enable_logging && bifrostConfig?.is_logs_connected && (

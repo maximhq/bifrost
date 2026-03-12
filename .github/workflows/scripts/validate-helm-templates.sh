@@ -54,7 +54,7 @@ test_template() {
 
 # 1. Storage Combinations (9 tests)
 echo ""
-echo -e "${CYAN}📦 1/3 - Testing Storage Combinations (9 tests)...${NC}"
+echo -e "${CYAN}📦 1/5 - Testing Storage Combinations (9 tests)...${NC}"
 echo "---------------------------------------------------"
 
 # config=no, logs=no
@@ -126,7 +126,7 @@ test_template "config=postgres, logs=postgres" \
 
 # 2. Vector Store Combinations (6 tests)
 echo ""
-echo -e "${CYAN}🗄️  2/3 - Testing Vector Store Combinations (6 tests)...${NC}"
+echo -e "${CYAN}🗄️  2/5 - Testing Vector Store Combinations (6 tests)...${NC}"
 echo "--------------------------------------------------------"
 
 # Weaviate
@@ -175,7 +175,7 @@ test_template "sqlite + qdrant" \
 
 # 3. Special Configurations (7 tests)
 echo ""
-echo -e "${CYAN}⚙️  3/3 - Testing Special Configurations (7 tests)...${NC}"
+echo -e "${CYAN}⚙️  3/5 - Testing Special Configurations (7 tests)...${NC}"
 echo "-----------------------------------------------------"
 
 # semantic cache: direct mode (dimension: 1, no provider/keys)
@@ -249,9 +249,90 @@ test_template "production-like config" \
   --set 'ingress.hosts[0].paths[0].path=/' \
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 
-# 4. Plugin Name Validation
+# 4. New Property Rendering (Gap 1-8 tests)
 echo ""
-echo -e "${CYAN}🔌 4/4 - Validating Plugin Names Match Go Registry...${NC}"
+echo -e "${CYAN}🆕 4/5 - Testing New Property Rendering (Gap 1-8)...${NC}"
+echo "-----------------------------------------------------"
+
+# Gap 1+2: Client new properties
+test_template "client: new properties (Gap 1+2)" \
+  --set bifrost.client.asyncJobResultTTL=300 \
+  --set 'bifrost.client.requiredHeaders[0]=X-Request-ID' \
+  --set 'bifrost.client.loggingHeaders[0]=X-Trace-ID' \
+  --set 'bifrost.client.allowedHeaders[0]=Authorization' \
+  --set bifrost.client.mcpAgentDepth=5 \
+  --set bifrost.client.mcpToolExecutionTimeout=30 \
+  --set bifrost.client.mcpCodeModeBindingLevel=server \
+  --set bifrost.client.mcpToolSyncInterval=60 \
+  --set bifrost.client.hideDeletedVirtualKeysInFilters=true
+
+# Gap 3: OTel plugin with new fields
+test_template "otel: headers + tls_ca_cert + insecure (Gap 3)" \
+  --set bifrost.plugins.otel.enabled=true \
+  --set bifrost.plugins.otel.config.collector_url=otel:4317 \
+  --set bifrost.plugins.otel.config.trace_type=otel \
+  --set bifrost.plugins.otel.config.protocol=grpc \
+  --set 'bifrost.plugins.otel.config.headers.Authorization=Bearer token' \
+  --set bifrost.plugins.otel.config.tls_ca_cert=/certs/ca.pem \
+  --set bifrost.plugins.otel.config.insecure=true
+
+# Gap 4: Governance plugin with new fields
+test_template "governance: required_headers + is_enterprise (Gap 4)" \
+  --set bifrost.plugins.governance.enabled=true \
+  --set 'bifrost.plugins.governance.config.required_headers[0]=X-Team-ID' \
+  --set bifrost.plugins.governance.config.is_enterprise=true
+
+# Gap 5: Governance modelConfigs + providers
+test_template "governance: modelConfigs + providers (Gap 5)" \
+  --set 'bifrost.governance.modelConfigs[0].id=mc-1' \
+  --set 'bifrost.governance.modelConfigs[0].model_name=gpt-4o' \
+  --set 'bifrost.governance.providers[0].name=openai'
+
+# Gap 6: MCP new fields
+test_template "mcp: toolSyncInterval + codeModeBindingLevel (Gap 6)" \
+  --set bifrost.mcp.enabled=true \
+  --set bifrost.mcp.toolSyncInterval=10m \
+  --set bifrost.mcp.toolManagerConfig.codeModeBindingLevel=server \
+  --set 'bifrost.mcp.clientConfigs[0].name=test' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=http://localhost:3000' \
+  --set 'bifrost.mcp.clientConfigs[0].clientId=client-1' \
+  --set 'bifrost.mcp.clientConfigs[0].isCodeModeClient=true' \
+  --set 'bifrost.mcp.clientConfigs[0].toolSyncInterval=5m'
+
+# Gap 7: Cluster with region
+test_template "cluster: region (Gap 7)" \
+  --set bifrost.cluster.enabled=true \
+  --set 'bifrost.cluster.peers[0]=peer-0:7946' \
+  --set bifrost.cluster.gossip.port=7946 \
+  --set bifrost.cluster.gossip.config.timeoutSeconds=10 \
+  --set bifrost.cluster.gossip.config.successThreshold=3 \
+  --set bifrost.cluster.gossip.config.failureThreshold=3 \
+  --set bifrost.cluster.region=us-east-1
+
+# Gap 8: Combined production-like with all new fields
+test_template "combined: all new Gap 1-8 fields" \
+  --set bifrost.client.asyncJobResultTTL=300 \
+  --set bifrost.client.mcpAgentDepth=5 \
+  --set bifrost.client.hideDeletedVirtualKeysInFilters=true \
+  --set bifrost.plugins.otel.enabled=true \
+  --set bifrost.plugins.otel.config.collector_url=otel:4317 \
+  --set bifrost.plugins.otel.config.trace_type=otel \
+  --set bifrost.plugins.otel.config.protocol=grpc \
+  --set bifrost.plugins.otel.config.insecure=true \
+  --set bifrost.plugins.governance.enabled=true \
+  --set bifrost.plugins.governance.config.is_enterprise=true \
+  --set bifrost.cluster.enabled=true \
+  --set 'bifrost.cluster.peers[0]=peer-0:7946' \
+  --set bifrost.cluster.gossip.port=7946 \
+  --set bifrost.cluster.gossip.config.timeoutSeconds=10 \
+  --set bifrost.cluster.gossip.config.successThreshold=3 \
+  --set bifrost.cluster.gossip.config.failureThreshold=3 \
+  --set bifrost.cluster.region=us-west-2
+
+# 5. Plugin Name Validation
+echo ""
+echo -e "${CYAN}🔌 5/5 - Validating Plugin Names Match Go Registry...${NC}"
 echo "------------------------------------------------------"
 
 # Verify semantic cache plugin renders with correct name ("semantic_cache", not "semantic_cache")

@@ -22,7 +22,7 @@
     "links": [
       {
         "label": "Discord",
-        "href": "https://getmax.im/bifrost-discord",
+        "href": "https://discord.gg/exN5KAydbU",
         "icon": "discord"
       },
       {
@@ -43,7 +43,7 @@
         {
           "anchor": "Discord",
           "icon": "discord",
-          "href": "https://getmax.im/bifrost-discord"
+          "href": "https://discord.gg/exN5KAydbU"
         },
         {
           "anchor": "Try Enterprise",
@@ -83,6 +83,7 @@
                   "quickstart/gateway/cli-agents"
                 ]
               },
+              "quickstart/cli/getting-started",
               {
                 "group": "Use as Go SDK",
                 "icon": "code",

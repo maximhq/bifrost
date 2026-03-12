@@ -8,11 +8,13 @@ import {
 	useGetVirtualKeysQuery,
 } from "@/lib/store"
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
+import { useDebouncedValue } from "@/hooks/useDebounce"
 
 const POLLING_INTERVAL = 5000
+const PAGE_SIZE = 25
 
 export default function GovernanceVirtualKeysPage() {
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View)
@@ -20,11 +22,29 @@ export default function GovernanceVirtualKeysPage() {
 	const hasCustomersAccess = useRbac(RbacResource.Customers, RbacOperation.View)
 	const shownErrorsRef = useRef(new Set<string>())
 
+	const [search, setSearch] = useState("")
+	const [customerFilter, setCustomerFilter] = useState("")
+	const [teamFilter, setTeamFilter] = useState("")
+	const [offset, setOffset] = useState(0)
+
+	const debouncedSearch = useDebouncedValue(search, 300)
+
+	// Reset to first page when filters change
+	useEffect(() => {
+		setOffset(0)
+	}, [debouncedSearch, customerFilter, teamFilter])
+
 	const {
 		data: virtualKeysData,
 		error: vkError,
 		isLoading: vkLoading,
-	} = useGetVirtualKeysQuery(undefined, {
+	} = useGetVirtualKeysQuery({
+		limit: PAGE_SIZE,
+		offset,
+		search: debouncedSearch || undefined,
+		customer_id: customerFilter || undefined,
+		team_id: teamFilter || undefined,
+	}, {
 		skip: !hasVirtualKeysAccess,
 		pollingInterval: POLLING_INTERVAL,
 	})
@@ -74,8 +94,18 @@ export default function GovernanceVirtualKeysPage() {
 		<div className="mx-auto w-full max-w-7xl">
 			<VirtualKeysTable
 				virtualKeys={virtualKeysData?.virtual_keys || []}
+				totalCount={virtualKeysData?.total_count || 0}
 				teams={teamsData?.teams || []}
 				customers={customersData?.customers || []}
+				search={search}
+				onSearchChange={setSearch}
+				customerFilter={customerFilter}
+				onCustomerFilterChange={setCustomerFilter}
+				teamFilter={teamFilter}
+				onTeamFilterChange={setTeamFilter}
+				offset={offset}
+				limit={PAGE_SIZE}
+				onOffsetChange={setOffset}
 			/>
 		</div>
 	)

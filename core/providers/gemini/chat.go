@@ -24,7 +24,6 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 	if bifrostReq.Params != nil {
 		geminiReq.ExtraParams = bifrostReq.Params.ExtraParams
 		geminiReq.GenerationConfig = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Model)
-
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
 			geminiReq.Tools = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
@@ -60,14 +59,12 @@ func ToGeminiChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *Gemi
 			}
 		}
 	}
-
 	// Convert chat completion messages to Gemini format
 	contents, systemInstruction := convertBifrostMessagesToGemini(bifrostReq.Input)
 	if systemInstruction != nil {
 		geminiReq.SystemInstruction = systemInstruction
 	}
 	geminiReq.Contents = contents
-
 	return geminiReq
 }
 
@@ -116,7 +113,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 				})
 				continue
 			}
-
 			// Handle regular text
 			if part.Text != "" {
 				contentBlocks = append(contentBlocks, schemas.ChatContentBlock{
@@ -133,7 +129,6 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 					})
 				}
 			}
-
 			if part.FunctionCall != nil {
 				function := schemas.ChatAssistantMessageToolCallFunction{
 					Name: &part.FunctionCall.Name,
@@ -262,6 +257,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 		bifrostResp.Choices = append(bifrostResp.Choices, schemas.BifrostResponseChoice{
 			Index:        0,
 			FinishReason: &finishReason,
+			LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
 			ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
 				Message: message,
 			},
@@ -271,6 +267,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Set usage information
 	bifrostResp.Usage = ConvertGeminiUsageMetadataToChatUsage(response.UsageMetadata)
 
+	
 	return bifrostResp
 }
 
@@ -456,6 +453,7 @@ func (response *GenerateContentResponse) ToBifrostChatCompletionStream() (*schem
 	choice := schemas.BifrostResponseChoice{
 		Index:        int(candidate.Index),
 		FinishReason: finishReason,
+		LogProbs:     ConvertGeminiLogprobsResultToBifrost(candidate.LogprobsResult),
 		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
 			Delta: delta,
 		},

@@ -15,6 +15,48 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
+func TestRewriteJSONModelValue(t *testing.T) {
+	in := []byte(`{"model":"openai/gpt-5","messages":[{"role":"user","content":"x"}]}`)
+	out, changed := rewriteJSONModelValue(in, "openai/gpt-5", "gpt-5")
+	if !changed {
+		t.Fatal("expected model rewrite to occur")
+	}
+	if strings.Contains(string(out), `"model":"openai/gpt-5"`) {
+		t.Fatalf("expected prefixed model to be removed, got: %s", string(out))
+	}
+	if !strings.Contains(string(out), `"model":"gpt-5"`) {
+		t.Fatalf("expected rewritten model, got: %s", string(out))
+	}
+}
+
+func TestApplyLargePayloadRequestBodyWithModelNormalization(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	payload := `{"model":"openai/gpt-5","messages":[{"role":"user","content":"hello"}]}`
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(
+		schemas.BifrostContextKeyLargePayloadReader,
+		strings.NewReader(payload),
+	)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{
+		Model: "openai/gpt-5",
+	})
+
+	req := &fasthttp.Request{}
+	if !ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.OpenAI) {
+		t.Fatal("expected large payload body to be applied")
+	}
+
+	body := string(req.Body())
+	if strings.Contains(body, "openai/gpt-5") {
+		t.Fatalf("expected rewritten model in body, got: %s", body)
+	}
+	if !strings.Contains(body, `"model":"gpt-5"`) {
+		t.Fatalf("expected normalized model in body, got: %s", body)
+	}
+}
+
 // TestHandleProviderAPIError_RawResponseIncluded verifies that HandleProviderAPIError
 // always includes the raw response body in BifrostError.ExtraFields.RawResponse
 func TestHandleProviderAPIError_RawResponseIncluded(t *testing.T) {
@@ -706,6 +748,77 @@ func TestCheckAndDecodeBody_Concurrent(t *testing.T) {
 
 	for i := 0; i < 100; i++ {
 		<-done
+	}
+}
+
+func TestDrainNonSSEStreamResponse_SSEDoesNotDrain(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("data: hello\n\n")
+	resp.Header.SetContentType("text/event-stream")
+	resp.SetBodyStream(bytes.NewReader(body), len(body))
+
+	drained := DrainNonSSEStreamResponse(resp)
+	if drained {
+		t.Fatal("expected SSE response to remain readable")
+	}
+
+	remaining, err := io.ReadAll(resp.BodyStream())
+	if err != nil {
+		t.Fatalf("failed to read SSE body after guard: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected SSE body to remain intact, got %q", string(remaining))
+	}
+}
+
+func TestDrainNonSSEStreamResponse_NonSSEDrains(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte(`{"error":"not stream"}`)
+	resp.Header.SetContentType("application/json")
+	resp.SetBodyStream(bytes.NewReader(body), len(body))
+
+	drained := DrainNonSSEStreamResponse(resp)
+	if !drained {
+		t.Fatal("expected non-SSE response to be drained")
+	}
+
+	remaining, err := io.ReadAll(resp.BodyStream())
+	if err != nil {
+		t.Fatalf("failed to read body after drain: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("expected drained body to be empty, got %q", string(remaining))
+	}
+}
+
+func TestDrainNonSSEStreamResponse_GzipSSEStillReadable(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	body := []byte("data: hello\n\ndata: [DONE]\n\n")
+	compressed := gzipCompress(body)
+	resp.Header.SetContentType("text/event-stream")
+	resp.Header.Set("Content-Encoding", "gzip")
+	resp.SetBodyStream(bytes.NewReader(compressed), len(compressed))
+
+	drained := DrainNonSSEStreamResponse(resp)
+	if drained {
+		t.Fatal("expected gzip SSE response to remain readable")
+	}
+
+	reader, releaseGzip := DecompressStreamBody(resp)
+	defer releaseGzip()
+
+	remaining, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read decompressed SSE body: %v", err)
+	}
+	if string(remaining) != string(body) {
+		t.Fatalf("expected decompressed SSE body %q, got %q", string(body), string(remaining))
 	}
 }
 

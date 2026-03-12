@@ -34,10 +34,59 @@ export interface GetBaseModelsRequest {
 	limit?: number;
 }
 
+export interface ModelDatasheetParameter {
+	id: string;
+	label: string;
+	helpText?: string;
+	type: string;
+	accesorKey?: string;
+	default?: any;
+	multiple?: boolean;
+	range?: { min: number; max: number; step?: number };
+	array?: { type: string; maxElements?: number; minElements?: number };
+	options?: { label: string; value: string; subFields?: ModelDatasheetParameter[] }[];
+}
+
+export interface ModelDatasheetResponse {
+	model_parameters?: ModelDatasheetParameter[];
+	max_input_tokens?: number;
+	max_output_tokens?: number;
+	max_tokens?: number;
+	mode?: string;
+	provider?: string;
+	base_model?: string;
+	supports_vision?: boolean;
+	[key: string]: any;
+}
+
 export interface ListBaseModelsResponse {
 	models: string[];
 	total: number;
 }
+
+const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
+	mode: "chat",
+	base_model: "default",
+	model_parameters: [
+		{
+			id: "temperature",
+			label: "Temperature",
+			helpText:
+				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
+			type: "number",
+			default: 1,
+			range: { min: 0, max: 2, step: 0.01 },
+		},
+		{
+			id: "max_tokens",
+			label: "Max Tokens",
+			helpText: "The maximum number of tokens that can be generated in the Result.",
+			type: "number",
+			default: 4096,
+			range: { min: 1, max: 8192, step: 1 },
+		},
+	],
+};
 
 export const providersApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
@@ -148,6 +197,22 @@ export const providersApi = baseApi.injectEndpoints({
 			},
 			providesTags: ["BaseModels"],
 		}),
+
+		// Get model parameters (parameters, capabilities) from local API
+		// Falls back to default parameters if the API returns an error (e.g. model not found)
+		getModelParameters: builder.query<ModelDatasheetResponse, string>({
+			queryFn: async (model, _queryApi, _extraOptions, baseQuery) => {
+				const result = await baseQuery(`/models/parameters?model=${encodeURIComponent(model)}`);
+				if (result.error) {
+					// If the model is not found, return the default parameters
+					if ((result.error as any)?.status === 404) {
+						return { data: DEFAULT_MODEL_PARAMETERS };
+					}
+					return { error: result.error };
+				}
+				return { data: result.data as ModelDatasheetResponse };
+			},
+		}),
 	}),
 });
 
@@ -165,4 +230,6 @@ export const {
 	useLazyGetAllKeysQuery,
 	useLazyGetModelsQuery,
 	useLazyGetBaseModelsQuery,
+	useGetModelParametersQuery,
+	useLazyGetModelParametersQuery,
 } = providersApi;

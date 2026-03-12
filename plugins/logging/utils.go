@@ -21,6 +21,9 @@ type KeyPair struct {
 
 // LogManager defines the main interface that combines all logging functionality
 type LogManager interface {
+	// GetLog retrieves a single log entry by ID (includes all fields, including raw_request/raw_response)
+	GetLog(ctx context.Context, id string) (*logstore.Log, error)
+
 	// Search searches for log entries based on filters and pagination
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 
@@ -101,6 +104,10 @@ type LogManager interface {
 // PluginLogManager implements LogManager interface wrapping the plugin
 type PluginLogManager struct {
 	plugin *LoggerPlugin
+}
+
+func (p *PluginLogManager) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	return p.plugin.GetLog(ctx, id)
 }
 
 func (p *PluginLogManager) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
@@ -322,6 +329,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		return []schemas.ChatMessage{}, request.ResponsesRequest.Input
 	}
 	if request.TextCompletionRequest != nil {
+		if request.TextCompletionRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		var text string
 		if request.TextCompletionRequest.Input.PromptStr != nil {
 			text = *request.TextCompletionRequest.Input.PromptStr
@@ -342,6 +352,11 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 		}, []schemas.ResponsesMessage{}
 	}
 	if request.EmbeddingRequest != nil {
+		// Large payload passthrough can intentionally leave Input nil to avoid
+		// materializing giant request bodies. Logging should degrade gracefully.
+		if request.EmbeddingRequest.Input == nil {
+			return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
+		}
 		texts := request.EmbeddingRequest.Input.Texts
 
 		if len(texts) == 0 && request.EmbeddingRequest.Input.Text != nil {

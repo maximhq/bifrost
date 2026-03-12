@@ -37,25 +37,98 @@ const (
 
 // UpdateLogData contains data for log entry updates
 type UpdateLogData struct {
-	Status                string
-	TokenUsage            *schemas.BifrostLLMUsage
-	Cost                  *float64        // Cost in dollars from pricing plugin
-	ListModelsOutput      []schemas.Model // For list models requests
-	ChatOutput            *schemas.ChatMessage
-	ResponsesOutput       []schemas.ResponsesMessage
-	EmbeddingOutput       []schemas.EmbeddingData
-	RerankOutput          []schemas.RerankResult
-	ErrorDetails          *schemas.BifrostError
-	SpeechOutput          *schemas.BifrostSpeechResponse          // For non-streaming speech responses
-	TranscriptionOutput   *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
-	ImageGenerationOutput *schemas.BifrostImageGenerationResponse // For non-streaming image generation responses
-	VideoGenerationOutput *schemas.BifrostVideoGenerationResponse // For non-streaming video generation responses
-	VideoRetrieveOutput   *schemas.BifrostVideoGenerationResponse // For non-streaming video retrieve responses
-	VideoDownloadOutput   *schemas.BifrostVideoDownloadResponse   // For non-streaming video download responses
-	VideoListOutput       *schemas.BifrostVideoListResponse       // For non-streaming video list responses
-	VideoDeleteOutput     *schemas.BifrostVideoDeleteResponse     // For non-streaming video delete responses
-	RawRequest            interface{}
-	RawResponse           interface{}
+	Status                 string
+	TokenUsage             *schemas.BifrostLLMUsage
+	Cost                   *float64        // Cost in dollars from pricing plugin
+	ListModelsOutput       []schemas.Model // For list models requests
+	ChatOutput             *schemas.ChatMessage
+	ResponsesOutput        []schemas.ResponsesMessage
+	EmbeddingOutput        []schemas.EmbeddingData
+	RerankOutput           []schemas.RerankResult
+	ErrorDetails           *schemas.BifrostError
+	SpeechOutput           *schemas.BifrostSpeechResponse          // For non-streaming speech responses
+	TranscriptionOutput    *schemas.BifrostTranscriptionResponse   // For non-streaming transcription responses
+	ImageGenerationOutput  *schemas.BifrostImageGenerationResponse // For non-streaming image generation responses
+	VideoGenerationOutput  *schemas.BifrostVideoGenerationResponse // For non-streaming video generation responses
+	VideoRetrieveOutput    *schemas.BifrostVideoGenerationResponse // For non-streaming video retrieve responses
+	VideoDownloadOutput    *schemas.BifrostVideoDownloadResponse   // For non-streaming video download responses
+	VideoListOutput        *schemas.BifrostVideoListResponse       // For non-streaming video list responses
+	VideoDeleteOutput      *schemas.BifrostVideoDeleteResponse     // For non-streaming video delete responses
+	RawRequest             interface{}
+	RawResponse            interface{}
+	IsLargePayloadRequest  bool // When true, RawRequest is a truncated preview string (skip sonic.Marshal)
+	IsLargePayloadResponse bool // When true, RawResponse is a truncated preview string (skip sonic.Marshal)
+}
+
+// applyLargePayloadPreviews reads large payload/response preview strings from context
+// and overrides RawRequest/RawResponse on updateData for truncated logging.
+func applyLargePayloadPreviews(ctx *schemas.BifrostContext, updateData *UpdateLogData) {
+	if isLargePayload, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		if preview, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestPreview).(string); ok && preview != "" {
+			updateData.RawRequest = preview
+			updateData.IsLargePayloadRequest = true
+		}
+	}
+	if isLargeResponse, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); ok && isLargeResponse {
+		if preview, ok := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string); ok && preview != "" {
+			updateData.RawResponse = preview
+			updateData.IsLargePayloadResponse = true
+		}
+	}
+}
+
+func applyLargePayloadPreviewsToEntry(ctx *schemas.BifrostContext, entry *logstore.Log) {
+	if ctx == nil || entry == nil {
+		return
+	}
+
+	updateData := &UpdateLogData{}
+	applyLargePayloadPreviews(ctx, updateData)
+
+	if updateData.IsLargePayloadRequest {
+		entry.IsLargePayloadRequest = true
+		if preview, ok := updateData.RawRequest.(string); ok {
+			entry.RawRequest = preview
+		}
+	}
+	if updateData.IsLargePayloadResponse {
+		entry.IsLargePayloadResponse = true
+		if preview, ok := updateData.RawResponse.(string); ok {
+			entry.RawResponse = preview
+		}
+	}
+}
+
+func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, requestID string, usageAlreadyPresent bool) {
+	if usageAlreadyPresent || ctx == nil {
+		return
+	}
+
+	deferredChan, ok := ctx.Value(schemas.BifrostContextKeyDeferredUsage).(<-chan *schemas.BifrostLLMUsage)
+	if !ok || deferredChan == nil {
+		return
+	}
+
+	go func() {
+		// Large-response phase B closes this channel after trailing usage extraction completes.
+		deferredUsage, chanOpen := <-deferredChan
+		if !chanOpen || deferredUsage == nil {
+			return
+		}
+
+		usageUpdates := map[string]interface{}{
+			"prompt_tokens":     deferredUsage.PromptTokens,
+			"completion_tokens": deferredUsage.CompletionTokens,
+			"total_tokens":      deferredUsage.TotalTokens,
+		}
+		tempEntry := &logstore.Log{TokenUsageParsed: deferredUsage}
+		if serErr := tempEntry.SerializeFields(); serErr == nil {
+			usageUpdates["token_usage"] = tempEntry.TokenUsage
+		}
+		if updErr := p.store.Update(p.ctx, requestID, usageUpdates); updErr != nil {
+			p.logger.Warn("failed to update deferred usage for request %s: %v", requestID, updErr)
+		}
+	}()
 }
 
 // RecalculateCostResult represents summary stats from a cost backfill operation
@@ -364,7 +437,19 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			initialData.SpeechInput = req.SpeechRequest.Input
 		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 			initialData.Params = req.TranscriptionRequest.Params
-			initialData.TranscriptionInput = req.TranscriptionRequest.Input
+			input := req.TranscriptionRequest.Input
+			if input != nil {
+				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+				if reqThreshold > 0 && int64(len(input.File)) > reqThreshold {
+					// Strip binary file content when it exceeds the large payload threshold
+					// to avoid serializing multi-MB audio into the log database.
+					logInput := *input
+					logInput.File = nil
+					initialData.TranscriptionInput = &logInput
+				} else {
+					initialData.TranscriptionInput = input
+				}
+			}
 		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 			initialData.Params = req.ImageGenerationRequest.Params
 			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
@@ -534,6 +619,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				entry.ErrorDetails = string(data)
 			}
 			entry.ErrorDetailsParsed = bifrostErr
+			applyLargePayloadPreviewsToEntry(ctx, entry)
 			p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
 		} else {
 			p.logger.Warn("no pending log data found for request %s, skipping log write", requestID)
@@ -545,7 +631,6 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
-
 	// Apply common output fields
 	var latency int64
 	if result != nil {
@@ -585,7 +670,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				}
 			}
 		}
+		applyLargePayloadPreviewsToEntry(ctx, entry)
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
 
@@ -615,6 +702,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse)
 		}
+		applyLargePayloadPreviewsToEntry(ctx, entry)
 
 		// Cleanup stream accumulator
 		if tracer != nil && traceID != "" {
@@ -622,6 +710,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 
 		p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
 
@@ -639,6 +728,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		entry.Status = "success"
 		p.applyNonStreamingOutputToEntry(entry, result)
 	}
+	applyLargePayloadPreviewsToEntry(ctx, entry)
 
 	// Calculate cost
 	var cacheDebug *schemas.BifrostCacheDebug
@@ -669,6 +759,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			}
 		}
 	}))
+	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
 }
 
