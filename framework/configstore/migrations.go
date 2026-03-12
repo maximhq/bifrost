@@ -4158,53 +4158,58 @@ func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
 				}
 			}
 
-			// 2. Seed one target per existing routing rule (idempotent).
-			// Only possible when the legacy columns still exist (i.e. upgrading from an older schema).
-			// On a fresh database AutoMigrate creates routing_rules without these columns, so skip seeding.
+			// 2. Read legacy data BEFORE dropping columns, then drop columns, then seed.
+			// Order matters: DropColumn on SQLite recreates the routing_rules table, which
+			// triggers the OnDelete:CASCADE on routing_targets and deletes any rows inserted
+			// before the drop. So we read first, drop, then insert.
 			type legacyRule struct {
 				ID       string
 				Provider string
 				Model    string
 			}
+			var legacyRows []legacyRule
 			if mg.HasColumn("routing_rules", "provider") {
-				var rows []legacyRule
-				if err := tx.Table("routing_rules").Select("id, provider, model").Scan(&rows).Error; err != nil {
+				if err := tx.Table("routing_rules").Select("id, provider, model").Scan(&legacyRows).Error; err != nil {
 					return fmt.Errorf("failed to scan routing_rules for seeding: %w", err)
 				}
-				for _, row := range rows {
-					var count int64
-					if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
-						return fmt.Errorf("failed to count targets for rule %s: %w", row.ID, err)
-					}
-					if count > 0 {
-						continue // already seeded
-					}
-					target := tables.TableRoutingTarget{
-						RuleID: row.ID,
-						Weight: 1.0,
-					}
-					if row.Provider != "" {
-						p := row.Provider
-						target.Provider = &p
-					}
-					if row.Model != "" {
-						m := row.Model
-						target.Model = &m
-					}
-					if err := tx.Create(&target).Error; err != nil {
-						return fmt.Errorf("failed to seed target for rule %s: %w", row.ID, err)
-					}
-				}
-			} // end if mg.HasColumn("routing_rules", "provider")
+			}
 
 			// 3. Drop legacy single-target columns from routing_rules.
 			// Must use the struct form (not string) so SQLite can reconstruct the table correctly.
+			// Do this BEFORE seeding so the CASCADE triggered by table recreation hits an empty
+			// routing_targets table (nothing to delete yet).
 			legacyModel := &legacyRoutingRuleColumns{}
 			for _, col := range []string{"provider", "model"} {
 				if mg.HasColumn("routing_rules", col) {
 					if err := mg.DropColumn(legacyModel, col); err != nil {
 						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
 					}
+				}
+			}
+
+			// 4. Seed routing_targets from the legacy data read above (idempotent).
+			for _, row := range legacyRows {
+				var count int64
+				if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
+					return fmt.Errorf("failed to count targets for rule %s: %w", row.ID, err)
+				}
+				if count > 0 {
+					continue // already seeded
+				}
+				target := tables.TableRoutingTarget{
+					RuleID: row.ID,
+					Weight: 1.0,
+				}
+				if row.Provider != "" {
+					p := row.Provider
+					target.Provider = &p
+				}
+				if row.Model != "" {
+					m := row.Model
+					target.Model = &m
+				}
+				if err := tx.Create(&target).Error; err != nil {
+					return fmt.Errorf("failed to seed target for rule %s: %w", row.ID, err)
 				}
 			}
 
