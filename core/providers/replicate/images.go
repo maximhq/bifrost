@@ -72,10 +72,6 @@ func ToReplicateImageGenerationInput(bifrostReq *schemas.BifrostImageGenerationR
 			input.AspectRatio = params.AspectRatio
 		}
 
-		if params.Resolution != nil {
-			input.Resolution = params.Resolution
-		}
-
 		// Map OutputFormat
 		if params.OutputFormat != nil {
 			input.OutputFormat = params.OutputFormat
