@@ -68,6 +68,11 @@ type PricingEntry struct {
 	OutputCostPerToken float64 `json:"output_cost_per_token"`
 	Provider           string  `json:"provider"`
 	Mode               string  `json:"mode"`
+	// Model capabilities
+	ContextLength   *int                  `json:"context_length,omitempty"`
+	MaxInputTokens  *int                  `json:"max_input_tokens,omitempty"`
+	MaxOutputTokens *int                  `json:"max_output_tokens,omitempty"`
+	Architecture    *schemas.Architecture `json:"architecture,omitempty"`
 	// Additional pricing for media
 	InputCostPerVideoPerSecond *float64 `json:"input_cost_per_video_per_second,omitempty"`
 	InputCostPerAudioPerSecond *float64 `json:"input_cost_per_audio_per_second,omitempty"`
@@ -300,6 +305,44 @@ func (mc *ModelCatalog) GetPricingEntryForModel(model string, provider schemas.M
 			return convertTableModelPricingToPricingData(&pricing)
 		}
 	}
+	return nil
+}
+
+// GetModelCapabilityEntryForModel returns capability metadata for a model/provider pair.
+// Mode precedence is tuned for common request patterns.
+func (mc *ModelCatalog) GetModelCapabilityEntryForModel(model string, provider schemas.ModelProvider) *PricingEntry {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+
+	preferredModes := []schemas.RequestType{
+		schemas.ChatCompletionRequest,
+		schemas.ResponsesRequest,
+		schemas.TextCompletionRequest,
+	}
+
+	for _, mode := range preferredModes {
+		key := makeKey(model, string(provider), normalizeRequestType(mode))
+		pricing, ok := mc.pricingData[key]
+		if ok {
+			return convertTableModelPricingToPricingData(&pricing)
+		}
+	}
+
+	// Fallback to any mode for the same model/provider if preferred modes are absent.
+	// Collect and sort keys for deterministic selection across requests.
+	prefix := model + "|" + string(provider) + "|"
+	var matchingKeys []string
+	for key := range mc.pricingData {
+		if strings.HasPrefix(key, prefix) {
+			matchingKeys = append(matchingKeys, key)
+		}
+	}
+	if len(matchingKeys) > 0 {
+		slices.Sort(matchingKeys)
+		pricing := mc.pricingData[matchingKeys[0]]
+		return convertTableModelPricingToPricingData(&pricing)
+	}
+
 	return nil
 }
 

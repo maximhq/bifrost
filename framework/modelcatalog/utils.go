@@ -76,6 +76,10 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		InputCostPerToken:  entry.InputCostPerToken,
 		OutputCostPerToken: entry.OutputCostPerToken,
 		Mode:               entry.Mode,
+		ContextLength:      entry.ContextLength,
+		MaxInputTokens:     entry.MaxInputTokens,
+		MaxOutputTokens:    entry.MaxOutputTokens,
+		Architecture:       entry.Architecture,
 
 		// Additional pricing for media
 		InputCostPerVideoPerSecond:  entry.InputCostPerVideoPerSecond,
@@ -126,6 +130,10 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		Mode:                                       pricing.Mode,
 		InputCostPerToken:                          pricing.InputCostPerToken,
 		OutputCostPerToken:                         pricing.OutputCostPerToken,
+		ContextLength:                              pricing.ContextLength,
+		MaxInputTokens:                             pricing.MaxInputTokens,
+		MaxOutputTokens:                            pricing.MaxOutputTokens,
+		Architecture:                               pricing.Architecture,
 		InputCostPerVideoPerSecond:                 pricing.InputCostPerVideoPerSecond,
 		OutputCostPerVideoPerSecond:                pricing.OutputCostPerVideoPerSecond,
 		OutputCostPerSecond:                        pricing.OutputCostPerSecond,

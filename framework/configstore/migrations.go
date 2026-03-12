@@ -302,6 +302,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddModelCapabilityColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4437,5 +4440,52 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
 	}
 
+	return nil
+}
+
+// migrationAddModelCapabilityColumns adds capability columns to governance_model_pricing.
+func migrationAddModelCapabilityColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_model_capability_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"context_length",
+				"max_input_tokens",
+				"max_output_tokens",
+				"architecture",
+			}
+			for _, column := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to add %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"context_length",
+				"max_input_tokens",
+				"max_output_tokens",
+				"architecture",
+			}
+			for _, column := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, column) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, column); err != nil {
+						return fmt.Errorf("failed to drop %s column: %w", column, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running model capability columns migration: %s", err.Error())
+	}
 	return nil
 }
