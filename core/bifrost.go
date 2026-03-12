@@ -3899,73 +3899,10 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	// via req.UpdateAPIKey / req.UpdateProviderBaseURL for the new provider.
 	fallbackReq := *req
 	fallbackReq.ProviderOverride = nil
-
-	if req.TextCompletionRequest != nil {
-		tmp := *req.TextCompletionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.TextCompletionRequest = &tmp
-	}
-
-	if req.ChatRequest != nil {
-		tmp := *req.ChatRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ChatRequest = &tmp
-	}
-
-	if req.ResponsesRequest != nil {
-		tmp := *req.ResponsesRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ResponsesRequest = &tmp
-	}
-
-	if req.CountTokensRequest != nil {
-		tmp := *req.CountTokensRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.CountTokensRequest = &tmp
-	}
-
-	if req.EmbeddingRequest != nil {
-		tmp := *req.EmbeddingRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.EmbeddingRequest = &tmp
-	}
-	if req.RerankRequest != nil {
-		tmp := *req.RerankRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.RerankRequest = &tmp
-	}
-
-	if req.SpeechRequest != nil {
-		tmp := *req.SpeechRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.SpeechRequest = &tmp
-	}
-
-	if req.TranscriptionRequest != nil {
-		tmp := *req.TranscriptionRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.TranscriptionRequest = &tmp
-	}
-	if req.ImageGenerationRequest != nil {
-		tmp := *req.ImageGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.ImageGenerationRequest = &tmp
-	}
-	if req.VideoGenerationRequest != nil {
-		tmp := *req.VideoGenerationRequest
-		tmp.Provider = fallback.Provider
-		tmp.Model = fallback.Model
-		fallbackReq.VideoGenerationRequest = &tmp
-	}
+	// SetProvider and UpdateModel cover every request type in the union, so this
+	// is always exhaustive even as new request types are added.
+	fallbackReq.SetProvider(fallback.Provider)
+	_ = fallbackReq.UpdateModel(fallback.Model) // no-op when fallback.Model is ""
 	return &fallbackReq
 }
 
