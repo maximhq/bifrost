@@ -1057,6 +1057,6 @@ func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateCohereRouteConfigs("/cursor")...)
 
 	return &CursorRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
