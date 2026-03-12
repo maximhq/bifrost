@@ -337,7 +337,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			weight: typeof config.weight === "string" ? parseFloat(config.weight) || 0 : config.weight,
 			budget: (() => {
 				const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
-				if (budgetMaxLimit) {
+				if (budgetMaxLimit !== undefined) {
 					return {
 						max_limit: budgetMaxLimit,
 						reset_duration: config.budget?.reset_duration || "1M",
@@ -354,12 +354,14 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			rate_limit: (() => {
 				const tokenMaxLimit = normalizeIntegerField(config.rate_limit?.token_max_limit);
 				const requestMaxLimit = normalizeIntegerField(config.rate_limit?.request_max_limit);
-				if (tokenMaxLimit || requestMaxLimit) {
+				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
+				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				if (hasTokenMaxLimit || hasRequestMaxLimit) {
 					return {
 						token_max_limit: tokenMaxLimit ?? null,
-						token_reset_duration: tokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
+						token_reset_duration: hasTokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
 						request_max_limit: requestMaxLimit ?? null,
-						request_reset_duration: requestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
+						request_reset_duration: hasRequestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
 					};
 				}
 
@@ -406,7 +408,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				// Add budget if enabled
 				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
 				const hadBudget = !!virtualKey.budget;
-				const hasBudget = !!budgetMaxLimit;
+				const hasBudget = budgetMaxLimit !== undefined;
 				if (hasBudget) {
 					updateData.budget = {
 						max_limit: budgetMaxLimit,
@@ -420,13 +422,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
 				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
 				const hadRateLimit = !!virtualKey.rate_limit;
-				const hasRateLimit = !!tokenMaxLimit || !!requestMaxLimit;
+				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
+				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				const hasRateLimit = hasTokenMaxLimit || hasRequestMaxLimit;
 				if (hasRateLimit) {
 					updateData.rate_limit = {
 						token_max_limit: tokenMaxLimit ?? null,
-						token_reset_duration: tokenMaxLimit ? data.tokenResetDuration || "1h" : null,
+						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : null,
 						request_max_limit: requestMaxLimit ?? null,
-						request_reset_duration: requestMaxLimit ? data.requestResetDuration || "1h" : null,
+						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : null,
 					};
 				} else if (hadRateLimit) {
 					updateData.rate_limit = {};
@@ -448,7 +452,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 				// Add budget if enabled
 				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				if (budgetMaxLimit) {
+				if (budgetMaxLimit !== undefined) {
 					createData.budget = {
 						max_limit: budgetMaxLimit,
 						reset_duration: data.budgetResetDuration || "1M",
@@ -458,12 +462,14 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				// Add rate limit if enabled
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
 				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
-				if (tokenMaxLimit || requestMaxLimit) {
+				const hasTokenMaxLimit = tokenMaxLimit !== undefined;
+				const hasRequestMaxLimit = requestMaxLimit !== undefined;
+				if (hasTokenMaxLimit || hasRequestMaxLimit) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimit,
-						token_reset_duration: data.tokenResetDuration || "1h",
+						token_reset_duration: hasTokenMaxLimit ? data.tokenResetDuration || "1h" : undefined,
 						request_max_limit: requestMaxLimit,
-						request_reset_duration: data.requestResetDuration || "1h",
+						request_reset_duration: hasRequestMaxLimit ? data.requestResetDuration || "1h" : undefined,
 					};
 				}
 

@@ -185,6 +185,20 @@ func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
 		req.TokenResetDuration == nil && req.RequestResetDuration == nil
 }
 
+func collectProviderConfigDeleteIDs(
+	config configstoreTables.TableVirtualKeyProviderConfig,
+	budgetIDs []string,
+	rateLimitIDs []string,
+) ([]string, []string) {
+	if config.BudgetID != nil {
+		budgetIDs = append(budgetIDs, *config.BudgetID)
+	}
+	if config.RateLimitID != nil {
+		rateLimitIDs = append(rateLimitIDs, *config.RateLimitID)
+	}
+	return budgetIDs, rateLimitIDs
+}
+
 // CreateTeamRequest represents the request body for creating a team
 type CreateTeamRequest struct {
 	Name       string                  `json:"name" validate:"required"`
@@ -983,6 +997,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			// Delete provider configs that are not in the request
 			for id := range existingConfigsMap {
 				if !requestConfigsMap[id] {
+					providerBudgetIDsToDelete, providerRateLimitIDsToDelete = collectProviderConfigDeleteIDs(
+						existingConfigsMap[id],
+						providerBudgetIDsToDelete,
+						providerRateLimitIDsToDelete,
+					)
 					if err := h.configStore.DeleteVirtualKeyProviderConfig(ctx, id, tx); err != nil {
 						return err
 					}

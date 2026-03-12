@@ -248,6 +248,69 @@ func TestRateLimitRemovalRequestDetection(t *testing.T) {
 	}
 }
 
+func TestCollectProviderConfigDeleteIDs(t *testing.T) {
+	budgetID := "budget-1"
+	rateLimitID := "rate-limit-1"
+
+	tests := []struct {
+		name             string
+		config           configstoreTables.TableVirtualKeyProviderConfig
+		initialBudgetIDs []string
+		initialRateIDs   []string
+		wantBudgetIDs    []string
+		wantRateIDs      []string
+	}{
+		{
+			name: "collects both IDs",
+			config: configstoreTables.TableVirtualKeyProviderConfig{
+				BudgetID:    &budgetID,
+				RateLimitID: &rateLimitID,
+			},
+			wantBudgetIDs: []string{budgetID},
+			wantRateIDs:   []string{rateLimitID},
+		},
+		{
+			name: "appends to existing slices",
+			config: configstoreTables.TableVirtualKeyProviderConfig{
+				BudgetID:    &budgetID,
+				RateLimitID: &rateLimitID,
+			},
+			initialBudgetIDs: []string{"budget-0"},
+			initialRateIDs:   []string{"rate-limit-0"},
+			wantBudgetIDs:    []string{"budget-0", budgetID},
+			wantRateIDs:      []string{"rate-limit-0", rateLimitID},
+		},
+		{
+			name:   "ignores missing IDs",
+			config: configstoreTables.TableVirtualKeyProviderConfig{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBudgetIDs, gotRateIDs := collectProviderConfigDeleteIDs(tt.config, tt.initialBudgetIDs, tt.initialRateIDs)
+
+			if len(gotBudgetIDs) != len(tt.wantBudgetIDs) {
+				t.Fatalf("budget IDs length = %d, want %d", len(gotBudgetIDs), len(tt.wantBudgetIDs))
+			}
+			for i := range gotBudgetIDs {
+				if gotBudgetIDs[i] != tt.wantBudgetIDs[i] {
+					t.Fatalf("budget IDs[%d] = %q, want %q", i, gotBudgetIDs[i], tt.wantBudgetIDs[i])
+				}
+			}
+
+			if len(gotRateIDs) != len(tt.wantRateIDs) {
+				t.Fatalf("rate limit IDs length = %d, want %d", len(gotRateIDs), len(tt.wantRateIDs))
+			}
+			for i := range gotRateIDs {
+				if gotRateIDs[i] != tt.wantRateIDs[i] {
+					t.Fatalf("rate limit IDs[%d] = %q, want %q", i, gotRateIDs[i], tt.wantRateIDs[i])
+				}
+			}
+		})
+	}
+}
+
 func bifrostFloat(v float64) *float64 {
 	return &v
 }
