@@ -2423,7 +2423,6 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
 	// Convert to Bifrost response using Gemini converter
 	bifrostResp, bifrostErr := gemini.ToBifrostVideoGenerationResponse(&operation, bifrostReq.Model)
 	if bifrostErr != nil {
@@ -2559,7 +2558,6 @@ func (provider *VertexProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		return nil, bifrostErr
 	}
 
-	// Convert to Bifrost response using Gemini converter
 	bifrostResp, bifrostErr := gemini.ToBifrostVideoGenerationResponse(&operation, "")
 	if bifrostErr != nil {
 		return nil, bifrostErr

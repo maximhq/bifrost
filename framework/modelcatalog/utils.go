@@ -18,6 +18,8 @@ func normalizeProvider(p string) string {
 		return string(schemas.Bedrock)
 	} else if strings.Contains(p, "cohere") {
 		return string(schemas.Cohere)
+	} else if strings.Contains(p, "runwayml") {
+		return string(schemas.Runway)
 	} else {
 		return p
 	}

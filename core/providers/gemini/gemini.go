@@ -2474,7 +2474,6 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 		return nil, bifrostErr
 	}
 
-	// Convert to Bifrost response
 	bifrostResp, bifrostErr := ToBifrostVideoGenerationResponse(&operation, "")
 	if bifrostErr != nil {
 		return nil, bifrostErr

@@ -1454,169 +1454,54 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 			}
 
 			if currentEvent.Event != "" {
-					// Process the event
-					switch currentEvent.Event {
-					case "output":
-						// Text chunk received
-						if currentEvent.Data != "" {
-							// Accumulate raw response if enabled
-							if sendBackRawResponse {
-								rawResponseChunks = append(rawResponseChunks, currentEvent)
-							}
-
-							// Emit lifecycle events on first content
-							if !hasEmittedCreated {
-								// response.created
-								createdResp := &schemas.BifrostResponsesStreamResponse{
-									Type:           schemas.ResponsesStreamResponseTypeCreated,
-									SequenceNumber: sequenceNumber,
-									Response: &schemas.BifrostResponsesResponse{
-										ID:        schemas.Ptr(messageID),
-										Model:     request.Model,
-										CreatedAt: int(startTime.Unix()),
-									},
-									ExtraFields: schemas.BifrostResponseExtraFields{
-										RequestType:    schemas.ResponsesStreamRequest,
-										Provider:       provider.GetProviderKey(),
-										ModelRequested: request.Model,
-										Latency:        time.Since(startTime).Milliseconds(),
-										ChunkIndex:     sequenceNumber,
-									},
-								}
-								if sendBackRawRequest {
-									providerUtils.ParseAndSetRawRequest(&createdResp.ExtraFields, jsonData)
-								}
-								providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-									providerUtils.GetBifrostResponseForStreamResponse(nil, nil, createdResp, nil, nil, nil),
-									responseChan)
-								sequenceNumber++
-								hasEmittedCreated = true
-							}
-
-							if !hasEmittedInProgress {
-								// response.in_progress
-								inProgressResp := &schemas.BifrostResponsesStreamResponse{
-									Type:           schemas.ResponsesStreamResponseTypeInProgress,
-									SequenceNumber: sequenceNumber,
-									Response: &schemas.BifrostResponsesResponse{
-										ID:        schemas.Ptr(messageID),
-										CreatedAt: int(startTime.Unix()),
-									},
-									ExtraFields: schemas.BifrostResponseExtraFields{
-										RequestType:    schemas.ResponsesStreamRequest,
-										Provider:       provider.GetProviderKey(),
-										ModelRequested: request.Model,
-										ChunkIndex:     sequenceNumber,
-									},
-								}
-								providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-									providerUtils.GetBifrostResponseForStreamResponse(nil, nil, inProgressResp, nil, nil, nil),
-									responseChan)
-								sequenceNumber++
-								hasEmittedInProgress = true
-							}
-
-							if !hasEmittedOutputItemAdded {
-								// response.output_item.added
-								messageType := schemas.ResponsesMessageTypeMessage
-								role := schemas.ResponsesInputMessageRoleAssistant
-								status := "in_progress"
-								itemAddedResp := &schemas.BifrostResponsesStreamResponse{
-									Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-									SequenceNumber: sequenceNumber,
-									OutputIndex:    schemas.Ptr(outputIndex),
-									Item: &schemas.ResponsesMessage{
-										ID:     schemas.Ptr(itemID),
-										Type:   &messageType,
-										Role:   &role,
-										Status: &status,
-										Content: &schemas.ResponsesMessageContent{
-											ContentBlocks: []schemas.ResponsesMessageContentBlock{},
-										},
-									},
-									ExtraFields: schemas.BifrostResponseExtraFields{
-										RequestType:    schemas.ResponsesStreamRequest,
-										Provider:       provider.GetProviderKey(),
-										ModelRequested: request.Model,
-										ChunkIndex:     sequenceNumber,
-									},
-								}
-								providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-									providerUtils.GetBifrostResponseForStreamResponse(nil, nil, itemAddedResp, nil, nil, nil),
-									responseChan)
-								sequenceNumber++
-								hasEmittedOutputItemAdded = true
-							}
-
-							if !hasEmittedContentPartAdded {
-								// response.content_part.added
-								emptyText := ""
-								partAddedResp := &schemas.BifrostResponsesStreamResponse{
-									Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-									SequenceNumber: sequenceNumber,
-									OutputIndex:    schemas.Ptr(outputIndex),
-									ContentIndex:   schemas.Ptr(contentIndex),
-									ItemID:         schemas.Ptr(itemID),
-									Part: &schemas.ResponsesMessageContentBlock{
-										Type: schemas.ResponsesOutputMessageContentTypeText,
-										Text: &emptyText,
-										ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-											Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-											LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-										},
-									},
-									ExtraFields: schemas.BifrostResponseExtraFields{
-										RequestType:    schemas.ResponsesStreamRequest,
-										Provider:       provider.GetProviderKey(),
-										ModelRequested: request.Model,
-										ChunkIndex:     sequenceNumber,
-									},
-								}
-								providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-									providerUtils.GetBifrostResponseForStreamResponse(nil, nil, partAddedResp, nil, nil, nil),
-									responseChan)
-								sequenceNumber++
-								hasEmittedContentPartAdded = true
-							}
-
-							// response.output_text.delta
-							deltaResp := &schemas.BifrostResponsesStreamResponse{
-								Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-								SequenceNumber: sequenceNumber,
-								OutputIndex:    schemas.Ptr(outputIndex),
-								ContentIndex:   schemas.Ptr(contentIndex),
-								ItemID:         schemas.Ptr(itemID),
-								Delta:          schemas.Ptr(currentEvent.Data),
-								LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ResponsesStreamRequest,
-									Provider:       provider.GetProviderKey(),
-									ModelRequested: request.Model,
-									ChunkIndex:     sequenceNumber,
-								},
-							}
-							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, deltaResp, nil, nil, nil),
-								responseChan)
-							sequenceNumber++
-							hasReceivedContent = true
-						}
-					case "done":
-						// Accumulate done event in raw responses if enabled
+				// Process the event
+				switch currentEvent.Event {
+				case "output":
+					// Text chunk received
+					if currentEvent.Data != "" {
+						// Accumulate raw response if enabled
 						if sendBackRawResponse {
 							rawResponseChunks = append(rawResponseChunks, currentEvent)
 						}
 
-						// Stream completed
-						if hasReceivedContent {
-							// response.output_text.done
-							textDoneResp := &schemas.BifrostResponsesStreamResponse{
-								Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+						// Emit lifecycle events on first content
+						if !hasEmittedCreated {
+							// response.created
+							createdResp := &schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeCreated,
 								SequenceNumber: sequenceNumber,
-								OutputIndex:    schemas.Ptr(outputIndex),
-								ContentIndex:   schemas.Ptr(contentIndex),
-								ItemID:         schemas.Ptr(itemID),
-								LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
+								Response: &schemas.BifrostResponsesResponse{
+									ID:        schemas.Ptr(messageID),
+									Model:     request.Model,
+									CreatedAt: int(startTime.Unix()),
+								},
+								ExtraFields: schemas.BifrostResponseExtraFields{
+									RequestType:    schemas.ResponsesStreamRequest,
+									Provider:       provider.GetProviderKey(),
+									ModelRequested: request.Model,
+									Latency:        time.Since(startTime).Milliseconds(),
+									ChunkIndex:     sequenceNumber,
+								},
+							}
+							if sendBackRawRequest {
+								providerUtils.ParseAndSetRawRequest(&createdResp.ExtraFields, jsonData)
+							}
+							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, createdResp, nil, nil, nil),
+								responseChan)
+							sequenceNumber++
+							hasEmittedCreated = true
+						}
+
+						if !hasEmittedInProgress {
+							// response.in_progress
+							inProgressResp := &schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeInProgress,
+								SequenceNumber: sequenceNumber,
+								Response: &schemas.BifrostResponsesResponse{
+									ID:        schemas.Ptr(messageID),
+									CreatedAt: int(startTime.Unix()),
+								},
 								ExtraFields: schemas.BifrostResponseExtraFields{
 									RequestType:    schemas.ResponsesStreamRequest,
 									Provider:       provider.GetProviderKey(),
@@ -1625,19 +1510,56 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 								},
 							}
 							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, textDoneResp, nil, nil, nil),
+								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, inProgressResp, nil, nil, nil),
 								responseChan)
 							sequenceNumber++
+							hasEmittedInProgress = true
+						}
 
-							// response.content_part.done
-							partDoneResp := &schemas.BifrostResponsesStreamResponse{
-								Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+						if !hasEmittedOutputItemAdded {
+							// response.output_item.added
+							messageType := schemas.ResponsesMessageTypeMessage
+							role := schemas.ResponsesInputMessageRoleAssistant
+							status := "in_progress"
+							itemAddedResp := &schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
+								SequenceNumber: sequenceNumber,
+								OutputIndex:    schemas.Ptr(outputIndex),
+								Item: &schemas.ResponsesMessage{
+									ID:     schemas.Ptr(itemID),
+									Type:   &messageType,
+									Role:   &role,
+									Status: &status,
+									Content: &schemas.ResponsesMessageContent{
+										ContentBlocks: []schemas.ResponsesMessageContentBlock{},
+									},
+								},
+								ExtraFields: schemas.BifrostResponseExtraFields{
+									RequestType:    schemas.ResponsesStreamRequest,
+									Provider:       provider.GetProviderKey(),
+									ModelRequested: request.Model,
+									ChunkIndex:     sequenceNumber,
+								},
+							}
+							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, itemAddedResp, nil, nil, nil),
+								responseChan)
+							sequenceNumber++
+							hasEmittedOutputItemAdded = true
+						}
+
+						if !hasEmittedContentPartAdded {
+							// response.content_part.added
+							emptyText := ""
+							partAddedResp := &schemas.BifrostResponsesStreamResponse{
+								Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
 								SequenceNumber: sequenceNumber,
 								OutputIndex:    schemas.Ptr(outputIndex),
 								ContentIndex:   schemas.Ptr(contentIndex),
 								ItemID:         schemas.Ptr(itemID),
 								Part: &schemas.ResponsesMessageContentBlock{
 									Type: schemas.ResponsesOutputMessageContentTypeText,
+									Text: &emptyText,
 									ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
 										Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
 										LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
@@ -1651,117 +1573,195 @@ func (provider *ReplicateProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 								},
 							}
 							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, partDoneResp, nil, nil, nil),
+								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, partAddedResp, nil, nil, nil),
 								responseChan)
 							sequenceNumber++
-
-							// response.output_item.done
-							messageType := schemas.ResponsesMessageTypeMessage
-							role := schemas.ResponsesInputMessageRoleAssistant
-							status := "completed"
-							itemDoneResp := &schemas.BifrostResponsesStreamResponse{
-								Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-								SequenceNumber: sequenceNumber,
-								OutputIndex:    schemas.Ptr(outputIndex),
-								Item: &schemas.ResponsesMessage{
-									ID:     schemas.Ptr(itemID),
-									Type:   &messageType,
-									Role:   &role,
-									Status: &status,
-									Content: &schemas.ResponsesMessageContent{
-										ContentBlocks: []schemas.ResponsesMessageContentBlock{
-											{
-												Type: schemas.ResponsesOutputMessageContentTypeText,
-												ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-													Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-													LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-												},
-											},
-										},
-									},
-								},
-								ExtraFields: schemas.BifrostResponseExtraFields{
-									RequestType:    schemas.ResponsesStreamRequest,
-									Provider:       provider.GetProviderKey(),
-									ModelRequested: request.Model,
-									ChunkIndex:     sequenceNumber,
-								},
-							}
-							providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-								providerUtils.GetBifrostResponseForStreamResponse(nil, nil, itemDoneResp, nil, nil, nil),
-								responseChan)
-							sequenceNumber++
+							hasEmittedContentPartAdded = true
 						}
 
-						// response.completed
-						completedResp := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeCompleted,
+						// response.output_text.delta
+						deltaResp := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
 							SequenceNumber: sequenceNumber,
-							Response: &schemas.BifrostResponsesResponse{
-								ID:          schemas.Ptr(messageID),
-								Model:       request.Model,
-								CreatedAt:   int(startTime.Unix()),
-								CompletedAt: schemas.Ptr(int(time.Now().Unix())),
+							OutputIndex:    schemas.Ptr(outputIndex),
+							ContentIndex:   schemas.Ptr(contentIndex),
+							ItemID:         schemas.Ptr(itemID),
+							Delta:          schemas.Ptr(currentEvent.Data),
+							LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								RequestType:    schemas.ResponsesStreamRequest,
+								Provider:       provider.GetProviderKey(),
+								ModelRequested: request.Model,
+								ChunkIndex:     sequenceNumber,
+							},
+						}
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, deltaResp, nil, nil, nil),
+							responseChan)
+						sequenceNumber++
+						hasReceivedContent = true
+					}
+				case "done":
+					// Accumulate done event in raw responses if enabled
+					if sendBackRawResponse {
+						rawResponseChunks = append(rawResponseChunks, currentEvent)
+					}
+
+					// Stream completed
+					if hasReceivedContent {
+						// response.output_text.done
+						textDoneResp := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(outputIndex),
+							ContentIndex:   schemas.Ptr(contentIndex),
+							ItemID:         schemas.Ptr(itemID),
+							LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								RequestType:    schemas.ResponsesStreamRequest,
+								Provider:       provider.GetProviderKey(),
+								ModelRequested: request.Model,
+								ChunkIndex:     sequenceNumber,
+							},
+						}
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, textDoneResp, nil, nil, nil),
+							responseChan)
+						sequenceNumber++
+
+						// response.content_part.done
+						partDoneResp := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(outputIndex),
+							ContentIndex:   schemas.Ptr(contentIndex),
+							ItemID:         schemas.Ptr(itemID),
+							Part: &schemas.ResponsesMessageContentBlock{
+								Type: schemas.ResponsesOutputMessageContentTypeText,
+								ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+									Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+									LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+								},
 							},
 							ExtraFields: schemas.BifrostResponseExtraFields{
 								RequestType:    schemas.ResponsesStreamRequest,
 								Provider:       provider.GetProviderKey(),
 								ModelRequested: request.Model,
-								Latency:        time.Since(startTime).Milliseconds(),
 								ChunkIndex:     sequenceNumber,
 							},
 						}
-
-						// Set raw request if enabled (on final chunk only)
-						if sendBackRawRequest {
-							providerUtils.ParseAndSetRawRequest(&completedResp.ExtraFields, jsonData)
-						}
-
-						// Set raw response if enabled
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							completedResp.ExtraFields.RawResponse = rawResponseChunks
-						}
-
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
-							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, completedResp, nil, nil, nil),
+							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, partDoneResp, nil, nil, nil),
 							responseChan)
-						resp.CloseBodyStream()
-						return
-					case "error":
-						// Accumulate error event in raw responses if enabled
-						if sendBackRawResponse {
-							rawResponseChunks = append(rawResponseChunks, currentEvent)
-						}
+						sequenceNumber++
 
-						// Handle error
-						errorMsg := "stream error"
-						if currentEvent.Data != "" {
-							errorMsg = currentEvent.Data
+						// response.output_item.done
+						messageType := schemas.ResponsesMessageTypeMessage
+						role := schemas.ResponsesInputMessageRoleAssistant
+						status := "completed"
+						itemDoneResp := &schemas.BifrostResponsesStreamResponse{
+							Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+							SequenceNumber: sequenceNumber,
+							OutputIndex:    schemas.Ptr(outputIndex),
+							Item: &schemas.ResponsesMessage{
+								ID:     schemas.Ptr(itemID),
+								Type:   &messageType,
+								Role:   &role,
+								Status: &status,
+								Content: &schemas.ResponsesMessageContent{
+									ContentBlocks: []schemas.ResponsesMessageContentBlock{
+										{
+											Type: schemas.ResponsesOutputMessageContentTypeText,
+											ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+												Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+												LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+											},
+										},
+									},
+								},
+							},
+							ExtraFields: schemas.BifrostResponseExtraFields{
+								RequestType:    schemas.ResponsesStreamRequest,
+								Provider:       provider.GetProviderKey(),
+								ModelRequested: request.Model,
+								ChunkIndex:     sequenceNumber,
+							},
 						}
-						bifrostErr := providerUtils.NewBifrostOperationError(
-							errorMsg,
-							fmt.Errorf("stream error: %s", errorMsg),
-							provider.GetProviderKey(),
-						)
-						bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+							providerUtils.GetBifrostResponseForStreamResponse(nil, nil, itemDoneResp, nil, nil, nil),
+							responseChan)
+						sequenceNumber++
+					}
+
+					// response.completed
+					completedResp := &schemas.BifrostResponsesStreamResponse{
+						Type:           schemas.ResponsesStreamResponseTypeCompleted,
+						SequenceNumber: sequenceNumber,
+						Response: &schemas.BifrostResponsesResponse{
+							ID:          schemas.Ptr(messageID),
+							Model:       request.Model,
+							CreatedAt:   int(startTime.Unix()),
+							CompletedAt: schemas.Ptr(int(time.Now().Unix())),
+						},
+						ExtraFields: schemas.BifrostResponseExtraFields{
+							RequestType:    schemas.ResponsesStreamRequest,
 							Provider:       provider.GetProviderKey(),
 							ModelRequested: request.Model,
-							RequestType:    schemas.ResponsesStreamRequest,
-						}
-
-						// Include accumulated raw responses in error
-						if sendBackRawResponse && len(rawResponseChunks) > 0 {
-							bifrostErr.ExtraFields.RawResponse = rawResponseChunks
-						}
-
-						ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-						enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
-						providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
-						resp.CloseBodyStream()
-						return
+							Latency:        time.Since(startTime).Milliseconds(),
+							ChunkIndex:     sequenceNumber,
+						},
 					}
+
+					// Set raw request if enabled (on final chunk only)
+					if sendBackRawRequest {
+						providerUtils.ParseAndSetRawRequest(&completedResp.ExtraFields, jsonData)
+					}
+
+					// Set raw response if enabled
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
+						completedResp.ExtraFields.RawResponse = rawResponseChunks
+					}
+
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+						providerUtils.GetBifrostResponseForStreamResponse(nil, nil, completedResp, nil, nil, nil),
+						responseChan)
+					resp.CloseBodyStream()
+					return
+				case "error":
+					// Accumulate error event in raw responses if enabled
+					if sendBackRawResponse {
+						rawResponseChunks = append(rawResponseChunks, currentEvent)
+					}
+
+					// Handle error
+					errorMsg := "stream error"
+					if currentEvent.Data != "" {
+						errorMsg = currentEvent.Data
+					}
+					bifrostErr := providerUtils.NewBifrostOperationError(
+						errorMsg,
+						fmt.Errorf("stream error: %s", errorMsg),
+						provider.GetProviderKey(),
+					)
+					bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+						Provider:       provider.GetProviderKey(),
+						ModelRequested: request.Model,
+						RequestType:    schemas.ResponsesStreamRequest,
+					}
+
+					// Include accumulated raw responses in error
+					if sendBackRawResponse && len(rawResponseChunks) > 0 {
+						bifrostErr.ExtraFields.RawResponse = rawResponseChunks
+					}
+
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					enrichedErr := providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, enrichedErr, responseChan, provider.logger)
+					resp.CloseBodyStream()
+					return
 				}
+			}
 		}
 	}()
 
