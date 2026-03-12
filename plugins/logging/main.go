@@ -109,10 +109,22 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		return
 	}
 
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
 		// Large-response phase B closes this channel after trailing usage extraction completes.
 		deferredUsage, chanOpen := <-deferredChan
 		if !chanOpen || deferredUsage == nil {
+			return
+		}
+
+		// Acquire semaphore — drop if all slots busy to prevent unbounded goroutines
+		// from exhausting DB connections when Postgres is slow
+		select {
+		case p.deferredUsageSem <- struct{}{}:
+			defer func() { <-p.deferredUsageSem }()
+		default:
+			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
 
@@ -214,6 +226,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -241,6 +254,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		done:                  make(chan struct{}),
 		logger:                logger,
 		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
+		deferredUsageSem:      make(chan struct{}, maxDeferredUsageConcurrency),
 		logMsgPool: sync.Pool{
 			New: func() interface{} {
 				return &LogMessage{}
