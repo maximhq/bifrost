@@ -606,7 +606,7 @@ func (bifrost *Bifrost) TextCompletionRequest(ctx *schemas.BifrostContext, req *
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.TextCompletionResponse, nil
 }
 
@@ -919,7 +919,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.EmbeddingResponse, nil
 }
 
@@ -1023,7 +1023,7 @@ func (bifrost *Bifrost) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.SpeechResponse, nil
 }
 
@@ -1096,7 +1096,7 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 	if err != nil {
 		return nil, err
 	}
-	//TODO: Release the response
+	// TODO: Release the response
 	return response.TranscriptionResponse, nil
 }
 
@@ -1136,7 +1136,8 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 
 // ImageGenerationRequest sends an image generation request to the specified provider.
 func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	req *schemas.BifrostImageGenerationRequest,
+) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1189,7 +1190,8 @@ func (bifrost *Bifrost) ImageGenerationRequest(ctx *schemas.BifrostContext,
 
 // ImageGenerationStreamRequest sends an image generation stream request to the specified provider.
 func (bifrost *Bifrost) ImageGenerationStreamRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	req *schemas.BifrostImageGenerationRequest,
+) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -1394,7 +1396,8 @@ func (bifrost *Bifrost) ImageVariationRequest(ctx *schemas.BifrostContext, req *
 
 // VideoGenerationRequest sends a video generation request to the specified provider.
 func (bifrost *Bifrost) VideoGenerationRequest(ctx *schemas.BifrostContext,
-	req *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	req *schemas.BifrostVideoGenerationRequest,
+) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if req == nil {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
@@ -4557,7 +4560,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 					// Send the processed message to the output stream
 					outputStream <- streamResponse
 
-					//TODO: Release the processed response immediately after use
+					// TODO: Release the processed response immediately after use
 				}
 			}()
 
@@ -5100,6 +5103,30 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 	// bifrost.logger.Debug("worker for provider %s exiting...", provider.GetProviderKey())
 }
 
+func shouldConvertTextToChat(ctx *schemas.BifrostContext, requestType schemas.RequestType, request *schemas.BifrostTextCompletionRequest) bool {
+	if ctx == nil || request == nil {
+		return false
+	}
+	if requestType != schemas.TextCompletionRequest && requestType != schemas.TextCompletionStreamRequest {
+		return false
+	}
+	shouldConvert, ok := ctx.Value(schemas.BifrostContextKeyShouldConvertTextToChat).(bool)
+	return ok && shouldConvert
+}
+
+func wrapTextToChatStreamPostHookRunner(postHookRunner schemas.PostHookRunner) schemas.PostHookRunner {
+	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result != nil && result.ChatResponse != nil {
+			if convertedResponse := result.ChatResponse.ToBifrostTextCompletionResponse(); convertedResponse != nil {
+				result = &schemas.BifrostResponse{
+					TextCompletionResponse: convertedResponse,
+				}
+			}
+		}
+		return postHookRunner(ctx, result, bifrostErr)
+	}
+}
+
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -5112,6 +5139,17 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 		}
 		response.ListModelsResponse = listModelsResponse
 	case schemas.TextCompletionRequest:
+		if shouldConvertTextToChat(req.Context, req.RequestType, req.BifrostRequest.TextCompletionRequest) {
+			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
+			if chatRequest != nil {
+				chatCompletionResponse, bifrostError := provider.ChatCompletion(req.Context, key, chatRequest)
+				if bifrostError != nil {
+					return nil, bifrostError
+				}
+				response.TextCompletionResponse = chatCompletionResponse.ToBifrostTextCompletionResponse()
+				break
+			}
+		}
 		textCompletionResponse, bifrostError := provider.TextCompletion(req.Context, key, req.BifrostRequest.TextCompletionRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
@@ -5365,6 +5403,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, req *Ch
 func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
+		if shouldConvertTextToChat(req.Context, req.RequestType, req.BifrostRequest.TextCompletionRequest) {
+			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
+			if chatRequest != nil {
+				return provider.ChatCompletionStream(req.Context, wrapTextToChatStreamPostHookRunner(postHookRunner), key, chatRequest)
+			}
+		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
 		return provider.ChatCompletionStream(req.Context, postHookRunner, key, req.BifrostRequest.ChatRequest)
