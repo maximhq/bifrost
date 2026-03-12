@@ -782,14 +782,12 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 			if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
 				details.AccessibleByKeys = keys
 			}
-			if modelCatalog != nil {
-				capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
-				if capabilities != nil {
-					details.ContextLength = capabilities.ContextLength
-					details.MaxInputTokens = capabilities.MaxInputTokens
-					details.MaxOutputTokens = capabilities.MaxOutputTokens
-					details.Architecture = capabilities.Architecture
-				}
+			capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+			if capabilities != nil {
+				details.ContextLength = capabilities.ContextLength
+				details.MaxInputTokens = capabilities.MaxInputTokens
+				details.MaxOutputTokens = capabilities.MaxOutputTokens
+				details.Architecture = capabilities.Architecture
 			}
 			allModels = append(allModels, details)
 		}
@@ -810,14 +808,12 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 				if keys, ok := modelAccessibleByKeys[model]; ok && len(keys) > 0 {
 					details.AccessibleByKeys = keys
 				}
-				if modelCatalog != nil {
-					capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
-					if capabilities != nil {
-						details.ContextLength = capabilities.ContextLength
-						details.MaxInputTokens = capabilities.MaxInputTokens
-						details.MaxOutputTokens = capabilities.MaxOutputTokens
-						details.Architecture = capabilities.Architecture
-					}
+				capabilities := modelCatalog.GetModelCapabilityEntryForModel(model, provider)
+				if capabilities != nil {
+					details.ContextLength = capabilities.ContextLength
+					details.MaxInputTokens = capabilities.MaxInputTokens
+					details.MaxOutputTokens = capabilities.MaxOutputTokens
+					details.Architecture = capabilities.Architecture
 				}
 				allModels = append(allModels, details)
 			}
@@ -864,6 +860,9 @@ func (h *ProviderHandler) getValidKeyIDsForProvider(provider schemas.ModelProvid
 
 	existing := make(map[string]bool, len(config.Keys))
 	for _, key := range config.Keys {
+		if key.Enabled != nil && !*key.Enabled {
+			continue
+		}
 		existing[key.ID] = true
 	}
 
@@ -922,6 +921,9 @@ func (h *ProviderHandler) filterModelsByKeysWithAccessMap(provider schemas.Model
 
 	keysByID := make(map[string]schemas.Key, len(config.Keys))
 	for _, key := range config.Keys {
+		if key.Enabled != nil && !*key.Enabled {
+			continue
+		}
 		keysByID[key.ID] = key
 	}
 
