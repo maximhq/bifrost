@@ -760,6 +760,10 @@ func (h *ProviderHandler) listModelDetails(ctx *fasthttp.RequestCtx) {
 
 	var allModels []ModelDetailsResponse
 	modelCatalog := h.inMemoryStore.ModelCatalog
+	if modelCatalog == nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+		return
+	}
 
 	var keyIDs []string
 	if keysParam != "" {
@@ -909,6 +913,10 @@ func (h *ProviderHandler) filterModelsByKeysWithAccessMap(provider schemas.Model
 	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
 		logger.Warn("Failed to get config for provider %s: %v", provider, err)
+		return []string{}, map[string][]string{}
+	}
+	if config == nil || config.Keys == nil {
+		logger.Warn("Missing key config for provider %s while filtering models by key access", provider)
 		return []string{}, map[string][]string{}
 	}
 
