@@ -176,6 +176,15 @@ type UpdateRateLimitRequest struct {
 	RequestResetDuration *string `json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 }
 
+func isBudgetRemovalRequest(req *UpdateBudgetRequest) bool {
+	return req != nil && req.MaxLimit == nil && req.ResetDuration == nil
+}
+
+func isRateLimitRemovalRequest(req *UpdateRateLimitRequest) bool {
+	return req != nil && req.TokenMaxLimit == nil && req.RequestMaxLimit == nil &&
+		req.TokenResetDuration == nil && req.RequestResetDuration == nil
+}
+
 // CreateTeamRequest represents the request body for creating a team
 type CreateTeamRequest struct {
 	Name       string                  `json:"name" validate:"required"`
@@ -611,6 +620,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		var budgetIDToDelete, rateLimitIDToDelete string
+		var providerBudgetIDsToDelete, providerRateLimitIDsToDelete []string
+
 		// Update fields if provided
 		if req.Name != nil {
 			vk.Name = *req.Name
@@ -636,7 +648,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			if vk.BudgetID != nil {
+			if isBudgetRemovalRequest(req.Budget) {
+				if vk.BudgetID != nil {
+					budgetIDToDelete = *vk.BudgetID
+					vk.BudgetID = nil
+					vk.Budget = nil
+				}
+			} else if vk.BudgetID != nil {
 				// Update existing budget
 				budget := configstoreTables.TableBudget{}
 				if err := tx.First(&budget, "id = ?", *vk.BudgetID).Error; err != nil {
@@ -687,7 +705,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle rate limit updates
 		if req.RateLimit != nil {
-			if vk.RateLimitID != nil {
+			if isRateLimitRemovalRequest(req.RateLimit) {
+				if vk.RateLimitID != nil {
+					rateLimitIDToDelete = *vk.RateLimitID
+					vk.RateLimitID = nil
+					vk.RateLimit = nil
+				}
+			} else if vk.RateLimitID != nil {
 				// Update existing rate limit
 				rateLimit := configstoreTables.TableRateLimit{}
 				if err := tx.First(&rateLimit, "id = ?", *vk.RateLimitID).Error; err != nil {
@@ -851,7 +875,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 					// Handle budget updates for provider config
 					if pc.Budget != nil {
-						if existing.BudgetID != nil {
+						if isBudgetRemovalRequest(pc.Budget) {
+							if existing.BudgetID != nil {
+								providerBudgetIDsToDelete = append(providerBudgetIDsToDelete, *existing.BudgetID)
+								existing.BudgetID = nil
+								existing.Budget = nil
+							}
+						} else if existing.BudgetID != nil {
 							// Update existing budget
 							budget := configstoreTables.TableBudget{}
 							if err := tx.First(&budget, "id = ?", *existing.BudgetID).Error; err != nil {
@@ -898,7 +928,13 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					// Handle rate limit updates for provider config
 					if pc.RateLimit != nil {
-						if existing.RateLimitID != nil {
+						if isRateLimitRemovalRequest(pc.RateLimit) {
+							if existing.RateLimitID != nil {
+								providerRateLimitIDsToDelete = append(providerRateLimitIDsToDelete, *existing.RateLimitID)
+								existing.RateLimitID = nil
+								existing.RateLimit = nil
+							}
+						} else if existing.RateLimitID != nil {
 							// Update existing rate limit
 							rateLimit := configstoreTables.TableRateLimit{}
 							if err := tx.First(&rateLimit, "id = ?", *existing.RateLimitID).Error; err != nil {
@@ -1010,6 +1046,28 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 			}
 		}
+
+		if budgetIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", budgetIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		if rateLimitIDToDelete != "" {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", rateLimitIDToDelete).Error; err != nil {
+				return err
+			}
+		}
+		for _, id := range providerBudgetIDsToDelete {
+			if err := tx.Delete(&configstoreTables.TableBudget{}, "id = ?", id).Error; err != nil {
+				return err
+			}
+		}
+		for _, id := range providerRateLimitIDsToDelete {
+			if err := tx.Delete(&configstoreTables.TableRateLimit{}, "id = ?", id).Error; err != nil {
+				return err
+			}
+		}
+
 		return nil
 	}); err != nil {
 		errMsg := err.Error()

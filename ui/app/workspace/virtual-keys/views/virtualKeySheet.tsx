@@ -34,7 +34,7 @@ import { KnownProvider } from "@/lib/types/config";
 import { CreateVirtualKeyRequest, Customer, Team, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Building, Info, Trash2, Users, X } from "lucide-react";
+import { Building, Info, RotateCcw, Trash2, Users, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { components, MultiValueProps, OptionProps } from "react-select";
@@ -244,6 +244,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	// Get current MCP configs from form
 	const mcpConfigs = form.watch("mcpConfigs") || [];
 
+	// Watch budget/rate-limit fields for conditional rendering of reset buttons
+	const watchedBudgetMaxLimit = form.watch("budgetMaxLimit");
+	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
+	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
+
 	// Handle adding a new provider configuration
 	const handleAddProvider = (provider: string) => {
 		const existingConfig = providerConfigs.find((config) => config.provider === provider);
@@ -304,28 +309,67 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		form.setValue("mcpConfigs", updatedConfigs, { shouldDirty: true });
 	};
 
+	const clearVirtualKeyBudget = () => {
+		form.setValue("budgetMaxLimit", "", { shouldDirty: true });
+		form.setValue("budgetResetDuration", "1M", { shouldDirty: true });
+	};
+
+	const clearVirtualKeyRateLimits = () => {
+		form.setValue("tokenMaxLimit", "", { shouldDirty: true });
+		form.setValue("tokenResetDuration", "1h", { shouldDirty: true });
+		form.setValue("requestMaxLimit", "", { shouldDirty: true });
+		form.setValue("requestResetDuration", "1h", { shouldDirty: true });
+	};
+
+	const normalizeIntegerField = (value: string | undefined): number | undefined => {
+		if (value === undefined || value === "") return undefined;
+		const num = parseInt(value, 10);
+		return isNaN(num) ? undefined : num;
+	};
+
 	// Helper function to convert string weights to numbers and normalize budget/rate limit fields
-	const normalizeProviderConfigs = (configs: any[]): any[] => {
+	const normalizeProviderConfigs = (
+		configs: NonNullable<FormData["providerConfigs"]>,
+		existingConfigs?: VirtualKey["provider_configs"],
+	): any[] => {
 		return configs.map((config) => ({
 			...config,
 			weight: typeof config.weight === "string" ? parseFloat(config.weight) || 0 : config.weight,
-			budget: config.budget?.max_limit
-				? {
-						max_limit: parseFloat(config.budget.max_limit) || 0,
-						reset_duration: config.budget.reset_duration || "1M",
-					}
-				: undefined,
-			rate_limit:
-				config.rate_limit?.token_max_limit || config.rate_limit?.request_max_limit
-					? {
-							token_max_limit: config.rate_limit.token_max_limit ? parseInt(config.rate_limit.token_max_limit) || undefined : undefined,
-							token_reset_duration: config.rate_limit.token_reset_duration || "1h",
-							request_max_limit: config.rate_limit.request_max_limit
-								? parseInt(config.rate_limit.request_max_limit) || undefined
-								: undefined,
-							request_reset_duration: config.rate_limit.request_reset_duration || "1h",
-						}
-					: undefined,
+			budget: (() => {
+				const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
+				if (budgetMaxLimit) {
+					return {
+						max_limit: budgetMaxLimit,
+						reset_duration: config.budget?.reset_duration || "1M",
+					};
+				}
+
+				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+				if (existingConfig?.budget) {
+					return {};
+				}
+
+				return undefined;
+			})(),
+			rate_limit: (() => {
+				const tokenMaxLimit = normalizeIntegerField(config.rate_limit?.token_max_limit);
+				const requestMaxLimit = normalizeIntegerField(config.rate_limit?.request_max_limit);
+				if (tokenMaxLimit || requestMaxLimit) {
+					return {
+						token_max_limit: tokenMaxLimit ?? null,
+						token_reset_duration: tokenMaxLimit ? config.rate_limit?.token_reset_duration || "1h" : null,
+						request_max_limit: requestMaxLimit ?? null,
+						request_reset_duration: requestMaxLimit ? config.rate_limit?.request_reset_duration || "1h" : null,
+					};
+				}
+
+				const existingConfig = existingConfigs?.find((item) => (config.id ? item.id === config.id : item.provider === config.provider));
+				if (existingConfig?.rate_limit) {
+					return {};
+				}
+
+				return undefined;
+			})(),
 		}));
 	};
 
@@ -344,7 +388,9 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		}
 		try {
 			// Normalize provider configs to ensure weights are numbers and handle budget/rate limits
-			const normalizedProviderConfigs = data.providerConfigs ? normalizeProviderConfigs(data.providerConfigs) : [];
+			const normalizedProviderConfigs = data.providerConfigs
+				? normalizeProviderConfigs(data.providerConfigs, virtualKey?.provider_configs)
+				: [];
 			if (isEditing && virtualKey) {
 				// Update existing virtual key
 				const updateData: UpdateVirtualKeyRequest = {
@@ -359,23 +405,31 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 				// Add budget if enabled
 				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				if (budgetMaxLimit) {
+				const hadBudget = !!virtualKey.budget;
+				const hasBudget = !!budgetMaxLimit;
+				if (hasBudget) {
 					updateData.budget = {
 						max_limit: budgetMaxLimit,
 						reset_duration: data.budgetResetDuration || "1M",
 					};
+				} else if (hadBudget) {
+					updateData.budget = {};
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
-				if (tokenMaxLimit || requestMaxLimit) {
+				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
+				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
+				const hadRateLimit = !!virtualKey.rate_limit;
+				const hasRateLimit = !!tokenMaxLimit || !!requestMaxLimit;
+				if (hasRateLimit) {
 					updateData.rate_limit = {
-						token_max_limit: tokenMaxLimit,
-						token_reset_duration: data.tokenResetDuration || "1h",
-						request_max_limit: requestMaxLimit,
-						request_reset_duration: data.requestResetDuration || "1h",
+						token_max_limit: tokenMaxLimit ?? null,
+						token_reset_duration: tokenMaxLimit ? data.tokenResetDuration || "1h" : null,
+						request_max_limit: requestMaxLimit ?? null,
+						request_reset_duration: requestMaxLimit ? data.requestResetDuration || "1h" : null,
 					};
+				} else if (hadRateLimit) {
+					updateData.rate_limit = {};
 				}
 
 				await updateVirtualKey({ vkId: virtualKey.id, data: updateData }).unwrap();
@@ -402,8 +456,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 				}
 
 				// Add rate limit if enabled
-				const tokenMaxLimit = normalizeNumericField(data.tokenMaxLimit);
-				const requestMaxLimit = normalizeNumericField(data.requestMaxLimit);
+				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
+				const requestMaxLimit = normalizeIntegerField(data.requestMaxLimit);
 				if (tokenMaxLimit || requestMaxLimit) {
 					createData.rate_limit = {
 						token_max_limit: tokenMaxLimit,
@@ -425,10 +479,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 	return (
 		<Sheet open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-			<SheetContent
-				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8"
-				data-testid="vk-sheet"
-			>
+			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white px-4 pb-8" data-testid="vk-sheet">
 				<SheetHeader className="flex flex-col items-start px-3 pt-8">
 					<SheetTitle className="flex items-center gap-2">{isEditing ? virtualKey?.name : "Create Virtual Key"}</SheetTitle>
 					<SheetDescription>
@@ -533,24 +584,28 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												return (
 													<>
 														{/* Base providers first */}
-														{baseProviders.filter((p) => p.name).map((provider, index) => (
-															<SelectItem key={`base-${index}`} value={provider.name}>
-																<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
-																{ProviderLabels[provider.name as ProviderName]}
-															</SelectItem>
-														))}
+														{baseProviders
+															.filter((p) => p.name)
+															.map((provider, index) => (
+																<SelectItem key={`base-${index}`} value={provider.name}>
+																	<RenderProviderIcon provider={provider.name as KnownProvider} size="sm" className="h-4 w-4" />
+																	{ProviderLabels[provider.name as ProviderName]}
+																</SelectItem>
+															))}
 
 														{/* Custom providers second */}
-														{customProviders.filter((p) => p.name).map((provider, index) => (
-															<SelectItem key={`custom-${index}`} value={provider.name}>
-																<RenderProviderIcon
-																	provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
-																	size="sm"
-																	className="h-4 w-4"
-																/>
-																{provider.name}
-															</SelectItem>
-														))}
+														{customProviders
+															.filter((p) => p.name)
+															.map((provider, index) => (
+																<SelectItem key={`custom-${index}`} value={provider.name}>
+																	<RenderProviderIcon
+																		provider={provider.custom_provider_config?.base_provider_type || (provider.name as KnownProvider)}
+																		size="sm"
+																		className="h-4 w-4"
+																	/>
+																	{provider.name}
+																</SelectItem>
+															))}
 													</>
 												);
 											})()}
@@ -857,7 +912,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 													{mcpClientsData.filter((client) => !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
 														.length > 0 ? (
 														mcpClientsData
-															.filter((client) => client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name))
+															.filter(
+																(client) =>
+																	client.config.name && !mcpConfigs.some((config) => config.mcp_client_name === client.config.name),
+															)
 															.map((client, index) => {
 																const client_tools = client.tools || [];
 																const totalTools = client.config.tools_to_execute?.includes("*")
@@ -963,7 +1021,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 							{/* Budget Configuration */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Budget Configuration</Label>
+								<div className="flex items-center justify-between gap-2">
+									<Label className="text-sm font-medium">Budget Configuration</Label>
+									{isEditing && (virtualKey?.budget || watchedBudgetMaxLimit) && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={clearVirtualKeyBudget}
+											data-testid="vk-budget-reset-button"
+										>
+											<RotateCcw className="h-4 w-4" />
+											Reset
+										</Button>
+									)}
+								</div>
 								<FormField
 									control={form.control}
 									name="budgetMaxLimit"
@@ -989,7 +1061,21 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 							{/* Rate Limiting Configuration */}
 							<div className="space-y-4">
-								<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+								<div className="flex items-center justify-between gap-2">
+									<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
+									{isEditing && (virtualKey?.rate_limit || watchedTokenMaxLimit || watchedRequestMaxLimit) && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											onClick={clearVirtualKeyRateLimits}
+											data-testid="vk-rate-limit-reset-button"
+										>
+											<RotateCcw className="h-4 w-4" />
+											Reset
+										</Button>
+									)}
+								</div>
 
 								<FormField
 									control={form.control}
@@ -1170,7 +1256,11 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 									<Tooltip>
 										<TooltipTrigger asChild>
 											<span className="inline-block">
-												<Button type="submit" disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit} data-testid="vk-save-btn">
+												<Button
+													type="submit"
+													disabled={isLoading || !form.formState.isDirty || !form.formState.isValid || !canSubmit}
+													data-testid="vk-save-btn"
+												>
 													{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 												</Button>
 											</span>
