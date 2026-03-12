@@ -3923,7 +3923,10 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 // given the provider config is provided in the account interface implementation.
 // This function uses read locks to prevent race conditions during provider updates.
 // Callers must check the closing flag or select on the done channel before sending.
-func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*ProviderQueue, error) {
+//
+// override is optional; when provided its BaseProviderType enables auto-initialisation of
+// arbitrary provider names (e.g. "my-tenant-openai") without a static config entry.
+func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, override *schemas.ProviderOverride) (*ProviderQueue, error) {
 	// Use read lock to allow concurrent reads but prevent concurrent updates
 	providerMutex := bifrost.getProviderMutex(providerKey)
 	providerMutex.RLock()
@@ -3947,11 +3950,30 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider) (*Pr
 	}
 	bifrost.logger.Debug(fmt.Sprintf("Creating new request queue for provider %s at runtime", providerKey))
 	config, err := bifrost.account.GetConfigForProvider(providerKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get config for provider: %v", err)
-	}
-	if config == nil {
-		return nil, fmt.Errorf("config is nil for provider %s", providerKey)
+	if err != nil || config == nil {
+		baseConfig := &schemas.ProviderConfig{
+			NetworkConfig:            schemas.DefaultNetworkConfig,
+			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		}
+		switch {
+		case override != nil && override.BaseProviderType != "":
+			// Arbitrary provider name with an explicit dialect: auto-initialise using the
+			// specified base type so no static config entry is required.
+			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s as %s dialect (no static config found)", providerKey, override.BaseProviderType))
+			baseConfig.CustomProviderConfig = &schemas.CustomProviderConfig{
+				BaseProviderType:  override.BaseProviderType,
+				CustomProviderKey: string(providerKey),
+			}
+			config = baseConfig
+		case slices.Contains(dynamicallyConfigurableProviders, providerKey):
+			// Well-known provider with no static config: auto-initialise using its own dialect.
+			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s with default config (no static config found)", providerKey))
+			config = baseConfig
+		case err != nil:
+			return nil, fmt.Errorf("failed to get config for provider: %v", err)
+		default:
+			return nil, fmt.Errorf("config is nil for provider %s", providerKey)
+		}
 	}
 	if err := bifrost.prepareProvider(providerKey, config); err != nil {
 		return nil, err
@@ -4291,18 +4313,16 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	return true
 }
 
-// prepareFallbackRequest creates a fallback request and validates the provider config
-// Returns the fallback request or nil if this fallback should be skipped
+// prepareFallbackRequest creates a fallback request for the given fallback entry.
+// Provider validation (including dynamic auto-init and BaseProviderType support) is deferred
+// to getProviderQueue, which is called inside tryRequest/tryStreamRequest after PreLLMHook
+// has run and may have set override credentials and BaseProviderType.
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
-	// Check if we have config for this fallback provider
-	_, err := bifrost.account.GetConfigForProvider(fallback.Provider)
-	if err != nil {
-		bifrost.logger.Warn("config not found for provider %s, skipping fallback: %v", fallback.Provider, err)
-		return nil
-	}
-
-	// Create a new request with the fallback provider and model
+	// Create a new request with the fallback provider and model.
+	// ProviderOverride is cleared so the fallback PreLLMHook can inject fresh credentials
+	// via req.UpdateAPIKey / req.UpdateProviderBaseURL for the new provider.
 	fallbackReq := *req
+	fallbackReq.ProviderOverride = nil
 
 	if req.TextCompletionRequest != nil {
 		tmp := *req.TextCompletionRequest
@@ -4455,12 +4475,6 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
-		if fallbackReq == nil {
-			bifrost.logger.Debug(fmt.Sprintf("fallback provider %s with model %s is nil", fallback.Provider, fallback.Model))
-			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
-			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
-			continue
-		}
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryRequest(ctx, fallbackReq)
@@ -4536,11 +4550,6 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		ctx.SetValue(schemas.BifrostContextKeySpanID, spanCtx.Value(schemas.BifrostContextKeySpanID))
 
 		fallbackReq := bifrost.prepareFallbackRequest(req, fallback)
-		if fallbackReq == nil {
-			tracer.SetAttribute(handle, "error", "fallback request preparation failed")
-			tracer.EndSpan(handle, schemas.SpanStatusError, "fallback request preparation failed")
-			continue
-		}
 
 		// Try the fallback provider
 		result, fallbackErr := bifrost.tryStreamRequest(ctx, fallbackReq)
@@ -4569,13 +4578,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 // tryRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostResponse, *schemas.BifrostError) {
-	provider, model, _ := req.GetRequestFields()
-	pq, err := bifrost.getProviderQueue(provider)
-	if err != nil {
-		bifrostErr := newBifrostError(err)
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
-	}
+	origProvider, model, _ := req.GetRequestFields()
 
 	// Add MCP tools to request if MCP is configured and requested
 	if bifrost.MCPManager != nil {
@@ -4585,7 +4588,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	tracer := bifrost.getTracer()
 	if tracer == nil {
 		bifrostErr := newBifrostErrorFromMsg("tracer not found in context")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4605,7 +4608,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
 			}
 			return resp, nil
@@ -4615,7 +4618,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
 			}
 			return resp, nil
@@ -4623,7 +4626,33 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       origProvider,
+			ModelRequested: model,
+		}
+		return nil, bifrostErr
+	}
+
+	// Provider comes from the request; UpdateProvider (called by hooks) sets it via SetProvider.
+	provider, _, _ := preReq.GetRequestFields()
+
+	// Wire request-level key/URL overrides into context for key selection and URL construction.
+	// Clear any leftover from a previous attempt first so each attempt starts fresh.
+	override := preReq.ProviderOverride
+	ctx.ClearValue(schemas.BifrostContextKeyProviderOverride)
+	if override != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, override)
+	}
+
+	pq, err := bifrost.getProviderQueue(provider, override)
+	if err != nil {
+		bifrostErr := newBifrostError(err)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
+		}
 		return nil, bifrostErr
 	}
 
@@ -4778,13 +4807,7 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 // tryStreamRequest is a generic function that handles common request processing logic
 // It consolidates queue setup, plugin pipeline execution, enqueue logic, and response handling
 func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	provider, model, _ := req.GetRequestFields()
-	pq, err := bifrost.getProviderQueue(provider)
-	if err != nil {
-		bifrostErr := newBifrostError(err)
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
-		return nil, bifrostErr
-	}
+	origProvider, model, _ := req.GetRequestFields()
 
 	// Add MCP tools to request if MCP is configured and requested
 	if req.RequestType != schemas.SpeechStreamRequest && req.RequestType != schemas.TranscriptionStreamRequest && bifrost.MCPManager != nil {
@@ -4794,7 +4817,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	tracer := bifrost.getTracer()
 	if tracer == nil {
 		bifrostErr := newBifrostErrorFromMsg("tracer not found in context")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 		return nil, bifrostErr
 	}
 
@@ -4830,7 +4853,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, shortCircuit.Response, nil, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4912,7 +4935,7 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 			resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainAndAttachPluginLogs(ctx)
 			if bifrostErr != nil {
-				bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+				bifrostErr.PopulateExtraFields(req.RequestType, origProvider, model, model)
 				return nil, bifrostErr
 			}
 			return newBifrostMessageChan(resp), nil
@@ -4920,7 +4943,33 @@ func (bifrost *Bifrost) tryStreamRequest(ctx *schemas.BifrostContext, req *schem
 	}
 	if preReq == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
-		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       origProvider,
+			ModelRequested: model,
+		}
+		return nil, bifrostErr
+	}
+
+	// Provider comes from the request; UpdateProvider (called by hooks) sets it via SetProvider.
+	provider, _, _ := preReq.GetRequestFields()
+
+	// Wire request-level key/URL overrides into context for key selection and URL construction.
+	// Clear any leftover from a previous attempt first so each attempt starts fresh.
+	override := preReq.ProviderOverride
+	ctx.ClearValue(schemas.BifrostContextKeyProviderOverride)
+	if override != nil {
+		ctx.SetValue(schemas.BifrostContextKeyProviderOverride, override)
+	}
+
+	pq, err := bifrost.getProviderQueue(provider, override)
+	if err != nil {
+		bifrostErr := newBifrostError(err)
+		bifrostErr.ExtraFields = schemas.BifrostErrorExtraFields{
+			RequestType:    req.RequestType,
+			Provider:       provider,
+			ModelRequested: model,
+		}
 		return nil, bifrostErr
 	}
 
@@ -6766,6 +6815,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 // resetBifrostRequest resets a BifrostRequest instance for reuse
 func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.RequestType = ""
+	req.ProviderOverride = nil
 	req.ListModelsRequest = nil
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
