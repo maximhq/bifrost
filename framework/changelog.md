@@ -1,0 +1,1 @@
+- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
