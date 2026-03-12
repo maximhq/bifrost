@@ -14,6 +14,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -234,12 +235,33 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
+		toolSyncInterval := mcp.DefaultToolSyncInterval
+		if req.ToolSyncInterval != 0 {
+			toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
+		} else {
+			config, err := h.store.ConfigStore.GetClientConfig(ctx)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get client config: %v", err))
+				return
+			}
+			if config != nil {
+				toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
+			}
+		}
+
+		isPingAvailable := true
+		if req.IsPingAvailable != nil {
+			isPingAvailable = *req.IsPingAvailable
+		}
+
 		// Store MCP client config in OAuth provider memory (not in database)
 		// It will be stored in database only after OAuth completion
 		pendingConfig := schemas.MCPClientConfig{
 			ID:                 req.ClientID,
 			Name:               req.Name,
 			IsCodeModeClient:   req.IsCodeModeClient,
+			IsPingAvailable:    isPingAvailable,
+			ToolSyncInterval:   toolSyncInterval,
 			ConnectionType:     schemas.MCPConnectionType(req.ConnectionType),
 			ConnectionString:   req.ConnectionString,
 			StdioConfig:        req.StdioConfig,
@@ -269,7 +291,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	toolSyncInterval := 10 * time.Minute
+	toolSyncInterval := mcp.DefaultToolSyncInterval
 	if req.ToolSyncInterval != 0 {
 		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 	} else {
@@ -281,8 +303,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if config != nil {
 			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
 		}
-
 	}
+
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	// Dereference IsPingAvailable pointer, defaulting to true if nil (new clients default to ping available)
 	isPingAvailable := true
@@ -404,7 +426,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
-	toolSyncInterval := 10 * time.Minute
+	toolSyncInterval := mcp.DefaultToolSyncInterval
 	if req.ToolSyncInterval != 0 {
 		toolSyncInterval = time.Duration(req.ToolSyncInterval) * time.Minute
 	} else {
@@ -416,7 +438,6 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		if config != nil {
 			toolSyncInterval = time.Duration(config.MCPToolSyncInterval) * time.Minute
 		}
-
 	}
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	isPingAvailable := true
