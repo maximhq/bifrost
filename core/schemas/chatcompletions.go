@@ -29,135 +29,21 @@ func (cr *BifrostChatRequest) GetExtraParams() map[string]interface{} {
 
 // BifrostChatResponse represents the complete result from a chat completion request.
 type BifrostChatResponse struct {
-	ID                      string                     `json:"id"`
-	Choices                 []BifrostResponseChoice    `json:"choices"`
-	Created                 int                        `json:"created"` // The Unix timestamp (in seconds).
-	Model                   string                     `json:"model"`
-	Object                  string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
-	ServiceTier             *string                    `json:"service_tier,omitempty"`
-	SystemFingerprint       string                     `json:"system_fingerprint"`
-	Usage                   *BifrostLLMUsage           `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
-	ExtraParams             map[string]interface{}     `json:"-"`
+	ID                string                     `json:"id"`
+	Choices           []BifrostResponseChoice    `json:"choices"`
+	Created           int                        `json:"created"` // The Unix timestamp (in seconds).
+	Model             string                     `json:"model"`
+	Object            string                     `json:"object"` // "chat.completion" or "chat.completion.chunk"
+	ServiceTier       *string                    `json:"service_tier,omitempty"`
+	SystemFingerprint string                     `json:"system_fingerprint"`
+	Usage             *BifrostLLMUsage           `json:"usage"`
+	ExtraFields       BifrostResponseExtraFields `json:"extra_fields"`
+	ExtraParams       map[string]interface{}     `json:"-"`
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
-}
-
-// ToTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
-func (cr *BifrostChatResponse) ToTextCompletionResponse() *BifrostTextCompletionResponse {
-	if cr == nil {
-		return nil
-	}
-
-	if len(cr.Choices) == 0 {
-		return &BifrostTextCompletionResponse{
-			ID:                cr.ID,
-			Model:             cr.Model,
-			Object:            "text_completion",
-			SystemFingerprint: cr.SystemFingerprint,
-			Usage:             cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:             TextCompletionRequest,
-				ChunkIndex:              cr.ExtraFields.ChunkIndex,
-				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
-				Latency:                 cr.ExtraFields.Latency,
-				RawResponse:             cr.ExtraFields.RawResponse,
-				CacheDebug:              cr.ExtraFields.CacheDebug,
-				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
-			},
-		}
-	}
-
-	choice := cr.Choices[0]
-
-	// Handle streaming response choice
-	if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
-		return &BifrostTextCompletionResponse{
-			ID:                cr.ID,
-			Model:             cr.Model,
-			Object:            "text_completion",
-			SystemFingerprint: cr.SystemFingerprint,
-			Choices: []BifrostResponseChoice{
-				{
-					Index: 0,
-					TextCompletionResponseChoice: &TextCompletionResponseChoice{
-						Text: choice.ChatStreamResponseChoice.Delta.Content,
-					},
-					FinishReason: choice.FinishReason,
-					LogProbs:     choice.LogProbs,
-				},
-			},
-			Usage: cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:             TextCompletionRequest,
-				ChunkIndex:              cr.ExtraFields.ChunkIndex,
-				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
-				Latency:                 cr.ExtraFields.Latency,
-				RawResponse:             cr.ExtraFields.RawResponse,
-				CacheDebug:              cr.ExtraFields.CacheDebug,
-				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
-			},
-		}
-	}
-
-	// Handle non-streaming response choice
-	if choice.ChatNonStreamResponseChoice != nil {
-		msg := choice.ChatNonStreamResponseChoice.Message
-		var textContent *string
-		if msg != nil && msg.Content != nil && msg.Content.ContentStr != nil {
-			textContent = msg.Content.ContentStr
-		}
-		return &BifrostTextCompletionResponse{
-			ID:                cr.ID,
-			Model:             cr.Model,
-			Object:            "text_completion",
-			SystemFingerprint: cr.SystemFingerprint,
-			Choices: []BifrostResponseChoice{
-				{
-					Index: 0,
-					TextCompletionResponseChoice: &TextCompletionResponseChoice{
-						Text: textContent,
-					},
-					FinishReason: choice.FinishReason,
-					LogProbs:     choice.LogProbs,
-				},
-			},
-			Usage: cr.Usage,
-			ExtraFields: BifrostResponseExtraFields{
-				RequestType:             TextCompletionRequest,
-				ChunkIndex:              cr.ExtraFields.ChunkIndex,
-				Provider:                cr.ExtraFields.Provider,
-				ModelRequested:           cr.ExtraFields.ModelRequested,
-				Latency:                 cr.ExtraFields.Latency,
-				RawResponse:             cr.ExtraFields.RawResponse,
-				CacheDebug:              cr.ExtraFields.CacheDebug,
-				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
-			},
-		}
-	}
-
-	// Fallback case - return basic response structure
-	return &BifrostTextCompletionResponse{
-		ID:                cr.ID,
-		Model:             cr.Model,
-		Object:            "text_completion",
-		SystemFingerprint: cr.SystemFingerprint,
-		Usage:             cr.Usage,
-		ExtraFields: BifrostResponseExtraFields{
-			RequestType:    TextCompletionRequest,
-			ChunkIndex:     cr.ExtraFields.ChunkIndex,
-			Provider:       cr.ExtraFields.Provider,
-			ModelRequested: cr.ExtraFields.ModelRequested,
-			Latency:        cr.ExtraFields.Latency,
-			RawResponse:    cr.ExtraFields.RawResponse,
-			CacheDebug:     cr.ExtraFields.CacheDebug,
-		},
-	}
 }
 
 // ChatParameters represents the parameters for a chat completion.
@@ -487,7 +373,6 @@ type AdditionalPropertiesStruct struct {
 // MarshalJSON implements custom JSON marshalling for AdditionalPropertiesStruct.
 // It marshals either AdditionalPropertiesBool or AdditionalPropertiesMap based on which is set.
 func (a AdditionalPropertiesStruct) MarshalJSON() ([]byte, error) {
-
 	// if both are set, return an error
 	if a.AdditionalPropertiesBool != nil && a.AdditionalPropertiesMap != nil {
 		return nil, fmt.Errorf("both AdditionalPropertiesBool and AdditionalPropertiesMap are set; only one should be non-nil")
@@ -1154,7 +1039,7 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	TotalTokens             int                          `json:"total_tokens"`
-	Cost                    *BifrostCost                 `json:"cost,omitempty"` //Only for the providers which support cost calculation
+	Cost                    *BifrostCost                 `json:"cost,omitempty"` // Only for the providers which support cost calculation
 }
 
 type ChatPromptTokensDetails struct {
