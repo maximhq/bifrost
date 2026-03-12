@@ -2464,12 +2464,12 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
 	// This builds a complete BifrostResponse from all the streaming chunks
-	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
+	accumulatedResp, ttftNs, chunkCount := tracer.GetAccumulatedChunks(traceID)
 
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
-	if ttftMs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+	if ttftNs > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)
 	}
 	if chunkCount > 0 {
 		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)
