@@ -1,13 +1,10 @@
-// Package litellmcompat provides LiteLLM-compatible request/response transformations
-// for the Bifrost gateway. It enables automatic conversion of text completion requests
-// to chat completion requests for models that only support chat completions, matching
-// LiteLLM's behavior.
+// Package litellmcompat provides LiteLLM-compatible text-to-chat conversion decisions
+// for the Bifrost gateway. It marks text completion requests that should be converted
+// by core provider dispatch for models that only support chat completions.
 //
 // When enabled, this plugin:
-//   - Silently converts text_completion() calls to chat completion format
-//   - Routes to the chat completion endpoint
-//   - Transforms the response back to text completion format
-//   - Places content in choices[0].text instead of choices[0].message.content
+//   - Decides whether text_completion() should be converted to chat
+//   - Stores the decision in context for core request dispatch
 package litellmcompat
 
 import (
@@ -78,47 +75,24 @@ func (p *LiteLLMCompatPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostC
 	return chunk, nil
 }
 
-// PreLLMHook intercepts requests and applies LiteLLM-compatible transformations.
+// PreLLMHook intercepts requests and applies LiteLLM-compatible transformation intent.
 // For text completion requests on models that don't support text completion,
-// it converts them to chat completion requests.
+// it marks the request so core can convert at provider dispatch time.
 func (p *LiteLLMCompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
-	tc := &TransformContext{}
-
 	// Apply request transforms in sequence
-	req = transformTextToChatRequest(ctx, req, tc, p.modelCatalog, p.logger)
-
-	// Store the transform context for use in PostHook
-	ctx.SetValue(TransformContextKey, tc)
-
+	req = transformTextToChatRequest(ctx, req, p.modelCatalog, p.logger)
 	return req, nil, nil
 }
 
-// PostLLMHook processes responses and applies LiteLLM-compatible transformations.
-// If a text completion request was converted to chat, this converts the
-// chat response back to text completion format.
+// PostLLMHook normalizes metadata on converted responses/errors
+// when this plugin requested text->chat conversion in PreLLMHook.
 func (p *LiteLLMCompatPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
-	// Retrieve the transform context
-	transformCtxValue := ctx.Value(TransformContextKey)
-	if transformCtxValue == nil {
-		return result, bifrostErr, nil
-	}
-	tc, ok := transformCtxValue.(*TransformContext)
-	if !ok || tc == nil {
-		return result, bifrostErr, nil
-	}
-
-	// Apply response transforms in sequence
-	// Note: tool-call content runs before text-to-chat because text-to-chat may convert
-	// the response type, and tool-call content needs to operate on chat responses
 	if result != nil {
-		result = transformTextToChatResponse(ctx, result, tc, p.logger)
+		result = transformTextToChatResponse(ctx, result, p.logger)
 	}
-
-	// Transform error metadata if there's an error
 	if bifrostErr != nil {
-		bifrostErr = transformTextToChatError(ctx, bifrostErr, tc)
+		bifrostErr = transformTextToChatError(ctx, bifrostErr)
 	}
-
 	return result, bifrostErr, nil
 }
 

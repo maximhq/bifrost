@@ -2013,3 +2013,121 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	return responses
 }
+
+// =============================================================================
+// RESPONSE CONVERSION METHODS
+// =============================================================================
+
+// ToBifrostTextCompletionResponse converts a BifrostChatResponse to a BifrostTextCompletionResponse
+func (cr *BifrostChatResponse) ToBifrostTextCompletionResponse() *BifrostTextCompletionResponse {
+	if cr == nil {
+		return nil
+	}
+
+	if len(cr.Choices) == 0 {
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Usage:             cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	choice := cr.Choices[0]
+
+	// Handle streaming response choice
+	if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil {
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: choice.ChatStreamResponseChoice.Delta.Content,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	// Handle non-streaming response choice
+	if choice.ChatNonStreamResponseChoice != nil {
+		msg := choice.ChatNonStreamResponseChoice.Message
+		var textContent *string
+		if msg != nil && msg.Content != nil && msg.Content.ContentStr != nil {
+			textContent = msg.Content.ContentStr
+		}
+		return &BifrostTextCompletionResponse{
+			ID:                cr.ID,
+			Model:             cr.Model,
+			Object:            "text_completion",
+			SystemFingerprint: cr.SystemFingerprint,
+			Choices: []BifrostResponseChoice{
+				{
+					Index: 0,
+					TextCompletionResponseChoice: &TextCompletionResponseChoice{
+						Text: textContent,
+					},
+					FinishReason: choice.FinishReason,
+					LogProbs:     choice.LogProbs,
+				},
+			},
+			Usage: cr.Usage,
+			ExtraFields: BifrostResponseExtraFields{
+				RequestType:             TextCompletionRequest,
+				ChunkIndex:              cr.ExtraFields.ChunkIndex,
+				Provider:                cr.ExtraFields.Provider,
+				ModelRequested:          cr.ExtraFields.ModelRequested,
+				Latency:                 cr.ExtraFields.Latency,
+				RawResponse:             cr.ExtraFields.RawResponse,
+				CacheDebug:              cr.ExtraFields.CacheDebug,
+				ProviderResponseHeaders: cr.ExtraFields.ProviderResponseHeaders,
+			},
+		}
+	}
+
+	// Fallback case - return basic response structure
+	return &BifrostTextCompletionResponse{
+		ID:                cr.ID,
+		Model:             cr.Model,
+		Object:            "text_completion",
+		SystemFingerprint: cr.SystemFingerprint,
+		Usage:             cr.Usage,
+		ExtraFields: BifrostResponseExtraFields{
+			RequestType:    TextCompletionRequest,
+			ChunkIndex:     cr.ExtraFields.ChunkIndex,
+			Provider:       cr.ExtraFields.Provider,
+			ModelRequested: cr.ExtraFields.ModelRequested,
+			Latency:        cr.ExtraFields.Latency,
+			RawResponse:    cr.ExtraFields.RawResponse,
+			CacheDebug:     cr.ExtraFields.CacheDebug,
+		},
+	}
+}
