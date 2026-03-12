@@ -767,7 +767,9 @@ func (ma *MockAccount) GetConfigForProvider(provider schemas.ModelProvider) (*sc
 		configCopy := *config
 		return &configCopy, nil
 	}
-	return nil, fmt.Errorf("provider %s not configured", provider)
+	// Return (nil, nil) to signal "not configured" — Bifrost may auto-init the provider.
+	// A non-nil error is reserved for genuine lookup failures.
+	return nil, nil
 }
 
 func (ma *MockAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
@@ -2599,23 +2601,6 @@ func TestRemoveProvider_ConcurrentNewProducersDuringShutdown(t *testing.T) {
 		numProducers)
 }
 
-// nilConfigAccount wraps MockAccount but returns (nil, nil) from GetConfigForProvider
-// for providers not in static config, mirroring production Account implementations that
-// allow getProviderQueue to auto-initialise dynamically-configurable providers.
-// Use this in tests that exercise the auto-init code path.
-type nilConfigAccount struct {
-	*MockAccount
-}
-
-func (a *nilConfigAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
-	cfg, err := a.MockAccount.GetConfigForProvider(provider)
-	if err != nil {
-		// Provider not in static config — signal auto-init is allowed.
-		return nil, nil
-	}
-	return cfg, nil
-}
-
 // TestProviderOverride verifies that the req.UpdateAPIKey / req.UpdateProviderBaseURL /
 // req.UpdateProvider methods injected by a plugin PreLLMHook cause Bifrost to use the
 // supplied credential and endpoint instead of the statically configured values. This is
@@ -2651,7 +2636,8 @@ func TestProviderOverride(t *testing.T) {
 		bf, err := Init(ctx, schemas.BifrostConfig{
 			Account:    account,
 			Logger:     NewDefaultLogger(schemas.LogLevelError),
-			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL+"/v1")},
+			// BaseURL is the host root only (no path prefix); Bifrost appends "/v1/chat/completions".
+		LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL)},
 		})
 		if err != nil {
 			t.Fatalf("Init failed: %v", err)
@@ -2680,9 +2666,8 @@ func TestProviderOverride(t *testing.T) {
 		if capturedHost != wantHost {
 			t.Errorf("Host header: got %q, want %q", capturedHost, wantHost)
 		}
-		// BaseURL is server.URL+"/v1"; Bifrost appends the provider default path "/v1/chat/completions".
-		if capturedPath != "/v1/v1/chat/completions" {
-			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/v1/chat/completions")
+		if capturedPath != "/v1/chat/completions" {
+			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/chat/completions")
 		}
 	})
 
@@ -2744,15 +2729,15 @@ func TestProviderOverride(t *testing.T) {
 		}))
 		defer server.Close()
 
-		// Empty account — no providers registered at all. nilConfigAccount returns (nil, nil)
+		// Empty account — no providers registered at all. MockAccount returns (nil, nil)
 		// for unregistered providers so getProviderQueue can auto-init OpenAI.
-		account := &nilConfigAccount{NewMockAccount()}
+		account := NewMockAccount()
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bf, err := Init(ctx, schemas.BifrostConfig{
 			Account:    account,
 			Logger:     NewDefaultLogger(schemas.LogLevelError),
-			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL+"/v1")},
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL)},
 		})
 		if err != nil {
 			t.Fatalf("Init failed: %v", err)
@@ -2802,13 +2787,13 @@ func TestProviderOverride(t *testing.T) {
 		defer overrideServer.Close()
 
 		// Anthropic → sentinel (must never be contacted after dialect switch).
-		// OpenAI is absent from static config; nilConfigAccount returns (nil, nil) for it
+		// OpenAI is absent from static config; MockAccount returns (nil, nil) for it
 		// so getProviderQueue can auto-init the OpenAI queue.
-		account := &nilConfigAccount{NewMockAccount()}
+		account := NewMockAccount()
 		account.AddProviderWithBaseURL(schemas.Anthropic, 2, 100, sentinelServer.URL)
 
 		// Plugin switches provider, key, and base URL.
-		plugin := newProviderSwitchPlugin(schemas.OpenAI, overrideKey, overrideServer.URL+"/v1")
+		plugin := newProviderSwitchPlugin(schemas.OpenAI, overrideKey, overrideServer.URL)
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bf, err := Init(ctx, schemas.BifrostConfig{
@@ -2859,16 +2844,16 @@ func TestProviderOverride(t *testing.T) {
 		}))
 		defer server.Close()
 
-		// Empty account — "my-org-openai" is not registered anywhere. nilConfigAccount
-		// returns (nil, nil) for unregistered providers (including the resolved "openai"
-		// base type) so getProviderQueue can auto-init it.
-		account := &nilConfigAccount{NewMockAccount()}
+		// Empty account — "my-org-openai" is not registered anywhere. MockAccount returns
+		// (nil, nil) for unregistered providers (including the resolved "openai" base type)
+		// so getProviderQueue can auto-init it.
+		account := NewMockAccount()
 
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bf, err := Init(ctx, schemas.BifrostConfig{
 			Account:    account,
 			Logger:     NewDefaultLogger(schemas.LogLevelError),
-			LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin("my-org-openai", schemas.OpenAI, arbitraryKey, server.URL+"/v1")},
+			LLMPlugins: []schemas.LLMPlugin{newArbitraryProviderPlugin("my-org-openai", schemas.OpenAI, arbitraryKey, server.URL)},
 		})
 		if err != nil {
 			t.Fatalf("Init() error = %v", err)
@@ -2994,15 +2979,15 @@ func TestFallbackToUnconfiguredProvider(t *testing.T) {
 	}))
 	defer fallbackServer.Close()
 
-	// Account has only the primary (Anthropic) configured. The fallback (OpenAI) is absent;
-	// nilConfigAccount returns (nil, nil) for it so getProviderQueue auto-inits it.
-	account := &nilConfigAccount{NewMockAccount()}
+	// Account has only the primary (Anthropic) configured. The fallback (OpenAI) is absent,
+	// so GetConfigForProvider("openai") returns (nil, nil) — Bifrost must auto-init it.
+	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Anthropic, 10, 100, primaryServer.URL)
 
 	// plugin swaps in fallback credentials via ProviderOverride when FallbackIndex > 0.
 	plugin := &fallbackOverridePlugin{
 		fallbackKey:     fallbackKey,
-		fallbackBaseURL: fallbackServer.URL + "/v1",
+		fallbackBaseURL: fallbackServer.URL,
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
