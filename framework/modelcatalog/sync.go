@@ -329,11 +329,6 @@ func (mc *ModelCatalog) syncModelParameters(ctx context.Context) error {
 		}
 	}
 
-	// Update in-memory cache
-	mc.paramsMu.Lock()
-	mc.modelParametersData = paramsData
-	mc.paramsMu.Unlock()
-
 	// Update last sync time if config store is available
 	if mc.configStore != nil {
 		config := &configstoreTables.TableGovernanceConfig{

@@ -713,21 +713,24 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	modelCatalog := h.inMemoryStore.ModelCatalog
-	if modelCatalog == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+	if h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "database store not available")
 		return
 	}
 
-	data := modelCatalog.GetModelParametersData(modelParam)
-	if data == nil {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+	params, err := h.dbStore.GetModelParameters(ctx, modelParam)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get model parameters: %v", err))
 		return
 	}
 
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBody(data)
+	ctx.SetBodyString(params.Data)
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions

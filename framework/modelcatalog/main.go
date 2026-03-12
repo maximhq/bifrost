@@ -3,7 +3,6 @@ package modelcatalog
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,10 +45,6 @@ type ModelCatalog struct {
 	modelPool           map[schemas.ModelProvider][]string
 	unfilteredModelPool map[schemas.ModelProvider][]string // model pool without allowed models filtering
 	baseModelIndex      map[string]string                  // model string → canonical base model name
-
-	// In-memory cache for model parameters (keyed by model name)
-	modelParametersData map[string]json.RawMessage
-	paramsMu            sync.RWMutex
 
 	// Background sync worker
 	syncTicker *time.Ticker
@@ -131,7 +126,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		modelPool:              make(map[schemas.ModelProvider][]string),
 		unfilteredModelPool:    make(map[schemas.ModelProvider][]string),
 		baseModelIndex:         make(map[string]string),
-		modelParametersData:    make(map[string]json.RawMessage),
 		done:                   make(chan struct{}),
 		shouldSyncPricingFunc:  shouldSyncPricingFunc,
 		distributedLockManager: configstore.NewDistributedLockManager(configStore, logger, configstore.WithDefaultTTL(30*time.Second)),
@@ -175,10 +169,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 		// Load pricing data from config memory
 		if err := mc.loadPricingIntoMemory(ctx); err != nil {
 			return nil, fmt.Errorf("failed to load pricing data from config memory: %w", err)
-		}
-		// Sync model parameters into memory
-		if err := mc.syncModelParameters(ctx); err != nil {
-			mc.logger.Warn("failed to sync model parameters data: %v", err)
 		}
 	}
 
@@ -549,17 +539,6 @@ func (mc *ModelCatalog) IsSameModel(model1, model2 string) bool {
 	return mc.GetBaseModelName(model1) == mc.GetBaseModelName(model2)
 }
 
-// GetModelParametersData returns the raw JSON model parameters for a specific model (thread-safe)
-func (mc *ModelCatalog) GetModelParametersData(model string) json.RawMessage {
-	mc.paramsMu.RLock()
-	defer mc.paramsMu.RUnlock()
-	data, ok := mc.modelParametersData[model]
-	if !ok {
-		return nil
-	}
-	return data
-}
-
 // DeleteModelDataForProvider deletes all model data from the pool for a given provider
 func (mc *ModelCatalog) DeleteModelDataForProvider(provider schemas.ModelProvider) {
 	mc.mu.Lock()
@@ -814,7 +793,6 @@ func NewTestCatalog(baseModelIndex map[string]string) *ModelCatalog {
 		unfilteredModelPool: make(map[schemas.ModelProvider][]string),
 		baseModelIndex:      baseModelIndex,
 		pricingData:         make(map[string]configstoreTables.TableModelPricing),
-		modelParametersData: make(map[string]json.RawMessage),
 		compiledOverrides:   make(map[schemas.ModelProvider][]compiledProviderPricingOverride),
 		done:                make(chan struct{}),
 	}
