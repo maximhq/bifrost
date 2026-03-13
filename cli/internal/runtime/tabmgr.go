@@ -1114,10 +1114,11 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 	case b == ' ':
 		tm.clearNoticeAndResume()
 	case b == prefix || b == 0x1b || b == '\r' || b == '\n':
-		tm.exitCommandMode()
 		if !tm.hasTabs() {
 			tm.drawTabBar()
+			return
 		}
+		tm.exitCommandMode()
 	case b >= '1' && b <= '9':
 		tm.switchTabAndResume(int(b - '1'))
 	case b == 'n' || b == 'N':
