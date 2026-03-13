@@ -3,7 +3,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
@@ -41,13 +40,13 @@ func (h *AnthropicOAuthHandler) RegisterRoutes(r *router.Router, middlewares ...
 // handleInitiate initiates an Anthropic OAuth PKCE flow
 // POST /api/anthropic-oauth/initiate
 func (h *AnthropicOAuthHandler) handleInitiate(ctx *fasthttp.RequestCtx) {
-	flowInitiation, err := h.oauthProvider.InitiateAnthropicOAuthFlow(context.Background())
+	flowInitiation, err := h.oauthProvider.InitiateAnthropicOAuthFlow(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to initiate Anthropic OAuth flow: %v", err))
 		return
 	}
 
-	SendJSON(ctx, map[string]interface{}{
+	SendJSONRaw(ctx, map[string]interface{}{
 		"authorize_url":   flowInitiation.AuthorizeURL,
 		"oauth_config_id": flowInitiation.OauthConfigID,
 		"expires_at":      flowInitiation.ExpiresAt,
@@ -74,7 +73,7 @@ func (h *AnthropicOAuthHandler) handleExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.oauthProvider.CompleteAnthropicOAuthFlow(context.Background(), req.Code, req.OAuthConfigID); err != nil {
+	if err := h.oauthProvider.CompleteAnthropicOAuthFlow(ctx, req.Code, req.OAuthConfigID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to exchange code: %v", err))
 		return
 	}
@@ -93,7 +92,7 @@ func (h *AnthropicOAuthHandler) handleStatus(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	valid, err := h.oauthProvider.ValidateToken(context.Background(), oauthConfigID)
+	valid, err := h.oauthProvider.ValidateToken(ctx, oauthConfigID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to validate token: %v", err))
 		return
@@ -129,7 +128,7 @@ func (h *AnthropicOAuthHandler) handleRefresh(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.oauthProvider.RefreshAccessToken(context.Background(), req.OAuthConfigID); err != nil {
+	if err := h.oauthProvider.RefreshAccessToken(ctx, req.OAuthConfigID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh token: %v", err))
 		return
 	}
@@ -158,7 +157,7 @@ func (h *AnthropicOAuthHandler) handleLogout(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if err := h.oauthProvider.RevokeToken(context.Background(), req.OAuthConfigID); err != nil {
+	if err := h.oauthProvider.RevokeToken(ctx, req.OAuthConfigID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke token: %v", err))
 		return
 	}
