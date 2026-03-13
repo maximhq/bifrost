@@ -381,6 +381,8 @@ export const allowedRequestsSchema = z.object({
 	video_remix: z.boolean(),
 	count_tokens: z.boolean(),
 	list_models: z.boolean(),
+	websocket_responses: z.boolean(),
+	realtime: z.boolean(),
 });
 
 // Custom provider config schema

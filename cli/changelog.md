@@ -1,12 +1,7 @@
-## v0.10.0
+## v0.10.1
 
-- feat: tabbed multiplexer for running multiple coding-agent sessions in a single terminal
-- feat: self-update flow with `bifrost update` command and background version checks
-- feat: `bifrost version` subcommand
-- feat: native config writing for Claude Code (~/.claude/settings.json) with confirmation prompt
-- feat: PTY-based process execution with SIGWINCH propagation for proper TUI rendering
-- feat: npx installer rewrite with persistent install to ~/.bifrost/bin/ and automatic shell PATH setup
-- feat: Claude Code simple terminal mode (CLAUDE_CODE_SIMPLE=1) for tab compatibility
-- fix: opencode harness model reference format and provider config (bifrost/ prefix, dedicated provider)
-- feat: opencode adaptive TUI theme injection and JSONC config parsing
-- fix: chooser TUI prompt cleanup and tab bar integration (ReservedRows, BackToTabs, Notify)
+- feat: added "edit session" functionality via ^B e to reopen chooser with prefilled values
+- feat: Claude harness now pins selected models across Sonnet, Opus, and Haiku tiers
+- fix: improved terminal cursor restoration on PTY exit
+- fix: enhanced error notice handling in command mode with sticky error states
+- fix: improved MCP client reconnection with exponential backoff and connection timeout

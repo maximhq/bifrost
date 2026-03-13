@@ -1811,8 +1811,12 @@ compare_postgres_snapshots() {
     local renamed_columns="routing_engine_used"
     
     # Columns that are intentionally dropped during migration should be excluded
-    # enable_governance (dropped in v1.4.8)
+    # enable_governance (dropped in v1.4.8) - applies to all tables
     local dropped_columns="enable_governance"
+    # provider, model (dropped from routing_rules only in v1.4.12)
+    if [ "$table" = "routing_rules" ]; then
+      dropped_columns="$dropped_columns provider model"
+    fi
     
     local before_col_array
     IFS=',' read -ra before_col_array <<< "$before_columns"

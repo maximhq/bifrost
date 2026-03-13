@@ -1,0 +1,58 @@
+---
+title: "v1.3.8"
+description: "v1.3.8 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.8">
+
+This release upgrades the base OSS version from v1.4.10 to v1.4.11, bringing Anthropic cache control for tool calls, Helm graceful shutdown improvements, Codex compatibility fixes, and numerous streaming/serialization bug fixes. On the enterprise side, Gray Swan guardrails now support custom base URLs.
+
+This build also upgrades to go 1.26.1 - that fixes CVE-2026-25679, CVE-2026-27137, CVE-2026-27138, CVE-2026-27139, CVE-2026-27142.
+
+### ✨ Features
+
+- Gray Swan Custom Base URL — Added support for custom base URLs in Gray Swan guardrails configuration
+- Anthropic Cache Control for Tool Calls — Added cache-control support for Anthropic tool calls
+- Helm Graceful Shutdown — Added graceful shutdown and HPA stabilization for streaming connections
+- Logstore Sonic Serialization — Replaced encoding/json with sonic for logstore serialization, improving performance
+- Maxim Attachments — Added attachment support to Maxim plugin
+
+### 🚨 Breaking changes
+
+Based on our recent pentesting, we have updated configuration for open endpoints.
+
+1. /metrics endpoint is now protected behind auth. You can create an API key - and add Metrics scope to it. You have to configure scraper with Header authorization `bearer api_key`
+
+### 🐞 Fixed
+
+- Codex Compatibility — Fixed fallback handling and request decompression for Codex compatibility
+- Anthropic SSE Streaming — Use NewSSEScanner for Responses API streaming
+- Audio Filename Preservation — Preserve original audio filename in transcription requests
+- Proxy Override — Fixed proxy override handling
+- Raw Request Serialization — Fixed raw request serialization in SSE events
+- Key List Models — Fixed key list models serialization
+- Async Job Recovery — Fixed async jobs stuck in "processing" on marshal failure, now correctly transition to "failed"
+- Valkey/Redis Vector Store — Improved Valkey Search compatibility and correctness in Redis vector store
+- Semanticcache Nil Check — Added nil check on message Content before accessing fields
+- Dashboard Overflow — Resolved dashboard and provider config overflow regressions
+- Config Schema Alignment — Fixed config schema and added test to verify Go model alignment
+- Key Selection Panic — Prevent panic in key selection when all keys have zero weight
+- Security Patches — Applied security patches including default Anthropic error type fix
+
+### 📀 Base OSS version
+
+```
+transports/v1.4.12-0.20260306144022-5ac7c2732345
+```
+
+### 🔌 If you are compiling plugin against this release - use following deps
+
+```
+github.com/maximhq/bifrost/core v1.4.8-0.20260306144022-5ac7c2732345
+github.com/maximhq/bifrost/framework v1.2.26
+github.com/maximhq/bifrost/plugins/governance v1.4.27
+github.com/maximhq/bifrost/plugins/logging v1.4.27
+github.com/maximhq/bifrost/transports v1.4.12-0.20260306144022-5ac7c2732345
+```
+
+</Update>
