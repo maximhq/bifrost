@@ -1,3 +1,4 @@
+- fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — auto, any, and specific tool constraints now correctly propagate to the model
 - feat: adds option to select specific API key for routing rules
 - feat: adds support for multiple weighted routing targets for probabilistic routing
 - [breaking change] feat: routing rules no longer support top-level `provider`/`model` fields; replace with a `targets` array — e.g. `"targets": [{"provider": "openai", "model": "gpt-4o", "weight": 1.0}]`

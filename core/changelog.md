@@ -1,3 +1,4 @@
+- fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — now correctly passes auto, any, and specific tool constraints to the model
 - feat: add BifrostContextKeyAPIKeyID for explicit key selection by ID, with priority over key name selection
 - feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
 - feat: add Filename field to TranscriptionInput schema to carry original filename through the request pipeline
