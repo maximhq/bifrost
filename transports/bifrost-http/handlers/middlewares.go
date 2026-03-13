@@ -90,11 +90,15 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-				// Don't send Allow-Credentials when wildcard origin is configured — it's a
-				// CORS spec violation and signals an overly permissive configuration.
-				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") {
-					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-				}
+			// Set Allow-Credentials for credentialed requests. Only skip when wildcard
+			// is configured AND the origin was matched by the wildcard (not by localhost rule
+			// or explicit listing). Localhost origins and explicitly listed origins always
+			// get credentials support since we return the specific origin.
+			if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+				isLocalhostOrigin(origin) ||
+				slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
+				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+			}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
 				// Vary: Origin tells caches that the response varies based on the Origin
 				// request header, preventing incorrect CORS headers from being served.
@@ -217,6 +221,7 @@ func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
 
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
 func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
 	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
 	bodyReader := bytes.NewReader(req.Body())
