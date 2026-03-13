@@ -161,6 +161,7 @@ func TestExtractGeminiModelMetadataParams(t *testing.T) {
 
 func TestConvertGeminiModelMetadataResponse(t *testing.T) {
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-2.5-pro")
 
 	resp := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{{ID: "gemini/gemini-2.5-pro", Name: schemas.Ptr("Gemini 2.5 Pro")}},
@@ -173,6 +174,26 @@ func TestConvertGeminiModelMetadataResponse(t *testing.T) {
 	require.True(t, ok, "expected gemini.GeminiModel")
 	assert.Equal(t, "models/gemini-2.5-pro", model.Name)
 	assert.Equal(t, "Gemini 2.5 Pro", model.DisplayName)
+}
+
+func TestConvertGeminiModelMetadataResponse_MatchesRequestedModelNotFirst(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-3-pro-preview")
+
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{
+			{ID: "gemini/gemini-1.5-pro", Name: schemas.Ptr("Gemini 1.5 Pro")},
+			{ID: "gemini/gemini-3-pro-preview", Name: schemas.Ptr("Gemini 3 Pro Preview")},
+		},
+	}
+
+	converted, err := convertGeminiModelMetadataResponse(bifrostCtx, resp)
+	require.NoError(t, err)
+
+	model, ok := converted.(gemini.GeminiModel)
+	require.True(t, ok, "expected gemini.GeminiModel")
+	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
+	assert.Equal(t, "Gemini 3 Pro Preview", model.DisplayName)
 }
 
 func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.T) {

@@ -1249,11 +1249,14 @@ func convertGeminiModelMetadataResponse(ctx *schemas.BifrostContext, resp *schem
 		return nil, errors.New("gemini model metadata response is nil")
 	}
 
-	if len(geminiResp.Models) > 0 {
-		return geminiResp.Models[0], nil
+	requestedModel, _ := ctx.Value(requestedGeminiModelMetadataContextKey).(string)
+	for _, m := range geminiResp.Models {
+		if strings.TrimPrefix(m.Name, "models/") == requestedModel {
+			return m, nil
+		}
 	}
 
-	if requestedModel, ok := ctx.Value(requestedGeminiModelMetadataContextKey).(string); ok && requestedModel != "" {
+	if requestedModel != "" {
 		// Gracefully return a minimal metadata object so SDK metadata discovery
 		// does not fail when no models are configured yet.
 		return gemini.GeminiModel{Name: "models/" + requestedModel}, nil
