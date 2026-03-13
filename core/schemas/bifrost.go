@@ -262,10 +262,12 @@ type ProviderOverride struct {
 	// Key is the API credential for this request. If nil, key-pool selection applies normally.
 	Key *Key `json:"key,omitempty"`
 	// BaseURL overrides NetworkConfig.BaseURL for this request.
-	// Provide the schema, host, and port only -- no path prefix.
+	// Provide the scheme, host, and port only -- no path prefix.
 	// Bifrost appends the provider's full default path (e.g. "/v1/chat/completions").
 	// Example: "https://eu.api.openai.com" (not "https://eu.api.openai.com/v1").
 	// Use RequestPathOverrides in CustomProviderConfig to change the path suffix.
+	// Honoured only by providers that use GetRequestPath internally (OpenAI, Anthropic,
+	// Cohere, HuggingFace, Replicate). Other providers construct their URLs directly.
 	BaseURL string `json:"base_url,omitempty"`
 	// BaseProviderType specifies the API dialect to use when the provider name set via
 	// UpdateProvider is not a built-in provider (e.g. "my-tenant-openai").
@@ -876,7 +878,12 @@ func (br *BifrostRequest) UpdateAPIKey(key Key) {
 
 // UpdateProviderBaseURL overrides the provider's base URL for this request, enabling
 // routing to geo-specific or tenant-specific endpoints (e.g. "https://eu.api.openai.com").
-// The URL should not have a trailing slash.
+// The URL should be the scheme + host only, without a trailing slash or path prefix.
+//
+// Note: BaseURL override is honoured only by providers that resolve their request URL
+// via GetRequestPath (OpenAI, Anthropic, Cohere, HuggingFace, Replicate). Providers that
+// construct their URLs directly (Gemini, Groq, Mistral, etc.) ignore this field; use
+// ctx.SetValue(schemas.BifrostContextKeyURLPath, fullURL) for those providers instead.
 func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
 	if br.ProviderOverride == nil {
 		br.ProviderOverride = &ProviderOverride{}

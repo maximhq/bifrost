@@ -1231,10 +1231,10 @@ func TestProviderOverride(t *testing.T) {
 		// data-residency-aware hook does after reading the user's JWT claims.
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		bf, err := Init(ctx, schemas.BifrostConfig{
-			Account:    account,
-			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			Account: account,
+			Logger:  NewDefaultLogger(schemas.LogLevelError),
 			// BaseURL is the host root only (no path prefix); Bifrost appends "/v1/chat/completions".
-		LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL)},
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL)},
 		})
 		if err != nil {
 			t.Fatalf("Init failed: %v", err)

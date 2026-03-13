@@ -237,7 +237,10 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	bc.userValues[key] = value
 }
 
-// ClearValue clears a value from the internal userValues map.
+// ClearValue removes a value from the internal userValues map.
+// After ClearValue, Value(key) falls through to the parent context lookup
+// rather than returning nil. Use this to restore parent-context visibility
+// for a key previously set on this context.
 func (bc *BifrostContext) ClearValue(key any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
@@ -247,7 +250,7 @@ func (bc *BifrostContext) ClearValue(key any) {
 	bc.valuesMu.Lock()
 	defer bc.valuesMu.Unlock()
 	if bc.userValues != nil {
-		bc.userValues[key] = nil
+		delete(bc.userValues, key)
 	}
 }
 
