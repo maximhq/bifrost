@@ -13,7 +13,7 @@ import {
 	useUpdatePromptMutation,
 } from "@/lib/store/apis/promptsApi";
 import { useGetModelParametersQuery } from "@/lib/store/apis/providersApi";
-import { Message, MessageRole, MessageType } from "@/lib/message";
+import { Message, MessageRole, MessageType, extractVariablesFromMessages, mergeVariables, type VariableMap } from "@/lib/message";
 import { Folder, ModelParams, Prompt, PromptSession, PromptVersion } from "@/lib/types/prompts";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
@@ -55,6 +55,10 @@ interface PromptContextValue {
 	apiKeyId: string;
 	setApiKeyId: React.Dispatch<React.SetStateAction<string>>;
 
+	// Jinja2 variables
+	variables: VariableMap;
+	setVariables: React.Dispatch<React.SetStateAction<VariableMap>>;
+
 	// Sheet states
 	folderSheet: { open: boolean; folder?: Folder };
 	setFolderSheet: React.Dispatch<React.SetStateAction<{ open: boolean; folder?: Folder }>>;
@@ -78,6 +82,8 @@ interface PromptContextValue {
 
 	// Diff detection
 	hasChanges: boolean;
+	hasVersionChanges: boolean;
+	hasSessionChanges: boolean;
 
 	// Handlers
 	handleSelectPrompt: (id: string) => void;
@@ -136,12 +142,13 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			return next.map((msg, i) => msg.withIndex(i));
 		});
 	}, []);
-	const [provider, setProvider] = useState("openai");
-	const [model, setModel] = useState("gpt-4o");
+	const [provider, setProvider] = useState("");
+	const [model, setModel] = useState("");
 	const [modelParams, setModelParams] = useState<ModelParams>({});
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
+	const [variables, setVariables] = useState<VariableMap>({});
 
 	// Fetch model datasheet for capabilities
 	const { data: datasheetData } = useGetModelParametersQuery(model, { skip: !model });
@@ -165,7 +172,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const selectedSession = useMemo(() => sessions.find((s) => s.id === selectedSessionId), [sessions, selectedSessionId]);
 
 	// Fetch full version data (with messages) when a version is selected
-	const { currentData: selectedVersionData, isLoading: isVersionLoading } = useGetPromptVersionQuery(selectedVersionId ?? 0, {
+	const { currentData: selectedVersionData, isLoading: isVersionLoading, isFetching: isVersionFetching } = useGetPromptVersionQuery(selectedVersionId ?? 0, {
 		skip: !selectedVersionId,
 	});
 	const selectedVersion = selectedVersionData?.version;
@@ -189,19 +196,28 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const { api_key_id, ...rest } = params || ({} as ModelParams);
 			setModelParams(rest);
 			setApiKeyId(api_key_id || "__auto__");
-			setProvider(prov || "openai");
-			setModel(mod || "gpt-4o");
+			setProvider(prov || "");
+			setModel(mod || "");
+		};
+
+		const loadMessages = (msgs: Message[]) => {
+			setMessages(msgs);
+			const varNames = extractVariablesFromMessages(msgs);
+			setVariables((prev) => mergeVariables(prev, varNames));
 		};
 
 		if (selectedSession) {
 			const raw = (selectedSession.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedSession.model_params, selectedSession.provider, selectedSession.model);
 		} else if (selectedVersion) {
+			// If sessions are still loading and no session is explicitly selected,
+			// wait — a session may auto-select and take priority
+			if (isSessionsLoading && !selectedSessionId) return;
 			const raw = (selectedVersion.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedVersion.model_params, selectedVersion.provider, selectedVersion.model);
 		} else if (selectedPrompt?.latest_version) {
 			// Only fall back to latest_version after sessions have settled
@@ -210,75 +226,111 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const version = selectedPrompt.latest_version;
 			const raw = (version.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
-			setMessages(loaded.length > 0 ? loaded : [Message.system("")]);
+			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(version.model_params, version.provider, version.model);
 			if (sessions.length === 0) {
 				setUrlState({ versionId: version.id });
 			}
 		} else {
 			setMessages([Message.system("")]);
-			setProvider("openai");
-			setModel("gpt-4o");
+			setProvider("");
+			setModel("");
 			setModelParams({});
 			setApiKeyId("__auto__");
 		}
 	}, [selectedSession, selectedVersion, selectedPrompt, selectedSessionId, selectedVersionId, setUrlState, isSessionsLoading, sessions.length]);
 
 	// Auto-select the most recent session when sessions load and none is selected
+	// Sessions take priority over versions for initial loading
 	useEffect(() => {
 		if (sessions.length > 0 && !selectedSessionId && !selectedVersionId) {
 			setUrlState({ sessionId: sessions[0].id });
 		}
 	}, [selectedPromptId, sessions, selectedSessionId, selectedVersionId, setUrlState]);
 
+	// Diff detection helper — compares current playground state against a reference config
+	const diffAgainst = useCallback(
+		(ref: { messages?: any[]; model_params?: ModelParams; provider?: string; model?: string } | undefined) => {
+			if (!ref) return true; // No reference — treat as changed
+			const refMessages = ref.messages ?? [];
+			const refProvider = ref.provider;
+			const refModel = ref.model;
+			const refParams = ref.model_params;
+
+			if (provider !== refProvider) return true;
+			if (model !== refModel) return true;
+
+			const { api_key_id: refApiKeyId, ...refParamsRest } = refParams || ({} as ModelParams);
+			const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
+			if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
+
+			if (JSON.stringify(modelParams, Object.keys(modelParams).sort()) !== JSON.stringify(refParamsRest, Object.keys(refParamsRest).sort()))
+				return true;
+
+			const currentSerialized = Message.serializeAll(messages);
+			if (JSON.stringify(currentSerialized) !== JSON.stringify(refMessages)) return true;
+
+			return false;
+		},
+		[provider, model, modelParams, apiKeyId, messages],
+	);
+
 	// Diff detection — compare current playground state against the loaded session/version
 	const hasChanges = useMemo(() => {
-		let refMessages: any[] | undefined;
-		let refParams: ModelParams | undefined;
-		let refProvider: string | undefined;
-		let refModel: string | undefined;
-
+		// Suppress diff while version data is in flight to avoid flicker
+		if (selectedVersionId && (isVersionFetching || selectedVersion?.id !== selectedVersionId)) return false;
 		if (selectedSession) {
-			refMessages = selectedSession.messages?.map((m) => m.message) ?? [];
-			refParams = selectedSession.model_params;
-			refProvider = selectedSession.provider;
-			refModel = selectedSession.model;
-		} else if (selectedVersion) {
-			refMessages = selectedVersion.messages?.map((m) => m.message) ?? [];
-			refParams = selectedVersion.model_params;
-			refProvider = selectedVersion.provider;
-			refModel = selectedVersion.model;
-		} else {
-			// No reference to compare against — always allow save
-			return true;
+			return diffAgainst({
+				messages: selectedSession.messages?.map((m) => m.message) ?? [],
+				model_params: selectedSession.model_params,
+				provider: selectedSession.provider,
+				model: selectedSession.model,
+			});
 		}
+		if (selectedVersion) {
+			return diffAgainst({
+				messages: selectedVersion.messages?.map((m) => m.message) ?? [],
+				model_params: selectedVersion.model_params,
+				provider: selectedVersion.provider,
+				model: selectedVersion.model,
+			});
+		}
+		return true;
+	}, [selectedSession, selectedVersion, diffAgainst, selectedVersionId, isVersionFetching]);
 
-		// Quick string checks first
-		if (provider !== refProvider) return true;
-		if (model !== refModel) return true;
+	// Diff against the active version — drives "unpublished changes" badge & commit button
+	// Uses the explicitly selected version if available, otherwise falls back to latest_version
+	const activeVersionRef = selectedVersion ?? selectedPrompt?.latest_version;
 
-		// Compare api_key_id
-		const { api_key_id: refApiKeyId, ...refParamsRest } = refParams || ({} as ModelParams);
-		const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
-		if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
+	const hasVersionChanges = useMemo(() => {
+		// Suppress diff while version data is in flight or mismatched to avoid flash
+		if (selectedVersionId && (isVersionFetching || selectedVersion?.id !== selectedVersionId)) return false;
+		if (!activeVersionRef) return true; // No versions yet — always allow commit
+		return diffAgainst({
+			messages: activeVersionRef.messages?.map((m) => m.message) ?? [],
+			model_params: activeVersionRef.model_params,
+			provider: activeVersionRef.provider,
+			model: activeVersionRef.model,
+		});
+	}, [activeVersionRef, diffAgainst, selectedVersionId, isVersionFetching, selectedVersion?.id]);
 
-		// Compare model params (excluding api_key_id)
-		if (JSON.stringify(modelParams, Object.keys(modelParams).sort()) !== JSON.stringify(refParamsRest, Object.keys(refParamsRest).sort()))
-			return true;
-
-		// Compare messages (most expensive — do last)
-		const currentSerialized = Message.serializeAll(messages);
-		if (JSON.stringify(currentSerialized) !== JSON.stringify(refMessages)) return true;
-
-		return false;
-	}, [selectedSession, selectedVersion, provider, model, modelParams, apiKeyId, messages]);
+	// Diff against the selected session — drives red asterisk indicator
+	const hasSessionChanges = useMemo(() => {
+		if (!selectedSession) return false;
+		return diffAgainst({
+			messages: selectedSession.messages?.map((m) => m.message) ?? [],
+			model_params: selectedSession.model_params,
+			provider: selectedSession.provider,
+			model: selectedSession.model,
+		});
+	}, [selectedSession, diffAgainst]);
 
 	// Handlers
 	const handleSelectPrompt = useCallback(
 		(id: string) => {
 			setMessages([Message.system("")]);
-			setProvider("openai");
-			setModel("gpt-4o");
+			setProvider("");
+			setModel("");
 			setModelParams({});
 			setApiKeyId("__auto__");
 			setUrlState({ promptId: id, sessionId: null, versionId: null });
@@ -335,7 +387,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const isActive = () => activeRunRef.current === runToken;
 
 			setIsStreaming(true);
-			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId }, {
+			await executePrompt(messages, pendingMessage, { provider, model, modelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -384,7 +436,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId],
+		[messages, provider, model, modelParams, apiKeyId, variables],
 	);
 
 	const handleSubmitToolResult = useCallback(
@@ -414,7 +466,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 			// Execute with the updated messages
 			setIsStreaming(true);
-			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId }, {
+			await executePrompt(newMessages, undefined, { provider, model, modelParams, apiKeyId, variables }, {
 				onStreamingStart: (allMessages, placeholder) => {
 					if (!isActive()) return;
 					setMessages([...allMessages, placeholder]);
@@ -463,7 +515,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				},
 			});
 		},
-		[messages, provider, model, modelParams, apiKeyId],
+		[messages, provider, model, modelParams, apiKeyId, variables],
 	);
 
 	const value: PromptContextValue = {
@@ -493,6 +545,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		setModelParams,
 		apiKeyId,
 		setApiKeyId,
+		variables,
+		setVariables,
 		folderSheet,
 		setFolderSheet,
 		promptSheet,
@@ -507,6 +561,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		isDeletingPrompt,
 		supportsVision,
 		hasChanges,
+		hasVersionChanges,
+		hasSessionChanges,
 		handleSelectPrompt,
 		handleMovePrompt,
 		handleDeleteFolder,

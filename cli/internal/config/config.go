@@ -40,9 +40,11 @@ type Selection struct {
 
 // State holds the persistent runtime state including profiles and per-profile selections.
 type State struct {
-	Profiles      []Profile            `json:"profiles"`
-	LastProfileID string               `json:"last_profile_id"`
-	Selections    map[string]Selection `json:"selections"`
+	Profiles         []Profile            `json:"profiles"`
+	LastProfileID    string               `json:"last_profile_id"`
+	Selections       map[string]Selection `json:"selections"`
+	LastVersionCheck int64                `json:"last_version_check,omitempty"`
+	LastKnownVersion string               `json:"last_known_version,omitempty"`
 }
 
 // DefaultConfigPath returns the default path to the bifrost config file (~/.bifrost/config.json).
@@ -107,9 +109,9 @@ func LoadState(path string) (*State, error) {
 	return &s, nil
 }
 
-// writeAtomic writes data to a temp file in the same directory and atomically
+// WriteAtomic writes data to a temp file in the same directory and atomically
 // replaces the target path via rename, preventing partial/corrupt files on crash.
-func writeAtomic(path string, data []byte, perm os.FileMode) error {
+func WriteAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, filepath.Base(path)+".tmp*")
 	if err != nil {
@@ -153,7 +155,7 @@ func SaveState(path string, s *State) error {
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)
 	}
-	if err := writeAtomic(path, b, 0o600); err != nil {
+	if err := WriteAtomic(path, b, 0o600); err != nil {
 		return fmt.Errorf("write state: %w", err)
 	}
 	return nil
@@ -173,7 +175,7 @@ func SaveConfig(path string, c *FileConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	if err := writeAtomic(path, b, 0o600); err != nil {
+	if err := WriteAtomic(path, b, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil

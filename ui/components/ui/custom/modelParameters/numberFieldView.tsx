@@ -34,11 +34,10 @@ export default function NumberFieldView(props: Props) {
 	return (
 		<div className={cn("flex flex-col gap-3", props.className)}>
 			<FieldLabel label={field.label} helpText={field.helpText} onClear={props.onClear}>
-				{field.range && (
+				{field.range && config[field.id] !== undefined && (
 					<NumberInput
 						className={cn("ml-auto h-[24px] w-[80px] text-center shrink-0", invalid ? "border-border-error focus-visible:ring-border-error" : "")}
 						value={config[field.id] as number}
-						placeholder={field.default !== undefined ? String(field.default) : ""}
 						disabled={props.disabled && props.disabled === true}
 						onChange={(value) => props.onChange(value)}
 						preventOnBlurFallback
@@ -53,7 +52,7 @@ export default function NumberFieldView(props: Props) {
 					max={field.range?.max ?? 1}
 					step={field.range?.step ?? (field.range?.max ?? 1) / 100}
 					disabled={props.disabled && props.disabled === true}
-					value={[(config[field.id] as number) !== undefined ? (config[field.id] as number) : field.default ?? 0]}
+					value={[(config[field.id] as number) !== undefined ? (config[field.id] as number) : 0]}
 					onValueChange={(value) => {
 						props.onChange(value[0]);
 					}}
@@ -63,7 +62,6 @@ export default function NumberFieldView(props: Props) {
 				<NumberInput
 					className="w-full"
 					value={config[field.id] as number}
-					placeholder={field.default !== undefined ? String(field.default) : ""}
 					disabled={props.disabled && props.disabled === true}
 					onChange={(value) => props.onChange(value)}
 					preventOnBlurFallback

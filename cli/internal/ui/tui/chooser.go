@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -43,12 +44,16 @@ type ChooserConfig struct {
 	Worktree     string
 	Harnesses    []HarnessOption
 	AfterSession bool // true when returning from a harness session; blocks input until ready
+	ReservedRows int  // rows reserved by the tab bar; subtracted from the available height
 	FetchModels  func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
+	Notify       func(message string, isError bool)
+	Input        io.Reader // optional stdin override; when nil, os.Stdin is used
 }
 
 // ChooserResult holds the user's selections after the chooser TUI completes.
 type ChooserResult struct {
 	Quit           bool
+	BackToTabs     bool // true when the user pressed Ctrl+B to return to tab command mode
 	InstallHarness bool // true when user selected a harness that needs installation
 	BaseURL        string
 	VirtualKey     string
@@ -74,13 +79,13 @@ type modelsMsg struct {
 }
 
 type warmupDoneMsg struct{}
-type quitResetMsg struct{}
 
 type chooserModel struct {
 	cfg ChooserConfig
 
 	phase           chooserPhase
 	quit            bool
+	backToTabs      bool
 	done            bool
 	installHarness  bool
 	returnToSummary bool
@@ -101,11 +106,10 @@ type chooserModel struct {
 	loading     bool
 	loadErr     string
 
-	message     string
-	log         string // harness exit log (shown via 'l' toggle)
-	showLog     bool
-	warming     bool // true while ignoring input after session ended
-	quitPending bool // true after first ctrl+c; second ctrl+c quits
+	message string
+	warming bool // true while ignoring input after session ended
+
+	plainLayout bool // conservative layout for terminals with flaky full-screen rendering
 }
 
 // RunChooser launches the interactive multi-phase chooser TUI. It walks the user
@@ -113,11 +117,14 @@ type chooserModel struct {
 // the collected selections. Returns ChooserResult with Quit=true if the user aborts.
 func RunChooser(cfg ChooserConfig) (ChooserResult, error) {
 	m := newChooserModel(cfg)
+	input := cfg.Input
+	if input == nil {
+		input = os.Stdin
+	}
 	p := tea.NewProgram(
 		m,
-		tea.WithInput(os.Stdin),
+		tea.WithInput(input),
 		tea.WithOutput(os.Stdout),
-		tea.WithAltScreen(),
 	)
 	final, err := p.Run()
 	if err != nil {
@@ -126,6 +133,9 @@ func RunChooser(cfg ChooserConfig) (ChooserResult, error) {
 	fm, ok := final.(chooserModel)
 	if !ok {
 		return ChooserResult{}, fmt.Errorf("unexpected model type from TUI")
+	}
+	if fm.backToTabs {
+		return ChooserResult{BackToTabs: true}, nil
 	}
 	if fm.quit {
 		return ChooserResult{Quit: true}, nil
@@ -146,14 +156,14 @@ func RunChooser(cfg ChooserConfig) (ChooserResult, error) {
 func newChooserModel(cfg ChooserConfig) chooserModel {
 	base := textInput.New()
 	base.Placeholder = "http://localhost:8080"
-	base.Prompt = "Bifrost Base URL"
+	base.Prompt = ""
 	base.SetValue(strings.TrimSpace(cfg.BaseURL))
 	base.Focus()
 	base.CharLimit = 512
 
 	vk := textInput.New()
 	vk.Placeholder = "optional (x-bf-vk)"
-	vk.Prompt = "Virtual Key"
+	vk.Prompt = ""
 	vk.SetValue(strings.TrimSpace(cfg.VirtualKey))
 	vk.Blur()
 	vk.CharLimit = 512
@@ -186,8 +196,9 @@ func newChooserModel(cfg ChooserConfig) chooserModel {
 		vkInput:       vk,
 		worktreeInput: wt,
 		harnessIdx:    hIdx,
-		filterInput: filter,
-		log:         strings.TrimSpace(cfg.Message),
+		filterInput:   filter,
+		message:       strings.TrimSpace(cfg.Message),
+		plainLayout:   prefersPlainChooserLayout(),
 	}
 
 	if strings.TrimSpace(cfg.BaseURL) != "" {
@@ -209,12 +220,19 @@ func newChooserModel(cfg ChooserConfig) chooserModel {
 
 // Init implements tea.Model.
 func (m chooserModel) Init() tea.Cmd {
-	if m.warming {
-		return tea.Tick(10*time.Millisecond, func(time.Time) tea.Msg {
-			return warmupDoneMsg{}
+	var cmds []tea.Cmd
+	if msg := strings.TrimSpace(m.message); msg != "" && m.cfg.Notify != nil {
+		cmds = append(cmds, func() tea.Msg {
+			m.cfg.Notify(msg, false)
+			return nil
 		})
 	}
-	return nil
+	if m.warming {
+		cmds = append(cmds, tea.Tick(10*time.Millisecond, func(time.Time) tea.Msg {
+			return warmupDoneMsg{}
+		}))
+	}
+	return tea.Batch(cmds...)
 }
 
 // Update implements tea.Model. It handles keyboard input for all chooser phases:
@@ -226,16 +244,12 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.warming = false
 		return m, nil
 
-	case quitResetMsg:
-		m.quitPending = false
-		if m.message == "press ctrl+c again to quit" {
-			m.message = ""
-		}
-		return m, nil
-
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
+		m.height = msg.Height - m.cfg.ReservedRows
+		if m.height < 10 {
+			m.height = 10
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -244,15 +258,12 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		s := msg.String()
 		if s == "ctrl+c" {
-			if m.quitPending {
-				m.quit = true
-				return m, tea.Quit
-			}
-			m.quitPending = true
-			m.message = "press ctrl+c again to quit"
-			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
-				return quitResetMsg{}
-			})
+			m.quit = true
+			return m, tea.Quit
+		}
+		if s == "ctrl+b" {
+			m.backToTabs = true
+			return m, tea.Quit
 		}
 		// Only handle 'q' as quit when not in a text input phase
 		if s == "q" && m.phase != phaseBaseURL && m.phase != phaseVirtualKey && m.phase != phaseModel && m.phase != phaseWorktree {
@@ -264,11 +275,10 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case phaseBaseURL:
 			if s == "enter" {
 				if strings.TrimSpace(m.baseInput.Value()) == "" {
-					m.message = "base URL is required"
+					m.notify("base URL is required", true)
 					return m, nil
 				}
 				m.baseInput.Blur()
-				m.message = ""
 				if m.returnToSummary {
 					m.returnToSummary = false
 					m.phase = phaseSummary
@@ -291,7 +301,6 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case phaseVirtualKey:
 			if s == "enter" {
 				m.vkInput.Blur()
-				m.message = ""
 				if m.returnToSummary {
 					m.returnToSummary = false
 					m.phase = phaseSummary
@@ -315,7 +324,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				baseURL := strings.TrimSpace(m.baseInput.Value())
 				if baseURL != "" {
 					openBrowser(baseURL)
-					m.message = "opened bifrost dashboard"
+					m.notify("opened bifrost dashboard", false)
 				}
 				return m, nil
 			}
@@ -420,7 +429,7 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if ft != "" {
 						model = ft
 					} else {
-						m.message = "select a model"
+						m.notify("select a model", true)
 						return m, nil
 					}
 				}
@@ -464,7 +473,6 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case phaseWorktree:
 			if s == "enter" {
 				m.worktreeInput.Blur()
-				m.message = ""
 				m.returnToSummary = false
 				m.phase = phaseSummary
 				return m, nil
@@ -507,36 +515,31 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "m":
 				if !m.currentHarness().SupportsModelOverride {
-					m.message = m.currentHarness().Label + " manages its own model selection"
+					m.notify(m.currentHarness().Label+" manages its own model selection", true)
 					return m, nil
 				}
 				m.phase = phaseModel
 				m.returnToSummary = true
 				m.loading = true
 				return m, m.fetchModelsCmd()
-			case "l":
-				if m.log != "" {
-					m.showLog = !m.showLog
-				}
-				return m, nil
 			case "d":
 				baseURL := strings.TrimSpace(m.baseInput.Value())
 				if baseURL != "" {
 					openBrowser(baseURL)
-					m.message = "opened bifrost dashboard"
+					m.notify("opened bifrost dashboard", false)
 				}
 				return m, nil
 			case "r":
 				openBrowser(docsURL)
-				m.message = "opened docs"
+				m.notify("opened docs", false)
 				return m, nil
 			case "i":
 				openBrowser(issuesURL)
-				m.message = "opened GitHub issues"
+				m.notify("opened GitHub issues", false)
 				return m, nil
 			case "s":
 				openBrowser(repoURL)
-				m.message = "opened GitHub repo"
+				m.notify("opened GitHub repo", false)
 				return m, nil
 			case "esc":
 				m.quit = true
@@ -548,11 +551,13 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err != nil {
 			m.loadErr = msg.err.Error()
+			m.notify(m.loadErr, true)
 			m.models = nil
 		} else {
 			m.models = msg.models
 			if len(m.models) == 0 {
 				m.loadErr = "no models found \u2014 type a model name manually"
+				m.notify(m.loadErr, false)
 			}
 		}
 		m.modelIdx = 0
@@ -593,7 +598,11 @@ func (m chooserModel) View() string {
 	var body strings.Builder
 	var footer string
 
-	if m.loadErr != "" {
+	if m.message != "" && m.cfg.Notify == nil {
+		body.WriteString(hint.Render(m.message))
+		body.WriteString("\n\n")
+	}
+	if m.loadErr != "" && m.cfg.Notify == nil {
 		body.WriteString(errorStyle.Render(m.loadErr))
 		body.WriteString("\n\n")
 	}
@@ -741,9 +750,6 @@ func (m chooserModel) View() string {
 		if ho.SupportsModelOverride {
 			fb.WriteString(accent.Render("m") + hint.Render(" model  "))
 		}
-		if m.log != "" {
-			fb.WriteString(accent.Render("l") + hint.Render(" logs  "))
-		}
 		fb.WriteString(accent.Render("d") + hint.Render(" dashboard  "))
 		fb.WriteString(accent.Render("r") + hint.Render(" docs  "))
 		fb.WriteString(accent.Render("i") + hint.Render(" report issue  "))
@@ -773,12 +779,8 @@ func (m chooserModel) View() string {
 	content.WriteString(alignedBody)
 	contentStr := content.String()
 
-	// Determine status line (message or log toggle)
-	statusText := ""
-	if m.message != "" {
-		statusText = m.message
-	} else if m.showLog && m.log != "" {
-		statusText = m.log
+	if m.plainLayout {
+		return renderPlainChooserView(title, bodyStr, footer)
 	}
 
 	logoLines := strings.Count(logoBlock, "\n") + 1
@@ -792,9 +794,7 @@ func (m chooserModel) View() string {
 		footerLines = strings.Count(wrapFooter(footer, w), "\n") + 1
 	}
 
-	// Always reserve space for the status line so content doesn't jump
-	// when a message appears or disappears.
-	statusLines := 2
+	statusLines := 0
 
 	bodyHeight := logoLines + metaLines + gapLines + contentLines
 	topPad := (h - bodyHeight - footerLines - statusLines) / 2
@@ -818,15 +818,6 @@ func (m chooserModel) View() string {
 	out.WriteString(centeredMeta)
 	out.WriteString("\n\n")
 	out.WriteString(contentStr)
-	out.WriteString("\n")
-	if statusText != "" {
-		if m.quitPending {
-			warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("208"))
-			out.WriteString(centerLine(warnStyle.Render(statusText), w))
-		} else {
-			out.WriteString(centerLine(hint.Render(statusText), w))
-		}
-	}
 	out.WriteString(strings.Repeat("\n", bottomPad))
 	// Wrap footer into multiple centered lines if it exceeds terminal width
 	if lipgloss.Width(footer) > w {
@@ -836,6 +827,45 @@ func (m chooserModel) View() string {
 	}
 
 	return out.String()
+}
+
+func prefersPlainChooserLayout() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("TERM_PROGRAM")), "Apple_Terminal")
+}
+
+func renderPlainChooserView(title, body, footer string) string {
+	var out strings.Builder
+
+	out.WriteString("BIFROST CLI\n\n")
+	if title != "" {
+		out.WriteString(title)
+		out.WriteString("\n\n")
+	}
+
+	trimmedBody := strings.TrimRight(body, "\n")
+	if trimmedBody != "" {
+		out.WriteString(trimmedBody)
+		out.WriteString("\n")
+	}
+
+	if footer != "" {
+		out.WriteString("\n")
+		out.WriteString(strings.TrimSpace(footer))
+	}
+
+	return out.String()
+}
+
+func (m *chooserModel) notify(message string, isError bool) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	if m.cfg.Notify != nil {
+		m.cfg.Notify(message, isError)
+		return
+	}
+	m.message = message
 }
 
 // centerBlock centers each line of a multi-line string within the given width.
@@ -867,7 +897,6 @@ func centerBlockLeft(block string, width int) string {
 	}
 	return strings.Join(lines, "\n")
 }
-
 
 // centerLine pads a single line with leading spaces to center it within width.
 func centerLine(line string, width int) string {

@@ -173,7 +173,7 @@ func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.Bifrost
 
 // GetAccumulatedData returns TTFT and chunk count for a deferred span.
 // Chunks are no longer stored; full content is available via the streaming.Accumulator.
-func (s *TraceStore) GetAccumulatedData(traceID string) (ttftMs int64, chunkCount int) {
+func (s *TraceStore) GetAccumulatedData(traceID string) (ttftNs int64, chunkCount int) {
 	info := s.GetDeferredSpan(traceID)
 	if info == nil {
 		return 0, 0
@@ -181,12 +181,12 @@ func (s *TraceStore) GetAccumulatedData(traceID string) (ttftMs int64, chunkCoun
 	info.mu.Lock()
 	defer info.mu.Unlock()
 
-	// Calculate TTFT in milliseconds
+	// Calculate TTFT in nanoseconds
 	if !info.StartTime.IsZero() && !info.FirstChunkTime.IsZero() {
-		ttftMs = info.FirstChunkTime.Sub(info.StartTime).Milliseconds()
+		ttftNs = info.FirstChunkTime.Sub(info.StartTime).Nanoseconds()
 	}
 
-	return ttftMs, info.ChunkCount
+	return ttftNs, info.ChunkCount
 }
 
 // ReleaseTrace returns the trace and its spans to the pools for reuse

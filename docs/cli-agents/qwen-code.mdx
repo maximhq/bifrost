@@ -1,0 +1,126 @@
+---
+title: "Qwen Code"
+description: "Use Alibaba's Qwen Code with Bifrost for AI-powered coding with any provider, virtual keys, and observability."
+icon: "q"
+---
+
+[Qwen Code](https://github.com/QwenLM/qwen-code) is Alibaba's powerful coding assistant with advanced reasoning capabilities. By connecting it to Bifrost, you get access to any provider/model in your Bifrost configuration, plus governance features like virtual keys and built-in observability.
+
+## Setup
+
+### 1. Install Qwen Code
+
+```bash
+npm install -g @qwen-code/qwen-code
+```
+
+### 2. Configure Bifrost as a Model Provider
+
+Qwen Code uses `~/.qwen/settings.json` to configure model providers. Add Bifrost as an OpenAI-compatible provider:
+
+```json
+{
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "openai/gpt-5",
+        "name": "GPT-5 (via Bifrost)",
+        "baseUrl": "http://localhost:8080/openai",
+        "envKey": "OPENAI_API_KEY"
+      },
+      {
+        "id": "anthropic/claude-sonnet-4-5-20250929",
+        "name": "Claude Sonnet 4.5 (via Bifrost)",
+        "baseUrl": "http://localhost:8080/openai",
+        "envKey": "OPENAI_API_KEY"
+      }
+    ]
+  },
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "model": {
+    "name": "openai/gpt-5"
+  }
+}
+```
+
+### 3. Set Your API Key
+
+Set the `OPENAI_API_KEY` environment variable to your Bifrost virtual key or provider API key:
+
+```bash
+export OPENAI_API_KEY=your-bifrost-virtual-key
+```
+
+Alternatively, use a `.env` file in `~/.qwen/.env`:
+
+```
+OPENAI_API_KEY=your-bifrost-virtual-key
+```
+
+### 4. Run Qwen Code
+
+```bash
+qwen
+```
+
+<Tip>
+You can also use environment variables for a minimal setup. Set `OPENAI_BASE_URL` and `OPENAI_API_KEY`, then run `qwen`. Note: some Qwen Code versions prioritize `settings.json` over env vars — use `settings.json` for reliable configuration.
+</Tip>
+
+## Virtual Keys
+
+When Bifrost has [virtual key authentication](/features/governance/virtual-keys) enabled, set `OPENAI_API_KEY` to your virtual key. This lets you enforce usage limits, budgets, and access control per user or environment.
+
+For team deployments, create a separate virtual key for each team — each key can have its own rate limits, budgets, and provider access rules configured in the Bifrost dashboard.
+
+## Model Selection
+
+Use the `/model` command to switch between models at runtime. All models configured in your `modelProviders` appear in the picker.
+
+```bash
+# Launch with a specific model
+qwen --model "anthropic/claude-sonnet-4-5-20250929"
+```
+
+- Use powerful models like `openai/gpt-5` or `anthropic/claude-sonnet-4-5-20250929` for complex coding tasks
+- Use fast models like `groq/llama-3.3-70b-versatile` for quick completions
+
+## Using Multiple Providers
+
+Bifrost routes requests to the correct provider based on the model name. Use the `provider/model-name` format in your `modelProviders` config to access any configured provider through the single OpenAI endpoint:
+
+```
+anthropic/claude-sonnet-4-5-20250929
+openai/gpt-5
+gemini/gemini-2.5-pro
+mistral/mistral-large-latest
+```
+
+Add multiple models to your `modelProviders.openai` array — they all use the same Bifrost `baseUrl` and `envKey`.
+
+### Supported Providers
+
+Bifrost supports the following providers with the `provider/model-name` format:
+
+`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
+
+<Warning>
+Non-native models **must support tool use** for Qwen Code to work properly. Qwen Code relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
+</Warning>
+
+<Note>
+Qwen Code connects to Bifrost via a single OpenAI-compatible endpoint. Bifrost handles routing to the correct provider based on the model name — no per-provider configuration needed.
+</Note>
+
+## Observability
+
+All Qwen Code traffic through Bifrost is logged. Monitor it at `http://localhost:8080/logs` — filter by provider, model, or search through conversation content to track usage.
+
+## Next Steps
+
+- [Provider Configuration](/quickstart/gateway/provider-configuration) — Configure AI providers in Bifrost
+- [Virtual Keys](/features/governance/virtual-keys) — Set up usage limits and access control

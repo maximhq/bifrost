@@ -416,8 +416,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, trace *schemas.
 	// Record streaming latency metrics if available
 	ttft := getFloat64Attr(attrs, schemas.AttrTimeToFirstToken)
 	if ttft > 0 {
-		// Convert from milliseconds to seconds if needed (check the unit)
-		p.metricsExporter.RecordStreamFirstTokenLatency(ctx, ttft/1000.0, otelAttrs...)
+		// Convert from nanoseconds to seconds if needed (check the unit)
+		p.metricsExporter.RecordStreamFirstTokenLatency(ctx, ttft/1e9, otelAttrs...)
 	}
 }
 

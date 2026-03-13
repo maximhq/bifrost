@@ -539,7 +539,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
-			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {				
 				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -1244,6 +1244,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 
 	return routes
 }
+
+// CreateOpenAIListModelsRouteConfigs creates route configurations for OpenAI list models endpoint.
 func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
 
@@ -1286,7 +1288,7 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 
 // setQueryParams creates a pre-callback for OpenAI list models
 // that handles query parameter extraction
-func setQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func setQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		// Then extract query parameters for list models
 		if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
@@ -1845,7 +1847,7 @@ func CreateOpenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerSto
 }
 
 // extractBatchListQueryParams extracts query parameters for batch list requests
-func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractBatchListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostBatchListRequest); ok {
 			// Extract provider from extra_query
@@ -1881,7 +1883,7 @@ func extractBatchListQueryParams(handlerStore lib.HandlerStore) PreRequestCallba
 }
 
 // extractBatchIDFromPath extracts batch_id from path parameters and provider from query params
-func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractBatchIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		batchID := ctx.UserValue("batch_id")
 		if batchID == nil {
@@ -1923,7 +1925,7 @@ func extractBatchIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 }
 
 // extractVideoIDFromPath extracts video_id from path parameters in provider:id format.
-func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractVideoIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		videoID := ctx.UserValue("video_id")
 		if videoID == nil {
@@ -1969,7 +1971,7 @@ func extractVideoIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
 }
 
 // extractFileListQueryParams extracts query parameters for file list requests
-func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostFileListRequest); ok {
 			// Extract provider from extra_query
@@ -2044,7 +2046,7 @@ func extractFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallbac
 }
 
 // extractFileIDFromPath extracts file_id from path parameters and provider/S3 config from query params
-func extractFileIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractFileIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		fileID := ctx.UserValue("file_id")
 		if fileID == nil {
@@ -2369,7 +2371,7 @@ func CreateOpenAIContainerRouteConfigs(pathPrefix string, handlerStore lib.Handl
 }
 
 // extractContainerListQueryParams extracts query parameters for container list requests
-func extractContainerListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		if listReq, ok := req.(*schemas.BifrostContainerListRequest); ok {
 			// Extract provider from query
@@ -2403,7 +2405,7 @@ func extractContainerListQueryParams(handlerStore lib.HandlerStore) PreRequestCa
 }
 
 // extractContainerIDFromPath extracts container_id from path parameters and provider from query params
-func extractContainerIDFromPath(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerIDFromPath(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 
 		containerID := ctx.UserValue("container_id")
@@ -2623,7 +2625,7 @@ func CreateOpenAIContainerFileRouteConfigs(pathPrefix string, handlerStore lib.H
 }
 
 // extractContainerFileCreateParams extracts container_id from path and provider from query for file create
-func extractContainerFileCreateParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerFileCreateParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		containerID := ctx.UserValue("container_id")
 		if containerID == nil {
@@ -2652,7 +2654,7 @@ func extractContainerFileCreateParams(handlerStore lib.HandlerStore) PreRequestC
 }
 
 // extractContainerFileListQueryParams extracts query parameters for container file list requests
-func extractContainerFileListQueryParams(handlerStore lib.HandlerStore) PreRequestCallback {
+func extractContainerFileListQueryParams(_ lib.HandlerStore) PreRequestCallback {
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 
 		containerID := ctx.UserValue("container_id")
@@ -2747,6 +2749,38 @@ func extractContainerAndFileIDFromPath(handlerStore lib.HandlerStore) PreRequest
 	}
 }
 
+// OpenAIWSResponsesPaths returns WebSocket GET paths for the Responses API.
+// Mirrors the HTTP POST paths from CreateOpenAIRouteConfigs for /v1/responses and /responses.
+// No /deployments/ paths — model is specified in event body, not URL.
+func OpenAIWSResponsesPaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/responses",
+		"/responses",
+		"/openai/responses",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
+// OpenAIRealtimePaths returns WebSocket GET paths for the Realtime API.
+// Azure GA uses /openai/v1/realtime?model=..., preview uses /openai/realtime?deployment=...
+// No /deployments/ paths — model is always in query params.
+func OpenAIRealtimePaths(pathPrefix string) []string {
+	basePaths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+	}
+	paths := make([]string, 0, len(basePaths))
+	for _, p := range basePaths {
+		paths = append(paths, pathPrefix+p)
+	}
+	return paths
+}
+
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
 func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
@@ -2757,7 +2791,7 @@ func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, log
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }
 
@@ -3260,3 +3294,4 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 
 	return nil
 }
+

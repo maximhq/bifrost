@@ -25,6 +25,7 @@ fi
 # Strip 'cli/' prefix from version
 VERSION_ONLY=${CLI_TAG#cli/v}
 CLI_VERSION="v${VERSION_ONLY}"
+printf '%s' "$CLI_VERSION" > "./dist/version.txt"
 R2_ENDPOINT="$(echo "$R2_ENDPOINT" | tr -d '[:space:]')"
 
 echo "📤 Uploading CLI binaries for version: $CLI_VERSION"

@@ -174,6 +174,8 @@ export interface NetworkConfig {
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds
 	retry_backoff_max: number; // Duration in milliseconds
+	insecure_skip_verify?: boolean;
+	ca_cert_pem?: string;
 }
 
 // ConcurrencyAndBufferSize matching Go's schemas.ConcurrencyAndBufferSize
@@ -240,7 +242,9 @@ export type RequestType =
 	| "container_file_list"
 	| "container_file_retrieve"
 	| "container_file_content"
-	| "container_file_delete";
+	| "container_file_delete"
+	| "websocket_responses"
+	| "realtime";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -269,6 +273,8 @@ export interface AllowedRequests {
 	video_delete: boolean;
 	video_list: boolean;
 	video_remix: boolean;
+	websocket_responses: boolean;
+	realtime: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig

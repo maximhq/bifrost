@@ -8,11 +8,17 @@ import (
 
 const (
 	// maxBatchSize is the maximum number of entries to collect before flushing
-	maxBatchSize = 100
+	maxBatchSize = 1000
 	// batchInterval is the maximum time to wait before flushing a partial batch
-	batchInterval = 50 * time.Millisecond
+	batchInterval = 2 * time.Second
+	// maxBatchBytes is the approximate byte-size ceiling for a batch (100 MB).
+	// When the cumulative estimated size of queued entries hits this limit the
+	// batch is flushed immediately, even if maxBatchSize hasn't been reached.
+	maxBatchBytes = 100 * 1024 * 1024
 	// writeQueueCapacity is the buffer size for the write queue channel
 	writeQueueCapacity = 10000
+	// maxDeferredUsageConcurrency limits concurrent deferred usage DB updates
+	maxDeferredUsageConcurrency = 5
 	// pendingLogTTL is how long a pending log entry can stay in memory before cleanup
 	pendingLogTTL = 5 * time.Minute
 )
@@ -42,9 +48,26 @@ func (p *LoggerPlugin) batchWriter() {
 	defer p.wg.Done()
 
 	batch := make([]*writeQueueEntry, 0, maxBatchSize)
+	batchBytes := 0
 	timer := time.NewTimer(batchInterval)
 	timer.Stop()
 	timerRunning := false
+
+	flush := func() {
+		if timerRunning {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			timerRunning = false
+		}
+		p.safeProcessBatch(batch)
+		clear(batch)
+		batch = batch[:0]
+		batchBytes = 0
+	}
 
 	for {
 		select {
@@ -55,18 +78,9 @@ func (p *LoggerPlugin) batchWriter() {
 				return
 			}
 			batch = append(batch, entry)
-			if len(batch) >= maxBatchSize {
-				if timerRunning {
-					if !timer.Stop() {
-						select {
-						case <-timer.C:
-						default:
-						}
-					}
-					timerRunning = false
-				}
-				p.safeProcessBatch(batch)
-				batch = batch[:0]
+			batchBytes += estimateLogEntrySize(entry.log)
+			if len(batch) >= maxBatchSize || batchBytes >= maxBatchBytes {
+				flush()
 			} else if !timerRunning {
 				timer.Reset(batchInterval)
 				timerRunning = true
@@ -75,8 +89,7 @@ func (p *LoggerPlugin) batchWriter() {
 		case <-timer.C:
 			timerRunning = false
 			if len(batch) > 0 {
-				p.safeProcessBatch(batch)
-				batch = batch[:0]
+				flush()
 			}
 		}
 	}
@@ -165,7 +178,8 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
-// If the queue is full, it blocks until space is available (backpressure).
+// If the queue is full, the entry is dropped to prevent Postgres slowness
+// from cascading into request handling goroutines.
 func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) {
 	if p.closed.Load() {
 		return
@@ -180,9 +194,61 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
 		// enqueued successfully
 	default:
-		// Fall through to blocking send
-		p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}
+		p.droppedRequests.Add(1)
+		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
+}
+
+// estimateLogEntrySize returns a rough byte-size estimate for a log entry
+// based on its serialized text fields. This is intentionally cheap — no
+// marshaling, just string lengths — and is used to cap batch memory.
+//
+// NOTE: At enqueue time the string fields may still be empty (data lives in the
+// Parsed struct fields until GORM's BeforeCreate hook serializes them), so this
+// can undercount significantly. That is acceptable — the byte limit is a
+// coarse safety valve, not a precise memory cap. Overshooting by 2× is fine;
+// maxBatchSize is the primary batching control.
+func estimateLogEntrySize(log *logstore.Log) int {
+	if log == nil {
+		return 0
+	}
+	// Sum the dominant text/blob fields. Fixed-width columns (IDs, timestamps,
+	// ints, bools) are negligible compared to these and covered by the 512-byte
+	// baseline below.
+	n := len(log.InputHistory) +
+		len(log.ResponsesInputHistory) +
+		len(log.OutputMessage) +
+		len(log.ResponsesOutput) +
+		len(log.EmbeddingOutput) +
+		len(log.RerankOutput) +
+		len(log.Params) +
+		len(log.Tools) +
+		len(log.ToolCalls) +
+		len(log.SpeechInput) +
+		len(log.SpeechOutput) +
+		len(log.TranscriptionInput) +
+		len(log.TranscriptionOutput) +
+		len(log.ImageGenerationInput) +
+		len(log.ImageGenerationOutput) +
+		len(log.VideoGenerationInput) +
+		len(log.VideoGenerationOutput) +
+		len(log.VideoRetrieveOutput) +
+		len(log.VideoDownloadOutput) +
+		len(log.VideoListOutput) +
+		len(log.VideoDeleteOutput) +
+		len(log.ListModelsOutput) +
+		len(log.TokenUsage) +
+		len(log.ErrorDetails) +
+		len(log.RawRequest) +
+		len(log.RawResponse) +
+		len(log.PassthroughRequestBody) +
+		len(log.PassthroughResponseBody) +
+		len(log.ContentSummary) +
+		len(log.CacheDebug) +
+		len(log.Metadata) +
+		len(log.RoutingEngineLogs)
+	// Baseline for fixed-width columns and struct overhead
+	return n + 512
 }
 
 // buildInitialLogEntry constructs a logstore.Log from PendingLogData (input)
@@ -202,6 +268,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
+		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
 		entry.ParentRequestID = &pending.ParentRequestID
@@ -232,6 +299,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		SpeechInputParsed:           pending.InitialData.SpeechInput,
 		TranscriptionInputParsed:    pending.InitialData.TranscriptionInput,
 		ImageGenerationInputParsed:  pending.InitialData.ImageGenerationInput,
+		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
 		entry.ParentRequestID = &pending.ParentRequestID

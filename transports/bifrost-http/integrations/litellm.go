@@ -34,6 +34,6 @@ func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, lo
 	routes = append(routes, CreateCohereRouteConfigs("/litellm")...)
 
 	return &LiteLLMRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }

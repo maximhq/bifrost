@@ -5,6 +5,9 @@ import { Markdown } from "@/components/ui/markdown";
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { fileToAttachment } from "../../utils/attachment";
+import { RichTextarea } from "@/components/ui/custom/richTextarea";
+import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
+import { AttachmentDisplay } from "./attachmentViews";
 
 export function UserMessageView({
 	message,
@@ -24,10 +27,13 @@ export function UserMessageView({
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const messageRef = useRef(message);
 	messageRef.current = message;
+	const pendingCursorRef = useRef<number | null>(null);
 	const content = message.content;
 	const isEmpty = !content;
 	const messageAttachments = message.attachments;
 	const canAttach = supportsVision && !disabled;
+	const hasVariables = JINJA_VAR_REGEX.test(content);
+	JINJA_VAR_REGEX.lastIndex = 0;
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -120,9 +126,27 @@ export function UserMessageView({
 		[addAttachments],
 	);
 
+	const handleReadOnlyClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+		if (disabled) return;
+		const target = e.target as HTMLTextAreaElement;
+		pendingCursorRef.current = target.selectionStart ?? 0;
+		setEditMode(true);
+	};
+
+	const handleEditFocus = (e: React.FocusEvent<HTMLTextAreaElement>) => {
+		const pos = pendingCursorRef.current;
+		pendingCursorRef.current = null;
+		const target = e.target;
+		requestAnimationFrame(() => {
+			const cursorPos = pos ?? target.value.length;
+			target.selectionStart = cursorPos;
+			target.selectionEnd = cursorPos;
+		});
+	};
+
 	return (
 		<div
-			className="group relative hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors"
+			className="group relative hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors"
 			ref={containerRef}
 			{...(canAttach
 				? {
@@ -134,7 +158,7 @@ export function UserMessageView({
 				: {})}
 		>
 			{canAttach && isDragging && (
-				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-lg border-2 border-dashed backdrop-blur-sm">
+				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
 						<span className="text-xs font-medium">Drop files to attach</span>
@@ -154,18 +178,18 @@ export function UserMessageView({
 								className="hidden"
 								onChange={handleFileSelect}
 							/>
-							<button type="button" aria-label="Attach file" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+							<button type="button" aria-label="Attach file" data-testid="user-msg-attach" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 								<Paperclip className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
 							</button>
 						</>
 					)}
 					{!disabled && (
-						<button type="button" aria-label="Edit message" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button type="button" aria-label="Edit message" data-testid="user-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button type="button" aria-label="Delete message" data-testid="user-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -174,106 +198,49 @@ export function UserMessageView({
 
 			<div>
 				{editMode ? (
-					<Textarea
+					<RichTextarea
 						autoFocus
 						value={content}
 						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none"
 						disabled={disabled}
 						onChange={(e) => {
 							const clone = message.clone();
 							clone.content = e.target.value;
 							onChange(clone.serialized);
 						}}
+						onFocus={handleEditFocus}
 						onBlur={() => {
 							if (content.trim().length > 0) setEditMode(false);
 						}}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
 					/>
 				) : isEmpty && messageAttachments.length === 0 ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter user message...</div>
+				) : hasVariables ? (
+					<RichTextarea
+						readOnly
+						value={content}
+						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none cursor-text"
+						onClick={handleReadOnlyClick}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
+					/>
 				) : (
-					<Markdown content={content} className="text-muted-foreground" />
+					<div
+						className={!disabled ? "cursor-text" : undefined}
+						onClick={() => {
+							if (!disabled) setEditMode(true);
+						}}
+					>
+						<Markdown content={content} className="text-muted-foreground" />
+					</div>
 				)}
 			</div>
 
 			{messageAttachments.length > 0 && (
 				<AttachmentDisplay attachments={messageAttachments} editable={canAttach} onRemoveAttachment={handleRemoveAttachment} />
 			)}
-		</div>
-	);
-}
-
-function AttachmentDisplay({
-	attachments,
-	editable,
-	onRemoveAttachment,
-}: {
-	attachments: MessageContent[];
-	editable?: boolean;
-	onRemoveAttachment?: (index: number) => void;
-}) {
-	if (attachments.length === 0) return null;
-
-	return (
-		<div className="mt-2 flex flex-wrap gap-2">
-			{attachments.map((att, i) => {
-				if (att.type === "image_url" && att.image_url?.url) {
-					return (
-						<div key={i} className="group/att relative">
-							{/* eslint-disable-next-line @next/next/no-img-element */}
-							<img src={att.image_url.url} alt="attached image" className="max-h-48 max-w-xs rounded-md border object-contain" />
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				if (att.type === "input_audio") {
-					const format = att.input_audio?.format || "wav";
-					const dataUrl = `data:audio/${format};base64,${att.input_audio?.data || ""}`;
-					return (
-						<div key={i} className="group/att bg-muted/30 relative flex items-center gap-2 rounded-md border px-3 py-2">
-							<Mic className="text-muted-foreground h-4 w-4" />
-							<audio controls className="h-8 max-w-[200px]">
-								<source src={dataUrl} type={`audio/${format}`} />
-							</audio>
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				if (att.type === "file") {
-					return (
-						<div key={i} className="group/att bg-muted/30 text-muted-foreground relative flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
-							<FileIcon className="h-4 w-4 shrink-0" />
-							<span className="max-w-[200px] truncate">{att.file?.filename || "File"}</span>
-							{att.file?.file_type && <span className="text-xs opacity-60">{att.file.file_type}</span>}
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				return null;
-			})}
 		</div>
 	);
 }

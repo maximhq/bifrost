@@ -975,7 +975,7 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
@@ -1142,6 +1142,38 @@ func sanitizeChatToolChoiceForFallback(toolChoice *ChatToolChoice, tools []ChatT
 // RESPONSE CONVERSION METHODS
 // =============================================================================
 
+func responsesStatusFromChatFinishReason(finishReason string) (status string, incompleteDetails *ResponsesResponseIncompleteDetails, mapped bool) {
+	switch finishReason {
+	case string(BifrostFinishReasonLength):
+		return "incomplete", &ResponsesResponseIncompleteDetails{Reason: "max_output_tokens"}, true
+	case string(BifrostFinishReasonStop), string(BifrostFinishReasonToolCalls):
+		return "completed", nil, true
+	default:
+		return "", nil, false
+	}
+}
+
+func responsesTerminalFromChatFinishReason(finishReason *string) (eventType ResponsesStreamResponseType, status string, incompleteDetails *ResponsesResponseIncompleteDetails) {
+	// Unknown/empty finish reasons preserve prior behavior: treat as completed.
+	eventType = ResponsesStreamResponseTypeCompleted
+	status = "completed"
+
+	if finishReason == nil || *finishReason == "" {
+		return eventType, status, nil
+	}
+
+	mappedStatus, mappedIncompleteDetails, mapped := responsesStatusFromChatFinishReason(*finishReason)
+	if !mapped {
+		return eventType, status, nil
+	}
+
+	if mappedStatus == "incomplete" {
+		eventType = ResponsesStreamResponseTypeIncomplete
+	}
+
+	return eventType, mappedStatus, mappedIncompleteDetails
+}
+
 // ToBifrostResponsesResponse converts the BifrostChatResponse to BifrostResponsesResponse format
 // This converts Chat-style fields (Choices) to Responses API format
 func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesResponse {
@@ -1177,6 +1209,28 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 	// Convert Usage if needed
 	if cr.Usage != nil {
 		responsesResp.Usage = cr.Usage.ToResponsesResponseUsage()
+	}
+
+	// Map finish reason to Responses status.
+	hasCompletedFinishReason := false
+	for _, choice := range cr.Choices {
+		if choice.FinishReason == nil || *choice.FinishReason == "" {
+			continue
+		}
+		status, incompleteDetails, mapped := responsesStatusFromChatFinishReason(*choice.FinishReason)
+		if !mapped {
+			continue
+		}
+		if status == "incomplete" {
+			responsesResp.Status = Ptr(status)
+			responsesResp.IncompleteDetails = incompleteDetails
+			hasCompletedFinishReason = false
+			break
+		}
+		hasCompletedFinishReason = true
+	}
+	if responsesResp.Status == nil && hasCompletedFinishReason {
+		responsesResp.Status = Ptr("completed")
 	}
 
 	// Copy other relevant fields
@@ -1709,6 +1763,8 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 	// Check if this is a completion chunk with finish_reason
 	if choice.FinishReason != nil {
+		terminalEventType, terminalStatus, terminalIncompleteDetails := responsesTerminalFromChatFinishReason(choice.FinishReason)
+
 		// Close text item if still open (regardless of whether it has content, to support reasoning-only responses)
 		if state.TextItemAdded && !state.TextItemClosed {
 			outputIndex := 0
@@ -1748,14 +1804,14 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.SequenceNumber++
 
 			// Emit output_item.done
-			statusCompleted := "completed"
+			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeMessage
 			role := ResponsesInputMessageRoleAssistant
 			textType := ResponsesOutputMessageContentTypeText
 			doneItem := &ResponsesMessage{
 				Type:   &messageType,
 				Role:   &role,
-				Status: &statusCompleted,
+				Status: &statusFinal,
 				Content: &ResponsesMessageContent{
 					ContentBlocks: []ResponsesMessageContentBlock{
 						{
@@ -1807,7 +1863,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				state.SequenceNumber++
 
 				// Emit output_item.done for function call
-				statusCompleted := "completed"
+				statusFinal := terminalStatus
 				messageType := ResponsesMessageTypeFunctionCall
 				callName, hasName := state.ToolCallNames[toolCallID]
 				var callNamePtr *string
@@ -1817,7 +1873,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 				argsValue := args
 				outputItemDone := &ResponsesMessage{
 					Type:   &messageType,
-					Status: &statusCompleted,
+					Status: &statusFinal,
 					ResponsesToolMessage: &ResponsesToolMessage{
 						CallID:    &toolCallID,
 						Name:      callNamePtr,
@@ -1839,23 +1895,27 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			}
 		}
 
-		// Emit response.completed
+		// Emit terminal response event.
 		var usage *ResponsesResponseUsage
 		if cr.Usage != nil {
 			usage = cr.Usage.ToResponsesResponseUsage()
 		}
 
+		responseStatus := terminalStatus
+
 		response := &BifrostResponsesResponse{
-			ID:        state.MessageID,
-			CreatedAt: state.CreatedAt,
-			Usage:     usage,
+			ID:                state.MessageID,
+			CreatedAt:         state.CreatedAt,
+			Usage:             usage,
+			Status:            &responseStatus,
+			IncompleteDetails: terminalIncompleteDetails,
 		}
 
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
 		if state.TextItemAdded {
-			statusCompleted := "completed"
+			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeMessage
 			role := ResponsesInputMessageRoleAssistant
 			textType := ResponsesOutputMessageContentTypeText
@@ -1865,7 +1925,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			msg := ResponsesMessage{
 				Type:   &messageType,
 				Role:   &role,
-				Status: &statusCompleted,
+				Status: &statusFinal,
 				Content: &ResponsesMessageContent{
 					ContentBlocks: []ResponsesMessageContentBlock{
 						{
@@ -1886,7 +1946,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		}
 
 		responses = append(responses, &BifrostResponsesStreamResponse{
-			Type:           ResponsesStreamResponseTypeCompleted,
+			Type:           terminalEventType,
 			SequenceNumber: state.SequenceNumber,
 			Response:       response,
 			ExtraFields:    cr.ExtraFields,

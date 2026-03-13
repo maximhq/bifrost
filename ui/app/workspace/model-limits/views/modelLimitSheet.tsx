@@ -214,6 +214,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 				className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8"
 				onInteractOutside={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
 				onEscapeKeyDown={(e) => { if (isEditing ? form.formState.isDirty : (!!form.watch("modelName") || hasAnyLimit)) e.preventDefault(); }}
+				data-testid="model-limit-sheet"
 			>
 				<SheetHeader className="flex flex-col items-start p-0">
 					<SheetTitle>{isEditing ? "Edit Model Limit" : "Create Model Limit"}</SheetTitle>
@@ -238,7 +239,7 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 											disabled={isEditing}
 										>
 											<FormControl>
-												<SelectTrigger className="w-full">
+												<SelectTrigger className="w-full" data-testid="model-limit-provider-select">
 													<SelectValue placeholder="All Providers" />
 												</SelectTrigger>
 											</FormControl>
@@ -271,15 +272,17 @@ export default function ModelLimitSheet({ modelConfig, onSave, onCancel }: Model
 									<FormItem>
 										<FormLabel>Model Name</FormLabel>
 										<FormControl>
-											<ModelMultiselect
-												provider={form.watch("provider") || undefined}
-												value={field.value}
-												onChange={field.onChange}
-												placeholder="Search for a model..."
-												isSingleSelect
-												loadModelsOnEmptyProvider="base_models"
-												disabled={isEditing}
-											/>
+											<div data-testid="model-limit-model-select">
+												<ModelMultiselect
+													provider={form.watch("provider") || undefined}
+													value={field.value}
+													onChange={field.onChange}
+													placeholder="Search for a model..."
+													isSingleSelect
+													loadModelsOnEmptyProvider="base_models"
+													disabled={isEditing}
+												/>
+											</div>
 										</FormControl>
 										<FormMessage />
 									</FormItem>

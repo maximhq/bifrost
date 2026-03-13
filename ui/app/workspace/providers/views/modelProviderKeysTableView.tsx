@@ -133,7 +133,7 @@ export default function ModelProviderKeysTableView({ provider, className, header
 						</TableHeader>
 						<TableBody>
 							{provider.keys.length === 0 && (
-								<TableRow>
+								<TableRow data-testid="keys-table-empty-state">
 									<TableCell colSpan={4} className="py-6 text-center">
 										No {entityLabelPlural} found.
 									</TableCell>
@@ -170,13 +170,14 @@ export default function ModelProviderKeysTableView({ provider, className, header
 												<span className="font-mono text-sm">{key.name}</span>
 											</div>
 										</TableCell>
-										<TableCell>
+										<TableCell data-testid="key-weight-value">
 											<div className="flex items-center space-x-2">
 												<span className="font-mono text-sm">{key.weight}</span>
 											</div>
 										</TableCell>
 										<TableCell>
 											<Switch
+												data-testid="key-enabled-switch"
 												checked={isKeyEnabled}
 												size="md"
 												disabled={!hasUpdateProviderAccess}

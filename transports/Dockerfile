@@ -1,5 +1,5 @@
 # --- UI Build Stage: Build the Next.js frontend ---
-FROM node:24-alpine3.22 AS ui-builder
+FROM node:24-alpine3.23 AS ui-builder
 WORKDIR /app
 
 # Copy UI package files and install dependencies
@@ -15,7 +15,7 @@ RUN node scripts/fix-paths.js
 # Skip the copy-build step since we'll copy the files in the Go build stage
 
 # --- Go Build Stage: Compile the Go binary ---
-FROM golang:1.26-alpine3.22 AS builder
+FROM golang:1.26.1-alpine3.23 AS builder
 WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite

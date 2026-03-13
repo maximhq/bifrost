@@ -12,6 +12,8 @@ bifrost:
     anthropic: "anthropic"
     cohere: "cohere"
     google: "genai"
+    "gemini_passthrough": "genai_passthrough"
+    "anthropic_passthrough": "anthropic_passthrough"
     litellm: "litellm"
     langchain: "langchain"
     pydanticai: "pydanticai"
@@ -106,6 +108,7 @@ providers:
     batch_cancel: "claude-sonnet-4-20250514"
     file_upload: "claude-sonnet-4-20250514"
     file_list: "claude-sonnet-4-20250514"
+    file_retrieve: "claude-sonnet-4-20250514"
     file_delete: "claude-sonnet-4-20250514"
     file_content: "claude-sonnet-4-20250514"
     count_tokens: "claude-sonnet-4-5-20250929"
@@ -140,6 +143,7 @@ providers:
     file_list: "gemini-2.0-flash"
     file_content: "gemini-2.0-flash"
     file_download: "gemini-2.0-flash"
+    file_retrieve: "gemini-2.0-flash"
     file_delete: "gemini-2.0-flash"
     count_tokens: "gemini-2.5-flash"
     alternatives:
@@ -375,10 +379,10 @@ provider_scenarios:
     batch_inline: true  # Anthropic uses inline requests for batch
     batch_s3: false  # Anthropic does not use S3 for batch
     file_upload: true
-    file_list: false
-    file_retrieve: false
+    file_list: true
+    file_retrieve: true
     file_delete: true
-    file_content: false
+    file_content: true
     count_tokens: true
     
   gemini:
@@ -426,7 +430,8 @@ provider_scenarios:
     file_delete: true
     file_content: false  # Gemini doesn't support direct file download
     count_tokens: true
-    
+    context_caching: true  # Gemini context caching (Caches API) via Bifrost passthrough
+
   vertex:
     simple_chat: true
     multi_turn_conversation: true
@@ -618,6 +623,7 @@ scenario_capabilities:
   file_content: "file_content"  # Uses file_content model directly
   count_tokens: "chat"
   video_generation: "video"
+  context_caching: "chat"  # Gemini Caches API (passthrough)
 
 # Model capabilities matrix
 model_capabilities:

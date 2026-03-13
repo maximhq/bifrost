@@ -14,7 +14,9 @@ export const Selectors = {
     providerList: '[data-testid="provider-list"]',
     providerItem: (name: string) => `[data-testid="provider-item-${name.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}"]`,
     addProviderBtn: '[data-testid="add-provider-btn"]',
-    
+    /** Add New Provider dropdown > Custom provider... (opens custom provider sheet) */
+    addProviderOptionCustom: '[data-testid="add-provider-option-custom"]',
+
     // Provider config
     providerConfig: '[data-testid="provider-config"]',
     addKeyBtn: '[data-testid="add-key-btn"]',

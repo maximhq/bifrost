@@ -83,6 +83,8 @@ export const DefaultNetworkConfig = {
 	max_retries: 0,
 	retry_backoff_initial: 1000,
 	retry_backoff_max: 10000,
+	insecure_skip_verify: false,
+	ca_cert_pem: "",
 } satisfies NetworkConfig;
 
 export const DefaultPerformanceConfig = {

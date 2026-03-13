@@ -80,7 +80,7 @@ export default function PricingConfigView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4">
+		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="pricing-config-view">
 			<form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
 				<div>
 					<h2 className="text-lg font-semibold tracking-tight">Pricing Configuration</h2>
@@ -98,6 +98,7 @@ export default function PricingConfigView() {
 							id="pricing-datasheet-url"
 							type="text"
 							placeholder="https://example.com/pricing.json"
+							data-testid="pricing-datasheet-url-input"
 							{...register("pricing_datasheet_url", {
 								pattern: {
 									value: /^(https?:\/\/)?((localhost|(\d{1,3}\.){3}\d{1,3})(:\d+)?|([\da-z\.-]+)\.([a-z\.]{2,6}))([\/\w \.-]*)*\/?$/,
@@ -146,10 +147,10 @@ export default function PricingConfigView() {
 					</div>
 				</div>
 				<div className="flex justify-end gap-2 pt-2">
-					<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess}>
+					<Button variant="outline" type="button" onClick={handleForceSync} disabled={isForceSyncing || !hasSettingsUpdateAccess} data-testid="pricing-force-sync-btn">
 						{isForceSyncing ? "Syncing..." : "Force Sync Now"}
 					</Button>
-					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					<Button type="submit" disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="pricing-save-btn">
 						{isLoading ? "Saving..." : "Save Changes"}
 					</Button>
 				</div>

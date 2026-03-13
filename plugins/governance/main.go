@@ -827,7 +827,12 @@ func (p *GovernancePlugin) applyRoutingRules(ctx *schemas.BifrostContext, req *s
 			body["fallbacks"] = decision.Fallbacks
 		}
 
-		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, fallbacks=%v", decision.Provider, decision.Model, decision.Fallbacks)
+		// Pin specific API key by ID if the routing rule specifies one
+		if decision.KeyID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, decision.KeyID)
+		}
+
+		p.logger.Debug("[Governance] Applied routing decision: provider=%s, model=%s, keyID=%s, fallbacks=%v", decision.Provider, decision.Model, decision.KeyID, decision.Fallbacks)
 	}
 
 	return body, decision, nil
@@ -1274,7 +1279,7 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, provi
 	if !isStreaming || (isStreaming && isFinalChunk) {
 		var cost float64
 		if p.modelCatalog != nil && result != nil {
-			cost = p.modelCatalog.CalculateCostWithCacheDebug(result)
+			cost = p.modelCatalog.CalculateCost(result)
 		}
 		tokensUsed := 0
 		if result != nil {

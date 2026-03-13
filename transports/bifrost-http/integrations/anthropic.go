@@ -76,8 +76,10 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
-						ResponsesRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
+						ResponsesRequest: bifrostReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type")
@@ -439,8 +441,10 @@ func CreateAnthropicCountTokensRouteConfigs(pathPrefix string, handlerStore lib.
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest); ok {
+					bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+					normalizeBifrostInputContentBlocks(bifrostReq)
 					return &schemas.BifrostRequest{
-						CountTokensRequest: anthropicReq.ToBifrostResponsesRequest(ctx),
+						CountTokensRequest: bifrostReq,
 					}, nil
 				}
 				return nil, errors.New("invalid request type for Anthropic count tokens")
@@ -1070,6 +1074,6 @@ func NewAnthropicRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, 
 	routes = append(routes, CreateAnthropicFilesRouteConfigs("/anthropic", handlerStore)...)
 
 	return &AnthropicRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
 	}
 }

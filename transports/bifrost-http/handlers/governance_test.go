@@ -165,3 +165,160 @@ func TestGetVirtualKeys_PaginatedEndpoint_QueryParams(t *testing.T) {
 // Ensure mockLogger satisfies schemas.Logger (already defined in middlewares_test.go
 // but we reference it here — same package, so no redeclaration needed).
 var _ schemas.Logger = (*mockLogger)(nil)
+
+func TestBudgetRemovalRequestDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *UpdateBudgetRequest
+		want bool
+	}{
+		{
+			name: "nil request is not removal",
+			req:  nil,
+			want: false,
+		},
+		{
+			name: "empty object is removal",
+			req:  &UpdateBudgetRequest{},
+			want: true,
+		},
+		{
+			name: "max limit present is not removal",
+			req:  &UpdateBudgetRequest{MaxLimit: bifrostFloat(10)},
+			want: false,
+		},
+		{
+			name: "reset duration only is not removal",
+			req:  &UpdateBudgetRequest{ResetDuration: bifrostString("1h")},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isBudgetRemovalRequest(tt.req); got != tt.want {
+				t.Fatalf("isBudgetRemovalRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRateLimitRemovalRequestDetection(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *UpdateRateLimitRequest
+		want bool
+	}{
+		{
+			name: "nil request is not removal",
+			req:  nil,
+			want: false,
+		},
+		{
+			name: "empty object is removal",
+			req:  &UpdateRateLimitRequest{},
+			want: true,
+		},
+		{
+			name: "token limit present is not removal",
+			req:  &UpdateRateLimitRequest{TokenMaxLimit: bifrostInt64(100)},
+			want: false,
+		},
+		{
+			name: "request limit present is not removal",
+			req:  &UpdateRateLimitRequest{RequestMaxLimit: bifrostInt64(10)},
+			want: false,
+		},
+		{
+			name: "durations only is not removal",
+			req: &UpdateRateLimitRequest{
+				TokenResetDuration:   bifrostString("1h"),
+				RequestResetDuration: bifrostString("1h"),
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isRateLimitRemovalRequest(tt.req); got != tt.want {
+				t.Fatalf("isRateLimitRemovalRequest() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCollectProviderConfigDeleteIDs(t *testing.T) {
+	budgetID := "budget-1"
+	rateLimitID := "rate-limit-1"
+
+	tests := []struct {
+		name             string
+		config           configstoreTables.TableVirtualKeyProviderConfig
+		initialBudgetIDs []string
+		initialRateIDs   []string
+		wantBudgetIDs    []string
+		wantRateIDs      []string
+	}{
+		{
+			name: "collects both IDs",
+			config: configstoreTables.TableVirtualKeyProviderConfig{
+				BudgetID:    &budgetID,
+				RateLimitID: &rateLimitID,
+			},
+			wantBudgetIDs: []string{budgetID},
+			wantRateIDs:   []string{rateLimitID},
+		},
+		{
+			name: "appends to existing slices",
+			config: configstoreTables.TableVirtualKeyProviderConfig{
+				BudgetID:    &budgetID,
+				RateLimitID: &rateLimitID,
+			},
+			initialBudgetIDs: []string{"budget-0"},
+			initialRateIDs:   []string{"rate-limit-0"},
+			wantBudgetIDs:    []string{"budget-0", budgetID},
+			wantRateIDs:      []string{"rate-limit-0", rateLimitID},
+		},
+		{
+			name:   "ignores missing IDs",
+			config: configstoreTables.TableVirtualKeyProviderConfig{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotBudgetIDs, gotRateIDs := collectProviderConfigDeleteIDs(tt.config, tt.initialBudgetIDs, tt.initialRateIDs)
+
+			if len(gotBudgetIDs) != len(tt.wantBudgetIDs) {
+				t.Fatalf("budget IDs length = %d, want %d", len(gotBudgetIDs), len(tt.wantBudgetIDs))
+			}
+			for i := range gotBudgetIDs {
+				if gotBudgetIDs[i] != tt.wantBudgetIDs[i] {
+					t.Fatalf("budget IDs[%d] = %q, want %q", i, gotBudgetIDs[i], tt.wantBudgetIDs[i])
+				}
+			}
+
+			if len(gotRateIDs) != len(tt.wantRateIDs) {
+				t.Fatalf("rate limit IDs length = %d, want %d", len(gotRateIDs), len(tt.wantRateIDs))
+			}
+			for i := range gotRateIDs {
+				if gotRateIDs[i] != tt.wantRateIDs[i] {
+					t.Fatalf("rate limit IDs[%d] = %q, want %q", i, gotRateIDs[i], tt.wantRateIDs[i])
+				}
+			}
+		})
+	}
+}
+
+func bifrostFloat(v float64) *float64 {
+	return &v
+}
+
+func bifrostInt64(v int64) *int64 {
+	return &v
+}
+
+func bifrostString(v string) *string {
+	return &v
+}

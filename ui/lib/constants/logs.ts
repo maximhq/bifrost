@@ -69,6 +69,11 @@ export const RequestTypes = [
 	"container_file_retrieve",
 	"container_file_content",
 	"container_file_delete",
+	"passthrough",
+	"passthrough_stream",
+	// WebSocket/Realtime operations
+	"websocket_responses",
+	"realtime",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -170,6 +175,7 @@ export const RequestTypeLabels = {
 	batch_list: "Batch List",
 	batch_retrieve: "Batch Retrieve",
 	batch_cancel: "Batch Cancel",
+	batch_delete: "Batch Delete",
 	batch_results: "Batch Results",
 
 	file_upload: "File Upload",
@@ -190,6 +196,12 @@ export const RequestTypeLabels = {
 	container_file_retrieve: "Container File Retrieve",
 	container_file_content: "Container File Content",
 	container_file_delete: "Container File Delete",
+
+	passthrough: "Passthrough",
+	passthrough_stream: "Passthrough Stream",
+	// WebSocket operations
+	websocket_responses: "WebSocket Responses",
+	realtime: "Realtime",
 } as const;
 
 export const RequestTypeColors = {
@@ -251,10 +263,14 @@ export const RequestTypeColors = {
 	container_file_content: "bg-sky-100 text-sky-800",
 	container_file_delete: "bg-rose-100 text-rose-800",
 
+	passthrough: "bg-slate-100 text-slate-800",
+	passthrough_stream: "bg-slate-200 text-slate-800",
+
 	batch_create: "bg-green-100 text-green-800",
 	batch_list: "bg-blue-100 text-blue-800",
 	batch_retrieve: "bg-red-100 text-red-800",
 	batch_cancel: "bg-yellow-100 text-yellow-800",
+	batch_delete: "bg-amber-100 text-amber-800",
 	batch_results: "bg-purple-100 text-purple-800",
 
 	file_upload: "bg-pink-100 text-pink-800",
@@ -262,6 +278,10 @@ export const RequestTypeColors = {
 	file_retrieve: "bg-orange-100 text-orange-800",
 	file_delete: "bg-red-100 text-red-800",
 	file_content: "bg-blue-100 text-blue-800",
+
+	// WebSocket operations
+	websocket_responses: "bg-teal-100 text-teal-800",
+	realtime: "bg-indigo-100 text-indigo-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

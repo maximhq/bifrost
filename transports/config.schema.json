@@ -1373,10 +1373,42 @@
     },
     "audit_logs": {
       "$ref": "#/$defs/audit_logs_config"
+    },
+    "websocket": {
+      "$ref": "#/$defs/websocket_config"
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "routing_target": {
+      "type": "object",
+      "description": "A single weighted routing target within a rule. All fields except weight are optional; omitting provider or model means use the incoming request value. Weights across all targets in a rule must sum to 1.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target provider name (e.g., 'openai', 'azure'). Omit to use the incoming request provider"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target model name. Omit to use the incoming request model"
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional API key UUID to pin for this target. Omit for load-balanced key selection"
+        },
+        "weight": {
+          "type": "number",
+          "description": "Probability weight for this target (must be > 0). All weights in a rule must sum to 1",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": ["weight"],
+      "additionalProperties": false
+    },
     "routing_rule": {
       "type": "object",
       "description": "Routing rule for dynamic provider/model selection",
@@ -1402,14 +1434,16 @@
           "type": "string",
           "description": "CEL (Common Expression Language) expression for rule evaluation"
         },
-        "provider": {
-          "type": "string",
-          "description": "Target provider name (e.g., 'openai', 'azure'). Empty means use original provider"
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Weighted routing targets. Weights must sum to 1. Omit provider or model to use the incoming request value.",
+          "items": {
+            "$ref": "#/$defs/routing_target"
+          }
         },
-        "model": {
-          "type": "string",
-          "description": "Target model name. Empty means use original model"
-        },
+        "provider": false,
+        "model": false,
         "fallbacks": {
           "type": "array",
           "description": "Fallback provider chain in order",
@@ -1438,7 +1472,7 @@
           "additionalProperties": true
         }
       },
-      "required": ["id", "name"],
+      "required": ["id", "name", "targets"],
       "additionalProperties": false
     },
     "virtual_key_provider_config": {
@@ -1936,6 +1970,7 @@
             "batch_list": { "type": "boolean" },
             "batch_retrieve": { "type": "boolean" },
             "batch_cancel": { "type": "boolean" },
+            "batch_delete": { "type": "boolean" },
             "batch_results": { "type": "boolean" },
             "file_upload": { "type": "boolean" },
             "file_list": { "type": "boolean" },
@@ -1950,7 +1985,9 @@
             "container_file_list": { "type": "boolean" },
             "container_file_retrieve": { "type": "boolean" },
             "container_file_content": { "type": "boolean" },
-            "container_file_delete": { "type": "boolean" }
+            "container_file_delete": { "type": "boolean" },
+            "passthrough": { "type": "boolean" },
+            "passthrough_stream": { "type": "boolean" }
           },
           "additionalProperties": false
         },
@@ -1999,6 +2036,14 @@
           "type": "integer",
           "minimum": 0,
           "description": "Maximum retry backoff in milliseconds"
+        },
+        "insecure_skip_verify": {
+          "type": "boolean",
+          "description": "Disable TLS certificate verification for provider connections. This bypasses server certificate validation and should be used only as a last resort when a trusted CA chain cannot be configured. Prefer ca_cert_pem for self-signed or private CA deployments."
+        },
+        "ca_cert_pem": {
+          "type": "string",
+          "description": "PEM-encoded CA certificate to trust for provider endpoint connections (e.g. self-signed or internal CA)"
         }
       },
       "additionalProperties": false
@@ -3416,6 +3461,56 @@
         "hmac_key": {
           "type": "string",
           "description": "HMAC secret key for signing audit events (minimum 32 bytes). Can use env. prefix for environment variables (e.g., 'env.AUDIT_HMAC_KEY')."
+        }
+      },
+      "additionalProperties": false
+    },
+    "websocket_config": {
+      "type": "object",
+      "description": "Optional tuning for the WebSocket gateway (Responses API WebSocket Mode, Realtime API). WebSocket is always enabled; these fields override the high defaults.",
+      "properties": {
+        "max_connections_per_user": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum concurrent WebSocket connections per user",
+          "default": 100
+        },
+        "transcript_buffer_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of transcript entries to buffer for Realtime API mid-session fallback",
+          "default": 100
+        },
+        "pool": {
+          "type": "object",
+          "description": "Upstream WebSocket connection pool configuration",
+          "properties": {
+            "max_idle_per_key": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum idle connections per provider/key combination",
+              "default": 50
+            },
+            "max_total_connections": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum total idle connections across all providers",
+              "default": 1000
+            },
+            "idle_timeout_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Seconds before an idle connection is evicted",
+              "default": 600
+            },
+            "max_connection_lifetime_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Maximum lifetime of a connection in seconds",
+              "default": 7200
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

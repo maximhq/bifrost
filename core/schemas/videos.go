@@ -97,6 +97,9 @@ type VideoGenerationParameters struct {
 	ExtraParams    map[string]any `json:"-"`
 }
 
+// DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.
+const DefaultVideoDuration = "8"
+
 // BifrostVideoGenerationResponse represents the video generation job response in bifrost format.
 type BifrostVideoGenerationResponse struct {
 	ID                 string             `json:"id,omitempty"`
@@ -116,6 +119,43 @@ type BifrostVideoGenerationResponse struct {
 	ContentFilter      *ContentFilterInfo `json:"content_filter,omitempty"`        // Information about content filtering (if applicable)
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// getSecondsFromVideoRequest extracts Seconds from video-related requests.
+func getSecondsFromVideoRequest(req *BifrostRequest) *string {
+	if req == nil {
+		return nil
+	}
+	useDefaultForSeconds := func(p ModelProvider) bool {
+		return p == Gemini || p == Vertex
+	}
+	if req.VideoGenerationRequest != nil {
+		var seconds *string
+		if req.VideoGenerationRequest.Params != nil {
+			seconds = req.VideoGenerationRequest.Params.Seconds
+		}
+		if seconds == nil && useDefaultForSeconds(req.VideoGenerationRequest.Provider) {
+			seconds = Ptr(DefaultVideoDuration)
+		}
+		return seconds
+	}
+	if req.VideoRemixRequest != nil && useDefaultForSeconds(req.VideoRemixRequest.Provider) {
+		return Ptr(DefaultVideoDuration)
+	}
+	return nil
+}
+
+// BackfillParams populates response fields from the original request that are needed
+// for cost calculation but may not be returned by the provider.
+// - Seconds (duration from request params or default)
+func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
+	if r == nil || req == nil {
+		return
+	}
+	seconds := getSecondsFromVideoRequest(req)
+	if seconds != nil {
+		r.Seconds = seconds
+	}
 }
 
 // --- Video Remix ---

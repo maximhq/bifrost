@@ -449,6 +449,10 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
+	// Merge network config - restore ca_cert_pem if the redacted placeholder was sent back
+	if oldConfigRaw.NetworkConfig != nil && (nc.CACertPEM == "<REDACTED>" || nc.CACertPEM == "********") {
+		nc.CACertPEM = oldConfigRaw.NetworkConfig.CACertPEM
+	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
@@ -709,21 +713,24 @@ func (h *ProviderHandler) getModelParameters(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	modelCatalog := h.inMemoryStore.ModelCatalog
-	if modelCatalog == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "model catalog not available")
+	if h.dbStore == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "database store not available")
 		return
 	}
 
-	data := modelCatalog.GetModelParametersData(modelParam)
-	if data == nil {
-		SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+	params, err := h.dbStore.GetModelParameters(ctx, modelParam)
+	if err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("no parameters found for model %s", modelParam))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get model parameters: %v", err))
 		return
 	}
 
 	ctx.SetContentType("application/json")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	ctx.SetBody(data)
+	ctx.SetBodyString(params.Data)
 }
 
 // filterModelsByKeys filters models based on key-level model restrictions
@@ -1164,14 +1171,11 @@ func validatePricingOverrideNonNegativeFields(index int, override schemas.Provid
 		"input_cost_per_video_per_second":                   override.InputCostPerVideoPerSecond,
 		"input_cost_per_audio_per_second":                   override.InputCostPerAudioPerSecond,
 		"input_cost_per_character":                          override.InputCostPerCharacter,
-		"output_cost_per_character":                         override.OutputCostPerCharacter,
 		"input_cost_per_token_above_128k_tokens":            override.InputCostPerTokenAbove128kTokens,
-		"input_cost_per_character_above_128k_tokens":        override.InputCostPerCharacterAbove128kTokens,
 		"input_cost_per_image_above_128k_tokens":            override.InputCostPerImageAbove128kTokens,
 		"input_cost_per_video_per_second_above_128k_tokens": override.InputCostPerVideoPerSecondAbove128kTokens,
 		"input_cost_per_audio_per_second_above_128k_tokens": override.InputCostPerAudioPerSecondAbove128kTokens,
 		"output_cost_per_token_above_128k_tokens":           override.OutputCostPerTokenAbove128kTokens,
-		"output_cost_per_character_above_128k_tokens":       override.OutputCostPerCharacterAbove128kTokens,
 		"input_cost_per_token_above_200k_tokens":            override.InputCostPerTokenAbove200kTokens,
 		"output_cost_per_token_above_200k_tokens":           override.OutputCostPerTokenAbove200kTokens,
 		"cache_creation_input_token_cost_above_200k_tokens": override.CacheCreationInputTokenCostAbove200kTokens,

@@ -17,3 +17,11 @@ export {
   type ToolCallFunction,
   type ToolResult,
 } from './types'
+export {
+  extractVariablesFromText,
+  extractVariablesFromMessages,
+  replaceVariablesInText,
+  replaceVariablesInMessages,
+  mergeVariables,
+  type VariableMap,
+} from './variables'

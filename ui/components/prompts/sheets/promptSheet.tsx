@@ -82,6 +82,7 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 							<Label htmlFor="name">Name</Label>
 							<Input
 								id="name"
+								data-testid="prompt-name-input"
 								placeholder="Customer Support Assistant"
 								{...register("name", {
 									required: "Prompt name is required",
@@ -94,10 +95,10 @@ export function PromptSheet({ open, onOpenChange, prompt, folderId, onSaved }: P
 					</div>
 
 					<SheetFooter className="mt-6 flex flex-row items-center justify-end gap-2 p-0">
-						<Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+						<Button type="button" variant="outline" data-testid="prompt-cancel" onClick={() => onOpenChange(false)}>
 							Cancel
 						</Button>
-						<Button type="submit" disabled={isLoading}>
+						<Button type="submit" data-testid="prompt-submit" disabled={isLoading}>
 							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 						</Button>
 					</SheetFooter>

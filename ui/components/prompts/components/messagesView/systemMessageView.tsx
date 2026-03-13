@@ -4,6 +4,8 @@ import { PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
 import { useEffect, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
+import { RichTextarea } from "@/components/ui/custom/richTextarea";
+import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 
 export function SystemMessageView({
 	message,
@@ -18,8 +20,11 @@ export function SystemMessageView({
 }) {
 	const [editMode, setEditMode] = useState(false);
 	const containerRef = useRef<HTMLDivElement>(null);
+	const pendingCursorRef = useRef<number | null>(null);
 	const content = message.content;
 	const isEmpty = !content;
+	const hasVariables = JINJA_VAR_REGEX.test(content);
+	JINJA_VAR_REGEX.lastIndex = 0;
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -37,44 +42,81 @@ export function SystemMessageView({
 		onChange(clone.serialized);
 	};
 
+	const handleReadOnlyClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+		if (disabled) return;
+		const target = e.target as HTMLTextAreaElement;
+		pendingCursorRef.current = target.selectionStart ?? 0;
+		setEditMode(true);
+	};
+
+	const handleEditFocus = (e: React.FocusEvent<HTMLTextAreaElement>) => {
+		const pos = pendingCursorRef.current;
+		pendingCursorRef.current = null;
+		const target = e.target;
+		requestAnimationFrame(() => {
+			const cursorPos = pos ?? target.value.length;
+			target.selectionStart = cursorPos;
+			target.selectionEnd = cursorPos;
+		});
+	};
+
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto flex items-center gap-0.5 h-5">
 					{!disabled && (
-						<button type="button" aria-label="Edit message" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button type="button" aria-label="Edit message" data-testid="system-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button type="button" aria-label="Delete message" data-testid="system-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
 			</div>
 
-			<div>
+			<div onClick={() => { if (!disabled && !editMode) setEditMode(true); }} className={!disabled && !editMode ? "cursor-text" : ""}>
 				{editMode ? (
-					<Textarea
+					<RichTextarea
 						autoFocus
 						value={content}
 						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none"
 						disabled={disabled}
 						onChange={(e) => {
 							const clone = message.clone();
 							clone.content = e.target.value;
 							onChange(clone.serialized);
 						}}
+						onFocus={handleEditFocus}
 						onBlur={() => {
 							if (content.trim().length > 0) setEditMode(false);
 						}}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
 					/>
 				) : isEmpty ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter system message...</div>
+				) : hasVariables ? (
+					<RichTextarea
+						readOnly
+						value={content}
+						className="text-muted-foreground dark:bg-transparent min-h-[20px] resize-none rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+						textAreaClassName="rounded-none p-0 border-none cursor-text"
+						onClick={handleReadOnlyClick}
+						highlightPatterns={JINJA_VAR_HIGHLIGHT_PATTERNS}
+					/>
 				) : (
-					<Markdown content={content} className="text-muted-foreground" />
+					<div
+						className={!disabled ? "cursor-text" : undefined}
+						onClick={() => {
+							if (!disabled) setEditMode(true);
+						}}
+					>
+						<Markdown content={content} className="text-muted-foreground" />
+					</div>
 				)}
 			</div>
 		</div>

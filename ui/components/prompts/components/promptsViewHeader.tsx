@@ -2,8 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { SplitButton } from "@/components/ui/splitButton";
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdownMenu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Check, ChevronDown, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
+import { Check, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { parseAsInteger, useQueryStates } from "nuqs";
@@ -14,6 +13,8 @@ import { getErrorMessage } from "@/lib/store";
 import { usePromptContext } from "../context";
 import { ModelParams, PromptSession } from "@/lib/types/prompts";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 export default function PromptsViewHeader() {
 	const {
@@ -26,6 +27,8 @@ export default function PromptsViewHeader() {
 		provider,
 		model,
 		hasChanges,
+		hasVersionChanges,
+		hasSessionChanges,
 		isStreaming,
 	} = usePromptContext();
 
@@ -74,7 +77,7 @@ export default function PromptsViewHeader() {
 	}, [modelParams, apiKeyId]);
 
 	const handleSaveSession = useCallback(async () => {
-		if (!selectedPrompt || !hasChanges) return;
+		if (!selectedPrompt || !hasChanges || isStreaming) return;
 		try {
 			const result = await createSession({
 				promptId: selectedPrompt.id,
@@ -90,7 +93,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges, isStreaming]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -99,9 +102,9 @@ export default function PromptsViewHeader() {
 		{
 			preventDefault: true,
 			enableOnFormTags: ["input", "textarea", "select"],
-			enabled: !!selectedPrompt && !isCreatingSession,
+			enabled: !!selectedPrompt && !isCreatingSession && !isStreaming,
 		},
-		[handleSaveSession, selectedPrompt, isCreatingSession],
+		[handleSaveSession, selectedPrompt, isCreatingSession, isStreaming],
 	);
 
 	const handleCommitVersion = useCallback(async () => {
@@ -117,7 +120,7 @@ export default function PromptsViewHeader() {
 					model,
 				},
 			}).unwrap();
-			setUrlState({ sessionId: result.session.id });
+			setUrlState({ sessionId: result.session.id, versionId: null });
 			onSessionSaved(result.session);
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
@@ -145,35 +148,47 @@ export default function PromptsViewHeader() {
 		}
 	}, [messages]);
 
+	const selectedVersion = versions.find((v) => v.id === selectedVersionId);
+	const latestVersion = versions.find((v) => v.is_latest);
+	const displayVersion = selectedVersion ?? latestVersion;
+
 	return (
 		<div className="flex items-center justify-between border-b px-4 py-3">
-			<h3 className="truncate font-semibold">{selectedPrompt?.name || "Playground"}</h3>
+			<div className="flex items-center gap-2 min-w-0">
+				<h3 className="truncate font-semibold">
+					{selectedPrompt?.name || "Playground"}
+					{hasChanges && <span className="text-destructive ml-1">*</span>}
+				</h3>
+				{displayVersion && (
+					<Badge variant={"secondary"}>
+						v{displayVersion.version_number}
+					</Badge>
+				)}
+				{hasVersionChanges && versions.length > 0 && (
+					<Badge variant="outline">
+						Unpublished Changes
+					</Badge>
+				)}
+			</div>
 			<div className="flex shrink-0 items-center gap-4">
 				{messages.length > 1 && (
-					<Button variant="ghost" size="sm" onClick={handleClearConversation} disabled={isStreaming}>
+					<Button variant="ghost" size="sm" data-testid="header-clear" onClick={handleClearConversation} disabled={isStreaming}>
 						<Trash2 className="h-4 w-4" />
 						Clear
 					</Button>
 				)}
-				<div className="inline-flex items-center">
-					<Button
-						variant="outline"
-						className="rounded-r-none border bg-transparent"
-						onClick={handleSaveSession}
-						disabled={isCreatingSession || !hasChanges || isStreaming}
-					>
-						<Save className="h-4 w-4" />
-						Save Session
-					</Button>
-					<Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
-						<PopoverTrigger asChild>
-							<Button variant="outline" className="h-[30px] w-8 rounded-l-none border border-l-0 bg-transparent p-0">
-								<ChevronDown className="h-4 w-4" />
-							</Button>
-						</PopoverTrigger>
-						<PopoverContent className="w-72 p-0" align="end">
+				<SplitButton
+					onClick={handleSaveSession}
+					disabled={isCreatingSession || isStreaming}
+					isLoading={isCreatingSession}
+					data-testid="header-save-session"
+					dropdownContent={{
+						className: "w-72 p-0",
+						open: sessionsOpen,
+						onOpenChange: setSessionsOpen,
+						children: (
 							<Command>
-								<CommandInput placeholder="Search sessions..." />
+								<CommandInput placeholder="Search sessions..." data-testid="header-sessions-search" />
 								<CommandList>
 									<CommandEmpty>No sessions found.</CommandEmpty>
 									<CommandGroup>
@@ -192,12 +207,24 @@ export default function PromptsViewHeader() {
 									</CommandGroup>
 								</CommandList>
 							</Command>
-						</PopoverContent>
-					</Popover>
-				</div>
+						),
+					}}
+					variant={"outline"}
+					dropdownTrigger={{
+						className: cn("bg-transparent"),
+					}}
+					button={{
+						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
+						disabled: !hasChanges,
+					}}
+				>
+					<Save className="h-4 w-4" />
+					Save Session
+				</SplitButton>
 				<SplitButton
 					onClick={handleCommitVersion}
 					disabled={isCreatingSession || isStreaming}
+					data-testid="header-commit-version"
 					dropdownContent={{
 						className: "w-64 max-h-72 overflow-y-auto",
 						children: (
@@ -219,7 +246,7 @@ export default function PromptsViewHeader() {
 													{version.is_latest && <span className="text-primary ml-1.5 text-xs">(latest)</span>}
 												</span>
 												<span className="text-muted-foreground truncate text-xs">{version.commit_message || "No commit message"}</span>
-												<span className="text-muted-foreground text-xs">{new Date(version.created_at).toLocaleString()}</span>
+												<span className="text-muted-foreground text-xs">{formatSessionDate(version.created_at)}</span>
 											</div>
 											{selectedVersionId === version.id && <Check className="text-primary h-4 w-4 shrink-0" />}
 										</DropdownMenuItem>
@@ -230,10 +257,11 @@ export default function PromptsViewHeader() {
 					}}
 					variant={"outline"}
 					dropdownTrigger={{
-						className: "bg-transparent",
+						className: cn("bg-transparent"),
 					}}
 					button={{
-						className: "bg-transparent",
+						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
+						disabled: !hasVersionChanges,
 					}}
 				>
 					<GitCommit className="h-4 w-4" />
@@ -289,6 +317,7 @@ function SessionItem({
 					defaultValue={session.name}
 					placeholder="Session name"
 					className="h-7 text-sm"
+					data-testid="session-rename-input"
 					autoFocus
 					onKeyDown={(e) => {
 						if (e.key === "Enter") handleRenameSubmit();
@@ -316,6 +345,7 @@ function SessionItem({
 				<button
 					type="button"
 					aria-label="Rename session"
+					data-testid="session-rename"
 					onPointerDown={(e) => {
 						e.preventDefault();
 						e.stopPropagation();
@@ -325,7 +355,7 @@ function SessionItem({
 						e.stopPropagation();
 						setIsEditing(true);
 					}}
-					className="rounded-sm p-1 hover:bg-muted focus:bg-muted opacity-0 transition-opacity group-hover/item:opacity-100 focus:opacity-100"
+					className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-hover/item:opacity-100 focus:opacity-100"
 				>
 					<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 cursor-pointer" />
 				</button>

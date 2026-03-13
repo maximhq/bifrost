@@ -26,6 +26,7 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 					<Button
 						variant="outline"
 						aria-label="Read more about budgets and limits (opens in new tab)"
+						data-testid="model-limits-button-read-more"
 						onClick={() => {
 							window.open(`${MODEL_LIMITS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
@@ -36,6 +37,7 @@ export function ModelLimitsEmptyState({ onAddClick, canCreate = true }: ModelLim
 						aria-label="Add your first model limit"
 						onClick={onAddClick}
 						disabled={!canCreate}
+						data-testid="model-limits-button-create"
 					>
 						Add Model Limit
 					</Button>

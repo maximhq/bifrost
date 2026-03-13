@@ -43,11 +43,123 @@ func (p *LoggerPlugin) insertInitialLogEntry(
 		RoutingEnginesUsed:          routingEnginesUsed,
 		MetadataParsed:              data.Metadata,
 		VideoGenerationInputParsed:  data.VideoGenerationInput,
+		PassthroughRequestBody:      data.PassthroughRequestBody,
 	}
 	if parentRequestID != "" {
 		entry.ParentRequestID = &parentRequestID
 	}
 	return p.store.CreateIfNotExists(ctx, entry)
+}
+
+// applySerializedLogUpdates copies serialized fields from a temporary log entry
+// into the GORM update map, respecting content-logging gates.
+func applySerializedLogUpdates(
+	updates map[string]interface{},
+	entry *logstore.Log,
+	data *UpdateLogData,
+	cacheDebug *schemas.BifrostCacheDebug,
+	contentLoggingEnabled bool,
+) {
+	if data.ChatOutput != nil && contentLoggingEnabled {
+		updates["output_message"] = entry.OutputMessage
+		updates["content_summary"] = entry.ContentSummary
+	}
+
+	if contentLoggingEnabled {
+		if data.ResponsesOutput != nil {
+			updates["responses_output"] = entry.ResponsesOutput
+		}
+		if data.ListModelsOutput != nil {
+			updates["list_models_output"] = entry.ListModelsOutput
+		}
+		if data.EmbeddingOutput != nil {
+			updates["embedding_output"] = entry.EmbeddingOutput
+		}
+		if data.RerankOutput != nil {
+			updates["rerank_output"] = entry.RerankOutput
+			updates["content_summary"] = entry.ContentSummary
+		}
+		if data.SpeechOutput != nil {
+			updates["speech_output"] = entry.SpeechOutput
+		}
+		if data.TranscriptionOutput != nil {
+			updates["transcription_output"] = entry.TranscriptionOutput
+		}
+		if data.ImageGenerationOutput != nil {
+			updates["image_generation_output"] = entry.ImageGenerationOutput
+		}
+		if data.VideoGenerationOutput != nil {
+			updates["video_generation_output"] = entry.VideoGenerationOutput
+		}
+		if data.VideoRetrieveOutput != nil {
+			updates["video_retrieve_output"] = entry.VideoRetrieveOutput
+		}
+		if data.VideoDownloadOutput != nil {
+			updates["video_download_output"] = entry.VideoDownloadOutput
+		}
+		if data.VideoListOutput != nil {
+			updates["video_list_output"] = entry.VideoListOutput
+		}
+		if data.VideoDeleteOutput != nil {
+			updates["video_delete_output"] = entry.VideoDeleteOutput
+		}
+	}
+
+	if data.TokenUsage != nil {
+		updates["token_usage"] = entry.TokenUsage
+		updates["prompt_tokens"] = data.TokenUsage.PromptTokens
+		updates["completion_tokens"] = data.TokenUsage.CompletionTokens
+		updates["total_tokens"] = data.TokenUsage.TotalTokens
+	}
+
+	if cacheDebug != nil {
+		updates["cache_debug"] = entry.CacheDebug
+	}
+	if data.ErrorDetails != nil {
+		updates["error_details"] = entry.ErrorDetails
+	}
+}
+
+// applySerializedStreamingLogUpdates copies serialized streaming fields from a
+// temporary log entry into the GORM update map, respecting content-logging
+// gates.
+func applySerializedStreamingLogUpdates(
+	updates map[string]interface{},
+	entry *logstore.Log,
+	streamResponse *streaming.ProcessedStreamResponse,
+	cacheDebug *schemas.BifrostCacheDebug,
+	contentLoggingEnabled bool,
+) {
+	if streamResponse.Data.TokenUsage != nil {
+		updates["token_usage"] = entry.TokenUsage
+		updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
+		updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
+		updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
+	}
+
+	if !contentLoggingEnabled {
+		return
+	}
+
+	if streamResponse.Data.TranscriptionOutput != nil {
+		updates["transcription_output"] = entry.TranscriptionOutput
+	}
+	if streamResponse.Data.AudioOutput != nil {
+		updates["speech_output"] = entry.SpeechOutput
+	}
+	if streamResponse.Data.ImageGenerationOutput != nil {
+		updates["image_generation_output"] = entry.ImageGenerationOutput
+	}
+	if cacheDebug != nil {
+		updates["cache_debug"] = entry.CacheDebug
+	}
+	if streamResponse.Data.OutputMessage != nil {
+		updates["output_message"] = entry.OutputMessage
+		updates["content_summary"] = entry.ContentSummary
+	}
+	if streamResponse.Data.OutputMessages != nil {
+		updates["responses_output"] = entry.ResponsesOutput
+	}
 }
 
 // updateLogEntry updates an existing log entry using GORM
@@ -91,126 +203,62 @@ func (p *LoggerPlugin) updateLogEntry(
 	if routingEngineLogs != "" {
 		updates["routing_engine_logs"] = routingEngineLogs
 	}
-	// Handle JSON fields by setting them on a temporary entry and serializing
+	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
 	tempEntry := &logstore.Log{}
-	if data.ChatOutput != nil {
-		tempEntry.OutputMessageParsed = data.ChatOutput
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize output message: %v", err)
-		} else {
-			updates["output_message"] = tempEntry.OutputMessage
-			updates["content_summary"] = tempEntry.ContentSummary // Update content summary
-		}
-	}
+	needsSerialization := false
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	if contentLoggingEnabled {
+		if data.ChatOutput != nil {
+			tempEntry.OutputMessageParsed = data.ChatOutput
+			needsSerialization = true
+		}
 		if data.ResponsesOutput != nil {
 			tempEntry.ResponsesOutputParsed = data.ResponsesOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize responses output: %v", err)
-			} else {
-				updates["responses_output"] = tempEntry.ResponsesOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.ListModelsOutput != nil {
 			tempEntry.ListModelsOutputParsed = data.ListModelsOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize list models output: %v", err)
-			} else {
-				updates["list_models_output"] = tempEntry.ListModelsOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.EmbeddingOutput != nil {
 			tempEntry.EmbeddingOutputParsed = data.EmbeddingOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize embedding output: %v", err)
-			} else {
-				updates["embedding_output"] = tempEntry.EmbeddingOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.RerankOutput != nil {
 			tempEntry.RerankOutputParsed = data.RerankOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize rerank output: %v", err)
-			} else {
-				updates["rerank_output"] = tempEntry.RerankOutput
-				updates["content_summary"] = tempEntry.ContentSummary
-			}
+			needsSerialization = true
 		}
-
 		if data.SpeechOutput != nil {
 			tempEntry.SpeechOutputParsed = data.SpeechOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize speech output: %v", err)
-			} else {
-				updates["speech_output"] = tempEntry.SpeechOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.TranscriptionOutput != nil {
 			tempEntry.TranscriptionOutputParsed = data.TranscriptionOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize transcription output: %v", err)
-			} else {
-				updates["transcription_output"] = tempEntry.TranscriptionOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.ImageGenerationOutput != nil {
 			tempEntry.ImageGenerationOutputParsed = data.ImageGenerationOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize image generation output: %v", err)
-			} else {
-				updates["image_generation_output"] = tempEntry.ImageGenerationOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.VideoGenerationOutput != nil {
 			tempEntry.VideoGenerationOutputParsed = data.VideoGenerationOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize video generation output: %v", err)
-			} else {
-				updates["video_generation_output"] = tempEntry.VideoGenerationOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.VideoRetrieveOutput != nil {
 			tempEntry.VideoRetrieveOutputParsed = data.VideoRetrieveOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize video retrieve output: %v", err)
-			} else {
-				updates["video_retrieve_output"] = tempEntry.VideoRetrieveOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.VideoDownloadOutput != nil {
 			tempEntry.VideoDownloadOutputParsed = data.VideoDownloadOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize video download output: %v", err)
-			} else {
-				updates["video_download_output"] = tempEntry.VideoDownloadOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.VideoListOutput != nil {
 			tempEntry.VideoListOutputParsed = data.VideoListOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize video list output: %v", err)
-			} else {
-				updates["video_list_output"] = tempEntry.VideoListOutput
-			}
+			needsSerialization = true
 		}
-
 		if data.VideoDeleteOutput != nil {
 			tempEntry.VideoDeleteOutputParsed = data.VideoDeleteOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize video delete output: %v", err)
-			} else {
-				updates["video_delete_output"] = tempEntry.VideoDeleteOutput
-			}
+			needsSerialization = true
 		}
 
 		// Handle raw request marshaling and logging
@@ -230,22 +278,9 @@ func (p *LoggerPlugin) updateLogEntry(
 		}
 	}
 
-	// Flag is set outside the content logging guard so the dashboard can always
-	// tag large payload requests regardless of content logging settings.
-	if data.IsLargePayloadRequest {
-		updates["is_large_payload_request"] = true
-	}
-
 	if data.TokenUsage != nil {
 		tempEntry.TokenUsageParsed = data.TokenUsage
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize token usage: %v", err)
-		} else {
-			updates["token_usage"] = tempEntry.TokenUsage
-			updates["prompt_tokens"] = data.TokenUsage.PromptTokens
-			updates["completion_tokens"] = data.TokenUsage.CompletionTokens
-			updates["total_tokens"] = data.TokenUsage.TotalTokens
-		}
+		needsSerialization = true
 	}
 
 	// Handle cost from pricing plugin
@@ -256,20 +291,26 @@ func (p *LoggerPlugin) updateLogEntry(
 	// Handle cache debug
 	if cacheDebug != nil {
 		tempEntry.CacheDebugParsed = cacheDebug
-		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize cache debug: %v", err)
-		} else {
-			updates["cache_debug"] = tempEntry.CacheDebug
-		}
+		needsSerialization = true
 	}
 
 	if data.ErrorDetails != nil {
 		tempEntry.ErrorDetailsParsed = data.ErrorDetails
+		needsSerialization = true
+	}
+
+	if needsSerialization {
 		if err := tempEntry.SerializeFields(); err != nil {
-			p.logger.Error("failed to serialize error details: %v", err)
+			p.logger.Error("failed to serialize log update fields: %v", err)
 		} else {
-			updates["error_details"] = tempEntry.ErrorDetails
+			applySerializedLogUpdates(updates, tempEntry, data, cacheDebug, contentLoggingEnabled)
 		}
+	}
+
+	// Flag is set outside the content logging guard so the dashboard can always
+	// tag large payload requests regardless of content logging settings.
+	if data.IsLargePayloadRequest {
+		updates["is_large_payload_request"] = true
 	}
 
 	if data.IsLargePayloadResponse {
@@ -355,9 +396,7 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 	// Always mark as streaming and update timestamp
 	updates["stream"] = true
 
-	// Calculate latency when stream finishes
 	tempEntry := &logstore.Log{}
-
 	updates["latency"] = float64(streamResponse.Data.Latency)
 
 	// Update model if provided
@@ -365,15 +404,12 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 		updates["model"] = streamResponse.Data.Model
 	}
 
+	needsSerialization := false
+
 	// Update token usage if provided
 	if streamResponse.Data.TokenUsage != nil {
 		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
-		if err := tempEntry.SerializeFields(); err == nil {
-			updates["token_usage"] = tempEntry.TokenUsage
-			updates["prompt_tokens"] = streamResponse.Data.TokenUsage.PromptTokens
-			updates["completion_tokens"] = streamResponse.Data.TokenUsage.CompletionTokens
-			updates["total_tokens"] = streamResponse.Data.TokenUsage.TotalTokens
-		}
+		needsSerialization = true
 	}
 
 	// Handle cost from pricing plugin
@@ -385,62 +421,37 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 		updates["status"] = "success"
 	}
 
-	if p.disableContentLogging == nil || !*p.disableContentLogging {
+	contentLoggingEnabled := p.disableContentLogging == nil || !*p.disableContentLogging
+	if contentLoggingEnabled {
 		// Handle transcription output from stream updates
 		if streamResponse.Data.TranscriptionOutput != nil {
 			tempEntry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
-			// Here we just log error but move one vs breaking the entire logging flow
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize transcription output: %v", err)
-			} else {
-				updates["transcription_output"] = tempEntry.TranscriptionOutput
-			}
+			needsSerialization = true
 		}
 		// Handle speech output from stream updates
 		if streamResponse.Data.AudioOutput != nil {
 			tempEntry.SpeechOutputParsed = streamResponse.Data.AudioOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize speech output: %v", err)
-			} else {
-				updates["speech_output"] = tempEntry.SpeechOutput
-			}
+			needsSerialization = true
 		}
 		// Handle image generation output from stream updates
 		if streamResponse.Data.ImageGenerationOutput != nil {
 			tempEntry.ImageGenerationOutputParsed = streamResponse.Data.ImageGenerationOutput
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize image generation output: %v", err)
-			} else {
-				updates["image_generation_output"] = tempEntry.ImageGenerationOutput
-			}
+			needsSerialization = true
 		}
 		// Handle cache debug
 		if cacheDebug != nil {
 			tempEntry.CacheDebugParsed = cacheDebug
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize cache debug: %v", err)
-			} else {
-				updates["cache_debug"] = tempEntry.CacheDebug
-			}
+			needsSerialization = true
 		}
 		// Create content summary
 		if streamResponse.Data.OutputMessage != nil {
 			tempEntry.OutputMessageParsed = streamResponse.Data.OutputMessage
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize output message: %v", err)
-			} else {
-				updates["output_message"] = tempEntry.OutputMessage
-				updates["content_summary"] = tempEntry.ContentSummary
-			}
+			needsSerialization = true
 		}
 		// Handle responses output from stream updates
 		if streamResponse.Data.OutputMessages != nil {
 			tempEntry.ResponsesOutputParsed = streamResponse.Data.OutputMessages
-			if err := tempEntry.SerializeFields(); err != nil {
-				p.logger.Error("failed to serialize responses output: %v", err)
-			} else {
-				updates["responses_output"] = tempEntry.ResponsesOutput
-			}
+			needsSerialization = true
 		}
 		// Handle raw request from stream updates
 		if streamResponse.RawRequest != nil && *streamResponse.RawRequest != nil {
@@ -462,6 +473,14 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 		// Handle raw response from stream updates
 		if streamResponse.Data.RawResponse != nil {
 			updates["raw_response"] = *streamResponse.Data.RawResponse
+		}
+	}
+
+	if needsSerialization {
+		if err := tempEntry.SerializeFields(); err != nil {
+			p.logger.Error("failed to serialize streaming log update fields: %v", err)
+		} else {
+			applySerializedStreamingLogUpdates(updates, tempEntry, streamResponse, cacheDebug, contentLoggingEnabled)
 		}
 	}
 	// Persist large payload flags for dashboard tagging
@@ -577,6 +596,14 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	}
 }
 
+// isPassthroughErrorResponse returns true when the result is a passthrough
+// response with a provider-reported HTTP error status (4xx or 5xx).
+func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
+	return result != nil &&
+		result.PassthroughResponse != nil &&
+		result.PassthroughResponse.StatusCode >= 400
+}
+
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
 	if result == nil {
@@ -676,6 +703,15 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		}
 		if result.ImageGenerationResponse != nil {
 			entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
+		}
+		if result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
+			entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
+		}
+	}
+
+	if result.PassthroughResponse != nil {
+		if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
+			params.StatusCode = result.PassthroughResponse.StatusCode
 		}
 	}
 }
@@ -917,79 +953,201 @@ func (p *LoggerPlugin) calculateCostForLog(logEntry *logstore.Log) (float64, err
 		}
 	}
 
-	cacheDebug := logEntry.CacheDebugParsed
 	usage := logEntry.TokenUsageParsed
+	cacheDebug := logEntry.CacheDebugParsed
 
-	// Handle cache hits before attempting to use usage data
-	if cacheDebug != nil && cacheDebug.CacheHit {
-		return p.calculateCostForCacheHit(cacheDebug)
-	}
-
-	if usage == nil {
+	// If no cache hit and no usage, we can't calculate cost
+	if usage == nil && (cacheDebug == nil || !cacheDebug.CacheHit) {
 		return 0, fmt.Errorf("token usage not available for log %s", logEntry.ID)
 	}
 
 	requestType := schemas.RequestType(logEntry.Object)
-	if requestType == "" {
+	if requestType == "" && (cacheDebug == nil || !cacheDebug.CacheHit) {
 		p.logger.Warn("skipping cost calculation for log %s: object type is empty (timestamp: %s)", logEntry.ID, logEntry.Timestamp)
 		return 0, fmt.Errorf("object type is empty for log %s", logEntry.ID)
 	}
 
-	baseCost := p.pricingManager.CalculateCostFromUsage(
-		logEntry.Provider,
-		logEntry.Model,
-		"",
-		usage,
-		requestType,
-		false,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
-
-	// For cache misses, combine base cost with embedding cost if available
-	if cacheDebug != nil && !cacheDebug.CacheHit {
-		baseCost += p.calculateCacheEmbeddingCost(cacheDebug)
+	// Build a minimal BifrostResponse matching the request type so that
+	// extractCostInput routes usage into the correct field for each compute function.
+	extraFields := schemas.BifrostResponseExtraFields{
+		RequestType:    requestType,
+		Provider:       schemas.ModelProvider(logEntry.Provider),
+		ModelRequested: logEntry.Model,
+		CacheDebug:     cacheDebug,
 	}
 
-	return baseCost, nil
+	resp := buildResponseForRequestType(requestType, usage, extraFields)
+
+	// Patch modality-specific output fields that are not captured in BifrostLLMUsage
+	// but are required for accurate cost calculation.
+
+	// Transcription: restore Seconds (duration billing) and InputTokenDetails
+	// (audio/text token breakdown) from the stored response object.
+	if resp.TranscriptionResponse != nil &&
+		logEntry.TranscriptionOutputParsed != nil &&
+		logEntry.TranscriptionOutputParsed.Usage != nil {
+		resp.TranscriptionResponse.Usage = logEntry.TranscriptionOutputParsed.Usage
+	}
+
+	// ImageGeneration: restore full ImageUsage (OutputTokensDetails/NImages for
+	// per-image pricing), Data count, and Size from the stored response object.
+	if resp.ImageGenerationResponse != nil && logEntry.ImageGenerationOutputParsed != nil {
+		parsed := logEntry.ImageGenerationOutputParsed
+		if parsed.Usage != nil {
+			resp.ImageGenerationResponse.Usage = parsed.Usage
+		}
+		if resp.ImageGenerationResponse.ImageGenerationResponseParameters == nil &&
+			parsed.ImageGenerationResponseParameters != nil {
+			resp.ImageGenerationResponse.ImageGenerationResponseParameters = parsed.ImageGenerationResponseParameters
+		}
+		if len(resp.ImageGenerationResponse.Data) == 0 {
+			resp.ImageGenerationResponse.Data = parsed.Data
+		}
+	}
+
+	// VideoGeneration: patch in Seconds from the stored output so that
+	// extractCostInput can compute the per-second cost.
+	if resp.VideoGenerationResponse != nil && logEntry.VideoGenerationOutputParsed != nil {
+		resp.VideoGenerationResponse.Seconds = logEntry.VideoGenerationOutputParsed.Seconds
+	}
+
+	// Speech: restore provider-specific usage (e.g. character-count billing) from
+	// the stored response instead of relying solely on aggregate token counts.
+	if resp.SpeechResponse != nil &&
+		logEntry.SpeechOutputParsed != nil &&
+		logEntry.SpeechOutputParsed.Usage != nil {
+		resp.SpeechResponse.Usage = logEntry.SpeechOutputParsed.Usage
+	}
+
+	return p.pricingManager.CalculateCost(resp), nil
 }
 
-func (p *LoggerPlugin) calculateCostForCacheHit(cacheDebug *schemas.BifrostCacheDebug) (float64, error) {
-	if cacheDebug == nil {
-		return 0, fmt.Errorf("cache debug data missing")
+// buildResponseForRequestType wraps BifrostLLMUsage into the correct response
+// field so that CalculateCost's extractCostInput routes it properly.
+func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas.BifrostLLMUsage, extra schemas.BifrostResponseExtraFields) *schemas.BifrostResponse {
+	switch requestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return &schemas.BifrostResponse{
+			TextCompletionResponse: &schemas.BifrostTextCompletionResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.EmbeddingRequest:
+		return &schemas.BifrostResponse{
+			EmbeddingResponse: &schemas.BifrostEmbeddingResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.RerankRequest:
+		return &schemas.BifrostResponse{
+			RerankResponse: &schemas.BifrostRerankResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		// Convert BifrostLLMUsage back to ResponsesResponseUsage, preserving token
+		// detail breakdowns so CalculateCost can apply cache and search-query pricing.
+		var respUsage *schemas.ResponsesResponseUsage
+		if usage != nil {
+			respUsage = &schemas.ResponsesResponseUsage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+				TotalTokens:  usage.TotalTokens,
+				Cost:         usage.Cost,
+			}
+			if usage.PromptTokensDetails != nil {
+				respUsage.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
+					TextTokens:        usage.PromptTokensDetails.TextTokens,
+					AudioTokens:       usage.PromptTokensDetails.AudioTokens,
+					ImageTokens:       usage.PromptTokensDetails.ImageTokens,
+					CachedReadTokens:  usage.PromptTokensDetails.CachedReadTokens,
+					CachedWriteTokens: usage.PromptTokensDetails.CachedWriteTokens,
+				}
+			}
+		if usage.CompletionTokensDetails != nil {
+			respUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{
+				TextTokens:               usage.CompletionTokensDetails.TextTokens,
+				AcceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
+				AudioTokens:              usage.CompletionTokensDetails.AudioTokens,
+				ImageTokens:              usage.CompletionTokensDetails.ImageTokens,
+				ReasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
+				RejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
+				CitationTokens:           usage.CompletionTokensDetails.CitationTokens,
+				NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
+			}
+		}
+		}
+		return &schemas.BifrostResponse{
+			ResponsesResponse: &schemas.BifrostResponsesResponse{
+				Usage:       respUsage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		var speechUsage *schemas.SpeechUsage
+		if usage != nil {
+			speechUsage = &schemas.SpeechUsage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+				TotalTokens:  usage.TotalTokens,
+			}
+		}
+		return &schemas.BifrostResponse{
+			SpeechResponse: &schemas.BifrostSpeechResponse{
+				Usage:       speechUsage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		var txUsage *schemas.TranscriptionUsage
+		if usage != nil {
+			txUsage = &schemas.TranscriptionUsage{
+				InputTokens:  &usage.PromptTokens,
+				OutputTokens: &usage.CompletionTokens,
+				TotalTokens:  &usage.TotalTokens,
+			}
+		}
+		return &schemas.BifrostResponse{
+			TranscriptionResponse: &schemas.BifrostTranscriptionResponse{
+				Usage:       txUsage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest,
+		schemas.ImageEditRequest, schemas.ImageEditStreamRequest, schemas.ImageVariationRequest:
+		// Log entries only store BifrostLLMUsage; convert to ImageUsage for proper routing
+		var imgUsage *schemas.ImageUsage
+		if usage != nil {
+			imgUsage = &schemas.ImageUsage{
+				InputTokens:  usage.PromptTokens,
+				OutputTokens: usage.CompletionTokens,
+				TotalTokens:  usage.TotalTokens,
+			}
+		}
+		return &schemas.BifrostResponse{
+			ImageGenerationResponse: &schemas.BifrostImageGenerationResponse{
+				Usage:       imgUsage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
+		// Seconds is not stored in BifrostLLMUsage; the caller must patch it in from
+		// the stored VideoGenerationOutputParsed after this function returns.
+		return &schemas.BifrostResponse{
+			VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+				ExtraFields: extra,
+			},
+		}
+	default:
+		// Default to chat response for unknown or chat request types
+		return &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
 	}
-
-	// Direct hits have zero cost
-	if cacheDebug.HitType != nil && *cacheDebug.HitType == "direct" {
-		return 0, nil
-	}
-
-	// Semantic hits bill the embedding lookup
-	embeddingCost := p.calculateCacheEmbeddingCost(cacheDebug)
-	return embeddingCost, nil
-}
-
-func (p *LoggerPlugin) calculateCacheEmbeddingCost(cacheDebug *schemas.BifrostCacheDebug) float64 {
-	if cacheDebug == nil || cacheDebug.ProviderUsed == nil || cacheDebug.ModelUsed == nil || cacheDebug.InputTokens == nil {
-		return 0
-	}
-
-	return p.pricingManager.CalculateCostFromUsage(
-		*cacheDebug.ProviderUsed,
-		*cacheDebug.ModelUsed,
-		"",
-		&schemas.BifrostLLMUsage{
-			PromptTokens:     *cacheDebug.InputTokens,
-			CompletionTokens: 0,
-			TotalTokens:      *cacheDebug.InputTokens,
-		},
-		schemas.EmbeddingRequest,
-		false,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
 }

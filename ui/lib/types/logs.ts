@@ -471,9 +471,11 @@ export interface LogEntry {
 	created_at: string; // ISO string format from Go time.Time - when the log was first created
 	raw_request?: string; // Raw provider request
 	raw_response?: string; // Raw provider response
-	metadata?: Record<string, unknown>; // JSON metadata (e.g., isAsyncRequest)
 	is_large_payload_request?: boolean; // true if request used large payload streaming
 	is_large_payload_response?: boolean; // true if response used large payload streaming
+	passthrough_request_body?: string; // Raw passthrough request body (UTF-8)
+	passthrough_response_body?: string; // Raw passthrough response body (UTF-8)
+	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 }
 
 export interface LogFilters {

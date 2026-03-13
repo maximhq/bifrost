@@ -45,12 +45,12 @@ export default function ToolCallMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors">
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors">
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto h-5">
 					{!disabled && onRemove && (
-							<button type="button" aria-label="Delete message" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+							<button type="button" aria-label="Delete message" data-testid="tool-call-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
 						</button>
 					)}
@@ -65,7 +65,7 @@ export default function ToolCallMessageView({
 						// keep raw string if not valid JSON
 					}
 					return (
-						<div key={tc.id} className="bg-muted/50 rounded-md border px-3 py-2">
+						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2">
 							<div className="flex items-center gap-2">
 								<Wrench className="text-muted-foreground h-3 w-3 shrink-0" />
 								<span className="font-mono text-xs font-medium shrink-0 mr-4">{tc.function.name}</span>
@@ -82,12 +82,14 @@ export default function ToolCallMessageView({
 											placeholder="Enter tool response..."
 											value={responses[tc.id] ?? ""}
 											onChange={(e) => handleResponseChange(tc.id, e.target.value)}
+											data-testid="tool-call-response-textarea"
 											className="min-h-[36px] resize-none font-mono text-xs"
 											rows={2}
 										/>
 										<Button
 											variant="secondary"
 											size="sm"
+											data-testid="tool-call-response-submit"
 											disabled={!responses[tc.id]?.trim()}
 											onClick={() => handleSubmitResponse(tc.id)}
 										>

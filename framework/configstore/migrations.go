@@ -296,6 +296,15 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddBedrockAssumeRoleColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddImageQualityPricingColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationAddRoutingTargetsTable(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
@@ -4121,6 +4130,310 @@ func migrationAddBedrockAssumeRoleColumns(ctx context.Context, db *gorm.DB) erro
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running bedrock assume role columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddPricingRefactorColumns adds all new pricing columns introduced in the pricing module refactor
+func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_pricing_refactor_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_priority",
+				"output_cost_per_token_priority",
+				"cache_creation_input_token_cost_above_1hr",
+				"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+				"cache_creation_input_audio_token_cost",
+				"cache_read_input_token_cost_priority",
+				"input_cost_per_pixel",
+				"output_cost_per_pixel",
+				"output_cost_per_image_premium_image",
+				"output_cost_per_image_above_512_and_512_pixels",
+				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_1024_and_1024_pixels",
+				"output_cost_per_image_above_1024x1024_pixels_premium",
+				"input_cost_per_audio_token",
+				"input_cost_per_second",
+				"input_cost_per_video_per_second",
+				"input_cost_per_audio_per_second",
+				"output_cost_per_audio_token",
+				"search_context_cost_per_query",
+				"code_interpreter_cost_per_session",
+				"input_cost_per_character",
+				"input_cost_per_token_above_128k_tokens",
+				"input_cost_per_image_above_128k_tokens",
+				"input_cost_per_video_per_second_above_128k_tokens",
+				"input_cost_per_audio_per_second_above_128k_tokens",
+				"output_cost_per_token_above_128k_tokens",
+			}
+
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			columns := []string{
+				"input_cost_per_token_priority",
+				"output_cost_per_token_priority",
+				"cache_creation_input_token_cost_above_1hr",
+				"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+				"cache_creation_input_audio_token_cost",
+				"cache_read_input_token_cost_priority",
+				"input_cost_per_pixel",
+				"output_cost_per_pixel",
+				"output_cost_per_image_premium_image",
+				"output_cost_per_image_above_512_and_512_pixels",
+				"output_cost_per_image_above_512_and_512_pixels_and_premium_image",
+				"output_cost_per_image_above_1024_and_1024_pixels",
+				"output_cost_per_image_above_1024x1024_pixels_premium",
+				"input_cost_per_audio_token",
+				"input_cost_per_second",
+				"input_cost_per_video_per_second",
+				"input_cost_per_audio_per_second",
+				"output_cost_per_audio_token",
+				"search_context_cost_per_query",
+				"code_interpreter_cost_per_session",
+				"input_cost_per_character",
+				"input_cost_per_token_above_128k_tokens",
+				"input_cost_per_image_above_128k_tokens",
+				"input_cost_per_video_per_second_above_128k_tokens",
+				"input_cost_per_audio_per_second_above_128k_tokens",
+				"output_cost_per_token_above_128k_tokens",
+			}
+
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running pricing refactor columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageQualityPricingColumns adds quality-based per-image cost columns (low, medium, high, auto).
+func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_image_quality_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"output_cost_per_image_above_2048_and_2048_pixels",
+				"output_cost_per_image_above_4096_and_4096_pixels",
+				"output_cost_per_image_low_quality",
+				"output_cost_per_image_medium_quality",
+				"output_cost_per_image_high_quality",
+				"output_cost_per_image_auto_quality",
+			}
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"output_cost_per_image_above_2048_and_2048_pixels",
+				"output_cost_per_image_above_4096_and_4096_pixels",
+				"output_cost_per_image_low_quality",
+				"output_cost_per_image_medium_quality",
+				"output_cost_per_image_high_quality",
+				"output_cost_per_image_auto_quality",
+			}
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running image quality pricing columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// legacyRoutingRuleColumns is a migration-only struct that represents the old routing_rules
+// schema before provider/model/key_id were moved to the routing_targets table.
+// GORM's SQLite DropColumn/AddColumn need a real struct (not a string table name) to
+// reconstruct the table correctly, so we keep this stub around for migration use only.
+type legacyRoutingRuleColumns struct {
+	Provider string `gorm:"column:provider;type:varchar(255)"`
+	Model    string `gorm:"column:model;type:varchar(255)"`
+}
+
+func (legacyRoutingRuleColumns) TableName() string { return "routing_rules" }
+
+// migrationAddRoutingTargetsTable creates the routing_targets table and seeds one target row per
+// existing routing rule, migrating the legacy provider/model columns.
+// After seeding, the legacy columns are dropped from routing_rules.
+func migrationAddRoutingTargetsTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_routing_targets_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			// 1. Create routing_targets table
+			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				if err := mg.CreateTable(&tables.TableRoutingTarget{}); err != nil {
+					return fmt.Errorf("failed to create routing_targets table: %w", err)
+				}
+			}
+			if !mg.HasConstraint(&tables.TableRoutingRule{}, "Targets") {
+				if err := mg.CreateConstraint(&tables.TableRoutingRule{}, "Targets"); err != nil {
+					return fmt.Errorf("failed to create routing_targets foreign key: %w", err)
+				}
+			}
+
+			// 2. Read legacy data BEFORE dropping columns, then drop columns, then seed.
+			// Order matters: DropColumn on SQLite recreates the routing_rules table, which
+			// triggers the OnDelete:CASCADE on routing_targets and deletes any rows inserted
+			// before the drop. So we read first, drop, then insert.
+			type legacyRule struct {
+				ID       string
+				Provider string
+				Model    string
+			}
+			var legacyRows []legacyRule
+			if mg.HasColumn("routing_rules", "provider") {
+				if err := tx.Table("routing_rules").Select("id, provider, model").Scan(&legacyRows).Error; err != nil {
+					return fmt.Errorf("failed to scan routing_rules for seeding: %w", err)
+				}
+			}
+
+			// 3. Drop legacy single-target columns from routing_rules.
+			// Must use the struct form (not string) so SQLite can reconstruct the table correctly.
+			// Do this BEFORE seeding so the CASCADE triggered by table recreation hits an empty
+			// routing_targets table (nothing to delete yet).
+			legacyModel := &legacyRoutingRuleColumns{}
+			for _, col := range []string{"provider", "model"} {
+				if mg.HasColumn("routing_rules", col) {
+					if err := mg.DropColumn(legacyModel, col); err != nil {
+						return fmt.Errorf("failed to drop column %s from routing_rules: %w", col, err)
+					}
+				}
+			}
+
+			// 4. Seed routing_targets from the legacy data read above (idempotent).
+			for _, row := range legacyRows {
+				var count int64
+				if err := tx.Table("routing_targets").Where("rule_id = ?", row.ID).Count(&count).Error; err != nil {
+					return fmt.Errorf("failed to count targets for rule %s: %w", row.ID, err)
+				}
+				if count > 0 {
+					continue // already seeded
+				}
+				target := tables.TableRoutingTarget{
+					RuleID: row.ID,
+					Weight: 1.0,
+				}
+				if row.Provider != "" {
+					p := row.Provider
+					target.Provider = &p
+				}
+				if row.Model != "" {
+					m := row.Model
+					target.Model = &m
+				}
+				if err := tx.Create(&target).Error; err != nil {
+					return fmt.Errorf("failed to seed target for rule %s: %w", row.ID, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+
+			if !mg.HasTable(&tables.TableRoutingTarget{}) {
+				return nil
+			}
+
+			// 1. Add provider and model columns back to routing_rules (before dropping targets)
+			legacyModel := &legacyRoutingRuleColumns{}
+			for _, col := range []string{"provider", "model"} {
+				if !mg.HasColumn("routing_rules", col) {
+					if err := mg.AddColumn(legacyModel, col); err != nil {
+						return fmt.Errorf("failed to add column %s to routing_rules: %w", col, err)
+					}
+				}
+			}
+
+			// 2. Backfill provider/model from routing_targets into routing_rules (join by rule_id)
+			type targetRow struct {
+				RuleID   string
+				Provider *string
+				Model    *string
+			}
+			var targets []targetRow
+			if err := tx.Table("routing_targets").Select("rule_id, provider, model").Order("rule_id").Scan(&targets).Error; err != nil {
+				return fmt.Errorf("failed to scan routing_targets for backfill: %w", err)
+			}
+			ruleData := make(map[string]targetRow)
+			for _, t := range targets {
+				if _, ok := ruleData[t.RuleID]; !ok {
+					ruleData[t.RuleID] = t
+				}
+			}
+			for ruleID, t := range ruleData {
+				provider, model := "", ""
+				if t.Provider != nil {
+					provider = *t.Provider
+				}
+				if t.Model != nil {
+					model = *t.Model
+				}
+				if err := tx.Table("routing_rules").Where("id = ?", ruleID).Updates(map[string]interface{}{
+					"provider": provider,
+					"model":    model,
+				}).Error; err != nil {
+					return fmt.Errorf("failed to backfill routing_rule %s: %w", ruleID, err)
+				}
+			}
+
+			// 3. Drop routing_targets table
+			if mg.HasConstraint(&tables.TableRoutingRule{}, "Targets") {
+				if err := mg.DropConstraint(&tables.TableRoutingRule{}, "Targets"); err != nil {
+					return fmt.Errorf("failed to drop routing_targets foreign key: %w", err)
+				}
+			}
+			if err := mg.DropTable(&tables.TableRoutingTarget{}); err != nil {
+				return fmt.Errorf("failed to drop routing_targets table: %w", err)
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running routing_targets_table migration: %s", err.Error())
 	}
 	return nil
 }

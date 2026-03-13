@@ -215,7 +215,7 @@ run_newman() {
         cmd+=(--env-var "CI=1")
     fi
     [ -n "$FOLDER" ] && cmd+=(--folder "$FOLDER")
-    cmd+=(--timeout-script 300000)
+    cmd+=(--timeout-script 120000 --timeout 900000)
     cmd+=(-r "$REPORTERS")
     if [[ "$REPORTERS" == *"html"* ]]; then
         cmd+=(--reporter-html-export "$REPORT_DIR/report_${1:-run}.html")

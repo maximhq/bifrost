@@ -86,6 +86,7 @@ export class VirtualKeysPage extends BasePage {
   // Main page elements
   readonly createBtn: Locator
   readonly table: Locator
+  readonly emptyState: Locator
 
   // Virtual key sheet elements
   readonly sheet: Locator
@@ -102,6 +103,7 @@ export class VirtualKeysPage extends BasePage {
     // Main page elements
     this.createBtn = page.getByTestId('create-vk-btn')
     this.table = page.getByTestId('vk-table')
+    this.emptyState = page.getByTestId('virtual-keys-empty-state')
 
     // Virtual key sheet elements
     this.sheet = page.getByTestId('vk-sheet')
@@ -136,6 +138,19 @@ export class VirtualKeysPage extends BasePage {
     // Use count() to check if element exists in DOM (doesn't require visibility)
     const count = await row.count()
     return count > 0
+  }
+
+  /**
+   * Check if the key value is revealed (visible) or masked in the table.
+   * When masked, the display shows bullets (•); when revealed, it shows the full key.
+   */
+  async isKeyRevealed(name: string): Promise<boolean> {
+    const row = this.getVirtualKeyRow(name)
+    const keyCell = row.getByTestId('vk-key-value')
+    await keyCell.waitFor({ state: 'visible', timeout: 5000 })
+    const text = (await keyCell.textContent())?.trim() ?? ''
+    // Masked keys contain bullet character; revealed keys do not
+    return text.length > 0 && !text.includes('•')
   }
 
   /**

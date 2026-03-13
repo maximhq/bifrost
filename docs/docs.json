@@ -79,8 +79,7 @@
                   "quickstart/gateway/tool-calling",
                   "quickstart/gateway/multimodal",
                   "quickstart/gateway/reranking",
-                  "quickstart/gateway/integrations",
-                  "quickstart/gateway/cli-agents"
+                  "quickstart/gateway/integrations"
                 ]
               },
               "quickstart/cli/getting-started",
@@ -98,6 +97,23 @@
                   "quickstart/go-sdk/logger"
                 ]
               }
+            ]
+          },
+          {
+            "group": "CLI Agents & Editors",
+            "icon": "command",
+            "pages": [
+              "cli-agents/overview",
+              "cli-agents/cursor",
+              "cli-agents/librechat",
+              "cli-agents/claude-code",
+              "cli-agents/codex-cli",
+              "cli-agents/gemini-cli",
+              "cli-agents/qwen-code",
+              "cli-agents/opencode",
+              "cli-agents/zed-editor",
+              "cli-agents/roo-code",
+              "cli-agents/open-webui"
             ]
           },
           {
@@ -180,7 +196,8 @@
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
-              "integrations/pydanticai-sdk"
+              "integrations/pydanticai-sdk",
+              "integrations/passthrough"
             ]
           },
           {
@@ -540,6 +557,30 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/quickstart/gateway/cli-agents",
+      "destination": "/cli-agents/overview"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/overview",
+      "destination": "/cli-agents/overview"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/cursor",
+      "destination": "/cli-agents/cursor"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/opencode",
+      "destination": "/cli-agents/opencode"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/zed",
+      "destination": "/cli-agents/zed-editor"
+    },
+    {
+      "source": "/quickstart/gateway/cli-agents/librechat",
+      "destination": "/cli-agents/librechat"
+    },
     {
       "source": "/providers/supported-headers",
       "destination": "/providers/request-options"

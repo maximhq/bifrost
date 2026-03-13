@@ -74,7 +74,7 @@ type GeminiGenerationRequest struct {
 	GenerationConfig  GenerationConfig         `json:"generationConfig,omitempty"`
 	SafetySettings    []SafetySetting          `json:"safetySettings,omitempty"`
 	Tools             []Tool                   `json:"tools,omitempty"`
-	ToolConfig        ToolConfig               `json:"toolConfig,omitempty"`
+	ToolConfig        *ToolConfig              `json:"toolConfig,omitempty"`
 	Labels            map[string]string        `json:"labels,omitempty"`
 	CachedContent     string                   `json:"cachedContent,omitempty"`
 	Stream            bool                     `json:"-"` // Internal field to track streaming requests
@@ -848,6 +848,18 @@ type GenerationConfig struct {
 	TopK *int `json:"topK,omitempty"`
 	// Optional. If specified, nucleus sampling will be used.
 	TopP *float64 `json:"topP,omitempty"`
+	// Optional. Image generation configuration.
+	ImageConfig *GeminiImageConfig `json:"imageConfig,omitempty"`
+}
+
+// GeminiImageConfig represents image generation configuration within GenerationConfig.
+type GeminiImageConfig struct {
+	// AspectRatio controls the aspect ratio of generated images.
+	// Valid values: "1:1", "3:4", "4:3", "9:16", "16:9"
+	AspectRatio string `json:"aspectRatio,omitempty"`
+	// ImageSize controls the resolution of generated images.
+	// Valid values: "1k", "2k", "4k"
+	ImageSize string `json:"imageSize,omitempty"`
 }
 
 // ModelSelectionConfig represents configuration for model selection.
@@ -1916,20 +1928,21 @@ type GeminiListModelsResponse struct {
 
 // GeminiBatchCreateRequest represents the top-level request structure for creating a batch.
 type GeminiBatchCreateRequest struct {
+	Model string            `json:"-"`
 	Batch GeminiBatchConfig `json:"batch"`
 }
 
 // GeminiBatchConfig represents the batch configuration.
 type GeminiBatchConfig struct {
-	DisplayName string                 `json:"display_name,omitempty"`
-	InputConfig GeminiBatchInputConfig `json:"input_config"`
+	DisplayName string                 `json:"displayName,omitempty"`
+	InputConfig GeminiBatchInputConfig `json:"inputConfig"`
 }
 
 // GeminiBatchInputConfig represents the input configuration for batch requests.
 // Supports both inline requests and file-based input.
 type GeminiBatchInputConfig struct {
 	Requests *GeminiBatchRequestsWrapper `json:"requests,omitempty"`
-	FileName string                      `json:"file_name,omitempty"`
+	FileName string                      `json:"fileName,omitempty"`
 }
 
 // GeminiBatchRequestsWrapper wraps the array of batch request items.
@@ -2210,6 +2223,7 @@ var GeminiRequestSuffixPaths = []string{
 	":countTokens",
 	":embedContent",
 	":batchEmbedContents",
+	":batchGenerateContent",
 	":predict",
 	":predictLongRunning",
 }
@@ -2605,4 +2619,52 @@ type GenerateVideosOperation struct {
 	Error map[string]any `json:"error,omitempty"`
 	// Optional. The long-running operation response payload.
 	Response *GenerateVideosOperationResponse `json:"response,omitempty"`
+}
+
+// geminiResumableUploadSession holds the metadata stored in the KV store
+// between step 1 (resumable upload initiation) and step 2 (binary upload)
+// of a Gemini-format file upload destined for non-Gemini/Vertex providers.
+type GeminiResumableUploadSession struct {
+	DisplayName string
+	MimeType    string
+	Provider    schemas.ModelProvider
+}
+
+// GeminiFileUploadHandlerReqFile represents the file metadata in a Gemini file upload request.
+type GeminiFileUploadHandlerReqFile struct {
+	DisplayName string `json:"display_name"`
+}
+
+func (f *GeminiFileUploadHandlerReqFile) UnmarshalJSON(data []byte) error {
+	type Alias struct {
+		DisplayNameCamel string `json:"displayName"`
+		DisplayNameSnake string `json:"display_name"`
+	}
+	var alias Alias
+	if err := sonic.Unmarshal(data, &alias); err != nil {
+		return err
+	}
+	// Prefer camelCase over snake_case
+	if alias.DisplayNameCamel != "" {
+		f.DisplayName = alias.DisplayNameCamel
+	} else {
+		f.DisplayName = alias.DisplayNameSnake
+	}
+	return nil
+}
+
+// geminiFileUploadHandlerReq is the unified request object for the GenAI file
+// upload route. It handles both step 1 (JSON metadata body) and step 2 (raw
+// binary body with upload_id query param).
+type GeminiFileUploadHandlerReq struct {
+	// Step 1 JSON fields — Gemini sends {"file": {"displayName": "..."}} or {"file": {"display_name": "..."}}
+	File GeminiFileUploadHandlerReqFile `json:"file"`
+
+	// Populated by RequestParser / PreCallback
+	Provider schemas.ModelProvider `json:"-"`
+	MimeType string                `json:"-"` // from X-Goog-Upload-Header-Content-Type
+
+	// Step 2 fields — populated when upload_id is present in query
+	UploadID string `json:"-"`
+	FileData []byte `json:"-"`
 }

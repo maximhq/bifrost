@@ -112,6 +112,12 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
 		RunStreamErrorStatusCodeTest,
+<<<<<<< HEAD
+		RunPassthroughAPITest,
+=======
+		RunWebSocketResponsesTest,
+		RunRealtimeTest,
+>>>>>>> 85296f866 (responses on websockets and realtime api support)
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -223,6 +229,9 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ContainerFileUnsupported", !testConfig.Scenarios.ContainerFileCreate && !testConfig.Scenarios.ContainerFileList && !testConfig.Scenarios.ContainerFileRetrieve && !testConfig.Scenarios.ContainerFileContent && !testConfig.Scenarios.ContainerFileDelete},
 		{"PassThroughExtraParams", testConfig.Scenarios.PassThroughExtraParams},
 		{"StreamErrorStatusCode", testConfig.Scenarios.CompletionStream},
+		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
+		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
+		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
 	}
 
 	supported := 0
