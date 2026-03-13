@@ -303,6 +303,8 @@ func convertImagenFormatToSize(sampleImageSize *string, aspectRatio *string) str
 			baseSize = 1024
 		case "2k":
 			baseSize = 2048
+		case "4k":
+			baseSize = 4096
 		}
 	}
 
@@ -403,6 +405,17 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
+
+		// Handle size conversion
+		if bifrostReq.Params.Size != nil && strings.ToLower(*bifrostReq.Params.Size) != "auto" {
+			imageSize, aspectRatio := convertSizeToImagenFormat(*bifrostReq.Params.Size)
+			if imageSize != "" && aspectRatio != "" {
+				geminiReq.GenerationConfig.ImageConfig = &GeminiImageConfig{
+					ImageSize:   imageSize,
+					AspectRatio: aspectRatio,
+				}
+			}
+		}
 
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
@@ -626,7 +639,7 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 }
 
 // convertSizeToImagenFormat converts standard size format (e.g., "1024x1024") to Imagen format
-// Returns (imageSize, aspectRatio) where imageSize is "1k", "2k" and aspectRatio is one of:
+// Returns (imageSize, aspectRatio) where imageSize is "1k", "2k", "4k" and aspectRatio is one of:
 // "1:1", "3:4", "4:3", "9:16", or "16:9"
 func convertSizeToImagenFormat(size string) (string, string) {
 	// Parse size string (format: "WIDTHxHEIGHT")
@@ -651,6 +664,8 @@ func convertSizeToImagenFormat(size string) (string, string) {
 		imageSize = "1k"
 	} else if width <= 2048 && height <= 2048 {
 		imageSize = "2k"
+	} else if width <= 4096 && height <= 4096 {
+		imageSize = "4k"
 	}
 
 	// Calculate aspect ratio

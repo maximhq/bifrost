@@ -18,6 +18,8 @@ Instead of setting environment variables, editing config files, and looking up p
 - Fetches available models from your Bifrost gateway's `/v1/models` endpoint
 - Installs missing agents via npm if needed
 - Auto-attaches Bifrost's MCP server to Claude Code for tool access
+- Launches agents inside a persistent tabbed terminal UI so you can switch sessions without re-running the CLI
+- Shows per-tab activity badges so you can tell when a session is progressing, idle, or has sent an alert
 - Stores your selections securely (virtual keys go to your OS keyring, never plaintext on disk)
 
 ## Installation
@@ -87,7 +89,7 @@ Select which coding agent you want to launch. The CLI shows installation status 
 | Claude Code | `claude` | `/anthropic` | MCP auto-attach, worktree support |
 | Codex CLI | `codex` | `/openai` | Model override via `--model` flag |
 | Gemini CLI | `gemini` | `/genai` | Model override via `--model` flag |
-| Opencode | `opencode` | `/openai` | Model configured via `config.json` |
+| Opencode | `opencode` | `/openai` | Custom models configured automatically through generated OpenCode config |
 
 If a harness isn't installed, the CLI will offer to install it via npm for you.
 
@@ -127,6 +129,31 @@ Review your configuration in the summary screen. Press Enter to launch, or use t
 The CLI then launches your agent with all the correct environment variables and configuration set automatically.
 
 {/* TODO: Add screenshot of the launch banner showing endpoint, model, vk status */}
+
+## Tabbed Session UI
+
+After launch, Bifrost CLI keeps you inside a tabbed terminal UI instead of exiting after the first session. The bottom tab bar shows:
+
+- The `Bifrost CLI` label and current CLI version
+- One tab per running or recent agent session
+- A status badge for each tab:
+  - `🧠` — the visible screen is actively changing, so the agent is still working
+  - `✅` — the session looks idle and ready
+  - `🔔` — the PTY emitted a real terminal alert
+
+Use `Ctrl+B` at any time to focus the tab bar. From tab mode you can:
+
+| Key | Action |
+|-----|--------|
+| `n` | Open a new tab and launch another agent session |
+| `x` | Close the current tab |
+| `h` / `l` | Move left or right across tabs |
+| `1`-`9` | Jump directly to a tab |
+| `Esc` / `Enter` / `Ctrl+B` | Return to the active session |
+
+<Tip>
+If you press `Ctrl+B` before launching your first session, Bifrost CLI stays open on the Home tab bar so you can create a new tab from there.
+</Tip>
 
 ## Configuration
 
@@ -201,14 +228,22 @@ When you switch harnesses, the CLI reconfigures everything for the new agent —
 After a session ends, the CLI returns to the summary screen with your previous configuration intact. Press `h` to switch agents or `m` to try a different model, then `Enter` to re-launch.
 </Tip>
 
+### Opencode Notes
+
+Bifrost CLI applies two OpenCode-specific behaviors automatically:
+
+- **Custom model selection**: when you pick a model in Bifrost CLI, OpenCode is launched with the correct provider-qualified model reference and a generated OpenCode runtime config.
+- **Theme handling**: if your OpenCode `tui.json` already defines a theme, Bifrost preserves it. If not, Bifrost supplies the adaptive `system` theme so OpenCode does not fall back to its default dark-only appearance.
+
 ## Session Flow
 
 The CLI is designed for iterative development sessions:
 
 1. **Launch** — Select your agent and model, press Enter
 2. **Work** — Use your agent as normal, all traffic routes through Bifrost
-3. **Return** — When the agent exits (or you quit it), the CLI returns to the selection screen
-4. **Re-launch** — Change model, switch harness, or re-launch the same setup instantly
+3. **Switch** — Press `Ctrl+B` any time to open the tab bar and jump to another session or start a new one
+4. **Return** — When an agent exits (or you quit it), the CLI returns to the chooser with your previous configuration intact
+5. **Re-launch** — Change model, switch harness, or re-launch the same setup instantly
 
 Your last selections are remembered across sessions. The next time you run `bifrost`, you'll see the summary screen with your previous configuration ready to go. Press Enter to re-launch immediately, or adjust any setting.
 

@@ -48,6 +48,7 @@ type MCPManager struct {
 	serverRunning        bool                               // Track whether local MCP server is running
 	healthMonitorManager *HealthMonitorManager              // Manager for client health monitors
 	toolSyncManager      *ToolSyncManager                   // Manager for periodic tool synchronization
+	reconnectingClients  sync.Map                           // Tracks in-flight reconnect attempts per client ID (map[string]bool)
 }
 
 // MCPToolFunction is a generic function type for handling tool calls with typed arguments.
@@ -128,6 +129,28 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 				defer wg.Done()
 				if err := manager.AddClient(clientConfig); err != nil {
 					manager.logger.Warn("%s Failed to register MCP client %s: %v", MCPLogPrefix, clientConfig.Name, err)
+					// Retain the entry in Disconnected state and start a health monitor to
+					// recover it automatically. On startup, a connection failure is likely
+					// transient (e.g. autoscaling cold start) — the client was previously
+					// configured and should be recovered without user intervention.
+					manager.mu.Lock()
+					if _, exists := manager.clientMap[clientConfig.ID]; !exists {
+						manager.clientMap[clientConfig.ID] = &schemas.MCPClientState{
+							Name:            clientConfig.Name,
+							ExecutionConfig: clientConfig,
+							State:           schemas.MCPConnectionStateDisconnected,
+							ToolMap:         make(map[string]schemas.ChatTool),
+							ToolNameMapping: make(map[string]string),
+							ConnectionInfo: &schemas.MCPClientConnectionInfo{
+								Type: clientConfig.ConnectionType,
+							},
+						}
+					} else {
+						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
+					}
+					manager.mu.Unlock()
+					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, clientConfig.IsPingAvailable, manager.logger)
+					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
 		}

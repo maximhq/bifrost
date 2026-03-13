@@ -72,6 +72,7 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
               <Label htmlFor="commitMessage">Commit Message</Label>
               <Input
                 id="commitMessage"
+                data-testid="commit-version-message"
                 placeholder="Added system message for better context..."
                 {...register('commitMessage', {
                   required: 'Commit message is required',
@@ -90,10 +91,10 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
           </div>
 
           <SheetFooter className="mt-6 p-0 flex flex-row items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" data-testid="commit-version-cancel" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isLoading}>
+            <Button type="submit" data-testid="commit-version-submit" disabled={isLoading}>
               {isLoading ? 'Committing...' : 'Commit Version'}
             </Button>
           </SheetFooter>

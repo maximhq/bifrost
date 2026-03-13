@@ -176,7 +176,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	span := trace.GetSpan(h.spanID)
 	if span == nil {
 		return
-	}	
+	}
 	for k, v := range PopulateResponseAttributes(resp) {
 		span.SetAttribute(k, v)
 	}
@@ -185,7 +185,7 @@ func (t *Tracer) PopulateLLMResponseAttributes(handle schemas.SpanHandle, resp *
 	}
 	// Populate cost attribute using pricing manager
 	if t.pricingManager != nil && resp != nil {
-		cost := t.pricingManager.CalculateCostWithCacheDebug(resp)
+		cost := t.pricingManager.CalculateCost(resp)
 		span.SetAttribute(schemas.AttrUsageCost, cost)
 	}
 }
@@ -241,8 +241,8 @@ func (t *Tracer) AddStreamingChunk(traceID string, response *schemas.BifrostResp
 // in completeDeferredSpan. Full content accumulation for plugins is handled by
 // the embedded streaming.Accumulator via ProcessStreamingChunk.
 func (t *Tracer) GetAccumulatedChunks(traceID string) (*schemas.BifrostResponse, int64, int) {
-	ttftMs, chunkCount := t.store.GetAccumulatedData(traceID)
-	return nil, ttftMs, chunkCount
+	ttftNs, chunkCount := t.store.GetAccumulatedData(traceID)
+	return nil, ttftNs, chunkCount
 }
 
 // CreateStreamAccumulator creates a new stream accumulator for the given trace ID.

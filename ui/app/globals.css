@@ -236,3 +236,9 @@ div.content-container main.content-container-inner:has(.no-padding-parent) {
 div.content-container:has(.no-border-parent) {
 	@apply !border-0;
 }
+
+/* // Custom styling for streamdown */
+
+[data-streamdown="code-block"], [data-streamdown="code-block-body"]{
+	@apply !rounded-sm;
+}

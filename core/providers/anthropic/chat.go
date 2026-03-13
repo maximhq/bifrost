@@ -30,8 +30,13 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.MaxTokens = *bifrostReq.Params.MaxCompletionTokens
 		}
 
-		anthropicReq.Temperature = bifrostReq.Params.Temperature
-		anthropicReq.TopP = bifrostReq.Params.TopP
+		// Anthropic doesn't allow both temperature and top_p to be specified
+		// If both are present, prefer temperature (more commonly used)
+		if bifrostReq.Params.Temperature != nil {
+			anthropicReq.Temperature = bifrostReq.Params.Temperature
+		} else if bifrostReq.Params.TopP != nil {
+			anthropicReq.TopP = bifrostReq.Params.TopP
+		}
 		anthropicReq.StopSequences = bifrostReq.Params.Stop
 		topK, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["top_k"])
 		if ok {
@@ -376,8 +381,8 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 			// Set content
 			if len(content) == 1 && content[0].Type == AnthropicContentBlockTypeText {
-				// Single text content can be string
-				anthropicMsg.Content = AnthropicContent{ContentStr: content[0].Text}
+				// Always use ContentBlocks for consistent array serialization
+				anthropicMsg.Content = AnthropicContent{ContentBlocks: content}
 			} else if len(content) > 0 {
 				// Multiple content blocks
 				anthropicMsg.Content = AnthropicContent{ContentBlocks: content}
@@ -682,8 +687,27 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 	return anthropicResp
 }
 
+// AnthropicStreamState tracks per-stream tool call index state.
+type AnthropicStreamState struct {
+	nextToolCallIndex         int
+	contentBlockToToolCallIdx map[int]int
+}
+
+// NewAnthropicStreamState returns an initialised stream state for one streaming response.
+func NewAnthropicStreamState() *AnthropicStreamState {
+	return &AnthropicStreamState{
+		contentBlockToToolCallIdx: make(map[int]int),
+	}
+}
+
 // ToBifrostChatCompletionStream converts an Anthropic stream event to a Bifrost Chat Completion Stream response
-func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.BifrostContext, structuredOutputToolName string) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.BifrostContext, structuredOutputToolName string, state *AnthropicStreamState) (*schemas.BifrostChatResponse, *schemas.BifrostError, bool) {
+	if state == nil {
+		state = NewAnthropicStreamState()
+	} else if state.contentBlockToToolCallIdx == nil {
+		state.contentBlockToToolCallIdx = make(map[int]int)
+	}
+
 	switch chunk.Type {
 	case AnthropicStreamEventTypeMessageStart:
 		return nil, nil, false
@@ -700,6 +724,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				return nil, nil, false
 			}
 
+			// Assign the next sequential tool-call index
+			toolCallIdx := state.nextToolCallIndex
+			state.contentBlockToToolCallIdx[*chunk.Index] = toolCallIdx
+			state.nextToolCallIndex++
+
 			// Create streaming response with tool call metadata
 			streamResponse := &schemas.BifrostChatResponse{
 				Object: "chat.completion.chunk",
@@ -710,8 +739,9 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 							Delta: &schemas.ChatStreamResponseChoiceDelta{
 								ToolCalls: []schemas.ChatAssistantMessageToolCall{
 									{
-										Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
-										ID:   chunk.ContentBlock.ID,
+										Index: uint16(toolCallIdx),
+										Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+										ID:    chunk.ContentBlock.ID,
 										Function: schemas.ChatAssistantMessageToolCallFunction{
 											Name:      chunk.ContentBlock.Name,
 											Arguments: "", // Empty arguments initially, will be filled by subsequent deltas
@@ -773,6 +803,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 						}
 						return streamResponse, nil, false
 					}
+
+					// Resolve which tool-call this delta belongs to via the content-block index.
+					toolCallIdx := state.contentBlockToToolCallIdx[*chunk.Index]
+
 					// Create streaming response for tool input delta
 					streamResponse := &schemas.BifrostChatResponse{
 						Object: "chat.completion.chunk",
@@ -783,7 +817,8 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 									Delta: &schemas.ChatStreamResponseChoiceDelta{
 										ToolCalls: []schemas.ChatAssistantMessageToolCall{
 											{
-												Type: func() *string { s := "function"; return &s }(),
+												Index: uint16(toolCallIdx),
+												Type:  schemas.Ptr(string(schemas.ChatToolTypeFunction)),
 												Function: schemas.ChatAssistantMessageToolCallFunction{
 													Arguments: *chunk.Delta.PartialJSON,
 												},

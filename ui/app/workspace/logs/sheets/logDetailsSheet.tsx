@@ -57,6 +57,10 @@ interface LogDetailSheetProps {
 	handleDelete: (log: LogEntry) => void;
 }
 
+// Helper to detect passthrough operations
+const isPassthroughOperation = (object: string) =>
+	object === "passthrough" || object === "passthrough_stream";
+
 // Helper to detect container operations (for hiding irrelevant fields like Model/Tokens)
 const isContainerOperation = (object: string) => {
 	const containerTypes = [
@@ -88,15 +92,26 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	// Guard against stale data: only use fullLog if it belongs to the currently opened log entry.
 	const rawRequest = fullLog?.id === log.id ? fullLog.raw_request : log.raw_request;
 	const rawResponse = fullLog?.id === log.id ? fullLog.raw_response : log.raw_response;
+	const passthroughRequestBody = fullLog?.id === log.id ? fullLog.passthrough_request_body : log.passthrough_request_body;
+	const passthroughResponseBody = fullLog?.id === log.id ? fullLog.passthrough_response_body : log.passthrough_response_body;
 
 	const isContainer = isContainerOperation(log.object);
+	const isPassthrough = isPassthroughOperation(log.object);
+	const passthroughParams = isPassthrough
+		? (log.params as {
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
+		: null;
 
 	// Taking out tool call
 	let toolsParameter = null;
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) {}
+		} catch (ignored) { }
 	}
 
 	// Extract audio format from request params
@@ -227,9 +242,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${
-											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-										} rounded-sm px-3 py-1`}
+										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+											} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -276,15 +290,45 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								</>
 							)}
 
+							{/* Display passthrough params (method, path, raw_query, status_code) */}
+							{passthroughParams && (
+								<>
+									{passthroughParams.method && (
+										<LogEntryDetailsView className="w-full" label="Method" value={passthroughParams.method} />
+									)}
+									{passthroughParams.path && (
+										<LogEntryDetailsView className="w-full" label="Path" value={passthroughParams.path} />
+									)}
+									{passthroughParams.raw_query && (
+										<LogEntryDetailsView className="w-full" label="Query" value={passthroughParams.raw_query} />
+									)}
+									{(passthroughParams.status_code ?? 0) !== 0 && (
+										<LogEntryDetailsView
+											className="w-full"
+											label="Status Code"
+											value={passthroughParams.status_code}
+										/>
+									)}
+								</>
+							)}
+
 							{log.params &&
 								Object.keys(log.params).length > 0 &&
 								Object.entries(log.params)
-									.filter(([key]) => key !== "tools" && key !== "instructions" && key !== "audio")
+									.filter(([key]) => {
+										const passthroughKeys = ["method", "path", "raw_query", "status_code"];
+										return (
+											key !== "tools" &&
+											key !== "instructions" &&
+											key !== "audio" &&
+											!(isPassthrough && passthroughKeys.includes(key))
+										);
+									})
 									.filter(([_, value]) => typeof value === "boolean" || typeof value === "number" || typeof value === "string")
 									.map(([key, value]) => <LogEntryDetailsView key={key} className="w-full" label={key} value={value} />)}
 						</div>
 					</div>
-					{log.status === "success" && !isContainer && (
+					{log.status === "success" && !isContainer && !isPassthrough && (
 						<>
 							<DottedSeparator />
 							<div className="space-y-4">
@@ -293,16 +337,24 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<LogEntryDetailsView className="w-full" label="Input Tokens" value={log.token_usage?.prompt_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Output Tokens" value={log.token_usage?.completion_tokens || "-"} />
 									<LogEntryDetailsView className="w-full" label="Total Tokens" value={log.token_usage?.total_tokens || "-"} />
+									<LogEntryDetailsView className="w-full" label="Cost" value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"} />
 									{log.token_usage?.prompt_tokens_details && (
 										<>
-											{(log.token_usage.prompt_tokens_details.cached_read_tokens ||
-												log.token_usage.prompt_tokens_details.cached_write_tokens) && (
+											{(log.token_usage.prompt_tokens_details.cached_read_tokens) && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="Cached Tokens"
+													label="Cache Read Tokens"
 													value={
-														(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0) +
-															(log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0) || "-"
+														(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0)
+													}
+												/>
+											)}
+											{(log.token_usage.prompt_tokens_details.cached_write_tokens) && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Cache Write Tokens"
+													value={
+														(log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0)
 													}
 												/>
 											)}
@@ -570,6 +622,36 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 					</CollapsibleBox>
 				)}
 
+				{/* Passthrough request body */}
+				{isPassthrough && passthroughRequestBody && (() => {
+					return (
+						<CollapsibleBox title="Request Body" onCopy={() => {
+							try {
+								return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+							} catch {
+								return passthroughRequestBody || "";
+							}
+						}}>
+							<CodeEditor
+								className="z-0 w-full"
+								shouldAdjustInitialHeight={true}
+								maxHeight={450}
+								wrap={true}
+								code={(() => {
+									try {
+										return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
+									} catch {
+										return passthroughRequestBody || "";
+									}
+								})()}
+								lang="json"
+								readonly={true}
+								options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+							/>
+						</CollapsibleBox>
+					);
+				})()}
+
 				{/* Show conversation history for chat/text completions */}
 				{log.input_history && log.input_history.length > 1 && (
 					<>
@@ -659,6 +741,36 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									/>
 								</CollapsibleBox>
 							</>
+						)}
+						{/* Passthrough response body */}
+						{isPassthrough && passthroughResponseBody && (
+							<CollapsibleBox
+								title="Response Body"
+								onCopy={() => {
+									try {
+										return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+									} catch {
+										return passthroughResponseBody || "";
+									}
+								}}
+							>
+								<CodeEditor
+									className="z-0 w-full"
+									shouldAdjustInitialHeight={true}
+									maxHeight={450}
+									wrap={true}
+									code={(() => {
+										try {
+											return JSON.stringify(JSON.parse(passthroughResponseBody || ""), null, 2);
+										} catch {
+											return passthroughResponseBody || "";
+										}
+									})()}
+									lang="json"
+									readonly={true}
+									options={{ scrollBeyondLastLine: false, lineNumbers: "off", alwaysConsumeMouseWheel: false }}
+								/>
+							</CollapsibleBox>
 						)}
 						{rawRequest && (
 							<>

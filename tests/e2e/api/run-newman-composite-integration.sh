@@ -189,7 +189,7 @@ run_newman() {
         cmd="$cmd --env-var \"base_url=$base_url\" --env-var \"provider=$provider\" --env-var \"model=$model\" --env-var \"embedding_model=$embedding_model\" --env-var \"speech_model=$speech_model\" --env-var \"transcription_model=$transcription_model\" --env-var \"image_model=$image_model\""
     fi
     [ -n "$FOLDER" ] && cmd="$cmd $FOLDER"
-    cmd="$cmd --timeout-script 300000 -r $REPORTERS"
+    cmd="$cmd --timeout-script 120000 --timeout 900000 -r $REPORTERS"
     if [[ "$REPORTERS" == *"html"* ]]; then
         cmd="$cmd --reporter-html-export $REPORT_DIR/report_${1:-run}.html"
     fi

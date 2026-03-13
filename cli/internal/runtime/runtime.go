@@ -34,10 +34,7 @@ func BuildEnv(spec LaunchSpec) ([]string, error) {
 	vk := strings.TrimSpace(spec.VirtualKey)
 	if vk != "" {
 		env = append(env, spec.Harness.APIKeyEnv+"="+vk)
-	} else {
-		env = append(env, spec.Harness.APIKeyEnv+"=dummy-key")
-	}
-
+	} 	
 	model := strings.TrimSpace(spec.Model)
 	if model != "" {
 		env = append(env, "BIFROST_MODEL="+model)
@@ -52,30 +49,36 @@ func BuildEnv(spec LaunchSpec) ([]string, error) {
 	return env, nil
 }
 
-// RunInteractive launches the harness as an interactive subprocess with full
-// TTY access. It prints a bifrost banner before launch and a summary after exit.
-func RunInteractive(ctx context.Context, stdout, stderr io.Writer, spec LaunchSpec) error {
+// PreparedCmd holds a command ready to execute along with any cleanup
+// function that should be called after the process exits.
+type PreparedCmd struct {
+	Cmd     *exec.Cmd
+	Cleanup func()
+}
+
+// PrepareCommand builds the exec.Cmd for a harness launch, including
+// environment variables, pre-launch hooks, and CLI arguments.
+func PrepareCommand(ctx context.Context, spec LaunchSpec) (*PreparedCmd, error) {
 	env, err := BuildEnv(spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	var cleanup func()
 	if spec.Harness.PreLaunch != nil {
 		endpoint, err := apis.BuildEndpoint(spec.BaseURL, spec.Harness.BasePath)
 		if err != nil {
-			return fmt.Errorf("build endpoint for pre-launch: %w", err)
+			return nil, fmt.Errorf("build endpoint for pre-launch: %w", err)
 		}
 		vk := strings.TrimSpace(spec.VirtualKey)
 		if vk == "" {
 			vk = "dummy-key"
 		}
-		extraEnv, cleanup, err := spec.Harness.PreLaunch(endpoint, vk, spec.Model)
+		extraEnv, c, err := spec.Harness.PreLaunch(endpoint, vk, spec.Model)
 		if err != nil {
-			return fmt.Errorf("pre-launch %s: %w", spec.Harness.Label, err)
+			return nil, fmt.Errorf("pre-launch %s: %w", spec.Harness.Label, err)
 		}
-		if cleanup != nil {
-			defer cleanup()
-		}
+		cleanup = c
 		env = append(env, extraEnv...)
 	}
 
@@ -87,15 +90,26 @@ func RunInteractive(ctx context.Context, stdout, stderr io.Writer, spec LaunchSp
 		args = append(args, spec.Harness.WorktreeArgs(spec.Worktree)...)
 	}
 
-	fmt.Fprint(stdout, renderBanner(spec))
-
 	cmd := exec.CommandContext(ctx, spec.Harness.Binary, args...)
 	cmd.Env = env
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.Stdin = os.Stdin
 
-	if err := cmd.Run(); err != nil {
+	return &PreparedCmd{Cmd: cmd, Cleanup: cleanup}, nil
+}
+
+// RunInteractive launches the harness as an interactive subprocess with full
+// TTY access. It prints a bifrost banner before launch and a summary after exit.
+func RunInteractive(ctx context.Context, stdout, stderr io.Writer, spec LaunchSpec) error {
+	p, err := PrepareCommand(ctx, spec)
+	if err != nil {
+		return err
+	}
+	if p.Cleanup != nil {
+		defer p.Cleanup()
+	}
+
+	fmt.Fprint(stdout, renderBanner(spec))
+
+	if err := runWithPTY(ctx, stdout, p.Cmd); err != nil {
 		fmt.Fprintf(stdout, "\n\033[36mbifrost>\033[0m session ended with error: %v\n", err)
 		return fmt.Errorf("run harness: %w", err)
 	}

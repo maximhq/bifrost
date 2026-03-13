@@ -187,7 +187,7 @@ export default function MCPClientsTable({ mcpClients, refetch }: MCPClientsTable
 									onClick={() => handleRowClick(c)}
 								>
 									<TableCell className="font-medium">{c.config.name}</TableCell>
-									<TableCell>{getConnectionTypeDisplay(c.config.connection_type)}</TableCell>
+									<TableCell data-testid="mcp-client-connection-type">{getConnectionTypeDisplay(c.config.connection_type)}</TableCell>
 									<TableCell>
 										<Badge
 											className={

@@ -216,7 +216,7 @@ build: build-ui ## Build bifrost-http binary
 build-cli: ## Build bifrost CLI binary
 	@echo "$(GREEN)Building bifrost CLI...$(NC)"
 	@mkdir -p ./tmp
-	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -o ../tmp/bifrost .
+	@cd cli && $(if $(LOCAL),,GOWORK=off) go build -ldflags "-X main.version=v0.1.1-dev" -o ../tmp/bifrost .
 	@echo "$(GREEN)Built: tmp/bifrost$(NC)"
 
 _build-with-docker: # Internal target for Docker-based cross-compilation
@@ -232,7 +232,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26-alpine3.22 \
+				golang:1.26.1-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -X main.Version=v$(VERSION)' \
@@ -249,7 +249,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 				-e GOOS=$(TARGET_OS) \
 				-e GOARCH=$(TARGET_ARCH) \
 				 $(if $(LOCAL),,-e GOWORK=off) \
-				golang:1.26-alpine3.22 \
+				golang:1.26.1-alpine3.23 \
 				sh -c "apk add --no-cache gcc musl-dev && \
 				go build \
 					-ldflags='-w -s -extldflags "-static" -X main.Version=v$(VERSION)' \

@@ -1438,6 +1438,29 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		}
 	}
 
+	// Convert tool choice
+	if request.ToolConfig != nil && request.ToolConfig.ToolChoice != nil {
+		toolChoice := request.ToolConfig.ToolChoice
+		if toolChoice.Auto != nil {
+			autoStr := string(schemas.ResponsesToolChoiceTypeAuto)
+			bifrostReq.Params.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: &autoStr,
+			}
+		} else if toolChoice.Any != nil {
+			anyStr := string(schemas.ResponsesToolChoiceTypeAny)
+			bifrostReq.Params.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStr: &anyStr,
+			}
+		} else if toolChoice.Tool != nil {
+			bifrostReq.Params.ToolChoice = &schemas.ResponsesToolChoice{
+				ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+					Type: schemas.ResponsesToolChoiceTypeFunction,
+					Name: &toolChoice.Tool.Name,
+				},
+			}
+		}
+	}
+
 	// Convert guardrail config to extra params
 	if request.GuardrailConfig != nil {
 		if bifrostReq.Params.ExtraParams == nil {
@@ -2128,6 +2151,10 @@ func convertResponsesToolChoice(toolChoice schemas.ResponsesToolChoice) *Bedrock
 	// Check if it's a string choice
 	if toolChoice.ResponsesToolChoiceStr != nil {
 		switch schemas.ResponsesToolChoiceType(*toolChoice.ResponsesToolChoiceStr) {
+		case schemas.ResponsesToolChoiceTypeAuto:
+			return &BedrockToolChoice{
+				Auto: &BedrockToolChoiceAuto{},
+			}
 		case schemas.ResponsesToolChoiceTypeAny, schemas.ResponsesToolChoiceTypeRequired:
 			return &BedrockToolChoice{
 				Any: &BedrockToolChoiceAny{},

@@ -47,7 +47,6 @@ type ImageGenerationParameters struct {
 	User              *string                `json:"user,omitempty"`
 	InputImages       []string               `json:"input_images,omitempty"` // input images for image generation, base64 encoded or URL
 	AspectRatio       *string                `json:"aspect_ratio,omitempty"` // aspect ratio of the image
-	Resolution        *string                `json:"resolution,omitempty"`   // resolution of the image
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 
@@ -62,6 +61,93 @@ type BifrostImageGenerationResponse struct {
 
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// BackfillParams populates response fields from the original request that are needed
+// for cost calculation but may not be returned by the provider.
+// - NumInputImages on ImageUsage (count of input images from the request)
+// - Size on ImageGenerationResponseParameters (from request params if not in response)
+// - Quality (low, medium, high, auto) only
+func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
+	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
+
+	// Backfill NumInputImages
+	if numInputImages > 0 {
+		if r.Usage == nil {
+			r.Usage = &ImageUsage{}
+		}
+		r.Usage.NumInputImages = numInputImages
+	}
+
+	// Backfill Size if not already present from provider response
+	if size != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.Size == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.Size = size
+	}
+
+	// Backfill Quality if not already present from provider response
+	if quality != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.Quality == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.Quality = quality
+	}
+}
+
+// getNumInputImagesSizeAndQualityFromRequest extracts request params for cost calculation.
+// Quality is only returned when it is one of low, medium, high, auto.
+func getNumInputImagesSizeAndQualityFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string) {
+	if req == nil {
+		return 0, "", ""
+	}
+
+	switch {
+	case req.ImageGenerationRequest != nil:
+		if req.ImageGenerationRequest.Params != nil {
+			p := req.ImageGenerationRequest.Params
+			numInputImages = len(p.InputImages)
+			if p.Size != nil {
+				size = *p.Size
+			}
+			if p.Quality != nil {
+				quality = normalizeImageQuality(*p.Quality)
+			}
+		}
+	case req.ImageEditRequest != nil:
+		if req.ImageEditRequest.Input != nil {
+			numInputImages = len(req.ImageEditRequest.Input.Images)
+		}
+		if req.ImageEditRequest.Params != nil {
+			p := req.ImageEditRequest.Params
+			if p.Size != nil {
+				size = *p.Size
+			}
+			if p.Quality != nil {
+				quality = normalizeImageQuality(*p.Quality)
+			}
+		}
+	case req.ImageVariationRequest != nil:
+		if req.ImageVariationRequest.Input != nil {
+			numInputImages = 1
+		}
+		if req.ImageVariationRequest.Params != nil && req.ImageVariationRequest.Params.Size != nil {
+			size = *req.ImageVariationRequest.Params.Size
+		}
+	}
+	return numInputImages, size, quality
+}
+
+// normalizeImageQuality returns the quality string only if it is supported by gpt-image-1.5 (low, medium, high, auto).
+// All other values (hd, standard, etc.) are discarded and return empty.
+func normalizeImageQuality(q string) string {
+	switch q {
+	case "low", "medium", "high", "auto":
+		return q
+	default:
+		return ""
+	}
 }
 
 type ImageGenerationResponseParameters struct {
@@ -84,6 +170,7 @@ type ImageUsage struct {
 	TotalTokens         int                `json:"total_tokens,omitempty"`
 	OutputTokens        int                `json:"output_tokens,omitempty"` // Always image tokens unless OutputTokensDetails is not nil
 	OutputTokensDetails *ImageTokenDetails `json:"output_tokens_details,omitempty"`
+	NumInputImages      int                `json:"num_input_images,omitempty"` // Number of input images from the request (populated by Bifrost)
 }
 
 type ImageTokenDetails struct {
@@ -113,6 +200,33 @@ type BifrostImageGenerationStreamResponse struct {
 	RawRequest        string                     `json:"-"`
 	RawResponse       string                     `json:"-"`
 	ExtraFields       BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// BackfillParams populates response fields from the original request that are needed
+// for cost calculation but may not be returned by the provider.
+// - NumInputImages on ImageUsage (count of input images from the request)
+// - Size on ImageGenerationResponseParameters (from request params if not in response)
+// - Quality (low, medium, high, auto) only
+func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostRequest) {
+	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
+
+	// Backfill NumInputImages
+	if numInputImages > 0 {
+		if r.Usage == nil {
+			r.Usage = &ImageUsage{}
+		}
+		r.Usage.NumInputImages = numInputImages
+	}
+
+	// Backfill Size if not already present from provider response
+	if size != "" && r.Size == "" {
+		r.Size = size
+	}
+
+	// Backfill Quality if not already present (only low, medium, high, auto)
+	if quality != "" && r.Quality == "" {
+		r.Quality = quality
+	}
 }
 
 // BifrostImageEditRequest represents an image edit request in bifrost format

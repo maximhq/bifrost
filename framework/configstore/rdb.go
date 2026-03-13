@@ -248,6 +248,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			ProxyConfig:              providerConfig.ProxyConfig,
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
+			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			PricingOverrides:         providerConfig.PricingOverrides,
 			ConfigHash:               providerConfig.ConfigHash,
@@ -427,6 +428,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.ProxyConfig = configCopy.ProxyConfig
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
+	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.PricingOverrides = configCopy.PricingOverrides
 	dbProvider.ConfigHash = configCopy.ConfigHash
@@ -570,6 +572,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		ProxyConfig:              configCopy.ProxyConfig,
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
+		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		PricingOverrides:         configCopy.PricingOverrides,
 		ConfigHash:               configCopy.ConfigHash,
@@ -730,6 +733,7 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			ProxyConfig:              dbProvider.ProxyConfig,
 			SendBackRawRequest:       dbProvider.SendBackRawRequest,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
+			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			PricingOverrides:         dbProvider.PricingOverrides,
 			ConfigHash:               dbProvider.ConfigHash,
@@ -779,6 +783,7 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		ProxyConfig:              dbProvider.ProxyConfig,
 		SendBackRawRequest:       dbProvider.SendBackRawRequest,
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
+		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		PricingOverrides:         dbProvider.PricingOverrides,
 		ConfigHash:               dbProvider.ConfigHash,
@@ -2462,10 +2467,27 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 	return nil
 }
 
+// loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
+// rules by priority ASC, created_at DESC; targets by weight DESC for deterministic ordering.
+func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
+	q := s.db.WithContext(ctx).
+		Preload("Targets", func(db *gorm.DB) *gorm.DB {
+			return db.Order("weight DESC").
+				Order("COALESCE(provider, '') ASC").
+				Order("COALESCE(model, '') ASC").
+				Order("COALESCE(key_id, '') ASC")
+		}).
+		Order("priority ASC, created_at DESC")
+	for _, scope := range scopes {
+		q = scope(q)
+	}
+	return q.Find(dest).Error
+}
+
 // GetRoutingRules retrieves all routing rules from the database.
 func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRoutingRule, error) {
 	var rules []tables.TableRoutingRule
-	if err := s.db.WithContext(ctx).Order("priority ASC, created_at DESC").Find(&rules).Error; err != nil {
+	if err := s.loadRoutingRulesOrdered(ctx, &rules); err != nil {
 		return nil, err
 	}
 	return rules, nil
@@ -2473,18 +2495,19 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 
 // GetRoutingRulesByScope retrieves routing rules by scope and scope ID, ordered by priority ASC.
 func (s *RDBConfigStore) GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error) {
-	var rules []tables.TableRoutingRule
-	query := s.db.WithContext(ctx)
-
-	if scope == "global" {
-		query = query.Where("scope = ?", "global")
-	} else if scope != "" && scopeID != "" {
-		query = query.Where("scope = ? AND scope_id = ?", scope, scopeID)
-	} else {
-		// If no scope specified, return all
+	if scope != "global" && scopeID == "" {
+		return nil, fmt.Errorf("scopeID is required for non-global scope %q", scope)
 	}
-
-	if err := query.Where("enabled = ?", true).Order("priority ASC").Find(&rules).Error; err != nil {
+	var rules []tables.TableRoutingRule
+	scopeFilter := func(q *gorm.DB) *gorm.DB {
+		if scope == "global" {
+			return q.Where("scope = ?", "global")
+		}
+		return q.Where("scope = ? AND scope_id = ?", scope, scopeID)
+	}
+	if err := s.loadRoutingRulesOrdered(ctx, &rules, scopeFilter, func(q *gorm.DB) *gorm.DB {
+		return q.Where("enabled = ?", true)
+	}); err != nil {
 		return nil, err
 	}
 	return rules, nil
@@ -2492,14 +2515,16 @@ func (s *RDBConfigStore) GetRoutingRulesByScope(ctx context.Context, scope strin
 
 // GetRoutingRule retrieves a specific routing rule by ID.
 func (s *RDBConfigStore) GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error) {
-	var rule tables.TableRoutingRule
-	if err := s.db.WithContext(ctx).Where("id = ?", id).First(&rule).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
-		}
+	var rules []tables.TableRoutingRule
+	if err := s.loadRoutingRulesOrdered(ctx, &rules, func(q *gorm.DB) *gorm.DB {
+		return q.Where("id = ?", id)
+	}); err != nil {
 		return nil, err
 	}
-	return &rule, nil
+	if len(rules) == 0 {
+		return nil, ErrNotFound
+	}
+	return &rules[0], nil
 }
 
 // GetRedactedRoutingRules retrieves redacted routing rules from the database.
@@ -2550,10 +2575,22 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
 	}
 
-	if err := database.WithContext(ctx).Create(rule).Error; err != nil {
-		return s.parseGormError(err)
-	}
-	return nil
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		targets := rule.Targets
+		rule.Targets = nil
+		if err := tx.Omit("Targets").Create(rule).Error; err != nil {
+			return err
+		}
+		rule.Targets = targets
+
+		for i := range rule.Targets {
+			rule.Targets[i].RuleID = rule.ID
+			if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 }
 
 // UpdateRoutingRule updates an existing routing rule in the database.
@@ -2587,27 +2624,47 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
 	}
 
-	if err := database.WithContext(ctx).Save(rule).Error; err != nil {
-		return s.parseGormError(err)
-	}
-	return nil
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		targets := rule.Targets
+		rule.Targets = nil
+		if err := tx.Omit("Targets").Save(rule).Error; err != nil {
+			return err
+		}
+		rule.Targets = targets
+
+		if err := tx.Where("rule_id = ?", rule.ID).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+			return err
+		}
+		for i := range rule.Targets {
+			rule.Targets[i].RuleID = rule.ID
+			if err := tx.Create(&rule.Targets[i]).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
 }
 
-// DeleteRoutingRule deletes a routing rule from the database.
+// DeleteRoutingRule deletes a routing rule and its targets from the database.
 func (s *RDBConfigStore) DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error {
 	database := s.db
 	if len(tx) > 0 && tx[0] != nil {
 		database = tx[0]
 	}
 
-	result := database.WithContext(ctx).Delete(&tables.TableRoutingRule{}, "id = ?", id)
-	if result.Error != nil {
-		return s.parseGormError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("rule_id = ?", id).Delete(&tables.TableRoutingTarget{}).Error; err != nil {
+			return err
+		}
+		result := tx.Delete(&tables.TableRoutingRule{}, "id = ?", id)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrNotFound
+		}
+		return nil
+	}))
 }
 
 // GetModelConfigs retrieves all model configs from the database.
@@ -2768,7 +2825,7 @@ func (s *RDBConfigStore) GetGovernanceConfig(ctx context.Context) (*GovernanceCo
 	if err := s.db.WithContext(ctx).Find(&providers).Error; err != nil {
 		return nil, err
 	}
-	if err := s.db.WithContext(ctx).Find(&routingRules).Error; err != nil {
+	if err := s.loadRoutingRulesOrdered(ctx, &routingRules); err != nil {
 		return nil, err
 	}
 	// Fetching governance config for username and password

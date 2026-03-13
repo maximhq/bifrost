@@ -28,6 +28,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 		defaultValues: {
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
+			store_raw_request_response: provider.store_raw_request_response ?? false,
 		},
 	});
 
@@ -39,14 +40,16 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 		form.reset({
 			send_back_raw_request: provider.send_back_raw_request ?? false,
 			send_back_raw_response: provider.send_back_raw_response ?? false,
+			store_raw_request_response: provider.store_raw_request_response ?? false,
 		});
-	}, [form, provider.name, provider.send_back_raw_request, provider.send_back_raw_response]);
+	}, [form, provider.name, provider.send_back_raw_request, provider.send_back_raw_response, provider.store_raw_request_response]);
 
 	const onSubmit = (data: DebuggingFormSchema) => {
 		const updatedProvider: ModelProvider = {
 			...provider,
 			send_back_raw_request: data.send_back_raw_request,
 			send_back_raw_response: data.send_back_raw_response,
+			store_raw_request_response: data.store_raw_request_response,
 		};
 		updateProvider(updatedProvider)
 			.unwrap()
@@ -63,7 +66,7 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 
 	return (
 		<Form {...form}>
-			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6">
+			<form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6 px-6" data-testid="provider-config-debugging-content">
 				<div className="space-y-4">
 					<FormField
 						control={form.control}
@@ -113,6 +116,35 @@ export function DebuggingFormFragment({ provider }: DebuggingFormFragmentProps) 
 											onCheckedChange={(checked) => {
 												field.onChange(checked);
 												form.trigger("send_back_raw_response");
+											}}
+										/>
+									</FormControl>
+								</div>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={form.control}
+						name="store_raw_request_response"
+						render={({ field }) => (
+							<FormItem>
+								<div className="flex items-center justify-between space-x-2">
+									<div className="space-y-0.5">
+										<FormLabel>Store Raw Request/Response</FormLabel>
+										<p className="text-muted-foreground text-xs">
+											Capture the raw provider request and response for internal logging. Raw payloads are not returned to clients unless send_back_raw_request or send_back_raw_response are also enabled.
+										</p>
+									</div>
+									<FormControl>
+										<Switch
+											data-testid="provider-debugging-store-raw-request-response-switch"
+											size="md"
+											checked={field.value}
+											disabled={!hasUpdateProviderAccess}
+											onCheckedChange={(checked) => {
+												field.onChange(checked);
+												form.trigger("store_raw_request_response");
 											}}
 										/>
 									</FormControl>

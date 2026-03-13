@@ -90,7 +90,7 @@ export default function LoginView() {
 		return (
 			<div className="flex min-h-screen items-center justify-center p-4">
 				<div className="w-full max-w-md">
-					<div className="border-border bg-card w-full space-y-6 rounded-lg border p-8 shadow-sm">
+					<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 						<div className="flex items-center justify-center">
 							<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
 						</div>
@@ -106,7 +106,7 @@ export default function LoginView() {
 	return (
 		<div className="flex min-h-screen items-center justify-center p-4">
 			<div className="w-full max-w-md">
-				<div className="border-border bg-card w-full space-y-6 rounded-lg border p-8 shadow-sm">
+				<div className="border-border bg-card w-full space-y-6 rounded-sm border p-8 ">
 					{/* Logo */}
 					<div className="flex items-center justify-center">
 						<Image src={logoSrc} alt="Bifrost" width={160} height={26} priority className="" />
@@ -118,7 +118,7 @@ export default function LoginView() {
 					</div>
 
 					<form onSubmit={handleSubmit} className="space-y-5">
-						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-md p-3 text-sm">{errorMessage}</div>}
+						{errorMessage && <div className="bg-destructive/10 text-destructive rounded-sm p-3 text-sm">{errorMessage}</div>}
 
 						<div className="space-y-2">
 							<Label htmlFor="username" className="text-sm font-medium">

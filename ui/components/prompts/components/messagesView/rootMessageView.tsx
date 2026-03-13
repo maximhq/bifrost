@@ -1,4 +1,4 @@
-import { Message, MessageType, SerializedMessage } from "@/lib/message";
+import { Message, MessageType, SerializedMessage, extractVariablesFromMessages, mergeVariables } from "@/lib/message";
 import { useCallback, useEffect, useRef } from "react";
 import { usePromptContext } from "../../context";
 import { SystemMessageView } from "./systemMessageView";
@@ -9,7 +9,7 @@ import ToolCallMessageView from "./toolCallView";
 import ErrorMessageView from "./errorMessageView";
 
 export function MessagesView() {
-	const { messages, setMessages: onUpdateMessages, isStreaming, supportsVision, handleSubmitToolResult } = usePromptContext();
+	const { messages, setMessages: onUpdateMessages, setVariables, isStreaming, supportsVision, handleSubmitToolResult } = usePromptContext();
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const prevLengthRef = useRef(messages.length);
 	const prevLastIdRef = useRef(messages[messages.length - 1]?.id);
@@ -24,21 +24,32 @@ export function MessagesView() {
 		}
 	}, [messages, isStreaming]);
 
+	const recomputeVariables = useCallback(
+		(msgs: Message[]) => {
+			const varNames = extractVariablesFromMessages(msgs);
+			setVariables((prev) => mergeVariables(prev, varNames));
+		},
+		[setVariables],
+	);
+
 	const handleMessageChange = useCallback(
 		(index: number, serialized: SerializedMessage) => {
 			const newMessages = [...messages];
 			newMessages[index] = Message.deserialize(serialized);
 			onUpdateMessages(newMessages);
+			recomputeVariables(newMessages);
 		},
-		[messages, onUpdateMessages],
+		[messages, onUpdateMessages, recomputeVariables],
 	);
 
 	const handleRemoveMessage = useCallback(
 		(index: number) => {
 			const newMessages = messages.filter((_, i) => i !== index);
-			onUpdateMessages(newMessages.length > 0 ? newMessages : [Message.system("")]);
+			const result = newMessages.length > 0 ? newMessages : [Message.system("")];
+			onUpdateMessages(result);
+			recomputeVariables(result);
 		},
-		[messages, onUpdateMessages],
+		[messages, onUpdateMessages, recomputeVariables],
 	);
 
 	const lastMessage = messages[messages.length - 1];

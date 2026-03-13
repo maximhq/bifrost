@@ -1,4 +1,4 @@
-import { Message, type CompletionUsage, type ToolCall } from "@/lib/message";
+import { Message, type CompletionUsage, type ToolCall, type VariableMap, replaceVariablesInMessages } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import type { ModelParams } from "@/lib/types/prompts";
 
@@ -7,6 +7,7 @@ export interface ExecutionConfig {
 	model: string;
 	modelParams: ModelParams;
 	apiKeyId: string;
+	variables?: VariableMap;
 }
 
 function getBaseUrl() {
@@ -43,6 +44,11 @@ export async function executePrompt(
 	const placeholder = Message.response("");
 	callbacks.onStreamingStart(allMessages, placeholder);
 
+	// Replace Jinja2 variables before sending to the API
+	const resolvedMessages = config.variables
+		? replaceVariablesInMessages(allMessages, config.variables)
+		: allMessages;
+
 	try {
 		const headers: Record<string, string> = { "Content-Type": "application/json" };
 		if (config.apiKeyId && config.apiKeyId !== "__auto__") {
@@ -59,7 +65,7 @@ export async function executePrompt(
 			headers,
 			body: JSON.stringify({
 				model: `${config.provider}/${config.model}`,
-				messages: Message.toAPIMessages(allMessages),
+				messages: Message.toAPIMessages(resolvedMessages),
 				...requestParams,
 				stream: requestParams.stream ?? true,
 			}),

@@ -6,7 +6,7 @@
   "homepage": "https://github.com/maximhq/bifrost",
   "repository": {
     "type": "git",
-    "url": "https://github.com/maximhq/bifrost.git"
+    "url": "git+https://github.com/maximhq/bifrost.git"
   },
   "license": "Apache-2.0",
   "author": "Maxim HQ",

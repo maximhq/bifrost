@@ -87,6 +87,7 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 							<Label htmlFor="name">Name</Label>
 							<Input
 								id="name"
+								data-testid="folder-name-input"
 								placeholder="My Prompts"
 								{...register("name", {
 									required: "Folder name is required",
@@ -101,6 +102,7 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 							<Label htmlFor="description">Description (optional)</Label>
 							<Textarea
 								id="description"
+								data-testid="folder-description-input"
 								placeholder="Prompts for customer support use cases..."
 								className="resize-none"
 								{...register("description")}
@@ -109,10 +111,10 @@ export function FolderSheet({ open, onOpenChange, folder, onSaved }: FolderSheet
 					</div>
 
 					<SheetFooter className="mt-6 flex flex-row items-center justify-end gap-2 p-0">
-						<Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+						<Button type="button" variant="outline" data-testid="folder-cancel" onClick={() => onOpenChange(false)}>
 							Cancel
 						</Button>
-						<Button type="submit" disabled={isLoading}>
+						<Button type="submit" data-testid="folder-submit" disabled={isLoading}>
 							{isLoading ? "Saving..." : isEditing ? "Update" : "Create"}
 						</Button>
 					</SheetFooter>

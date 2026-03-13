@@ -75,6 +75,24 @@ Skip the key selection process entirely and pass an empty key to the provider. U
 ctx := context.WithValue(ctx, schemas.BifrostContextKeySkipKeySelection, true)
 ```
 
+### Session Stickiness (Session ID)
+
+Bind a session to a specific API key so that requests with the same session ID consistently use the same key. Useful for predictable rate-limit buckets, cost attribution per user, and consistent model routing per session.
+
+On the first request for a session ID, Bifrost selects a key (via weighted random) and caches the binding in the KV store. Subsequent requests with the same session ID reuse the cached key as long as it remains valid. If the cached key is no longer in the supported set (disabled, removed, or model support changed), Bifrost re-selects and overwrites the cache.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionID, "user-123-session-abc")
+```
+
+### Session TTL
+
+Optional. Controls how long the session-to-key binding is cached. If not set, Bifrost uses `DefaultSessionStickyTTL` (1 hour). The TTL is refreshed on each request so active sessions do not expire.
+
+```go
+ctx := context.WithValue(ctx, schemas.BifrostContextKeySessionTTL, 30*time.Minute)
+```
+
 ### Request ID
 
 Set a custom request ID for tracking and correlation.
@@ -301,6 +319,8 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyFallbackIndex` | `int` | Read | Current fallback index |
 | `BifrostContextKeyStreamEndIndicator` | `bool` | Read | Stream completion flag |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection |
+| `BifrostContextKeySessionID` | `string` | Set | Session ID for key stickiness (requires KV store) |
+| `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session-to-key cache (default: 1 hour) |
 | `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom request headers |
 | `BifrostContextKeyURLPath` | `string` | Set | Custom URL path suffix |
 | `BifrostContextKeyUseRawRequestBody` | `bool` | Set | Use raw request body |

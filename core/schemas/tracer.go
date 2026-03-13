@@ -95,7 +95,7 @@ type Tracer interface {
 	// The response is always nil — full content accumulation is handled by the streaming.Accumulator
 	// via ProcessStreamingChunk. Callers should nil-check the response.
 	// Returns nil, 0, 0 if no accumulated data exists.
-	GetAccumulatedChunks(traceID string) (response *BifrostResponse, ttftMs int64, chunkCount int)
+	GetAccumulatedChunks(traceID string) (response *BifrostResponse, ttftNs int64, chunkCount int)
 
 	// CreateStreamAccumulator creates a new stream accumulator for the given trace ID.
 	// This should be called at the start of a streaming request.

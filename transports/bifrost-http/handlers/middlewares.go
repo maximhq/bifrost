@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -86,11 +90,15 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 				ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 				ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
 				ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
-				// Don't send Allow-Credentials when wildcard origin is configured — it's a
-				// CORS spec violation and signals an overly permissive configuration.
-				if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") {
-					ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
-				}
+			// Set Allow-Credentials for credentialed requests. Only skip when wildcard
+			// is configured AND the origin was matched by the wildcard (not by localhost rule
+			// or explicit listing). Localhost origins and explicitly listed origins always
+			// get credentials support since we return the specific origin.
+			if !slices.Contains(config.ClientConfig.AllowedOrigins, "*") ||
+				isLocalhostOrigin(origin) ||
+				slices.Contains(config.ClientConfig.AllowedOrigins, origin) {
+				ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
+			}
 				ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
 				// Vary: Origin tells caches that the response varies based on the Origin
 				// request header, preventing incorrect CORS headers from being served.
@@ -111,36 +119,167 @@ func CorsMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 }
 
 // RequestDecompressionMiddleware transparently decompresses compressed request bodies.
-// fasthttp supports gzip/deflate/br/zstd via BodyUncompressed().
+// Two paths based on compressed Content-Length:
+//   - Large or chunked (CL > threshold or CL unknown): streaming decompression via
+//     SetBodyStream, avoiding full body materialization. Uses pooled gzip readers
+//     matching the response-side pattern in core/providers/utils.
+//   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
+//     with decompression bomb protection via MaxRequestBodySizeMB.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
-			if len(ctx.Request.Header.ContentEncoding()) > 0 {
-				maxRequestBodyBytes := 0
-				if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-					maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
-				}
+			if len(ctx.Request.Header.ContentEncoding()) == 0 {
+				next(ctx)
+				return
+			}
 
-				body, err := ctx.Request.BodyUncompressed()
+			if shouldStreamDecompress(config, ctx) {
+				cleanup, applied, err := streamingDecompress(ctx)
 				if err != nil {
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
 				}
-				if maxRequestBodyBytes > 0 && len(body) > maxRequestBodyBytes {
-					SendError(
-						ctx,
-						fasthttp.StatusRequestEntityTooLarge,
-						fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes),
-					)
+				if applied {
+					next(ctx)
+					cleanup()
 					return
 				}
-
-				ctx.Request.SetBodyRaw(body)
-				ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
-				ctx.Request.Header.Del(fasthttp.HeaderContentLength)
+				// No body stream available (StreamRequestBody not enabled) — fall
+				// through to the buffered decompression path below.
 			}
+
+			// Buffered path: small compressed request — materialize fully.
+			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
+			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			}
+
+			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+			if errors.Is(err, errRequestBodyTooLarge) {
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				return
+			}
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
+				return
+			}
+
+			ctx.Request.SetBodyRaw(body)
+			ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
+			ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 			next(ctx)
 		}
+	}
+}
+
+// shouldStreamDecompress returns true when the compressed request body should
+// use streaming decompression rather than full materialization. Uses the
+// config threshold (set by enterprise from LargePayloadConfig.RequestThresholdBytes)
+// or falls back to DefaultLargePayloadRequestThresholdBytes.
+// Chunked requests (unknown size) always stream to be safe.
+func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
+	contentLength := ctx.Request.Header.ContentLength()
+	// Chunked transfer encoding: fasthttp reports -1. Size unknown, stream to be safe.
+	if contentLength < 0 {
+		return true
+	}
+	var threshold int64 = schemas.DefaultLargePayloadRequestThresholdBytes
+	if config != nil && config.StreamingDecompressThreshold > 0 {
+		threshold = config.StreamingDecompressThreshold
+	}
+	return int64(contentLength) > threshold
+}
+
+// streamingDecompress wraps the request body stream with a streaming decompression
+// reader, avoiding full body materialization for large compressed requests.
+// Returns (cleanup, applied, err):
+//   - applied=true: body stream was wrapped; caller must invoke cleanup after the
+//     handler chain completes and the body is fully consumed.
+//   - applied=false: no body stream available (StreamRequestBody not enabled on the
+//     server). Caller should fall back to the buffered decompression path.
+func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool, err error) {
+	bodyStream := ctx.RequestBodyStream()
+	if bodyStream == nil {
+		return func() {}, false, nil
+	}
+
+	encoding := strings.ToLower(strings.TrimSpace(
+		string(ctx.Request.Header.ContentEncoding()),
+	))
+
+	decompReader, cleanup, err := newDecompressReader(bodyStream, encoding)
+	if err != nil {
+		return nil, false, err
+	}
+
+	ctx.Request.SetBodyStream(decompReader, -1)
+	ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
+	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
+
+	return cleanup, true, nil
+}
+
+var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
+
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
+	bodyReader := bytes.NewReader(req.Body())
+
+	var reader io.Reader = bodyReader
+	cleanup := func() {}
+	if encoding != "" {
+		var err error
+		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer cleanup()
+
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
+	}
+
+	limitedReader := &io.LimitedReader{R: reader, N: int64(maxRequestBodyBytes + 1)}
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxRequestBodyBytes {
+		return nil, errRequestBodyTooLarge
+	}
+	return body, nil
+}
+
+// newDecompressReader wraps r with a decompression reader for the given encoding.
+// All encodings use pooled readers from core/providers/utils. The returned cleanup
+// function must be called when the reader is no longer needed.
+func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error) {
+	switch encoding {
+	case "gzip":
+		gz, err := providerUtils.AcquireGzipReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return gz, func() { providerUtils.ReleaseGzipReader(gz) }, nil
+	case "deflate":
+		fr, err := providerUtils.AcquireFlateReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return fr, func() { providerUtils.ReleaseFlateReader(fr) }, nil
+	case "br":
+		br := providerUtils.AcquireBrotliReader(r)
+		return br, func() { providerUtils.ReleaseBrotliReader(br) }, nil
+	case "zstd":
+		dec, err := providerUtils.AcquireZstdDecoder(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return dec, func() { providerUtils.ReleaseZstdDecoder(dec) }, nil
+	default:
+		return nil, nil, fmt.Errorf("%w: %q", fasthttp.ErrContentEncodingUnsupported, encoding)
 	}
 }
 
@@ -257,7 +396,10 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
 	// because the large-payload-mode flag is only set later inside the handler hook.
 	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
-		if int64(ctx.Request.Header.ContentLength()) > threshold {
+		cl := int64(ctx.Request.Header.ContentLength())
+		// Skip body copy when CL exceeds threshold OR CL is unknown (streaming/
+		// chunked, e.g. after streaming decompression deletes the header).
+		if cl > threshold || cl < 0 {
 			return
 		}
 	}
@@ -343,12 +485,20 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 	return true
 }
 
+// isInferenceWSEndpoint returns true for WebSocket endpoints that should use
+// standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
+func isInferenceWSEndpoint(path string) bool {
+	return path == "/v1/responses" || path == "/v1/realtime"
+}
+
+// AuthMiddleware is a middleware that handles authentication for the API.
 type AuthMiddleware struct {
 	store         configstore.ConfigStore
 	authConfig    atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore *WSTicketStore
 }
 
+// InitAuthMiddleware initializes the auth middleware.
 func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketStore) (*AuthMiddleware, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is not present")
@@ -427,40 +577,47 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// Get the authorization header
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
-				// Check if its a websocket 101 upgrade request
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					// Prefer short-lived ticket-based auth (from POST /api/session/ws-ticket)
-					ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
-					if ticket != "" && m.wsTicketStore != nil {
-						sessionToken := m.wsTicketStore.Consume(ticket)
-						if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
-							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
+					path := string(ctx.Path())
+					if isInferenceWSEndpoint(path) {
+						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
+						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
+						// If no Authorization header, fall through to return 401 below
+						// (or the shouldSkip check above already passed them through).
+					} else {
+						// Prefer short-lived ticket-based auth (from POST /api/session/ws-ticket)
+						ticket := string(ctx.Request.URI().QueryArgs().Peek("ticket"))
+						if ticket != "" && m.wsTicketStore != nil {
+							sessionToken := m.wsTicketStore.Consume(ticket)
+							if sessionToken != "" && validateSession(ctx, m.store, sessionToken) {
+								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, sessionToken)
+								next(ctx)
+								return
+							}
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						// Fallback: legacy ?token= param (for backward compatibility)
+						token := string(ctx.Request.URI().QueryArgs().Peek("token"))
+						if token != "" {
+							if validateSession(ctx, m.store, token) {
+								ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
+								next(ctx)
+								return
+							}
+							SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
+							return
+						}
+						// Fallback: cookie-based WS auth
+						cookieToken := string(ctx.Request.Header.Cookie("token"))
+						if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
+							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
 							next(ctx)
 							return
 						}
 						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 						return
 					}
-					// Fallback: legacy ?token= param (for backward compatibility)
-					token := string(ctx.Request.URI().QueryArgs().Peek("token"))
-					if token != "" {
-						if validateSession(ctx, m.store, token) {
-							ctx.SetUserValue(schemas.BifrostContextKeySessionToken, token)
-							next(ctx)
-							return
-						}
-						SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-						return
-					}
-					// Fallback: cookie-based WS auth
-					cookieToken := string(ctx.Request.Header.Cookie("token"))
-					if cookieToken != "" && validateSession(ctx, m.store, cookieToken) {
-						ctx.SetUserValue(schemas.BifrostContextKeySessionToken, cookieToken)
-						next(ctx)
-						return
-					}
-					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
-					return
 				}
 				// Cookie-based auth fallback: if no Authorization header, check for the HTTPOnly session cookie.
 				// This supports the dashboard which relies on cookies instead of localStorage tokens.

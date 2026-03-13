@@ -5,10 +5,10 @@ package utils
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -390,34 +390,34 @@ func filterHeaders(headers map[string][]string) map[string][]string {
 // providerResponseFilterHeaders are headers to exclude when forwarding provider response headers.
 // These are transport-level headers that don't apply when re-serving the response.
 var providerResponseFilterHeaders = map[string]bool{
-	"content-length":                    true,
-	"content-encoding":                  true,
-	"transfer-encoding":                 true,
-	"connection":                        true,
-	"keep-alive":                        true,
-	"proxy-connection":                  true,
-	"proxy-authenticate":                true,
-	"proxy-authorization":               true,
-	"authorization":                     true,
-	"cookie":                            true,
-	"set-cookie":                        true,
-	"set-cookie2":                       true,
-	"www-authenticate":                  true,
-	"te":                                true,
-	"trailer":                           true,
-	"upgrade":                           true,
-	"host":                              true,
-	"date":                              true,
-	"server":                            true,
-	"alt-svc":                           true,
-	"strict-transport-security":         true,
-	"content-type":                      true,
-	"access-control-allow-origin":       true,
-	"access-control-allow-methods":      true,
-	"access-control-allow-headers":      true,
-	"access-control-expose-headers":     true,
-	"access-control-allow-credentials":  true,
-	"access-control-max-age":            true,
+	"content-length":                   true,
+	"content-encoding":                 true,
+	"transfer-encoding":                true,
+	"connection":                       true,
+	"keep-alive":                       true,
+	"proxy-connection":                 true,
+	"proxy-authenticate":               true,
+	"proxy-authorization":              true,
+	"authorization":                    true,
+	"cookie":                           true,
+	"set-cookie":                       true,
+	"set-cookie2":                      true,
+	"www-authenticate":                 true,
+	"te":                               true,
+	"trailer":                          true,
+	"upgrade":                          true,
+	"host":                             true,
+	"date":                             true,
+	"server":                           true,
+	"alt-svc":                          true,
+	"strict-transport-security":        true,
+	"content-type":                     true,
+	"access-control-allow-origin":      true,
+	"access-control-allow-methods":     true,
+	"access-control-allow-headers":     true,
+	"access-control-expose-headers":    true,
+	"access-control-allow-credentials": true,
+	"access-control-max-age":           true,
 }
 
 // ExtractProviderResponseHeaders extracts and filters response headers from a
@@ -799,36 +799,6 @@ func CloneFastHTTPClientConfig(base *fasthttp.Client) *fasthttp.Client {
 		DisableHeaderNamesNormalizing: base.DisableHeaderNamesNormalizing,
 		DisablePathNormalizing:        base.DisablePathNormalizing,
 		StreamResponseBody:            base.StreamResponseBody,
-	}
-}
-
-// gzipReaderPool reuses gzip.Reader instances across requests to reduce GC pressure.
-var gzipReaderPool = sync.Pool{
-	New: func() any {
-		return &gzip.Reader{}
-	},
-}
-
-// AcquireGzipReader gets a gzip.Reader from the pool and resets it to read from r,
-// or creates a new one if the pool is empty or reset fails.
-func AcquireGzipReader(r io.Reader) (*gzip.Reader, error) {
-	if v := gzipReaderPool.Get(); v != nil {
-		gz := v.(*gzip.Reader)
-		if err := gz.Reset(r); err == nil {
-			return gz, nil
-		}
-		// Reset failed; discard the reader. After a failed Reset the internal
-		// decompressor may be nil, making Close() panic (Go 1.26+).
-		// Do not re-pool — let GC reclaim it.
-	}
-	return gzip.NewReader(r)
-}
-
-// ReleaseGzipReader closes and returns a gzip.Reader to the pool.
-func ReleaseGzipReader(gz *gzip.Reader) {
-	if gz != nil {
-		_ = gz.Close()
-		gzipReaderPool.Put(gz)
 	}
 }
 
@@ -1322,6 +1292,16 @@ func ParseAndSetRawRequest(extraFields *schemas.BifrostResponseExtraFields, json
 	}
 }
 
+// ParseAndSetRawRequestIfJSON parses the request body if it's JSON and sets the raw request in the extra fields.
+func ParseAndSetRawRequestIfJSON(fasthttpReq *fasthttp.Request, extraFields *schemas.BifrostResponseExtraFields) {
+	extraFields.RawRequest = nil
+	contentType := strings.ToLower(string(fasthttpReq.Header.ContentType()))
+	if strings.Contains(contentType, "application/json") {
+		body := append([]byte(nil), fasthttpReq.Body()...)
+		ParseAndSetRawRequest(extraFields, body)
+	}
+}
+
 // NewUnsupportedOperationError creates a standardized error for unsupported operations.
 // This helper reduces code duplication across providers that don't support certain operations.
 func NewUnsupportedOperationError(requestType schemas.RequestType, providerName schemas.ModelProvider) *schemas.BifrostError {
@@ -1611,9 +1591,12 @@ type RequestMetadata struct {
 	RequestType schemas.RequestType
 }
 
-// ShouldSendBackRawRequest checks if the raw request should be sent back.
+// ShouldSendBackRawRequest checks if the raw request should be captured.
 // Context overrides are intentionally restricted to asymmetric behavior: a context value can only
 // promote false→true and will not override a true config to false, avoiding accidental suppression.
+// Both full send-back mode and logging-only mode (store_raw_request_response) set
+// BifrostContextKeySendBackRawRequest=true in the request context so a single flag is checked here.
+// In logging-only mode the payload is stripped before the response reaches the client.
 func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest bool) bool {
 	if sendBackRawRequest, ok := ctx.Value(schemas.BifrostContextKeySendBackRawRequest).(bool); ok && sendBackRawRequest {
 		return sendBackRawRequest
@@ -1621,7 +1604,12 @@ func ShouldSendBackRawRequest(ctx context.Context, defaultSendBackRawRequest boo
 	return defaultSendBackRawRequest
 }
 
-// ShouldSendBackRawResponse checks if the raw response should be sent back, and returns it if it exists.
+// ShouldSendBackRawResponse checks if the raw response should be captured.
+// Context overrides are intentionally restricted to asymmetric behavior: a context value can only
+// promote false→true and will not override a true config to false, avoiding accidental suppression.
+// Both full send-back mode and logging-only mode (store_raw_request_response) set
+// BifrostContextKeySendBackRawResponse=true in the request context so a single flag is checked here.
+// In logging-only mode the payload is stripped before the response reaches the client.
 func ShouldSendBackRawResponse(ctx context.Context, defaultSendBackRawResponse bool) bool {
 	if sendBackRawResponse, ok := ctx.Value(schemas.BifrostContextKeySendBackRawResponse).(bool); ok && sendBackRawResponse {
 		return sendBackRawResponse
@@ -1671,6 +1659,77 @@ func SendInProgressEventResponsesChunk(ctx *schemas.BifrostContext, postHookRunn
 	ProcessAndSendResponse(ctx, postHookRunner, bifrostResponse, responseChan)
 }
 
+// BuildClientStreamChunk constructs a BifrostStreamChunk from post-hook results.
+// It never mutates the shared processedResponse or processedError objects — when in
+// logging-only mode (BifrostContextKeyRawRequestResponseForLogging) it shallow-copies
+// each inner response struct and the BifrostError, nils only the raw fields on those
+// copies, and returns them as the outgoing chunk. This is safe for concurrent PostLLMHook
+// goroutines that still hold references to the originals.
+func BuildClientStreamChunk(ctx context.Context, processedResponse *schemas.BifrostResponse, processedError *schemas.BifrostError) *schemas.BifrostStreamChunk {
+	dropRaw, _ := ctx.Value(schemas.BifrostContextKeyRawRequestResponseForLogging).(bool)
+	streamResponse := &schemas.BifrostStreamChunk{}
+	if processedResponse != nil {
+		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
+		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
+		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
+		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
+		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
+		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
+		// Strip raw fields from client-facing copies without mutating the shared objects
+		// that PostLLMHook goroutines may still be reading.
+		if dropRaw {
+			if streamResponse.BifrostTextCompletionResponse != nil {
+				cp := *streamResponse.BifrostTextCompletionResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTextCompletionResponse = &cp
+			}
+			if streamResponse.BifrostChatResponse != nil {
+				cp := *streamResponse.BifrostChatResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostChatResponse = &cp
+			}
+			if streamResponse.BifrostResponsesStreamResponse != nil {
+				cp := *streamResponse.BifrostResponsesStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostResponsesStreamResponse = &cp
+			}
+			if streamResponse.BifrostSpeechStreamResponse != nil {
+				cp := *streamResponse.BifrostSpeechStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostSpeechStreamResponse = &cp
+			}
+			if streamResponse.BifrostTranscriptionStreamResponse != nil {
+				cp := *streamResponse.BifrostTranscriptionStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostTranscriptionStreamResponse = &cp
+			}
+			if streamResponse.BifrostImageGenerationStreamResponse != nil {
+				cp := *streamResponse.BifrostImageGenerationStreamResponse
+				cp.ExtraFields.RawRequest = nil
+				cp.ExtraFields.RawResponse = nil
+				streamResponse.BifrostImageGenerationStreamResponse = &cp
+			}
+		}
+	}
+	if processedError != nil {
+		if dropRaw {
+			// Strip raw fields from a client-facing copy without mutating the shared error object.
+			errCopy := *processedError
+			errCopy.ExtraFields.RawRequest = nil
+			errCopy.ExtraFields.RawResponse = nil
+			streamResponse.BifrostError = &errCopy
+		} else {
+			streamResponse.BifrostError = processedError
+		}
+	}
+	return streamResponse
+}
+
 // ProcessAndSendResponse handles post-hook processing and sends the response to the channel.
 // This utility reduces code duplication across streaming implementations by encapsulating
 // the common pattern of running post hooks, handling errors, and sending responses with
@@ -1702,18 +1761,7 @@ func ProcessAndSendResponse(
 		return
 	}
 
-	streamResponse := &schemas.BifrostStreamChunk{}
-	if processedResponse != nil {
-		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
-		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
-		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
-		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
-		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
-		streamResponse.BifrostImageGenerationStreamResponse = processedResponse.ImageGenerationStreamResponse
-	}
-	if processedError != nil {
-		streamResponse.BifrostError = processedError
-	}
+	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	select {
 	case responseChan <- streamResponse:
@@ -1754,17 +1802,7 @@ func ProcessAndSendBifrostError(
 		return
 	}
 
-	streamResponse := &schemas.BifrostStreamChunk{}
-	if processedResponse != nil {
-		streamResponse.BifrostTextCompletionResponse = processedResponse.TextCompletionResponse
-		streamResponse.BifrostChatResponse = processedResponse.ChatResponse
-		streamResponse.BifrostResponsesStreamResponse = processedResponse.ResponsesStreamResponse
-		streamResponse.BifrostSpeechStreamResponse = processedResponse.SpeechStreamResponse
-		streamResponse.BifrostTranscriptionStreamResponse = processedResponse.TranscriptionStreamResponse
-	}
-	if processedError != nil {
-		streamResponse.BifrostError = processedError
-	}
+	streamResponse := BuildClientStreamChunk(ctx, processedResponse, processedError)
 
 	select {
 	case responseChan <- streamResponse:
@@ -2454,12 +2492,12 @@ func completeDeferredSpan(ctx *schemas.BifrostContext, result *schemas.BifrostRe
 
 	// Get accumulated response with full data (content, tool calls, reasoning, etc.)
 	// This builds a complete BifrostResponse from all the streaming chunks
-	accumulatedResp, ttftMs, chunkCount := tracer.GetAccumulatedChunks(traceID)
+	accumulatedResp, ttftNs, chunkCount := tracer.GetAccumulatedChunks(traceID)
 
 	// Set TTFT and chunk count attributes regardless of accumulated response availability
 	// (GetAccumulatedChunks may return nil response while still providing valid metrics)
-	if ttftMs > 0 {
-		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftMs)
+	if ttftNs > 0 {
+		tracer.SetAttribute(handle, schemas.AttrTimeToFirstToken, ttftNs)
 	}
 	if chunkCount > 0 {
 		tracer.SetAttribute(handle, schemas.AttrTotalChunks, chunkCount)

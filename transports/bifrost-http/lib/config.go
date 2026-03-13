@@ -26,6 +26,7 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/envutils"
+	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -69,6 +70,9 @@ type HandlerStore interface {
 	GetAsyncJobExecutor() *logstore.AsyncJobExecutor
 	// GetAsyncJobResultTTL returns the default TTL for async job results in seconds.
 	GetAsyncJobResultTTL() int
+	// GetKVStore returns the shared in-memory kvstore instance.
+	// Returns nil if not initialized.
+	GetKVStore() *kvstore.Store
 }
 
 // Retry backoff constants for validation
@@ -118,6 +122,7 @@ type ConfigData struct {
 	ConfigStoreConfig *configstore.Config                   `json:"config_store,omitempty"`
 	LogsStoreConfig   *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
+	WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 }
 
 // UnmarshalJSON unmarshals the ConfigData from JSON using internal unmarshallers
@@ -137,6 +142,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		ConfigStoreConfig json.RawMessage                       `json:"config_store,omitempty"`
 		LogsStoreConfig   json.RawMessage                       `json:"logs_store,omitempty"`
 		Plugins           []*schemas.PluginConfig               `json:"plugins,omitempty"`
+		WebSocket         *schemas.WebSocketConfig              `json:"websocket,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -152,6 +158,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	cd.MCP = temp.MCP
 	cd.Governance = temp.Governance
 	cd.Plugins = temp.Plugins
+	cd.WebSocket = temp.WebSocket
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -295,6 +302,8 @@ type Config struct {
 
 	// Async job executor (initialized during setup if LogsStore + governance are available)
 	AsyncJobExecutor *logstore.AsyncJobExecutor
+	// Shared in-memory kvstore for transport-level protocol coordination.
+	KVStore *kvstore.Store
 
 	// Catalog managers
 	ModelCatalog *modelcatalog.ModelCatalog
@@ -303,23 +312,31 @@ type Config struct {
 	// Optional event broadcaster for real-time updates (e.g., WebSocket).
 	// Set by HTTP server at startup; may be nil in non-HTTP usage.
 	EventBroadcaster schemas.EventBroadcaster
+
+	// StreamingDecompressThreshold overrides the default threshold (10MB) for
+	// switching from buffered to streaming request decompression. Set by
+	// enterprise from LargePayloadConfig.RequestThresholdBytes. Zero means
+	// use schemas.DefaultLargePayloadRequestThresholdBytes.
+	StreamingDecompressThreshold int64
+	// WebSocket configuration for WS gateway features (Responses WS mode, Realtime API).
+	WebSocketConfig *schemas.WebSocketConfig
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
-	DropExcessRequests:      false,
-	PrometheusLabels:        []string{},
-	InitialPoolSize:         schemas.DefaultInitialPoolSize,
-	EnableLogging:           true,
-	DisableContentLogging:   false,
-	EnforceAuthOnInference:  false,
-	AllowDirectKeys:         false,
-	AllowedOrigins:          []string{"*"},
-	AllowedHeaders:          []string{},
-	MaxRequestBodySizeMB:    100,
-	MCPAgentDepth:           10,
-	MCPToolExecutionTimeout: 30,
-	MCPCodeModeBindingLevel: string(schemas.CodeModeBindingLevelServer),
-	EnableLiteLLMFallbacks:  false,
+	DropExcessRequests:              false,
+	PrometheusLabels:                []string{},
+	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
+	EnableLogging:                   true,
+	DisableContentLogging:           false,
+	EnforceAuthOnInference:          false,
+	AllowDirectKeys:                 false,
+	AllowedOrigins:                  []string{"*"},
+	AllowedHeaders:                  []string{},
+	MaxRequestBodySizeMB:            100,
+	MCPAgentDepth:                   10,
+	MCPToolExecutionTimeout:         30,
+	MCPCodeModeBindingLevel:         string(schemas.CodeModeBindingLevelServer),
+	EnableLiteLLMFallbacks:          false,
 	HideDeletedVirtualKeysInFilters: false,
 }
 
@@ -438,6 +455,10 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	if err = initStoresFromFile(ctx, config, &configData); err != nil {
 		return nil, err
 	}
+	// Initialize kvstore
+	if err := initKVStore(config); err != nil {
+		return nil, err
+	}
 	// From now on, config store gets priority if enabled and we find data.
 	// If we don't find any data in the store, then we resort to config file.
 	// NOTE: We follow a standard practice: store -> config file -> update store.
@@ -459,6 +480,15 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	initFrameworkConfigFromFile(ctx, config, &configData)
 	// Sync encryption: encrypt any plaintext rows written during config loading
 	syncEncryption(ctx, config)
+	// Load WebSocket config (always enabled, apply defaults for any missing values)
+	if configData.WebSocket != nil {
+		configData.WebSocket.CheckAndSetDefaults()
+		config.WebSocketConfig = configData.WebSocket
+	} else {
+		wsConfig := &schemas.WebSocketConfig{}
+		wsConfig.CheckAndSetDefaults()
+		config.WebSocketConfig = wsConfig
+	}
 	return config, nil
 }
 
@@ -1953,8 +1983,15 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	if err = initDefaultFrameworkConfig(ctx, config); err != nil {
 		return nil, err
 	}
+	if err := initKVStore(config); err != nil {
+		return nil, err
+	}
 	// Sync encryption: encrypt any plaintext rows written during config loading
 	syncEncryption(ctx, config)
+	// Initialize WebSocket config with defaults (always enabled)
+	wsConfig := &schemas.WebSocketConfig{}
+	wsConfig.CheckAndSetDefaults()
+	config.WebSocketConfig = wsConfig
 	return config, nil
 }
 
@@ -2541,6 +2578,24 @@ func (c *Config) GetAsyncJobResultTTL() int {
 		return c.ClientConfig.AsyncJobResultTTL
 	}
 	return logstore.DefaultAsyncJobResultTTL
+}
+
+// GetKVStore returns the shared in-memory kvstore instance.
+func (c *Config) GetKVStore() *kvstore.Store {
+	return c.KVStore
+}
+
+// initKVStore initializes the kvstore for the config
+func initKVStore(config *Config) error {
+	var err error
+	config.KVStore, err = kvstore.New(kvstore.Config{
+		DefaultTTL:      30 * time.Minute,
+		CleanupInterval: 1 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize kvstore: %w", err)
+	}
+	return nil
 }
 
 // GetLoadedMCPPlugins returns the current snapshot of loaded MCP plugins.

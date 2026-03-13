@@ -15,9 +15,9 @@ import {
 	FlaskConical,
 	FolderGit,
 	Globe,
+	HardDriveUpload,
 	KeyRound,
 	Landmark,
-	Layers,
 	LayoutGrid,
 	LogOut,
 	Logs,
@@ -25,6 +25,7 @@ import {
 	PanelLeftClose,
 	Puzzle,
 	Router,
+	ScanEye,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -306,7 +307,7 @@ const SidebarItemView = ({
 										{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />}
 										<span className={`text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
 										{subItem.tag && (
-											<Badge variant="secondary" className="text-muted-foreground leading-normal text-[10px] py-0 font-medium">
+											<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 												{subItem.tag}
 											</Badge>
 										)}
@@ -392,9 +393,12 @@ export default function AppSidebar() {
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
+	const hasPiiRedactorAccess = useRbac(RbacResource.PIIRedactor, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
 	const items = useMemo(
 		() => [
@@ -605,6 +609,29 @@ export default function AppSidebar() {
 				],
 			},
 			{
+				title: "PII Redactor",
+				url: "/workspace/pii-redactor",
+				icon: ScanEye,
+				description: "PII detection and redaction",
+				hasAccess: hasPiiRedactorAccess,
+				subItems: [
+					{
+						title: "Rules",
+						url: "/workspace/pii-redactor/rules",
+						icon: SearchCheck,
+						description: "PII redaction rules",
+						hasAccess: hasPiiRedactorAccess,
+					},
+					{
+						title: "Providers",
+						url: "/workspace/pii-redactor/providers",
+						icon: Boxes,
+						description: "PII redaction providers",
+						hasAccess: hasPiiRedactorAccess,
+					},
+				],
+			},
+			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -618,30 +645,34 @@ export default function AppSidebar() {
 				description: "Manage adaptive load balancer",
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
-			{
-				title: "Prompt Repository",
-				url: "/workspace/prompt-repo",
-				icon: FolderGit,
-				description: "Prompt repository",
-				hasAccess: true,
-				subItems: [
-					{
-						title: "Prompts",
-						url: "/workspace/prompt-repo/prompts",
-						icon: SquareTerminal,
-						description: "Manage prompts",
-						hasAccess: true,
-						tag: "Beta",
-					},
-					{
-						title: "Deployments",
-						url: "/workspace/prompt-repo/deployments",
-						icon: Router,
-						description: "Manage deployment",
-						hasAccess: true,
-					},
-				],
-			},
+			...(isDbConnected
+				? [
+						{
+							title: "Prompt Repository",
+							url: "/workspace/prompt-repo",
+							icon: FolderGit,
+							description: "Prompt repository",
+							hasAccess: true,
+							subItems: [
+								{
+									title: "Prompts",
+									url: "/workspace/prompt-repo/prompts",
+									icon: SquareTerminal,
+									description: "Manage prompts",
+									hasAccess: true,
+									tag: "Beta",
+								},
+								{
+									title: "Deployments",
+									url: "/workspace/prompt-repo/deployments",
+									icon: Router,
+									description: "Manage deployment",
+									hasAccess: true,
+								},
+							],
+						},
+					]
+				: []),
 			{
 				title: "Evals",
 				url: "https://www.getmaxim.ai",
@@ -708,7 +739,7 @@ export default function AppSidebar() {
 								{
 									title: "Large Payload",
 									url: "/workspace/config/large-payload",
-									icon: Layers,
+									icon: HardDriveUpload,
 									description: "Large payload streaming optimization",
 									hasAccess: hasSettingsAccess,
 								},
@@ -734,9 +765,11 @@ export default function AppSidebar() {
 			hasRoutingRulesAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
+			hasPiiRedactorAccess,
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
+			isDbConnected,
 		],
 	);
 
@@ -781,8 +814,6 @@ export default function AppSidebar() {
 		}
 		return false;
 	}, [latestRelease, version]);
-	// Get governance config from RTK Query
-	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isAuthEnabled = coreConfig?.auth_config?.is_enabled || false;
 
 	useEffect(() => {

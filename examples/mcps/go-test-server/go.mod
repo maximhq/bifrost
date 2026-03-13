@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/mcps/go-test-server
 
-go 1.26
+go 1.26.1
 
 require (
 	github.com/google/uuid v1.6.0

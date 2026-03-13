@@ -1,13 +1,18 @@
 package harness
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bytedance/sonic"
 )
 
 // Harness defines a coding assistant CLI that Bifrost can launch and manage.
@@ -29,19 +34,26 @@ type Harness struct {
 	// config files and return extra environment variables to inject. The
 	// returned cleanup function is deferred after the process exits.
 	PreLaunch func(baseURL, apiKey, model string) (extraEnv []string, cleanup func(), err error)
+	// WriteNativeConfig persists the bifrost connection settings into the
+	// harness CLI's own config file so the same configuration is available
+	// when users launch the CLI directly outside bifrost.
+	WriteNativeConfig func(baseURL, apiKey, model string) error
+	// NativeConfigPath is the human-readable path to the file that
+	// WriteNativeConfig modifies (e.g. "~/.claude/settings.json").
+	// Used to inform the user in the confirmation prompt.
+	NativeConfigPath string
 }
 
 var all = map[string]Harness{
 	"claude": {
-		ID:          "claude",
-		Label:       "Claude Code",
-		Binary:      "claude",
-		InstallPkg:  "@anthropic-ai/claude-code",
-		VersionArgs: []string{"--version"},
-		BasePath:    "/anthropic",
-		BaseURLEnv:  "ANTHROPIC_BASE_URL",
-		APIKeyEnv:   "ANTHROPIC_API_KEY",
-		ModelEnv:    "ANTHROPIC_MODEL",
+		ID:               "claude",
+		Label:            "Claude Code",
+		Binary:           "claude",
+		InstallPkg:       "@anthropic-ai/claude-code",
+		VersionArgs:      []string{"--version"},
+		BasePath:         "/anthropic",
+		BaseURLEnv:       "ANTHROPIC_BASE_URL",
+		APIKeyEnv:        "ANTHROPIC_API_KEY",
 		SupportsMCP:      true,
 		SupportsWorktree: true,
 		RunArgsForMod: func(model string) []string {
@@ -57,6 +69,9 @@ var all = map[string]Harness{
 			}
 			return []string{"--worktree", name}
 		},
+		PreLaunch:         claudePreLaunch,
+		WriteNativeConfig: claudeWriteNativeConfig,
+		NativeConfigPath:  "~/.claude/settings.json",
 	},
 	"codex": {
 		ID:         "codex",
@@ -107,12 +122,11 @@ var all = map[string]Harness{
 		BasePath:   "/openai",
 		BaseURLEnv: "OPENAI_BASE_URL",
 		APIKeyEnv:  "OPENAI_API_KEY",
-		ModelEnv:   "OPENAI_MODEL",
 		RunArgsForMod: func(model string) []string {
 			if strings.TrimSpace(model) == "" {
 				return nil
 			}
-			return []string{"--model", model}
+			return []string{"--model", opencodeModelRef(model)}
 		},
 		PreLaunch: opencodePreLaunch,
 	},
@@ -185,33 +199,53 @@ func DetectVersion(h Harness) string {
 	return s
 }
 
-// opencodePreLaunch writes a temporary opencode.json config file with the
-// selected model and provider settings, then returns OPENCODE_CONFIG pointing
-// to it. Opencode merges this with any existing user config.
+// opencodePreLaunch writes temporary OpenCode config files when Bifrost needs
+// to override runtime model/provider settings and/or supply an adaptive TUI
+// theme. The returned cleanup removes any generated temp files after exit.
 func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return nil, func() {}, nil
+	var env []string
+	var cleanupFns []func()
+
+	tuiEnv, tuiCleanup, err := opencodeTUIPreLaunch()
+	if err != nil {
+		return nil, nil, err
+	}
+	env = append(env, tuiEnv...)
+	if tuiCleanup != nil {
+		cleanupFns = append(cleanupFns, tuiCleanup)
 	}
 
-	cfg := fmt.Sprintf(`{
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return env, combineCleanup(cleanupFns), nil
+	}
+
+	modelRef := opencodeModelRef(model)
+	runtimeCfg := fmt.Sprintf(`{
   "$schema": "https://opencode.ai/config.json",
   "model": %q,
   "provider": {
-    "openai": {
+    "bifrost": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Bifrost",
       "options": {
         "baseURL": %q,
         "apiKey": %q
+      },
+      "models": {
+        %q: {
+          "name": %q
+        }
       }
     }
   }
-}`, model, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey))
+}`, modelRef, strings.TrimSpace(baseURL), strings.TrimSpace(apiKey), model, model)
 
 	f, err := os.CreateTemp("", "bifrost-opencode-*.json")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create opencode config: %w", err)
 	}
-	if _, err := f.WriteString(cfg); err != nil {
+	if _, err := f.WriteString(runtimeCfg); err != nil {
 		f.Close()
 		os.Remove(f.Name())
 		return nil, nil, fmt.Errorf("write opencode config: %w", err)
@@ -221,6 +255,211 @@ func opencodePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) 
 		return nil, nil, fmt.Errorf("close opencode config: %w", err)
 	}
 
-	cleanup := func() { os.Remove(f.Name()) }
-	return []string{"OPENCODE_CONFIG=" + f.Name()}, cleanup, nil
+	env = append(env, "OPENCODE_CONFIG="+f.Name())
+	cleanupFns = append(cleanupFns, func() { os.Remove(f.Name()) })
+	return env, combineCleanup(cleanupFns), nil
+}
+
+func opencodeModelRef(model string) string {
+	return "bifrost/" + strings.TrimSpace(model)
+}
+
+func opencodeTUIPreLaunch() ([]string, func(), error) {
+	path, err := opencodeTUIConfigPath()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve opencode tui config: %w", err)
+	}
+
+	cfg, hasTheme, err := loadOpencodeTUIConfig(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if hasTheme {
+		return nil, nil, nil
+	}
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	cfg["theme"] = "system"
+
+	b, err := sonic.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal opencode tui config: %w", err)
+	}
+
+	f, err := os.CreateTemp("", "bifrost-opencode-tui-*.json")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create opencode tui config: %w", err)
+	}
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return nil, nil, fmt.Errorf("write opencode tui config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return nil, nil, fmt.Errorf("close opencode tui config: %w", err)
+	}
+
+	return []string{"OPENCODE_TUI_CONFIG=" + f.Name()}, func() { os.Remove(f.Name()) }, nil
+}
+
+func opencodeTUIConfigPath() (string, error) {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		return filepath.Join(xdg, "opencode", "tui.json"), nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "opencode", "tui.json"), nil
+}
+
+func loadOpencodeTUIConfig(path string) (map[string]any, bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read opencode tui config: %w", err)
+	}
+
+	normalized := normalizeJSONC(b)
+	if len(bytes.TrimSpace(normalized)) == 0 {
+		return map[string]any{}, false, nil
+	}
+
+	var cfg map[string]any
+	if err := sonic.Unmarshal(normalized, &cfg); err != nil {
+		return nil, false, fmt.Errorf("parse opencode tui config: %w", err)
+	}
+	theme, ok := cfg["theme"]
+	return cfg, ok && strings.TrimSpace(fmt.Sprint(theme)) != "", nil
+}
+
+func combineCleanup(cleanups []func()) func() {
+	return func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			if cleanups[i] != nil {
+				cleanups[i]()
+			}
+		}
+	}
+}
+
+func normalizeJSONC(data []byte) []byte {
+	return stripTrailingCommas(stripJSONComments(data))
+}
+
+func stripJSONComments(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	escape := false
+	inLineComment := false
+	inBlockComment := false
+
+	for i := 0; i < len(data); i++ {
+		ch := data[i]
+
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+				out = append(out, ch)
+			}
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && i+1 < len(data) && data[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inString {
+			out = append(out, ch)
+			if escape {
+				escape = false
+				continue
+			}
+			if ch == '\\' {
+				escape = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			out = append(out, ch)
+			continue
+		}
+		if ch == '/' && i+1 < len(data) {
+			switch data[i+1] {
+			case '/':
+				inLineComment = true
+				i++
+				continue
+			case '*':
+				inBlockComment = true
+				i++
+				continue
+			}
+		}
+
+		out = append(out, ch)
+	}
+
+	return out
+}
+
+func stripTrailingCommas(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	escape := false
+
+	for i := 0; i < len(data); i++ {
+		ch := data[i]
+
+		if inString {
+			out = append(out, ch)
+			if escape {
+				escape = false
+				continue
+			}
+			if ch == '\\' {
+				escape = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			out = append(out, ch)
+			continue
+		}
+		if ch == ',' {
+			j := i + 1
+			for j < len(data) {
+				switch data[j] {
+				case ' ', '\t', '\r', '\n':
+					j++
+					continue
+				case '}', ']':
+					ch = 0
+				}
+				break
+			}
+			if ch == 0 {
+				continue
+			}
+		}
+
+		out = append(out, ch)
+	}
+
+	return out
 }

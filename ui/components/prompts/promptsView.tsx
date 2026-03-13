@@ -7,12 +7,12 @@ import { PlaygroundPanel } from "./fragments/playgroundPanel";
 import { SettingsPanel } from "./fragments/settingsPanel";
 import { DeleteFolderDialog, DeletePromptDialog } from "./components/alerts";
 import { PromptSheets } from "./components/sheets";
-import { EmptyState } from "./components/emptyState";
+import { EmptyState, PromptsEmptyState } from "./components/emptyState";
 import PromptsViewHeader from "./components/promptsViewHeader";
 import { usePromptContext } from "./context";
 
 export default function PromptsView() {
-	const { foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } = usePromptContext();
+	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } = usePromptContext();
 
 	if (foldersLoading || promptsLoading) {
 		return <FullPageLoader />;
@@ -29,20 +29,29 @@ export default function PromptsView() {
 		);
 	}
 
+	if (folders.length === 0 && prompts.length === 0) {
+		return (
+			<div className="no-padding-parent no-border-parent h-[calc(100dvh_-_18px)] w-full flex items-center">
+				<PromptSheets />
+				<PromptsEmptyState />
+			</div>
+		);
+	}
+
 	return (
-		<div className="no-padding-parent no-border-parent bg-background h-[calc(100dvh_-_18px)] w-full">
+		<div className="no-padding-parent no-border-parent bg-background h-[calc(100dvh_-_16px)] w-full">
 			<DeleteFolderDialog />
 			<DeletePromptDialog />
 			<PromptSheets />
 
 			<ResizablePanelGroup direction="horizontal" className="h-full">
-				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-r-md rounded-br-none">
+				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-r-md">
 					<PromptSidebar />
 				</ResizablePanel>
 
 				<ResizableHandle className="mr-1 bg-transparent" />
 
-				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md rounded-bl-none">
+				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md">
 					{selectedPromptId ? (
 						<div className="flex h-full flex-col">
 							<PromptsViewHeader />

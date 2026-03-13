@@ -19,6 +19,10 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
+	/** id for the search input (accessibility) */
+	inputId?: string;
+	/** id of element that labels this control (accessibility) */
+	ariaLabelledBy?: string;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -219,6 +223,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
+			inputId={props.inputId}
+			ariaLabelledBy={props.ariaLabelledBy}
 			value={selectedOptions}
 			onChange={handleChange}
 			reload={loadOptions}

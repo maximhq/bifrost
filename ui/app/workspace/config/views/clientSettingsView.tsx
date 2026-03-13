@@ -234,6 +234,7 @@ export default function ClientSettingsView() {
 								href="https://docs.getbifrost.ai/features/litellm-compat"
 								target="_blank"
 								rel="noopener noreferrer"
+								data-testid="litellm-docs-link"
 							>
 								Learn more
 							</a>

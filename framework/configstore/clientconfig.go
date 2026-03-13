@@ -254,6 +254,7 @@ type ProviderConfig struct {
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
+	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	PricingOverrides         []schemas.ProviderPricingOverride `json:"pricing_overrides,omitempty"`           // Provider-level pricing overrides
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
@@ -273,6 +274,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		ConcurrencyAndBufferSize: p.ConcurrencyAndBufferSize,
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
+		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		PricingOverrides:         p.PricingOverrides,
 		ConfigHash:               p.ConfigHash,
@@ -465,6 +467,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 	// Hash SendBackRawResponse
 	if p.SendBackRawResponse {
 		hash.Write([]byte("sendBackRawResponse"))
+	}
+
+	// Hash StoreRawRequestResponse
+	if p.StoreRawRequestResponse {
+		hash.Write([]byte("storeRawRequestResponse"))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -864,6 +871,24 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 
 // GenerateRoutingRuleHash generates a SHA256 hash for a routing rule.
 // This is used to detect changes to routing rules between config.json and database.
+// routingTargetHashPayload is a canonical struct for hashing a routing target.
+// Used to ensure deterministic hashes regardless of slice order.
+// Fields use plain string (not *string) so nil and "" both marshal to "" and produce the same hash.
+type routingTargetHashPayload struct {
+	Provider string  `json:"provider"`
+	Model    string  `json:"model"`
+	KeyID    string  `json:"key_id"`
+	Weight   float64 `json:"weight"`
+}
+
+// derefStr returns the dereferenced value of s, or "" if s is nil.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 // Skips: CreatedAt, UpdatedAt (dynamic fields)
 func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	hash := sha256.New()
@@ -887,11 +912,30 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	// Hash CelExpression
 	hash.Write([]byte(r.CelExpression))
 
-	// Hash Provider
-	hash.Write([]byte(r.Provider))
-
-	// Hash Model
-	hash.Write([]byte(r.Model))
+	// Hash Targets: sort by canonical marshaled payload for determinism, then hash each target as a single blob
+	targets := make([]tables.TableRoutingTarget, len(r.Targets))
+	copy(targets, r.Targets)
+	sort.Slice(targets, func(i, j int) bool {
+		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
+		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
+		di, err := sonic.Marshal(pi)
+		if err != nil {
+			return false
+		}
+		dj, err := sonic.Marshal(pj)
+		if err != nil {
+			return false
+		}
+		return string(di) < string(dj)
+	})
+	for _, t := range targets {
+		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
+		data, err := sonic.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 
 	// Hash Fallbacks: use DB string when set, else marshal ParsedFallbacks (config-origin)
 	if r.Fallbacks != nil {

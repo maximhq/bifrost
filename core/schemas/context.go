@@ -221,7 +221,6 @@ func (bc *BifrostContext) SetValue(key, value any) {
 	// Check if the key is a reserved key
 	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
 		// we silently drop writes for these reserved keys
-
 		return
 	}
 	bc.valuesMu.Lock()
@@ -230,6 +229,20 @@ func (bc *BifrostContext) SetValue(key, value any) {
 		bc.userValues = make(map[any]any)
 	}
 	bc.userValues[key] = value
+}
+
+// ClearValue clears a value from the internal userValues map.
+func (bc *BifrostContext) ClearValue(key any) {
+	// Check if the key is a reserved key
+	if bc.blockRestrictedWrites.Load() && slices.Contains(reservedKeys, key) {
+		// we silently drop writes for these reserved keys
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.userValues != nil {
+		bc.userValues[key] = nil
+	}
 }
 
 // GetAndSetValue gets a value from the internal userValues map and sets it

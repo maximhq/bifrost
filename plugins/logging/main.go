@@ -109,10 +109,22 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		return
 	}
 
+	p.wg.Add(1)
 	go func() {
+		defer p.wg.Done()
 		// Large-response phase B closes this channel after trailing usage extraction completes.
 		deferredUsage, chanOpen := <-deferredChan
 		if !chanOpen || deferredUsage == nil {
+			return
+		}
+
+		// Acquire semaphore — drop if all slots busy to prevent unbounded goroutines
+		// from exhausting DB connections when Postgres is slow
+		select {
+		case p.deferredUsageSem <- struct{}{}:
+			defer func() { <-p.deferredUsageSem }()
+		default:
+			p.logger.Warn("deferred usage update dropped for request %s: semaphore full", requestID)
 			return
 		}
 
@@ -164,20 +176,21 @@ type LogMessage struct {
 
 // InitialLogData contains data for initial log entry creation
 type InitialLogData struct {
-	Status                string
-	Provider              string
-	Model                 string
-	Object                string
-	InputHistory          []schemas.ChatMessage
-	ResponsesInputHistory []schemas.ResponsesMessage
-	Params                interface{}
-	SpeechInput           *schemas.SpeechInput
-	TranscriptionInput    *schemas.TranscriptionInput
-	ImageGenerationInput  *schemas.ImageGenerationInput
-	VideoGenerationInput  *schemas.VideoGenerationInput
-	Tools                 []schemas.ChatTool
-	RoutingEngineUsed     []string
-	Metadata              map[string]interface{}
+	Status                 string
+	Provider               string
+	Model                  string
+	Object                 string
+	InputHistory           []schemas.ChatMessage
+	ResponsesInputHistory  []schemas.ResponsesMessage
+	Params                 interface{}
+	SpeechInput            *schemas.SpeechInput
+	TranscriptionInput     *schemas.TranscriptionInput
+	ImageGenerationInput   *schemas.ImageGenerationInput
+	VideoGenerationInput   *schemas.VideoGenerationInput
+	Tools                  []schemas.ChatTool
+	RoutingEngineUsed      []string
+	Metadata               map[string]interface{}
+	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
 }
 
 // LogCallback is a function that gets called when a new log entry is created
@@ -213,6 +226,7 @@ type LoggerPlugin struct {
 	pendingLogs           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
 	writeQueue            chan *writeQueueEntry // Buffered channel for batch write queue
 	closed                atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem      chan struct{}          // Limits concurrent deferred usage DB updates
 }
 
 // Init creates new logger plugin with given log store
@@ -240,6 +254,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		done:                  make(chan struct{}),
 		logger:                logger,
 		writeQueue:            make(chan *writeQueueEntry, writeQueueCapacity),
+		deferredUsageSem:      make(chan struct{}, maxDeferredUsageConcurrency),
 		logMsgPool: sync.Pool{
 			New: func() interface{} {
 				return &LogMessage{}
@@ -394,7 +409,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	createdTimestamp := time.Now().UTC()
 
 	// If request type is streaming we create a stream accumulator via the tracer
-	if bifrost.IsStreamRequestType(req.RequestType) {
+	// Skip for passthrough streams — they carry raw bytes, not LLM response chunks
+	if bifrost.IsStreamRequestType(req.RequestType) && req.RequestType != schemas.PassthroughStreamRequest {
 		tracer, traceID, err := bifrost.GetTracerFromContext(ctx)
 		if err == nil && tracer != nil && traceID != "" {
 			tracer.CreateStreamAccumulator(traceID, createdTimestamp)
@@ -420,7 +436,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 			initialData.Params = req.ChatRequest.Params
 			initialData.Tools = req.ChatRequest.Params.Tools
-		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 			initialData.Params = req.ResponsesRequest.Params
 
 			var tools []schemas.ChatTool
@@ -472,6 +488,18 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		case schemas.VideoDeleteRequest:
 			initialData.Params = &schemas.VideoLogParams{
 				VideoID: req.VideoDeleteRequest.ID,
+			}
+		case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
+			initialData.Params = &schemas.PassthroughLogParams{
+				Method:   req.PassthroughRequest.Method,
+				Path:     req.PassthroughRequest.Path,
+				RawQuery: req.PassthroughRequest.RawQuery,
+			}
+			if len(req.PassthroughRequest.Body) > 0 {
+				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
+				if strings.Contains(ct, "application/json") {
+					initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
+				}
 			}
 		}
 	}
@@ -575,7 +603,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	var tracer schemas.Tracer
 	var traceID string
-	if bifrost.IsStreamRequestType(requestType) {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest {
 		var err error
 		tracer, traceID, err = bifrost.GetTracerFromContext(ctx)
 		if err != nil {
@@ -589,7 +617,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// and skip the write queue entirely. The accumulator work (ProcessStreamingChunk)
 	// is fast (mutex + append). Only final chunks, errors, and non-streaming
 	// responses need a DB write.
-	if bifrost.IsStreamRequestType(requestType) && !isFinalChunk && result != nil && bifrostErr == nil {
+	if bifrost.IsStreamRequestType(requestType) && requestType != schemas.PassthroughStreamRequest && !isFinalChunk && result != nil && bifrostErr == nil {
 		if tracer != nil && traceID != "" {
 			tracer.ProcessStreamingChunk(traceID, false, result, bifrostErr)
 		}
@@ -679,7 +707,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Path B: Streaming final chunk
 	if bifrost.IsStreamRequestType(requestType) {
 		var streamResponse *streaming.ProcessedStreamResponse
-		if tracer != nil && traceID != "" {
+		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
 			accResult := tracer.ProcessStreamingChunk(traceID, isFinalChunk, result, bifrostErr)
 			if accResult != nil {
 				streamResponse = convertToProcessedStreamResponse(accResult, requestType)
@@ -702,10 +730,19 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse)
 		}
+		// Backfill passthrough status_code from response (streaming path)
+		if result != nil && result.PassthroughResponse != nil {
+			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
+				params.StatusCode = result.PassthroughResponse.StatusCode
+			}
+			// Flip status for passthrough error responses (4xx/5xx from provider)
+			if isPassthroughErrorResponse(result) {
+				entry.Status = "error"
+			}
+		}
 		applyLargePayloadPreviewsToEntry(ctx, entry)
 
-		// Cleanup stream accumulator
-		if tracer != nil && traceID != "" {
+		if requestType != schemas.PassthroughStreamRequest && tracer != nil && traceID != "" {
 			tracer.CleanupStreamAccumulator(traceID)
 		}
 
@@ -727,6 +764,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	} else if result != nil {
 		entry.Status = "success"
 		p.applyNonStreamingOutputToEntry(entry, result)
+		// Flip status for passthrough error responses (4xx/5xx from provider)
+		if isPassthroughErrorResponse(result) {
+			entry.Status = "error"
+		}
 	}
 	applyLargePayloadPreviewsToEntry(ctx, entry)
 
@@ -737,8 +778,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.CacheDebugParsed = cacheDebug
 	if p.pricingManager != nil {
-		cost := p.pricingManager.CalculateCostWithCacheDebug(result)
-		entry.Cost = &cost
+		if cost := p.pricingManager.CalculateCost(result); cost > 0 {
+			entry.Cost = &cost
+		}
 	}
 
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(func(updatedEntry *logstore.Log) {

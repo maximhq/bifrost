@@ -217,7 +217,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 
 	return (
 		<Dialog open onOpenChange={onCancel}>
-			<DialogContent className="max-w-2xl">
+			<DialogContent className="max-w-2xl" data-testid="team-dialog-content">
 				<DialogHeader>
 					<DialogTitle className="flex items-center gap-2">{isEditing ? "Edit Team" : "Create Team"}</DialogTitle>
 					<DialogDescription>
@@ -237,6 +237,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 									value={formData.name}
 									maxLength={50}
 									onChange={(e) => updateField("name", e.target.value)}
+									data-testid="team-name-input"
 								/>
 							</div>
 
@@ -274,6 +275,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
 							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
 							options={resetDurationOptions}
+							dataTestId="budget-max-limit-input"
 						/>
 
 						{/* Rate Limit Configuration - Token Limits */}

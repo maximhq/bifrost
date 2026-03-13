@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -9,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
+func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
 	var jsonBody []byte
 	var err error
 
@@ -21,20 +22,26 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		if err := sonic.Unmarshal(jsonBody, &requestBody); err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, fmt.Errorf("failed to unmarshal request body: %w", err), providerName)
 		}
-		// Add max_tokens if not present
-		if _, exists := requestBody["max_tokens"]; !exists {
-			requestBody["max_tokens"] = anthropic.AnthropicDefaultMaxTokens
+		if isCountTokens {
+			delete(requestBody, "max_tokens")
+			delete(requestBody, "temperature")
+			requestBody["model"] = deployment
+		} else {
+			// Add max_tokens if not present
+			if _, exists := requestBody["max_tokens"]; !exists {
+				requestBody["max_tokens"] = anthropic.AnthropicDefaultMaxTokens
+			}
+			delete(requestBody, "model")
+			// Add stream if not present
+			if isStreaming {
+				requestBody["stream"] = true
+			}
 		}
-		delete(requestBody, "model")
 		delete(requestBody, "region")
 		delete(requestBody, "fallbacks")
 		// Add anthropic_version if not present
 		if _, exists := requestBody["anthropic_version"]; !exists {
 			requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
-		}
-		// Add stream if not present
-		if isStreaming {
-			requestBody["stream"] = true
 		}
 		jsonBody, err = sonic.Marshal(requestBody)
 		if err != nil {
@@ -42,7 +49,6 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		}
 	} else {
 		// Convert request to Anthropic format
-		request.Model = deployment
 		reqBody, err := anthropic.ToAnthropicResponsesRequest(ctx, request)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
@@ -50,6 +56,7 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 		if reqBody == nil {
 			return nil, providerUtils.NewBifrostOperationError("request body is not provided", nil, providerName)
 		}
+		reqBody.Model = deployment
 
 		if isStreaming {
 			reqBody.Stream = schemas.Ptr(true)
@@ -73,8 +80,13 @@ func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *s
 			requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
 		}
 
-		// Remove fields not needed by Vertex API
-		delete(requestBody, "model")
+		if isCountTokens {
+			delete(requestBody, "max_tokens")
+			delete(requestBody, "temperature")
+		} else {
+			// Remove fields not needed by Vertex API
+			delete(requestBody, "model")
+		}
 		delete(requestBody, "region")
 
 		jsonBody, err = sonic.Marshal(requestBody)
@@ -107,4 +119,74 @@ func getCompleteURLForGeminiEndpoint(deployment string, region string, projectID
 		}
 	}
 	return url
+}
+
+// buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
+// This is used when the user has explicitly configured which models they want to use.
+func buildResponseFromConfig(deployments map[string]string, allowedModels []string) *schemas.BifrostListModelsResponse {
+	response := &schemas.BifrostListModelsResponse{
+		Data: make([]schemas.Model, 0),
+	}
+
+	addedModelIDs := make(map[string]bool)
+
+	// Build allowlist set for O(1) lookup
+	allowedSet := make(map[string]bool, len(allowedModels))
+	for _, m := range allowedModels {
+		allowedSet[m] = true
+	}
+
+	// First add models from deployments (filtered by allowedModels when set)
+	for alias, deploymentValue := range deployments {
+		if len(allowedSet) > 0 && !allowedSet[alias] {
+			continue
+		}
+		modelID := string(schemas.Vertex) + "/" + alias
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(alias)
+		modelEntry := schemas.Model{
+			ID:         modelID,
+			Name:       schemas.Ptr(modelName),
+			Deployment: schemas.Ptr(deploymentValue),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	// Then add models from allowedModels that aren't already in deployments
+	for _, allowedModel := range allowedModels {
+		modelID := string(schemas.Vertex) + "/" + allowedModel
+		if addedModelIDs[modelID] {
+			continue
+		}
+
+		modelName := formatDeploymentName(allowedModel)
+		modelEntry := schemas.Model{
+			ID:   modelID,
+			Name: schemas.Ptr(modelName),
+		}
+
+		response.Data = append(response.Data, modelEntry)
+		addedModelIDs[modelID] = true
+	}
+
+	return response
+}
+
+// extractModelIDFromName extracts the model ID from a full resource name.
+// Format: "publishers/google/models/gemini-1.5-pro" -> "gemini-1.5-pro"
+func extractModelIDFromName(name string) string {
+	parts := strings.Split(name, "/")
+	if len(parts) >= 4 && parts[2] == "models" {
+		return parts[3]
+	}
+	// Fallback: return last segment
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return ""
 }

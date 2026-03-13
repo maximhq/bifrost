@@ -25,7 +25,6 @@ export default function TextFieldView(props: Props) {
 				value={(config[field.id] as string) ?? ""}
 				disabled={props.disabled && props.disabled === true}
 				onChange={(e) => props.onChange(e.target.value || undefined)}
-				placeholder={field.default}
 			/>
 		</div>
 	);

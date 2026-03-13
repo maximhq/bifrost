@@ -89,11 +89,11 @@ func GetProviderVoice(provider schemas.ModelProvider, voiceType string) string {
 type SampleToolType string
 
 const (
-	SampleToolTypeWeather              SampleToolType = "weather"
-	SampleToolTypeCalculate            SampleToolType = "calculate"
-	SampleToolTypeTime                 SampleToolType = "time"
-	SampleToolTypePingWithEmpty        SampleToolType = "ping_empty"
-	SampleToolTypePingWithNil          SampleToolType = "ping_nil"
+	SampleToolTypeWeather       SampleToolType = "weather"
+	SampleToolTypeCalculate     SampleToolType = "calculate"
+	SampleToolTypeTime          SampleToolType = "time"
+	SampleToolTypePingWithEmpty SampleToolType = "ping_empty"
+	SampleToolTypePingWithNil   SampleToolType = "ping_nil"
 )
 
 var SampleToolFunctions = map[SampleToolType]*schemas.ChatToolFunction{
@@ -396,6 +396,7 @@ type ToolCallInfo struct {
 	Name      string
 	Arguments string
 	ID        string
+	Index     int // OpenAI tool_calls index (0, 1, 2, ...); -1 when not available
 }
 
 // GetChatContent returns the string content from a BifrostChatResponse
@@ -503,8 +504,9 @@ func ExtractChatToolCalls(response *schemas.BifrostChatResponse) []ToolCallInfo 
 	for _, choice := range response.Choices {
 		if choice.Message.ChatAssistantMessage != nil && choice.Message.ChatAssistantMessage.ToolCalls != nil {
 			for _, toolCall := range choice.Message.ChatAssistantMessage.ToolCalls {
-				info := ToolCallInfo{
-					ID: *toolCall.ID,
+				info := ToolCallInfo{}
+				if toolCall.ID != nil {
+					info.ID = *toolCall.ID
 				}
 				if toolCall.Function.Name != nil {
 					info.Name = *toolCall.Function.Name

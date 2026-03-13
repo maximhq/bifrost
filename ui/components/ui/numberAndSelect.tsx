@@ -12,6 +12,7 @@ const NumberAndSelect = ({
 	onChangeSelect,
 	options,
 	labelClassName,
+	dataTestId,
 }: {
 	id: string;
 	label: string;
@@ -21,6 +22,7 @@ const NumberAndSelect = ({
 	onChangeSelect: (value: string) => void;
 	options: { label: string; value: string }[];
 	labelClassName?: string;
+	dataTestId?: string;
 }) => {
 	return (
 		<div className="flex w-full items-center justify-between gap-4">
@@ -30,6 +32,7 @@ const NumberAndSelect = ({
 				</Label>
 				<Input
 					id={id}
+					data-testid={dataTestId}
 					placeholder="100"
 					value={value}
 					onChange={(e) => {

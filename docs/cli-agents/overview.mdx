@@ -1,0 +1,121 @@
+---
+title: "Overview"
+description: "Use Bifrost with tools like LibreChat, Claude Code, Codex CLI, Gemini CLI and Qwen Code by just changing the base URL and unlock advanced features."
+icon: "Book"
+---
+
+## Overview
+
+Bifrost provides **100% compatible endpoints** for OpenAI, Anthropic, and Gemini APIs, making it seamless to integrate with any agent that uses these providers. By simply pointing your agent's base URL to Bifrost, you unlock powerful features like:
+
+- **Universal Model Access**: Use **any provider/model** configured in Bifrost with any agent (e.g., use GPT-5 with Claude Code, or Claude Sonnet 4.5 with Codex CLI)
+- **MCP Tools Integration**: All Model Context Protocol tools configured in Bifrost become available to your agents
+- **Built-in Observability**: Monitor all agent interactions in real-time through Bifrost's logging dashboard
+- **Load Balancing**: Automatically distribute requests across multiple providers and regions
+- **Advanced Features**: Governance, caching, failover, and more - all transparent to your agent
+
+## CLI Agents
+
+<CardGroup cols={3}>
+  <Card title="LibreChat" icon="comments" href="/cli-agents/librechat">
+    Open-source chat client supporting multiple providers
+  </Card>
+  <Card title="Open WebUI" icon="globe" href="/cli-agents/open-webui">
+    ChatGPT-like open-source chat interface
+  </Card>
+  <Card title="Claude Code" icon="terminal" href="/cli-agents/claude-code">
+    AI-powered coding directly in your terminal
+  </Card>
+  <Card title="Codex CLI" icon="code" href="/cli-agents/codex-cli">
+    OpenAI's powerful code generation CLI
+  </Card>
+  <Card title="Gemini CLI" icon="diamond" href="/cli-agents/gemini-cli">
+    Google's coding assistant with advanced reasoning
+  </Card>
+  <Card title="Qwen Code" icon="q" href="/cli-agents/qwen-code">
+    Alibaba's coding assistant
+  </Card>
+  <Card title="Opencode" icon="square-code" href="/cli-agents/opencode">
+    Terminal-based coding assistant by SST
+  </Card>
+</CardGroup>
+
+## Editors
+
+<CardGroup cols={3}>
+  <Card title="Cursor" icon="mouse-pointer" href="/cli-agents/cursor">
+    AI-powered IDE with MCP integration and virtual key support
+  </Card>
+  <Card title="Zed Editor" icon="window" href="/cli-agents/zed-editor">
+    High-performance editor with AI integration
+  </Card>
+  <Card title="Roo Code" icon="code" href="/cli-agents/roo-code">
+    AI-powered VS Code extension with multi-provider support
+  </Card>
+</CardGroup>
+
+## Configuration
+
+Agent integrations work with your existing Bifrost configuration. Ensure you have:
+
+- **Providers configured**: See [Provider Configuration](/quickstart/gateway/provider-configuration) for setup details
+- **Optional: MCP tools**: See [MCP Integration](/mcp/overview) to enhance agent capabilities
+
+## Monitoring Agent Traffic
+
+All agent interactions are automatically logged and can be monitored at `http://localhost:8080/logs`. You can filter by provider, model, or search through conversation content to track your agents' performance.
+
+![Agent Monitoring](../media/ui-live-log-stream.gif)
+For complete monitoring capabilities, see [Built-in Observability](/features/observability/default).
+
+## MCP Tools Integration
+
+<Note>
+This feature is only available on `v1.4.0-prerelease1` and above.
+</Note>
+
+Bifrost exposes all configured MCP tools through a dedicated MCP server endpoint at `/mcp`. This allows external MCP clients (Claude Code, Cursor, and other MCP-compatible applications) to connect directly and access your tools.
+
+### Connect Claude Code to Bifrost MCP
+
+Add Bifrost as an MCP server to Claude Code:
+
+```bash
+claude mcp add --transport http bifrost http://localhost:8080/mcp
+```
+
+**Using Virtual Key Authentication:**
+
+If you have virtual key authentication enabled in Bifrost, connect using the JSON configuration format:
+
+```bash
+claude mcp add-json bifrost '{"type":"http","url":"http://localhost:8080/mcp","headers":{"Authorization":"Bearer bf-virtual-key"}}'
+```
+
+Replace `bf-virtual-key` with your actual Bifrost virtual key.
+
+Claude Code will only have access to the specific MCP tools permitted by the virtual key's configuration. To grant access to additional tools, verify or modify the virtual key's MCP tool permissions in the Bifrost dashboard.
+
+### Supported Agents
+
+You can connect any MCP-compatible client to Bifrost's MCP server:
+
+- **Claude Code** - Add via `claude mcp add` command
+- **Cursor IDE** - Configure in cursor settings
+- **Custom Applications** - Any app implementing the MCP protocol
+
+### Tool Access Control
+
+Control which tools each client can access using Virtual Keys:
+
+- Create a Virtual Key for each client/environment
+- Configure which MCP servers and tools the key can access
+- Bifrost automatically enforces these permissions
+
+For complete setup instructions and tool filtering options, see [MCP Gateway URL](/mcp/gateway-url).
+
+## Next Steps
+
+- **[Provider Configuration](/quickstart/gateway/provider-configuration)** - Configure AI providers for your agents
+- **[Governance](/features/governance/virtual-keys)** - Set usage limits and policies for your agents
+- **[Integrations](/integrations/what-is-an-integration)** - Understand how Bifrost works with existing AI provider SDKs

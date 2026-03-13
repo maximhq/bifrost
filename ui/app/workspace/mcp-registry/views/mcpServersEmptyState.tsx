@@ -26,6 +26,7 @@ export function MCPServersEmptyState({ onAddClick, canCreate = true }: MCPServer
 					<Button
 						variant="outline"
 						aria-label="Read more about MCP servers (opens in new tab)"
+						data-testid="mcp-registry-button-read-more"
 						onClick={() => {
 							window.open(`${MCP_SERVERS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}

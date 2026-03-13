@@ -543,8 +543,9 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 	if mc.ContentBlocks != nil {
 		return sonic.Marshal(mc.ContentBlocks)
 	}
-	// If both are nil, return null
-	return sonic.Marshal(nil)
+	// If both are nil, return empty array instead of null.
+	// Anthropic's API requires content to be an array, not null.
+	return []byte("[]"), nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for AnthropicContent.

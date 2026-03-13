@@ -11,23 +11,18 @@ import (
 
 // confirmModel holds information about current model selection
 type confirmModel struct {
-	header  string
-	prompt  string
-	command string
-	idx     int
-	quit    bool
-	yes     bool
+	header     string
+	prompt     string
+	command    string
+	idx        int
+	quit       bool
+	yes        bool
+	clearFirst bool
 }
 
-// RunConfirmInstall displays a yes/no confirmation dialog asking the user
-// whether to install a missing harness. Returns true if the user confirms.
-func RunConfirmInstall(header, harnessLabel, command string) (bool, error) {
-	m := confirmModel{
-		header:  header,
-		prompt:  fmt.Sprintf("%s is not installed. Install now?", harnessLabel),
-		command: command,
-		idx:     0,
-	}
+// runConfirm runs a confirm dialog with the given model and returns the user's
+// choice.
+func runConfirm(m confirmModel) (bool, error) {
 	p := tea.NewProgram(
 		m,
 		tea.WithInput(os.Stdin),
@@ -40,7 +35,7 @@ func RunConfirmInstall(header, harnessLabel, command string) (bool, error) {
 	}
 	fm, ok := out.(confirmModel)
 	if !ok {
-		return false, fmt.Errorf("unexpected model type from TUI")
+		return false, fmt.Errorf("unexpected model type from tui")
 	}
 	if fm.quit {
 		return false, nil
@@ -48,8 +43,33 @@ func RunConfirmInstall(header, harnessLabel, command string) (bool, error) {
 	return fm.yes, nil
 }
 
+// RunConfirmInstall displays a yes/no confirmation dialog asking the user
+// whether to install a missing harness. Returns true if the user confirms.
+func RunConfirmInstall(header, harnessLabel, command string) (bool, error) {
+	return runConfirm(confirmModel{
+		header:  header,
+		prompt:  fmt.Sprintf("%s is not installed. Install now?", harnessLabel),
+		command: command,
+	})
+}
+
+// RunConfirmSettings displays a yes/no confirmation dialog asking the user
+// whether to update the harness's native settings file. Returns true if the
+// user confirms.
+func RunConfirmSettings(harnessLabel, settingsPath string) (bool, error) {
+	return runConfirm(confirmModel{
+		prompt:     fmt.Sprintf("Update %s settings? (%s)", harnessLabel, settingsPath),
+		clearFirst: true,
+	})
+}
+
 // Init implements tea.Model.
-func (m confirmModel) Init() tea.Cmd { return nil }
+func (m confirmModel) Init() tea.Cmd {
+	if m.clearFirst {
+		return tea.ClearScreen
+	}
+	return nil
+}
 
 // Update implements tea.Model. Handles y/n, arrow keys, and enter for confirmation.
 func (m confirmModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -95,13 +115,18 @@ func (m confirmModel) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(m.header)
-	b.WriteString("\n")
+	if m.header != "" {
+		b.WriteString(m.header)
+		b.WriteString("\n")
+	}
 	b.WriteString(m.prompt)
 	b.WriteString("\n")
-	b.WriteString("command: ")
-	b.WriteString(m.command)
-	b.WriteString("\n\n")
+	if m.command != "" {
+		b.WriteString("command: ")
+		b.WriteString(m.command)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString(yes + "  " + no)
 	b.WriteString("\n")
 	b.WriteString("enter: confirm, y/n quick choice, q: cancel")

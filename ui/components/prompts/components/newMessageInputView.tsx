@@ -10,7 +10,7 @@ import { fileToAttachment } from "../utils/attachment";
 import { AttachmentBadge } from "./messagesView/attachmentViews";
 
 export function NewMessageInputView() {
-	const { messages, setMessages: onUpdateMessages, handleSendMessage: onSendMessage, isStreaming, supportsVision } = usePromptContext();
+	const { messages, setMessages: onUpdateMessages, handleSendMessage: onSendMessage, isStreaming, supportsVision, provider, model } = usePromptContext();
 	const [userInput, setUserInput] = useState("");
 	const [inputRole, setInputRole] = useState<string>("user");
 	const [attachments, setAttachments] = useState<MessageContent[]>([]);
@@ -35,8 +35,10 @@ export function NewMessageInputView() {
 		onUpdateMessages([...messages, msg]);
 	}, [userInput, attachments, isStreaming, inputRole, onUpdateMessages, messages]);
 
+	const canRun = !!(provider && model);
+
 	const handleRun = useCallback(async () => {
-		if (isStreaming) return;
+		if (isStreaming || !provider || !model) return;
 		const input = userInput.trim();
 		const currentAttachments = attachments.length > 0 ? [...attachments] : undefined;
 		if (input || currentAttachments) {
@@ -57,7 +59,7 @@ export function NewMessageInputView() {
 		setTimeout(() => {
 			userInputRef.current?.focus();
 		}, 100);
-	}, [userInput, attachments, isStreaming, inputRole, onSendMessage]);
+	}, [userInput, attachments, isStreaming, inputRole, onSendMessage, provider, model]);
 
 	const handleKeyDown = useCallback(
 		(e: React.KeyboardEvent) => {
@@ -166,7 +168,7 @@ export function NewMessageInputView() {
 				: {})}
 		>
 			{supportsVision && isDragging && (
-				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-lg border-2 border-dashed backdrop-blur-sm">
+				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
 						<span className="text-xs font-medium">Drop files to attach</span>
@@ -185,7 +187,7 @@ export function NewMessageInputView() {
 							className="hidden"
 							onChange={handleFileSelect}
 						/>
-						<button type="button" aria-label="Attach file" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 hover:bg-muted focus:bg-muted">
+						<button type="button" aria-label="Attach file" data-testid="new-message-attach-file" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 hover:bg-muted focus:bg-muted">
 							<Paperclip className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
 						</button>
 					</div>
@@ -206,6 +208,7 @@ export function NewMessageInputView() {
 					onChange={(e) => setUserInput(e.target.value)}
 					onKeyDown={handleKeyDown}
 					onPaste={handlePaste}
+					data-testid="new-message-textarea"
 					className="text-muted-foreground min-h-[60px] resize-none rounded-none border-0 bg-transparent p-0 pr-16 text-sm shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
 					disabled={isStreaming}
 				/>
@@ -214,6 +217,7 @@ export function NewMessageInputView() {
 						onClick={handleAddMessage}
 						disabled={isStreaming}
 						variant={"ghost"}
+						data-testid="new-message-add"
 						className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 					>
 						<Plus className="h-3.5 w-3.5" />
@@ -223,8 +227,9 @@ export function NewMessageInputView() {
 						<TooltipTrigger asChild>
 							<Button
 								onClick={handleRun}
-								disabled={isStreaming}
+								disabled={isStreaming || !canRun}
 								variant={"ghost"}
+								data-testid="new-message-run"
 								className="text-muted-foreground hover:text-foreground flex items-center gap-1 rounded px-1.5 py-1 text-xs disabled:pointer-events-none disabled:opacity-50"
 							>
 								{isStreaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
@@ -232,7 +237,11 @@ export function NewMessageInputView() {
 							</Button>
 						</TooltipTrigger>
 						<TooltipContent side="top">
-							<span>Run prompt</span>
+							{!canRun ? (
+								<span>Select a provider and model to run</span>
+							) : (
+								<span>Run prompt</span>
+							)}
 							<kbd className="bg-primary-foreground/20 ml-1.5 rounded px-1 py-0.5 font-mono text-[10px]">↵</kbd>
 						</TooltipContent>
 					</Tooltip>
