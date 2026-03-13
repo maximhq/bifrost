@@ -61,6 +61,7 @@ type ReplicatePredictionRequestInput struct {
 
 	// Image generation parameters
 	AspectRatio  *string  `json:"aspect_ratio,omitempty"`
+	Resolution   *string  `json:"resolution,omitempty"` // Resolution tier: "1k", "2k", "4k"
 	OutputFormat *string  `json:"output_format,omitempty"`
 	InputImages  []string `json:"input_images,omitempty"` // Image input for image-to-image models
 	ImagePrompt  *string  `json:"image_prompt,omitempty"` // Image prompt for image models (flux family)
@@ -153,6 +154,7 @@ func (r *ReplicatePredictionRequestInput) UnmarshalJSON(data []byte) error {
 		"presence_penalty":      true,
 		"frequency_penalty":     true,
 		"aspect_ratio":          true,
+		"resolution":            true,
 		"output_format":         true,
 		"input_images":          true,
 		"image_prompt":          true,

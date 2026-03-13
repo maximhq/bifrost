@@ -537,13 +537,13 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 		const pixels2048x2048 = 2048 * 2048
 		const pixels4096x4096 = 4096 * 4096
 		switch {
-		case pixels > pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
+		case pixels >= pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
 			perImageRate = pricing.OutputCostPerImageAbove4096x4096Pixels
-		case pixels > pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
+		case pixels >= pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
 			perImageRate = pricing.OutputCostPerImageAbove2048x2048Pixels
-		case pixels > pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
+		case pixels >= pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
 			perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
-		case pixels > pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
+		case pixels >= pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
 			perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
 		default:
 			perImageRate = pricing.OutputCostPerImage
