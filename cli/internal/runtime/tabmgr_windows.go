@@ -12,6 +12,10 @@ import (
 // without creating any tabs.
 var ErrQuit = errors.New("user quit")
 
+// ErrBackToTabs is returned by the newTabFn when the user presses Ctrl+B
+// to dismiss the chooser and return to tab command mode.
+var ErrBackToTabs = errors.New("back to tabs")
+
 // NewTabFunc is called when the user requests a new tab.
 // stdinReader provides keyboard input; when nil the callback should read os.Stdin.
 type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader) (*LaunchSpec, error)
