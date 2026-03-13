@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -233,7 +234,7 @@ type ConfigStore interface {
 }
 
 type PricingOverrideFilter struct {
-	ScopeKind     *schemas.PricingOverrideScopeKind
+	ScopeKind     *pricingoverrides.ScopeKind
 	VirtualKeyID  *string
 	ProviderID    *string
 	ProviderKeyID *string

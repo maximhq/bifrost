@@ -3787,17 +3787,22 @@ func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) e
 			tx = tx.WithContext(ctx)
 			mgr := tx.Migrator()
 
-			if mgr.HasTable(&tables.TablePricingOverride{}) {
-				if err := mgr.DropTable(&tables.TablePricingOverride{}); err != nil {
-					return fmt.Errorf("failed to drop governance_pricing_overrides table for reconcile: %w", err)
+			if !mgr.HasTable(&tables.TablePricingOverride{}) {
+				if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
+					return fmt.Errorf("failed to create governance_pricing_overrides table: %w", err)
 				}
+				return nil
 			}
-			if err := dropPricingOverrideIndexesIfExists(tx); err != nil {
-				return err
+			if err := tx.AutoMigrate(&tables.TablePricingOverride{}); err != nil {
+				return fmt.Errorf("failed to automigrate governance_pricing_overrides table: %w", err)
 			}
-
-			if err := mgr.CreateTable(&tables.TablePricingOverride{}); err != nil {
-				return fmt.Errorf("failed to recreate governance_pricing_overrides table: %w", err)
+			for _, indexName := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
+				if mgr.HasIndex(&tables.TablePricingOverride{}, indexName) {
+					continue
+				}
+				if err := mgr.CreateIndex(&tables.TablePricingOverride{}, indexName); err != nil {
+					return fmt.Errorf("failed to create pricing override index %s: %w", indexName, err)
+				}
 			}
 			return nil
 		},
@@ -3814,15 +3819,6 @@ func migrationReconcilePricingOverridesTable(ctx context.Context, db *gorm.DB) e
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing overrides table reconcile migration: %s", err.Error())
-	}
-	return nil
-}
-
-func dropPricingOverrideIndexesIfExists(tx *gorm.DB) error {
-	for _, idx := range []string{"idx_pricing_override_scope", "idx_pricing_override_match"} {
-		if err := tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", idx)).Error; err != nil {
-			return fmt.Errorf("failed to drop pricing override index %s: %w", idx, err)
-		}
 	}
 	return nil
 }

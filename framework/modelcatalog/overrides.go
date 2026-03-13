@@ -9,8 +9,11 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/pricingoverrides"
 )
 
+// PricingLookupScopes carries the runtime identifiers used to resolve scoped
+// pricing overrides during cost calculation.
 type PricingLookupScopes struct {
 	VirtualKeyID  string
 	SelectedKeyID string
@@ -29,8 +32,8 @@ func normalizeScopeIDPointer(id *string) *string {
 }
 
 type compiledPricingOverride struct {
-	override         schemas.PricingOverride
-	pricingPatch     schemas.PricingOverridePatch
+	override         pricingoverrides.Override
+	pricingPatch     pricingoverrides.Patch
 	wildcardPrefix   string
 	requestModes     map[string]struct{}
 	hasRequestFilter bool
@@ -45,14 +48,16 @@ type pricingOverrideScopeBucket struct {
 
 type compiledScopedOverrides struct {
 	buckets map[string]*pricingOverrideScopeBucket
-	byID    map[string]schemas.PricingOverride
+	byID    map[string]pricingoverrides.Override
 }
 
-func normalizedScopeKey(scopeKind schemas.PricingOverrideScopeKind, virtualKeyID, providerID, providerKeyID string) string {
+func normalizedScopeKey(scopeKind pricingoverrides.ScopeKind, virtualKeyID, providerID, providerKeyID string) string {
 	return string(scopeKind) + "|" + virtualKeyID + "|" + providerID + "|" + providerKeyID
 }
 
-func (mc *ModelCatalog) SetPricingOverrides(overrides []schemas.PricingOverride) error {
+// SetPricingOverrides replaces the in-memory compiled pricing override set with
+// overrides.
+func (mc *ModelCatalog) SetPricingOverrides(overrides []pricingoverrides.Override) error {
 	compiled, err := compileScopedOverrides(overrides)
 	if err != nil {
 		return err
@@ -64,12 +69,14 @@ func (mc *ModelCatalog) SetPricingOverrides(overrides []schemas.PricingOverride)
 	return nil
 }
 
-func (mc *ModelCatalog) UpsertPricingOverride(override schemas.PricingOverride) error {
+// UpsertPricingOverride inserts or replaces a single pricing override in the
+// compiled in-memory override set.
+func (mc *ModelCatalog) UpsertPricingOverride(override pricingoverrides.Override) error {
 	mc.overridesMu.Lock()
 	defer mc.overridesMu.Unlock()
 	current := mc.scopedOverrides
 
-	overrides := make([]schemas.PricingOverride, 0)
+	overrides := make([]pricingoverrides.Override, 0)
 	if current != nil {
 		for _, ov := range current.byID {
 			if ov.ID == override.ID {
@@ -79,7 +86,7 @@ func (mc *ModelCatalog) UpsertPricingOverride(override schemas.PricingOverride) 
 		}
 	}
 	overrides = append(overrides, override)
-	slices.SortFunc(overrides, func(a, b schemas.PricingOverride) int {
+	slices.SortFunc(overrides, func(a, b pricingoverrides.Override) int {
 		if a.ID < b.ID {
 			return -1
 		}
@@ -96,6 +103,8 @@ func (mc *ModelCatalog) UpsertPricingOverride(override schemas.PricingOverride) 
 	return nil
 }
 
+// DeletePricingOverride removes a pricing override from the compiled in-memory
+// override set.
 func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.overridesMu.Lock()
 	defer mc.overridesMu.Unlock()
@@ -103,14 +112,14 @@ func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	if current == nil {
 		return
 	}
-	overrides := make([]schemas.PricingOverride, 0, len(current.byID))
+	overrides := make([]pricingoverrides.Override, 0, len(current.byID))
 	for _, ov := range current.byID {
 		if ov.ID == id {
 			continue
 		}
 		overrides = append(overrides, ov)
 	}
-	slices.SortFunc(overrides, func(a, b schemas.PricingOverride) int {
+	slices.SortFunc(overrides, func(a, b pricingoverrides.Override) int {
 		if a.ID < b.ID {
 			return -1
 		}
@@ -127,10 +136,10 @@ func (mc *ModelCatalog) DeletePricingOverride(id string) {
 	mc.scopedOverrides = compiled
 }
 
-func compileScopedOverrides(overrides []schemas.PricingOverride) (*compiledScopedOverrides, error) {
+func compileScopedOverrides(overrides []pricingoverrides.Override) (*compiledScopedOverrides, error) {
 	compiled := &compiledScopedOverrides{
 		buckets: make(map[string]*pricingOverrideScopeBucket),
-		byID:    make(map[string]schemas.PricingOverride, len(overrides)),
+		byID:    make(map[string]pricingoverrides.Override, len(overrides)),
 	}
 
 	for i := range overrides {
@@ -160,9 +169,9 @@ func compileScopedOverrides(overrides []schemas.PricingOverride) (*compiledScope
 			compiled.buckets[key] = bucket
 		}
 		switch item.override.MatchType {
-		case schemas.PricingOverrideMatchExact:
+		case pricingoverrides.MatchTypeExact:
 			bucket.exact[item.override.Pattern] = append(bucket.exact[item.override.Pattern], item)
-		case schemas.PricingOverrideMatchWildcard:
+		case pricingoverrides.MatchTypeWildcard:
 			if _, exists := bucket.wildcard[item.wildcardPrefix]; !exists {
 				bucket.wildcardPrefixLengths = append(bucket.wildcardPrefixLengths, len(item.wildcardPrefix))
 			}
@@ -208,21 +217,21 @@ func (mc *ModelCatalog) applyScopedPricingOverrides(model string, requestType sc
 func resolveScopedOverride(compiled *compiledScopedOverrides, model, mode string, scopes PricingLookupScopes) *compiledPricingOverride {
 	scopeOrder := make([]string, 0, 6)
 	if scopes.VirtualKeyID != "" && scopes.Provider != "" && scopes.SelectedKeyID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProviderKey, scopes.VirtualKeyID, scopes.Provider, scopes.SelectedKeyID))
+		scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindVirtualKeyProviderKey, scopes.VirtualKeyID, scopes.Provider, scopes.SelectedKeyID))
 	}
 	if scopes.VirtualKeyID != "" && scopes.Provider != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKeyProvider, scopes.VirtualKeyID, scopes.Provider, ""))
+		scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindVirtualKeyProvider, scopes.VirtualKeyID, scopes.Provider, ""))
 	}
 	if scopes.VirtualKeyID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindVirtualKey, scopes.VirtualKeyID, "", ""))
+		scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindVirtualKey, scopes.VirtualKeyID, "", ""))
 	}
 	if scopes.SelectedKeyID != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProviderKey, "", "", scopes.SelectedKeyID))
+		scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindProviderKey, "", "", scopes.SelectedKeyID))
 	}
 	if scopes.Provider != "" {
-		scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindProvider, "", scopes.Provider, ""))
+		scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindProvider, "", scopes.Provider, ""))
 	}
-	scopeOrder = append(scopeOrder, normalizedScopeKey(schemas.PricingOverrideScopeKindGlobal, "", "", ""))
+	scopeOrder = append(scopeOrder, normalizedScopeKey(pricingoverrides.ScopeKindGlobal, "", "", ""))
 
 	for _, key := range scopeOrder {
 		bucket := compiled.buckets[key]
@@ -290,16 +299,16 @@ func isBetterOverrideCandidate(candidate, current *compiledPricingOverride) bool
 	return candidate.order < current.order
 }
 
-func compilePricingOverride(order int, override schemas.PricingOverride) (compiledPricingOverride, error) {
+func compilePricingOverride(order int, override pricingoverrides.Override) (compiledPricingOverride, error) {
 	override.VirtualKeyID = normalizeScopeIDPointer(override.VirtualKeyID)
 	override.ProviderID = normalizeScopeIDPointer(override.ProviderID)
 	override.ProviderKeyID = normalizeScopeIDPointer(override.ProviderKeyID)
 
-	if err := schemas.ValidatePricingOverrideScopeKind(override.ScopeKind, override.VirtualKeyID, override.ProviderID, override.ProviderKeyID); err != nil {
+	if err := pricingoverrides.ValidateScopeKind(override.ScopeKind, override.VirtualKeyID, override.ProviderID, override.ProviderKeyID); err != nil {
 		return compiledPricingOverride{}, err
 	}
 
-	pattern, err := schemas.ValidatePricingOverridePattern(override.MatchType, override.Pattern)
+	pattern, err := pricingoverrides.ValidatePattern(override.MatchType, override.Pattern)
 	if err != nil {
 		return compiledPricingOverride{}, err
 	}
@@ -313,15 +322,15 @@ func compilePricingOverride(order int, override schemas.PricingOverride) (compil
 	}
 
 	switch override.MatchType {
-	case schemas.PricingOverrideMatchExact:
-	case schemas.PricingOverrideMatchWildcard:
+	case pricingoverrides.MatchTypeExact:
+	case pricingoverrides.MatchTypeWildcard:
 		compiled.wildcardPrefix = strings.TrimSuffix(override.Pattern, "*")
 	default:
 		return compiledPricingOverride{}, fmt.Errorf("unsupported match_type: %s", override.MatchType)
 	}
 
 	if len(override.RequestTypes) > 0 {
-		if err := schemas.ValidatePricingOverrideRequestTypes(override.RequestTypes); err != nil {
+		if err := pricingoverrides.ValidateRequestTypes(override.RequestTypes); err != nil {
 			return compiledPricingOverride{}, err
 		}
 		compiled.hasRequestFilter = true
@@ -333,7 +342,7 @@ func compilePricingOverride(order int, override schemas.PricingOverride) (compil
 	return compiled, nil
 }
 
-func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.PricingOverridePatch) configstoreTables.TableModelPricing {
+func patchPricing(pricing configstoreTables.TableModelPricing, override pricingoverrides.Patch) configstoreTables.TableModelPricing {
 	patched := pricing
 
 	for _, field := range []struct {
@@ -420,23 +429,9 @@ func (mc *ModelCatalog) loadPricingOverridesFromStore(ctx context.Context) error
 	if err != nil {
 		return err
 	}
-	overrides := make([]schemas.PricingOverride, 0, len(rows))
+	overrides := make([]pricingoverrides.Override, 0, len(rows))
 	for i := range rows {
-		overrides = append(overrides, schemas.PricingOverride{
-			ID:            rows[i].ID,
-			Name:          rows[i].Name,
-			ScopeKind:     rows[i].ScopeKind,
-			VirtualKeyID:  rows[i].VirtualKeyID,
-			ProviderID:    rows[i].ProviderID,
-			ProviderKeyID: rows[i].ProviderKeyID,
-			MatchType:     rows[i].MatchType,
-			Pattern:       rows[i].Pattern,
-			RequestTypes:  rows[i].RequestTypes,
-			Patch:         rows[i].Patch,
-			ConfigHash:    rows[i].ConfigHash,
-			CreatedAt:     rows[i].CreatedAt,
-			UpdatedAt:     rows[i].UpdatedAt,
-		})
+		overrides = append(overrides, rows[i].ToPricingOverride())
 	}
 	return mc.SetPricingOverrides(overrides)
 }

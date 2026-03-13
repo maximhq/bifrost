@@ -1014,6 +1014,8 @@ type AuthConfig struct {
 // ConfigMap maps provider names to their configurations.
 type ConfigMap map[schemas.ModelProvider]ProviderConfig
 
+// GovernanceConfig contains governance entities loaded from the config store or
+// reconciled from config.json.
 type GovernanceConfig struct {
 	VirtualKeys  []tables.TableVirtualKey  `json:"virtual_keys"`
 	Teams        []tables.TableTeam        `json:"teams"`
