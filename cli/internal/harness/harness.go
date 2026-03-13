@@ -54,7 +54,6 @@ var all = map[string]Harness{
 		BasePath:         "/anthropic",
 		BaseURLEnv:       "ANTHROPIC_BASE_URL",
 		APIKeyEnv:        "ANTHROPIC_API_KEY",
-		ModelEnv:         "ANTHROPIC_MODEL",
 		SupportsMCP:      true,
 		SupportsWorktree: true,
 		RunArgsForMod: func(model string) []string {

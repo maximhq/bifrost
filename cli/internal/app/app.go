@@ -112,20 +112,33 @@ func (a *App) Run(ctx context.Context) error {
 	// chooseAndPrepare runs the chooser TUI, handles installation flows,
 	// persists state, and returns a launch spec. Loops internally until
 	// the user picks a valid harness or quits.
-	chooseAndPrepare := func(_ context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader, msg string, isAfterSession bool) (*runtime.LaunchSpec, error) {
+	chooseAndPrepare := func(_ context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader, msg string, isAfterSession bool, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+		seedApplied := false
 		for {
 			harnesses := a.harnessOptions()
+			baseURL := activeProfile.BaseURL
+			currentVK := vk
+			currentSelection := selection
+			currentWorktree := worktree
+			if seed != nil && !seedApplied {
+				baseURL = seed.BaseURL
+				currentVK = seed.VirtualKey
+				currentSelection.Harness = seed.Harness.ID
+				currentSelection.Model = seed.Model
+				currentWorktree = seed.Worktree
+				seedApplied = true
+			}
 
 			choice, err := tui.RunChooser(tui.ChooserConfig{
 				Version:      a.opts.Version,
 				Commit:       a.opts.Commit,
 				ConfigSrc:    a.configSource,
 				Message:      msg,
-				BaseURL:      activeProfile.BaseURL,
-				VirtualKey:   vk,
-				Harness:      selection.Harness,
-				Model:        selection.Model,
-				Worktree:     worktree,
+				BaseURL:      baseURL,
+				VirtualKey:   currentVK,
+				Harness:      currentSelection.Harness,
+				Model:        currentSelection.Model,
+				Worktree:     currentWorktree,
 				AfterSession: isAfterSession,
 				ReservedRows: 1, // bottom tab bar
 				Harnesses:    harnesses,
@@ -248,8 +261,8 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	// Enter tabbed mode — draws chrome, opens chooser, runs tabs.
-	err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader) (*runtime.LaunchSpec, error) {
-		return chooseAndPrepare(tabCtx, notify, stdinReader, message, afterSession)
+	err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+		return chooseAndPrepare(tabCtx, notify, stdinReader, message, afterSession, seed)
 	})
 
 	if errors.Is(err, runtime.ErrQuit) {

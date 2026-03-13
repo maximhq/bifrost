@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/cli/internal/config"
@@ -14,7 +15,11 @@ import (
 // launched inside Bifrost's tab multiplexer. This avoids Claude-specific
 // full-screen terminal behavior that doesn't restore reliably across tab swaps.
 func claudePreLaunch(baseURL, apiKey, model string) ([]string, func(), error) {
-	return []string{"CLAUDE_CODE_SIMPLE=1"}, func() {}, nil
+	env := []string{"CLAUDE_CODE_SIMPLE=1"}
+	if model = strings.TrimSpace(model); model != "" {
+		env = append(env, claudeTierModelEnv(model)...)
+	}
+	return env, func() {}, nil
 }
 
 // claudeWriteNativeConfig writes the bifrost endpoint, API key, and model
@@ -55,8 +60,11 @@ func claudeWriteNativeConfig(baseURL, apiKey, model string) error {
 
 	envMap["ANTHROPIC_BASE_URL"] = baseURL
 	envMap["ANTHROPIC_API_KEY"] = apiKey
-	if model != "" {
-		envMap["ANTHROPIC_MODEL"] = model
+	if model = strings.TrimSpace(model); model != "" {
+		for key, value := range claudeTierModelEnvMap(model) {
+			envMap[key] = value
+		}
+		delete(envMap, "ANTHROPIC_MODEL")
 	}
 
 	settings["env"] = envMap
@@ -70,4 +78,21 @@ func claudeWriteNativeConfig(baseURL, apiKey, model string) error {
 		return fmt.Errorf("create claude config dir: %w", err)
 	}
 	return config.WriteAtomic(settingsPath, b, 0o600)
+}
+
+func claudeTierModelEnv(model string) []string {
+	envMap := claudeTierModelEnvMap(model)
+	return []string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL=" + envMap["ANTHROPIC_DEFAULT_SONNET_MODEL"],
+		"ANTHROPIC_DEFAULT_OPUS_MODEL=" + envMap["ANTHROPIC_DEFAULT_OPUS_MODEL"],
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=" + envMap["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+	}
+}
+
+func claudeTierModelEnvMap(model string) map[string]string {
+	return map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   model,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  model,
+	}
 }

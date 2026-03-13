@@ -132,6 +132,20 @@ func TestEnterCommandModeDrawsHomeTabBarWithoutTabs(t *testing.T) {
 	}
 }
 
+func TestEditSessionKey(t *testing.T) {
+	t.Parallel()
+
+	if !isEditSessionKey('e') {
+		t.Fatal("expected lowercase e to edit the current session")
+	}
+	if !isEditSessionKey('E') {
+		t.Fatal("expected uppercase E to edit the current session")
+	}
+	if isEditSessionKey('n') {
+		t.Fatal("did not expect n to be treated as edit session")
+	}
+}
+
 func TestBuildTabBarStringUsesCLIBrandAndRightSideVersion(t *testing.T) {
 	t.Parallel()
 
@@ -179,8 +193,30 @@ func TestBuildTabBarStringShowsErrorNoticeInRed(t *testing.T) {
 	if !strings.Contains(got, "error: new tab failed") {
 		t.Fatalf("expected error message in tab bar, got %q", got)
 	}
-	if !strings.Contains(got, "space: resume") {
-		t.Fatalf("expected space-to-resume hint, got %q", got)
+	if !strings.Contains(got, "Esc: clear") {
+		t.Fatalf("expected escape-to-clear hint, got %q", got)
+	}
+	if strings.Contains(got, "space: resume") {
+		t.Fatalf("did not expect space-to-resume hint during sticky error, got %q", got)
+	}
+}
+
+func TestBuildTabBarStringShowsEditSessionHintInCommandMode(t *testing.T) {
+	t.Parallel()
+
+	tm := &TabManager{
+		rows:        24,
+		cols:        120,
+		commandMode: true,
+		tabs: []*Tab{
+			{id: 1, label: "Codex"},
+		},
+	}
+
+	got := tm.buildTabBarString()
+
+	if !strings.Contains(got, "e:edit session") {
+		t.Fatalf("expected command mode hint to include edit session, got %q", got)
 	}
 }
 
@@ -223,6 +259,16 @@ func TestHostKeyboardResetSequenceDisablesEnhancedKeyboardModes(t *testing.T) {
 	}
 }
 
+func TestHostCursorResetSequenceShowsVisibleDefaultCursor(t *testing.T) {
+	t.Parallel()
+
+	got := hostCursorResetSequence()
+
+	if got != "\x1b[0 q\x1b[?25h" {
+		t.Fatalf("hostCursorResetSequence() = %q, want %q", got, "\x1b[0 q\x1b[?25h")
+	}
+}
+
 func TestSyncHostInputModesReturnsSequenceOnlyOnChange(t *testing.T) {
 	t.Parallel()
 
@@ -240,6 +286,19 @@ func TestSyncHostInputModesReturnsSequenceOnlyOnChange(t *testing.T) {
 	reset := tm.syncHostInputModes(0)
 	if !strings.Contains(reset, "\x1b[?1000l") {
 		t.Fatalf("expected reset sequence to disable mouse tracking, got %q", reset)
+	}
+}
+
+func TestResetHostInputModesRestoresCursorVisibility(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	tm := &TabManager{stdout: &out}
+
+	tm.resetHostInputModes()
+
+	if got := out.String(); !strings.Contains(got, "\x1b[?25h") {
+		t.Fatalf("expected resetHostInputModes() to restore visible cursor, got %q", got)
 	}
 }
 
@@ -263,6 +322,54 @@ func TestHandleCommandKeySpaceClearsNoticeAndResumes(t *testing.T) {
 	}
 	if tm.noticeText != "" {
 		t.Fatalf("expected notice to clear after space resume, got %q", tm.noticeText)
+	}
+}
+
+func TestHandleCommandKeyEscapeClearsStickyErrorAndStaysInCommandMode(t *testing.T) {
+	t.Parallel()
+
+	tm := &TabManager{
+		stdout:       io.Discard,
+		rows:         24,
+		cols:         80,
+		commandMode:  true,
+		noticeText:   "oops",
+		noticeLevel:  TabNoticeError,
+		noticeSticky: true,
+		tabs:         []*Tab{{id: 1, label: "Codex"}},
+	}
+
+	tm.handleCommandKey(nil, nil, nil, 0x1b)
+
+	if !tm.commandMode {
+		t.Fatal("expected command mode to stay enabled after clearing sticky error")
+	}
+	if tm.noticeText != "" {
+		t.Fatalf("expected sticky error notice to clear on escape, got %q", tm.noticeText)
+	}
+}
+
+func TestHandleCommandKeyEnterDoesNotResumeWhileStickyErrorIsShown(t *testing.T) {
+	t.Parallel()
+
+	tm := &TabManager{
+		stdout:       io.Discard,
+		rows:         24,
+		cols:         80,
+		commandMode:  true,
+		noticeText:   "oops",
+		noticeLevel:  TabNoticeError,
+		noticeSticky: true,
+		tabs:         []*Tab{{id: 1, label: "Codex"}},
+	}
+
+	tm.handleCommandKey(nil, nil, nil, '\r')
+
+	if !tm.commandMode {
+		t.Fatal("expected sticky error to keep tab manager in command mode")
+	}
+	if tm.noticeText != "oops" {
+		t.Fatalf("expected enter to leave sticky error untouched, got %q", tm.noticeText)
 	}
 }
 

@@ -16,13 +16,14 @@ var ErrQuit = errors.New("user quit")
 // to dismiss the chooser and return to tab command mode.
 var ErrBackToTabs = errors.New("back to tabs")
 
-// NewTabFunc is called when the user requests a new tab.
+// NewTabFunc is called when the user requests a new tab or reopens the
+// chooser for the active tab.
 // stdinReader provides keyboard input; when nil the callback should read os.Stdin.
-type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader) (*LaunchSpec, error)
+type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader, seed *LaunchSpec) (*LaunchSpec, error)
 
 // RunTabbed is not supported on Windows — falls back to single-session mode.
 func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, newTabFn NewTabFunc) error {
-	spec, err := newTabFn(ctx, func(TabNoticeLevel, string) {}, nil)
+	spec, err := newTabFn(ctx, func(TabNoticeLevel, string) {}, nil, nil)
 	if err != nil {
 		return err
 	}

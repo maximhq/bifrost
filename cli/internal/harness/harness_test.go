@@ -5,7 +5,90 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bytedance/sonic"
 )
+
+func TestClaudePreLaunchPinsSelectedModelAcrossClaudeTiers(t *testing.T) {
+	t.Parallel()
+
+	env, cleanup, err := claudePreLaunch("https://example.com/anthropic", "test-key", "openai/gpt-5")
+	if err != nil {
+		t.Fatalf("claudePreLaunch() error = %v", err)
+	}
+	defer cleanup()
+
+	for _, want := range []string{
+		"CLAUDE_CODE_SIMPLE=1",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL=openai/gpt-5",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL=openai/gpt-5",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL=openai/gpt-5",
+	} {
+		parts := strings.SplitN(want, "=", 2)
+		if got := envValue(env, parts[0]); got != parts[1] {
+			t.Fatalf("env[%q] = %q, want %q", parts[0], got, parts[1])
+		}
+	}
+
+	if got := envValue(env, "ANTHROPIC_MODEL"); got != "" {
+		t.Fatalf("did not expect ANTHROPIC_MODEL in env, got %#v", env)
+	}
+}
+
+func TestClaudeWriteNativeConfigPinsTierDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	settingsDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o755); err != nil {
+		t.Fatalf("mkdir settings dir: %v", err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	initial := `{"env":{"EXISTING":"keep","ANTHROPIC_MODEL":"stale-model"}}`
+	if err := os.WriteFile(settingsPath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("write initial settings: %v", err)
+	}
+
+	if err := claudeWriteNativeConfig("https://example.com/anthropic", "test-key", "openai/gpt-5"); err != nil {
+		t.Fatalf("claudeWriteNativeConfig() error = %v", err)
+	}
+
+	b, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+
+	var settings map[string]any
+	if err := sonic.Unmarshal(b, &settings); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+
+	envRaw, ok := settings["env"]
+	if !ok {
+		t.Fatalf("expected env map in settings, got %#v", settings)
+	}
+	envMap, ok := envRaw.(map[string]any)
+	if !ok {
+		t.Fatalf("env map type = %T, want map[string]any", envRaw)
+	}
+
+	for key, want := range map[string]string{
+		"EXISTING":                       "keep",
+		"ANTHROPIC_BASE_URL":             "https://example.com/anthropic",
+		"ANTHROPIC_API_KEY":              "test-key",
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "openai/gpt-5",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "openai/gpt-5",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "openai/gpt-5",
+	} {
+		if got, _ := envMap[key].(string); got != want {
+			t.Fatalf("env[%q] = %q, want %q", key, got, want)
+		}
+	}
+
+	if _, ok := envMap["ANTHROPIC_MODEL"]; ok {
+		t.Fatalf("did not expect legacy ANTHROPIC_MODEL in settings env: %#v", envMap)
+	}
+}
 
 func TestOpencodeModelRef(t *testing.T) {
 	t.Parallel()

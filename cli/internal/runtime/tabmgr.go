@@ -39,6 +39,7 @@ const pendingTabLabel = "Bifrost"
 type Tab struct {
 	id               int
 	label            string
+	spec             LaunchSpec
 	ptmx             *os.File
 	cmd              *PreparedCmd
 	done             chan struct{} // closed when the process exits
@@ -75,11 +76,12 @@ type belParserState struct {
 	escPending bool
 }
 
-// NewTabFunc is called when the user requests a new tab.
-// It should present any UI needed (e.g. the harness chooser) and return
-// the launch spec. Return a nil spec to cancel.
+// NewTabFunc is called when the user requests a new tab or reopens the
+// chooser for the active tab. It should present any UI needed (e.g. the
+// harness chooser) and return the launch spec. Return a nil spec to cancel.
+// When seed is non-nil, the chooser should use it to prefill the current tab.
 // stdinReader provides keyboard input; when nil the callback should read os.Stdin.
-type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader) (*LaunchSpec, error)
+type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader, seed *LaunchSpec) (*LaunchSpec, error)
 
 // TabManager multiplexes multiple CLI sessions. Each session runs in its own PTY,
 // with a virtual terminal emulator capturing output. A 30fps render loop composites
@@ -148,7 +150,7 @@ func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, ne
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		// Can't go raw — fall back: open chooser directly, then single-session
-		spec, err := newTabFn(ctx, tm.emitNotice, nil)
+		spec, err := newTabFn(ctx, tm.emitNotice, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -250,9 +252,25 @@ func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, ne
 // addTab creates a new PTY session for the given spec, initializes a virtual
 // terminal emulator, and starts reading PTY output into it.
 func (tm *TabManager) addTab(ctx context.Context, spec LaunchSpec) error {
-	p, err := PrepareCommand(ctx, spec)
+	tab, err := tm.createTab(ctx, spec)
 	if err != nil {
 		return err
+	}
+
+	tm.mu.Lock()
+	tm.tabs = append(tm.tabs, tab)
+	tm.activeIdx = len(tm.tabs) - 1
+	tm.needsRender = true
+	tm.mu.Unlock()
+
+	tm.startTab(tab)
+	return nil
+}
+
+func (tm *TabManager) createTab(ctx context.Context, spec LaunchSpec) (*Tab, error) {
+	p, err := PrepareCommand(ctx, spec)
+	if err != nil {
+		return nil, err
 	}
 
 	contentRows := tm.contentRows()
@@ -267,7 +285,7 @@ func (tm *TabManager) addTab(ctx context.Context, spec LaunchSpec) error {
 		if p.Cleanup != nil {
 			p.Cleanup()
 		}
-		return fmt.Errorf("start pty: %w", err)
+		return nil, fmt.Errorf("start pty: %w", err)
 	}
 
 	// Build label: "harness" or "harness:worktree"
@@ -279,6 +297,7 @@ func (tm *TabManager) addTab(ctx context.Context, spec LaunchSpec) error {
 	tab := &Tab{
 		id:        tm.nextID,
 		label:     label,
+		spec:      spec,
 		ptmx:      ptmx,
 		cmd:       p,
 		done:      make(chan struct{}),
@@ -291,28 +310,24 @@ func (tm *TabManager) addTab(ctx context.Context, spec LaunchSpec) error {
 	tab.cursorVisible.Store(true)
 	tm.nextID++
 
-	tm.mu.Lock()
-	tm.tabs = append(tm.tabs, tab)
-	tm.activeIdx = len(tm.tabs) - 1
-	tm.needsRender = true
-	tm.mu.Unlock()
+	return tab, nil
+}
 
+func (tm *TabManager) startTab(tab *Tab) {
 	// Read PTY output into the VT emulator
 	go tm.readPTY(tab)
 
 	// Wait for process exit
 	go func() {
-		tab.exitErr = p.Cmd.Wait()
+		tab.exitErr = tab.cmd.Cmd.Wait()
 		tab.ptmx.Close()
 		tab.exited.Store(true)
 		close(tab.done)
-		if p.Cleanup != nil {
-			p.Cleanup()
+		if tab.cmd.Cleanup != nil {
+			tab.cmd.Cleanup()
 		}
 		tm.removeTab(tab)
 	}()
-
-	return nil
 }
 
 func (tm *TabManager) addPendingTab() (*Tab, int) {
@@ -480,6 +495,7 @@ const prefix = 0x02
 // Keybindings while in tab command mode (^B prefix):
 //
 //	N               — open new tab (shows chooser)
+//	E               — edit the current session
 //	X               — close current tab
 //	H/L or J/K      — move left/right
 //	1…9             — jump to tab N
@@ -1073,6 +1089,23 @@ func (tm *TabManager) clearNotice() bool {
 	return true
 }
 
+func (tm *TabManager) hasStickyErrorNotice() bool {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.noticeText != "" && tm.noticeSticky && tm.noticeLevel == TabNoticeError
+}
+
+func (tm *TabManager) clearNoticeAndStayInCommandMode() {
+	hadNotice := tm.clearNotice()
+	if tm.hasTabs() {
+		tm.enterCommandMode()
+		return
+	}
+	if hadNotice {
+		tm.drawTabBar()
+	}
+}
+
 func (tm *TabManager) clearNoticeAndResume() {
 	hadNotice := tm.clearNotice()
 	if tm.hasTabs() {
@@ -1112,8 +1145,18 @@ func (tm *TabManager) exitCommandMode() {
 func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc, termState *term.State, b byte) {
 	switch {
 	case b == ' ':
+		if tm.hasStickyErrorNotice() {
+			tm.clearNoticeAndStayInCommandMode()
+			return
+		}
 		tm.clearNoticeAndResume()
 	case b == prefix || b == 0x1b || b == '\r' || b == '\n':
+		if tm.hasStickyErrorNotice() {
+			if b == 0x1b {
+				tm.clearNoticeAndStayInCommandMode()
+			}
+			return
+		}
 		if !tm.hasTabs() {
 			tm.drawTabBar()
 			return
@@ -1123,6 +1166,8 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 		tm.switchTabAndResume(int(b - '1'))
 	case b == 'n' || b == 'N':
 		tm.openNewTab(ctx, newTabFn, termState)
+	case isEditSessionKey(b):
+		tm.openCurrentTabChooser(ctx, newTabFn, termState)
 	case b == 'x' || b == 'X' || b == 'w' || b == 'W':
 		tm.closeCurrentTab()
 	case b == 'l' || b == 'L' || b == 'j' || b == 'J' || b == '\t':
@@ -1130,6 +1175,10 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 	case b == 'h' || b == 'H' || b == 'k' || b == 'K' || b == 'p' || b == 'P':
 		tm.moveTabSelection(-1)
 	}
+}
+
+func isEditSessionKey(b byte) bool {
+	return b == 'e' || b == 'E'
 }
 
 // switchTabAndResume exits command mode and activates the selected tab.
@@ -1384,47 +1433,7 @@ func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termS
 	}
 
 	pendingTab, prevActive := tm.addPendingTab()
-	fullscreenChooser := prefersFullscreenChooser()
-
-	// Clear screen for the chooser. On most terminals, show the tab bar
-	// above the chooser; Apple Terminal gets a full-screen render.
-	tm.resetHostInputModes()
-	tm.writeString("\x1b[2J\x1b[H")
-	if !fullscreenChooser {
-		tm.drawTabBar()
-	}
-	term.Restore(int(os.Stdin.Fd()), termState)
-
-	// Pause the stdinCh goroutine so Bubble Tea can own os.Stdin exclusively.
-	// SetReadDeadline on the dup'd non-blocking fd forces the blocked Read
-	// to return immediately, so the goroutine enters its sleep loop without
-	// eating the user's next keystroke.
-	tm.stdinPaused.Store(true)
-	if tm.stdinPollFd != nil {
-		tm.stdinPollFd.SetReadDeadline(time.Now())
-	}
-	time.Sleep(20 * time.Millisecond) // let goroutine wake and enter sleep loop
-	// Drain any buffered data from the channel.
-	for {
-		select {
-		case <-tm.stdinCh:
-		default:
-			goto drained
-		}
-	}
-drained:
-
-	spec, err := newTabFn(ctx, tm.emitNotice, nil)
-
-	// Resume the stdinCh goroutine — clear deadline so it can Read again.
-	if tm.stdinPollFd != nil {
-		tm.stdinPollFd.SetReadDeadline(time.Time{})
-	}
-	tm.stdinPaused.Store(false)
-
-	// Re-enter raw mode and clear any scroll region left by the chooser (bubbletea)
-	term.MakeRaw(int(os.Stdin.Fd()))
-	tm.writeString("\x1b[r")
+	spec, err := tm.runChooser(ctx, newTabFn, termState, nil)
 
 	if err != nil || spec == nil {
 		// Cancelled — remove the placeholder tab and resume the previous session.
@@ -1471,6 +1480,148 @@ drained:
 	tm.commandMode = false
 	tm.needsRender = true
 	tm.mu.Unlock()
+}
+
+func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTabFunc, termState *term.State) {
+	if newTabFn == nil {
+		return
+	}
+
+	currentTab, current, ok := tm.activeTabSeed()
+	if !ok {
+		return
+	}
+
+	tm.mu.Lock()
+	tm.paused = true
+	tm.commandMode = false
+	tm.needsRender = true
+	tm.mu.Unlock()
+
+	spec, err := tm.runChooser(ctx, newTabFn, termState, &current)
+	if err != nil || spec == nil {
+		tm.mu.Lock()
+		tm.paused = false
+		tm.needsRender = true
+		tm.mu.Unlock()
+
+		if errors.Is(err, ErrBackToTabs) {
+			tm.enterCommandMode()
+			return
+		}
+		if err != nil {
+			tm.emitNotice(TabNoticeError, err.Error())
+		}
+		return
+	}
+
+	if err := tm.replaceTab(ctx, currentTab, *spec); err != nil {
+		tm.mu.Lock()
+		tm.paused = false
+		tm.needsRender = true
+		tm.mu.Unlock()
+		tm.emitNotice(TabNoticeError, fmt.Sprintf("tab relaunch failed: %v", err))
+		return
+	}
+
+	tm.mu.Lock()
+	tm.paused = false
+	tm.commandMode = false
+	tm.needsRender = true
+	tm.mu.Unlock()
+}
+
+func (tm *TabManager) activeTabSeed() (*Tab, LaunchSpec, bool) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if tm.activeIdx < 0 || tm.activeIdx >= len(tm.tabs) {
+		return nil, LaunchSpec{}, false
+	}
+	tab := tm.tabs[tm.activeIdx]
+	return tab, tab.spec, true
+}
+
+func (tm *TabManager) replaceTab(ctx context.Context, target *Tab, spec LaunchSpec) error {
+	newTab, err := tm.createTab(ctx, spec)
+	if err != nil {
+		return err
+	}
+
+	var oldTab *Tab
+	tm.mu.Lock()
+	replaceIdx := -1
+	for i, tab := range tm.tabs {
+		if tab == target {
+			replaceIdx = i
+			break
+		}
+	}
+	if replaceIdx >= 0 {
+		oldTab = tm.tabs[replaceIdx]
+		tm.tabs[replaceIdx] = newTab
+		tm.activeIdx = replaceIdx
+	} else {
+		tm.tabs = append(tm.tabs, newTab)
+		tm.activeIdx = len(tm.tabs) - 1
+	}
+	tm.needsRender = true
+	tm.mu.Unlock()
+
+	tm.startTab(newTab)
+
+	if oldTab != nil && oldTab.cmd != nil && oldTab.cmd.Cmd.Process != nil && !oldTab.exited.Load() {
+		_ = oldTab.cmd.Cmd.Process.Signal(syscall.SIGHUP)
+	}
+
+	return nil
+}
+
+func (tm *TabManager) runChooser(ctx context.Context, newTabFn NewTabFunc, termState *term.State, seed *LaunchSpec) (*LaunchSpec, error) {
+	fullscreenChooser := prefersFullscreenChooser()
+
+	// Clear screen for the chooser. On most terminals, show the tab bar
+	// above the chooser; Apple Terminal gets a full-screen render.
+	tm.resetHostInputModes()
+	tm.writeString("\x1b[2J\x1b[H")
+	if !fullscreenChooser {
+		tm.drawTabBar()
+	}
+	if termState != nil {
+		_ = term.Restore(int(os.Stdin.Fd()), termState)
+	}
+
+	// Pause the stdinCh goroutine so Bubble Tea can own os.Stdin exclusively.
+	// SetReadDeadline on the dup'd non-blocking fd forces the blocked Read
+	// to return immediately, so the goroutine enters its sleep loop without
+	// eating the user's next keystroke.
+	tm.stdinPaused.Store(true)
+	if tm.stdinPollFd != nil {
+		_ = tm.stdinPollFd.SetReadDeadline(time.Now())
+	}
+	time.Sleep(20 * time.Millisecond) // let goroutine wake and enter sleep loop
+	for {
+		select {
+		case <-tm.stdinCh:
+		default:
+			goto drained
+		}
+	}
+drained:
+
+	spec, err := newTabFn(ctx, tm.emitNotice, nil, seed)
+
+	if tm.stdinPollFd != nil {
+		_ = tm.stdinPollFd.SetReadDeadline(time.Time{})
+	}
+	tm.stdinPaused.Store(false)
+
+	if termState != nil {
+		_, _ = term.MakeRaw(int(os.Stdin.Fd()))
+	}
+	tm.writeString("\x1b[r")
+
+	return spec, err
 }
 
 func prefersFullscreenChooser() bool {
@@ -1961,12 +2112,12 @@ func (tm *TabManager) buildTabBarString() string {
 	hint := " ^B tab mode "
 	if noticeText != "" {
 		if noticeLevel == TabNoticeError {
-			hint = " error: " + noticeText + "  space: resume "
+			hint = " error: " + noticeText + "  Esc: clear "
 		} else {
 			hint = " " + noticeText + " "
 		}
 	} else if cmdMode {
-		hint = " n:new x:close h/l:move 1-9:jump Esc:resume "
+		hint = " n:new e:edit session x:close h/l:move 1-9:jump Esc:resume "
 	}
 	used := tm.tabBarContentWidth(tabs) + len(hint) + len(versionLabel)
 	if cols > used {
@@ -2217,7 +2368,7 @@ func (tm *TabManager) writeString(s string) {
 }
 
 func (tm *TabManager) resetHostInputModes() {
-	seq := tm.syncHostInputModes(0) + hostKeyboardResetSequence()
+	seq := tm.syncHostInputModes(0) + hostKeyboardResetSequence() + hostCursorResetSequence()
 	if seq == "" {
 		return
 	}
@@ -2272,4 +2423,10 @@ func hostKeyboardResetSequence() string {
 	// Bubble Tea or the host shell. This fixes chooser key handling without
 	// spraying broader terminal-keyboard mode resets into every terminal.
 	return "\x1b[<u"
+}
+
+func hostCursorResetSequence() string {
+	// Restore a visible default cursor in case the child CLI hid it or left a
+	// custom DECSCUSR shape behind.
+	return "\x1b[0 q\x1b[?25h"
 }

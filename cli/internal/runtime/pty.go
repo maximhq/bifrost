@@ -62,7 +62,10 @@ func runWithPTY(ctx context.Context, stdout io.Writer, cmd *exec.Cmd) error {
 		oldState = nil
 	}
 	if oldState != nil {
-		defer term.Restore(int(os.Stdin.Fd()), oldState)
+		defer func() {
+			_ = term.Restore(int(os.Stdin.Fd()), oldState)
+			_, _ = io.WriteString(stdout, hostCursorResetSequence())
+		}()
 	}
 
 	// Relay stdout: PTY master → caller's stdout
