@@ -82,6 +82,8 @@ interface PromptContextValue {
 
 	// Diff detection
 	hasChanges: boolean;
+	hasVersionChanges: boolean;
+	hasSessionChanges: boolean;
 
 	// Handlers
 	handleSelectPrompt: (id: string) => void;
@@ -170,7 +172,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const selectedSession = useMemo(() => sessions.find((s) => s.id === selectedSessionId), [sessions, selectedSessionId]);
 
 	// Fetch full version data (with messages) when a version is selected
-	const { currentData: selectedVersionData, isLoading: isVersionLoading } = useGetPromptVersionQuery(selectedVersionId ?? 0, {
+	const { currentData: selectedVersionData, isLoading: isVersionLoading, isFetching: isVersionFetching } = useGetPromptVersionQuery(selectedVersionId ?? 0, {
 		skip: !selectedVersionId,
 	});
 	const selectedVersion = selectedVersionData?.version;
@@ -210,6 +212,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
 			loadFromParams(selectedSession.model_params, selectedSession.provider, selectedSession.model);
 		} else if (selectedVersion) {
+			// If sessions are still loading and no session is explicitly selected,
+			// wait — a session may auto-select and take priority
+			if (isSessionsLoading && !selectedSessionId) return;
 			const raw = (selectedVersion.messages ?? []).map((m) => m.message);
 			const loaded = Message.fromLegacyAll(raw);
 			loadMessages(loaded.length > 0 ? loaded : [Message.system("")]);
@@ -236,53 +241,89 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	}, [selectedSession, selectedVersion, selectedPrompt, selectedSessionId, selectedVersionId, setUrlState, isSessionsLoading, sessions.length]);
 
 	// Auto-select the most recent session when sessions load and none is selected
+	// Sessions take priority over versions for initial loading
 	useEffect(() => {
 		if (sessions.length > 0 && !selectedSessionId && !selectedVersionId) {
 			setUrlState({ sessionId: sessions[0].id });
 		}
 	}, [selectedPromptId, sessions, selectedSessionId, selectedVersionId, setUrlState]);
 
+	// Diff detection helper — compares current playground state against a reference config
+	const diffAgainst = useCallback(
+		(ref: { messages?: any[]; model_params?: ModelParams; provider?: string; model?: string } | undefined) => {
+			if (!ref) return true; // No reference — treat as changed
+			const refMessages = ref.messages ?? [];
+			const refProvider = ref.provider;
+			const refModel = ref.model;
+			const refParams = ref.model_params;
+
+			if (provider !== refProvider) return true;
+			if (model !== refModel) return true;
+
+			const { api_key_id: refApiKeyId, ...refParamsRest } = refParams || ({} as ModelParams);
+			const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
+			if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
+
+			if (JSON.stringify(modelParams, Object.keys(modelParams).sort()) !== JSON.stringify(refParamsRest, Object.keys(refParamsRest).sort()))
+				return true;
+
+			const currentSerialized = Message.serializeAll(messages);
+			if (JSON.stringify(currentSerialized) !== JSON.stringify(refMessages)) return true;
+
+			return false;
+		},
+		[provider, model, modelParams, apiKeyId, messages],
+	);
+
 	// Diff detection — compare current playground state against the loaded session/version
 	const hasChanges = useMemo(() => {
-		let refMessages: any[] | undefined;
-		let refParams: ModelParams | undefined;
-		let refProvider: string | undefined;
-		let refModel: string | undefined;
-
+		// Suppress diff while version data is in flight to avoid flicker
+		if (selectedVersionId && (isVersionFetching || selectedVersion?.id !== selectedVersionId)) return false;
 		if (selectedSession) {
-			refMessages = selectedSession.messages?.map((m) => m.message) ?? [];
-			refParams = selectedSession.model_params;
-			refProvider = selectedSession.provider;
-			refModel = selectedSession.model;
-		} else if (selectedVersion) {
-			refMessages = selectedVersion.messages?.map((m) => m.message) ?? [];
-			refParams = selectedVersion.model_params;
-			refProvider = selectedVersion.provider;
-			refModel = selectedVersion.model;
-		} else {
-			// No reference to compare against — always allow save
-			return true;
+			return diffAgainst({
+				messages: selectedSession.messages?.map((m) => m.message) ?? [],
+				model_params: selectedSession.model_params,
+				provider: selectedSession.provider,
+				model: selectedSession.model,
+			});
 		}
+		if (selectedVersion) {
+			return diffAgainst({
+				messages: selectedVersion.messages?.map((m) => m.message) ?? [],
+				model_params: selectedVersion.model_params,
+				provider: selectedVersion.provider,
+				model: selectedVersion.model,
+			});
+		}
+		return true;
+	}, [selectedSession, selectedVersion, diffAgainst, selectedVersionId, isVersionFetching]);
 
-		// Quick string checks first
-		if (provider !== refProvider) return true;
-		if (model !== refModel) return true;
+	// Diff against the active version — drives "unpublished changes" badge & commit button
+	// Uses the explicitly selected version if available, otherwise falls back to latest_version
+	const activeVersionRef = selectedVersion ?? selectedPrompt?.latest_version;
 
-		// Compare api_key_id
-		const { api_key_id: refApiKeyId, ...refParamsRest } = refParams || ({} as ModelParams);
-		const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
-		if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
+	const hasVersionChanges = useMemo(() => {
+		// Suppress diff while version data is in flight or mismatched to avoid flash
+		if (selectedVersionId && (isVersionFetching || selectedVersion?.id !== selectedVersionId)) return false;
+		if (!activeVersionRef) return true; // No versions yet — always allow commit
+		return diffAgainst({
+			messages: activeVersionRef.messages?.map((m) => m.message) ?? [],
+			model_params: activeVersionRef.model_params,
+			provider: activeVersionRef.provider,
+			model: activeVersionRef.model,
+		});
+	}, [activeVersionRef, diffAgainst, selectedVersionId, isVersionFetching, selectedVersion?.id]);
 
-		// Compare model params (excluding api_key_id)
-		if (JSON.stringify(modelParams, Object.keys(modelParams).sort()) !== JSON.stringify(refParamsRest, Object.keys(refParamsRest).sort()))
-			return true;
-
-		// Compare messages (most expensive — do last)
-		const currentSerialized = Message.serializeAll(messages);
-		if (JSON.stringify(currentSerialized) !== JSON.stringify(refMessages)) return true;
-
-		return false;
-	}, [selectedSession, selectedVersion, provider, model, modelParams, apiKeyId, messages]);
+	// Diff against the selected session — drives red asterisk indicator
+	const hasSessionChanges = useMemo(() => {
+		if (!selectedSession) return false;
+		return diffAgainst({
+			messages: selectedSession.messages?.map((m) => m.message) ?? [],
+			model_params: selectedSession.model_params,
+			provider: selectedSession.provider,
+			model: selectedSession.model,
+		});
+	}, [selectedSession, diffAgainst]);
 
 	// Handlers
 	const handleSelectPrompt = useCallback(
@@ -520,6 +561,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		isDeletingPrompt,
 		supportsVision,
 		hasChanges,
+		hasVersionChanges,
+		hasSessionChanges,
 		handleSelectPrompt,
 		handleMovePrompt,
 		handleDeleteFolder,

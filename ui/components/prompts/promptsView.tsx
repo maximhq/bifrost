@@ -39,19 +39,19 @@ export default function PromptsView() {
 	}
 
 	return (
-		<div className="no-padding-parent no-border-parent bg-background h-[calc(100dvh_-_18px)] w-full">
+		<div className="no-padding-parent no-border-parent bg-background h-[calc(100dvh_-_16px)] w-full">
 			<DeleteFolderDialog />
 			<DeletePromptDialog />
 			<PromptSheets />
 
 			<ResizablePanelGroup direction="horizontal" className="h-full">
-				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-r-md rounded-br-none">
+				<ResizablePanel defaultSize={20} className="bg-card mr-1 overflow-hidden rounded-r-md">
 					<PromptSidebar />
 				</ResizablePanel>
 
 				<ResizableHandle className="mr-1 bg-transparent" />
 
-				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md rounded-bl-none">
+				<ResizablePanel defaultSize={80} minSize={50} className="bg-card overflow-hidden rounded-md">
 					{selectedPromptId ? (
 						<div className="flex h-full flex-col">
 							<PromptsViewHeader />

@@ -2,8 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { SplitButton } from "@/components/ui/splitButton";
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from "@/components/ui/dropdownMenu";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Check, ChevronDown, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
+import { Check, GitCommit, PencilIcon, Save, Trash2 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import { parseAsInteger, useQueryStates } from "nuqs";
@@ -15,6 +14,7 @@ import { usePromptContext } from "../context";
 import { ModelParams, PromptSession } from "@/lib/types/prompts";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 export default function PromptsViewHeader() {
 	const {
@@ -27,6 +27,8 @@ export default function PromptsViewHeader() {
 		provider,
 		model,
 		hasChanges,
+		hasVersionChanges,
+		hasSessionChanges,
 		isStreaming,
 	} = usePromptContext();
 
@@ -146,9 +148,28 @@ export default function PromptsViewHeader() {
 		}
 	}, [messages]);
 
+	const selectedVersion = versions.find((v) => v.id === selectedVersionId);
+	const latestVersion = versions.find((v) => v.is_latest);
+	const displayVersion = selectedVersion ?? latestVersion;
+
 	return (
 		<div className="flex items-center justify-between border-b px-4 py-3">
-			<h3 className="truncate font-semibold">{selectedPrompt?.name || "Playground"}</h3>
+			<div className="flex items-center gap-2 min-w-0">
+				<h3 className="truncate font-semibold">
+					{selectedPrompt?.name || "Playground"}
+					{hasChanges && <span className="text-destructive ml-1">*</span>}
+				</h3>
+				{displayVersion && (
+					<Badge variant={"secondary"}>
+						v{displayVersion.version_number}
+					</Badge>
+				)}
+				{hasVersionChanges && versions.length > 0 && (
+					<Badge variant="outline">
+						Unpublished Changes
+					</Badge>
+				)}
+			</div>
 			<div className="flex shrink-0 items-center gap-4">
 				{messages.length > 1 && (
 					<Button variant="ghost" size="sm" data-testid="header-clear" onClick={handleClearConversation} disabled={isStreaming}>
@@ -156,31 +177,16 @@ export default function PromptsViewHeader() {
 						Clear
 					</Button>
 				)}
-				<div className="inline-flex items-center">
-					<Button
-						variant="outline"
-						className="h-8 rounded-r-none border bg-transparent"
-						data-testid="header-save-session"
-						onClick={handleSaveSession}
-						disabled={isCreatingSession || !hasChanges || isStreaming}
-					>
-						<Save className="h-4 w-4" />
-						Save Session
-					</Button>
-					<Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
-						<PopoverTrigger asChild>
-							<Button
-								variant="outline"
-								data-testid="header-sessions-dropdown"
-								className={cn(
-									"h-8 w-8 rounded-l-none border border-l-0 bg-transparent p-0",
-									isCreatingSession || !hasChanges || isStreaming ? "border-border/50" : "",
-								)}
-							>
-								<ChevronDown className="h-4 w-4" />
-							</Button>
-						</PopoverTrigger>
-						<PopoverContent className="w-72 p-0" align="end">
+				<SplitButton
+					onClick={handleSaveSession}
+					disabled={isCreatingSession || isStreaming}
+					isLoading={isCreatingSession}
+					data-testid="header-save-session"
+					dropdownContent={{
+						className: "w-72 p-0",
+						open: sessionsOpen,
+						onOpenChange: setSessionsOpen,
+						children: (
 							<Command>
 								<CommandInput placeholder="Search sessions..." data-testid="header-sessions-search" />
 								<CommandList>
@@ -201,9 +207,20 @@ export default function PromptsViewHeader() {
 									</CommandGroup>
 								</CommandList>
 							</Command>
-						</PopoverContent>
-					</Popover>
-				</div>
+						),
+					}}
+					variant={"outline"}
+					dropdownTrigger={{
+						className: cn("bg-transparent"),
+					}}
+					button={{
+						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
+						disabled: !hasChanges,
+					}}
+				>
+					<Save className="h-4 w-4" />
+					Save Session
+				</SplitButton>
 				<SplitButton
 					onClick={handleCommitVersion}
 					disabled={isCreatingSession || isStreaming}
@@ -229,7 +246,7 @@ export default function PromptsViewHeader() {
 													{version.is_latest && <span className="text-primary ml-1.5 text-xs">(latest)</span>}
 												</span>
 												<span className="text-muted-foreground truncate text-xs">{version.commit_message || "No commit message"}</span>
-												<span className="text-muted-foreground text-xs">{new Date(version.created_at).toLocaleString()}</span>
+												<span className="text-muted-foreground text-xs">{formatSessionDate(version.created_at)}</span>
 											</div>
 											{selectedVersionId === version.id && <Check className="text-primary h-4 w-4 shrink-0" />}
 										</DropdownMenuItem>
@@ -240,10 +257,11 @@ export default function PromptsViewHeader() {
 					}}
 					variant={"outline"}
 					dropdownTrigger={{
-						className: "bg-transparent",
+						className: cn("bg-transparent"),
 					}}
 					button={{
-						className: "bg-transparent",
+						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
+						disabled: !hasVersionChanges,
 					}}
 				>
 					<GitCommit className="h-4 w-4" />
