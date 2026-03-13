@@ -1735,16 +1735,6 @@ func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *sch
 		ctx = bifrost.ctx
 	}
 
-	provider := bifrost.getProviderByKey(req.Provider)
-	if provider == nil {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "provider not found for batch create request",
-			},
-		}
-	}
-
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.BatchCreateRequest
 	bifrostReq.BatchCreateRequest = req

@@ -508,6 +508,10 @@ func GetPathFromContext(ctx context.Context, defaultPath string) string {
 // It returns the resolved value and a boolean indicating whether the value is a full absolute URL.
 // If the boolean is false, the returned string is a path (leading slash ensured).
 func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, requestType schemas.RequestType) (string, bool) {
+	// Track whether the path came from the per-request context so that static
+	// RequestPathOverrides do not overwrite an explicitly provided context path.
+	pathFromContext := false
+
 	// If an explicit path/URL is set in context, handle it before checking ProviderOverride.
 	// Absolute URLs short-circuit entirely. Relative paths update defaultPath so the
 	// ProviderOverride.BaseURL join logic below can still combine them into a full URL.
@@ -518,18 +522,22 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 		}
 		// Relative path: do not return yet. If a ProviderOverride.BaseURL is also set,
 		// it should be joined with this path rather than the provider's static base URL.
-		defaultPath = trimmed
+		if trimmed != "" {
+			defaultPath = trimmed
+			pathFromContext = true
+		}
 	}
 
 	// If a ProviderOverride with a BaseURL is set, combine with the effective path and return
 	// as a complete absolute URL, bypassing the provider's static NetworkConfig.BaseURL.
-	// Respect RequestPathOverrides for the path suffix when configured.
+	// Respect RequestPathOverrides for the path suffix when configured, but only when the
+	// path was not already set explicitly via context (pathFromContext = false).
 	// BaseURL is used unconditionally: a non-empty value is an explicit developer choice.
 	// If it is malformed the concatenated result is returned as-is so the transport surfaces
 	// a clear error rather than silently routing to the static provider endpoint.
 	if override, ok := ctx.Value(schemas.BifrostContextKeyProviderOverride).(*schemas.ProviderOverride); ok && override != nil && override.BaseURL != "" {
 		path := defaultPath
-		if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
+		if !pathFromContext && customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 			if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok && strings.TrimSpace(raw) != "" {
 				path = strings.TrimSpace(raw)
 				// If the path override is itself an absolute URL, return it directly.
@@ -544,8 +552,9 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 		return strings.TrimRight(override.BaseURL, "/") + path, true
 	}
 
-	// If path override set in custom provider config, return it.
-	if customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
+	// If path override set in custom provider config, return it (only when path was not
+	// already provided via context).
+	if !pathFromContext && customProviderConfig != nil && customProviderConfig.RequestPathOverrides != nil {
 		if raw, ok := customProviderConfig.RequestPathOverrides[requestType]; ok {
 			override := strings.TrimSpace(raw)
 			if override == "" {
@@ -565,7 +574,11 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 		}
 	}
 
-	// Return default path.
+	// Ensure a leading slash on relative paths before returning so buildRequestURL
+	// does not produce a malformed URL when concatenating with a base URL.
+	if defaultPath != "" && !strings.HasPrefix(defaultPath, "/") {
+		defaultPath = "/" + defaultPath
+	}
 	return defaultPath, false
 }
 
