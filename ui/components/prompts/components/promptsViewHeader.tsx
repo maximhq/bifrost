@@ -14,6 +14,7 @@ import { getErrorMessage } from "@/lib/store";
 import { usePromptContext } from "../context";
 import { ModelParams, PromptSession } from "@/lib/types/prompts";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 
 export default function PromptsViewHeader() {
 	const {
@@ -74,7 +75,7 @@ export default function PromptsViewHeader() {
 	}, [modelParams, apiKeyId]);
 
 	const handleSaveSession = useCallback(async () => {
-		if (!selectedPrompt || !hasChanges) return;
+		if (!selectedPrompt || !hasChanges || isStreaming) return;
 		try {
 			const result = await createSession({
 				promptId: selectedPrompt.id,
@@ -90,7 +91,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges, isStreaming]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -99,9 +100,9 @@ export default function PromptsViewHeader() {
 		{
 			preventDefault: true,
 			enableOnFormTags: ["input", "textarea", "select"],
-			enabled: !!selectedPrompt && !isCreatingSession,
+			enabled: !!selectedPrompt && !isCreatingSession && !isStreaming,
 		},
-		[handleSaveSession, selectedPrompt, isCreatingSession],
+		[handleSaveSession, selectedPrompt, isCreatingSession, isStreaming],
 	);
 
 	const handleCommitVersion = useCallback(async () => {
@@ -117,7 +118,7 @@ export default function PromptsViewHeader() {
 					model,
 				},
 			}).unwrap();
-			setUrlState({ sessionId: result.session.id });
+			setUrlState({ sessionId: result.session.id, versionId: null });
 			onSessionSaved(result.session);
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
@@ -158,7 +159,7 @@ export default function PromptsViewHeader() {
 				<div className="inline-flex items-center">
 					<Button
 						variant="outline"
-						className="rounded-r-none border bg-transparent"
+						className="h-8 rounded-r-none border bg-transparent"
 						onClick={handleSaveSession}
 						disabled={isCreatingSession || !hasChanges || isStreaming}
 					>
@@ -167,7 +168,13 @@ export default function PromptsViewHeader() {
 					</Button>
 					<Popover open={sessionsOpen} onOpenChange={setSessionsOpen}>
 						<PopoverTrigger asChild>
-							<Button variant="outline" className="h-[30px] w-8 rounded-l-none border border-l-0 bg-transparent p-0">
+							<Button
+								variant="outline"
+								className={cn(
+									"h-8 w-8 rounded-l-none border border-l-0 bg-transparent p-0",
+									isCreatingSession || !hasChanges || isStreaming ? "border-border/50" : "",
+								)}
+							>
 								<ChevronDown className="h-4 w-4" />
 							</Button>
 						</PopoverTrigger>
@@ -325,7 +332,7 @@ function SessionItem({
 						e.stopPropagation();
 						setIsEditing(true);
 					}}
-					className="rounded-sm p-1 hover:bg-muted focus:bg-muted opacity-0 transition-opacity group-hover/item:opacity-100 focus:opacity-100"
+					className="hover:bg-muted focus:bg-muted rounded-sm p-1 opacity-0 transition-opacity group-hover/item:opacity-100 focus:opacity-100"
 				>
 					<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 cursor-pointer" />
 				</button>

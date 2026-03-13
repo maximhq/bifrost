@@ -7,6 +7,7 @@ import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { fileToAttachment } from "../../utils/attachment";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
+import { AttachmentDisplay } from "./attachmentViews";
 
 export function UserMessageView({
 	message,
@@ -32,6 +33,7 @@ export function UserMessageView({
 	const messageAttachments = message.attachments;
 	const canAttach = supportsVision && !disabled;
 	const hasVariables = JINJA_VAR_REGEX.test(content);
+	JINJA_VAR_REGEX.lastIndex = 0;
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -144,7 +146,7 @@ export function UserMessageView({
 
 	return (
 		<div
-			className="group relative hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors"
+			className="group relative hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors"
 			ref={containerRef}
 			{...(canAttach
 				? {
@@ -156,7 +158,7 @@ export function UserMessageView({
 				: {})}
 		>
 			{canAttach && isDragging && (
-				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-lg border-2 border-dashed backdrop-blur-sm">
+				<div className="bg-background/80 border-primary absolute inset-0 z-50 flex items-center justify-center rounded-sm border-2 border-dashed backdrop-blur-sm">
 					<div className="text-primary flex flex-col items-center gap-1">
 						<Paperclip className="h-5 w-5" />
 						<span className="text-xs font-medium">Drop files to attach</span>
@@ -239,82 +241,6 @@ export function UserMessageView({
 			{messageAttachments.length > 0 && (
 				<AttachmentDisplay attachments={messageAttachments} editable={canAttach} onRemoveAttachment={handleRemoveAttachment} />
 			)}
-		</div>
-	);
-}
-
-function AttachmentDisplay({
-	attachments,
-	editable,
-	onRemoveAttachment,
-}: {
-	attachments: MessageContent[];
-	editable?: boolean;
-	onRemoveAttachment?: (index: number) => void;
-}) {
-	if (attachments.length === 0) return null;
-
-	return (
-		<div className="mt-2 flex flex-wrap gap-2">
-			{attachments.map((att, i) => {
-				if (att.type === "image_url" && att.image_url?.url) {
-					return (
-						<div key={i} className="group/att relative">
-							{/* eslint-disable-next-line @next/next/no-img-element */}
-							<img src={att.image_url.url} alt="attached image" className="max-h-48 max-w-xs rounded-md border object-contain" />
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				if (att.type === "input_audio") {
-					const format = att.input_audio?.format || "wav";
-					const dataUrl = `data:audio/${format};base64,${att.input_audio?.data || ""}`;
-					return (
-						<div key={i} className="group/att bg-muted/30 relative flex items-center gap-2 rounded-md border px-3 py-2">
-							<Mic className="text-muted-foreground h-4 w-4" />
-							<audio controls className="h-8 max-w-[200px]">
-								<source src={dataUrl} type={`audio/${format}`} />
-							</audio>
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				if (att.type === "file") {
-					return (
-						<div key={i} className="group/att bg-muted/30 text-muted-foreground relative flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
-							<FileIcon className="h-4 w-4 shrink-0" />
-							<span className="max-w-[200px] truncate">{att.file?.filename || "File"}</span>
-							{att.file?.file_type && <span className="text-xs opacity-60">{att.file.file_type}</span>}
-							{editable && onRemoveAttachment && (
-								<button
-									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
-								>
-									<XIcon className="h-3 w-3" />
-								</button>
-							)}
-						</div>
-					);
-				}
-
-				return null;
-			})}
 		</div>
 	);
 }

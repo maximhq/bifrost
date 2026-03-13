@@ -3,8 +3,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Message, SerializedMessage } from "@/lib/message";
 import { InfoIcon, PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
+import { isJson } from "@/lib/utils/validation";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 export function AssistantMessageView({
 	message,
@@ -24,6 +26,25 @@ export function AssistantMessageView({
 	const content = message.content;
 	const isEmpty = !content;
 	const usage = message.usage;
+	const jsonBufferRef = useRef<string | null>(null);
+	const contentIsJson = useMemo(() => !isEmpty && !isStreaming && isJson(content), [content, isEmpty, isStreaming]);
+	const formattedJson = useMemo(() => {
+		if (!contentIsJson) return "";
+		try {
+			return JSON.stringify(JSON.parse(content), null, 2);
+		} catch {
+			return content;
+		}
+	}, [content, contentIsJson]);
+
+	const flushJsonBuffer = () => {
+		if (jsonBufferRef.current !== null) {
+			const clone = message.clone();
+			clone.content = jsonBufferRef.current;
+			onChange(clone.serialized);
+			jsonBufferRef.current = null;
+		}
+	};
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -42,7 +63,7 @@ export function AssistantMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto flex items-center gap-0.5 h-5">
@@ -53,9 +74,9 @@ export function AssistantMessageView({
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
 								<div className="flex flex-col gap-0.5 text-xs tabular-nums">
-									<span>Input: {usage.prompt_tokens} tokens</span>
-									<span>Output: {usage.completion_tokens} tokens</span>
-									<span>Total: {usage.total_tokens} tokens</span>
+									<span><span className="w-12 inline-block">Input:</span> {usage.prompt_tokens} tokens</span>
+									<span><span className="w-12 inline-block">Output:</span> {usage.completion_tokens} tokens</span>
+									<span><span className="w-12 inline-block">Total:</span> {usage.total_tokens} tokens</span>
 								</div>
 							</TooltipContent>
 						</Tooltip>
@@ -76,9 +97,9 @@ export function AssistantMessageView({
 			<div>
 				{isStreaming && isEmpty ? (
 					<div className="flex items-center gap-1 py-1">
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "0ms" }} />
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "150ms" }} />
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "300ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "0ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "150ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "300ms" }} />
 					</div>
 				) : editMode ? (
 					<Textarea
@@ -104,6 +125,18 @@ export function AssistantMessageView({
 					/>
 				) : isEmpty ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter assistant message...</div>
+				) : contentIsJson ? (
+					<CodeEditor
+						wrap
+						code={formattedJson}
+						lang="json"
+						readonly={disabled}
+						autoResize
+						onChange={(value) => {
+							jsonBufferRef.current = value ?? "";
+						}}
+						onBlur={flushJsonBuffer}
+					/>
 				) : (
 					<div
 						className={!disabled && !isStreaming ? "cursor-text" : undefined}

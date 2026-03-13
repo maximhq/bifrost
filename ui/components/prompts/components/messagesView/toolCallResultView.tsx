@@ -36,7 +36,7 @@ export default function ToolResultMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? MessageRole.ASSISTANT} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto flex items-center gap-0.5 overflow-x-auto max-w-1/2 h-5">

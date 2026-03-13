@@ -45,7 +45,7 @@ export default function ToolCallMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors">
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors">
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto h-5">
@@ -65,7 +65,7 @@ export default function ToolCallMessageView({
 						// keep raw string if not valid JSON
 					}
 					return (
-						<div key={tc.id} className="bg-muted/50 rounded-md border px-3 py-2">
+						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2">
 							<div className="flex items-center gap-2">
 								<Wrench className="text-muted-foreground h-3 w-3 shrink-0" />
 								<span className="font-mono text-xs font-medium shrink-0 mr-4">{tc.function.name}</span>

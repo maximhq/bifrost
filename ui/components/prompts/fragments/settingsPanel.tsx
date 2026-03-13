@@ -1,6 +1,4 @@
-import {
-	ComboboxSelect
-} from "@/components/ui/combobox";
+import { ComboboxSelect } from "@/components/ui/combobox";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Separator } from "@/components/ui/separator";
@@ -47,7 +45,17 @@ export function SettingsPanel() {
 	);
 	// Dynamic providers
 	const { data: providers } = useGetProvidersQuery();
-	const configuredProviders = useMemo(() => (providers ?? []).filter((p) => p.keys && p.keys.length > 0), [providers]);
+	const { data: virtualKeysData } = useGetVirtualKeysQuery();
+	const configuredProviders = useMemo(() => {
+		const activeVirtualKeys = virtualKeysData?.virtual_keys?.filter((vk) => vk.is_active) ?? [];
+		return (providers ?? []).filter((p) => {
+			if (p.keys && p.keys.length > 0) return true;
+			// Include providers that have active virtual keys (wildcard or explicitly targeting this provider)
+			return activeVirtualKeys.some(
+				(vk) => !vk.provider_configs || vk.provider_configs.length === 0 || vk.provider_configs.some((pc) => pc.provider === p.name),
+			);
+		});
+	}, [providers, virtualKeysData]);
 
 	// Ensure current provider always has a label-resolved option (even before providers query loads)
 	const providerOptions = useMemo(() => {
@@ -67,7 +75,6 @@ export function SettingsPanel() {
 	const providerKeys = useMemo(() => (allKeys ?? []).filter((k) => k.provider === provider), [allKeys, provider]);
 
 	// Virtual keys filtered by selected provider
-	const { data: virtualKeysData } = useGetVirtualKeysQuery();
 	const providerVirtualKeys = useMemo(() => {
 		const vks = virtualKeysData?.virtual_keys ?? [];
 		return vks.filter((vk) => {
@@ -128,7 +135,6 @@ export function SettingsPanel() {
 		<div className="flex h-full flex-col">
 			<ScrollArea className="grow overflow-y-auto" viewportClassName="no-table">
 				<div className="space-y-6 p-4">
-					{/* Provider Selector */}
 					<div className="flex flex-col gap-2">
 						<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
 						<ComboboxSelect
@@ -140,46 +146,45 @@ export function SettingsPanel() {
 						/>
 					</div>
 
-					{/* Model Selector */}
 					<div className="flex flex-col gap-2">
 						<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
 						<ComboboxSelect
 							options={availableModels.map((m) => ({ label: m, value: m }))}
 							value={model}
 							onValueChange={(v) => v && onModelChange(v)}
-							placeholder="Select model"
+							placeholder={!provider ? "Select a provider first" : "Select model"}
 							hideClear
+							disabled={!provider}
 						/>
 					</div>
 
-					{/* API Key / Virtual Key Selector */}
-					{(providerKeys.length > 0 || providerVirtualKeys.length > 0) && (
-						<div className="flex flex-col gap-2">
-							<Label className="text-muted-foreground text-xs font-medium uppercase">API Key</Label>
-							<ApiKeySelectorView
-								providerKeys={providerKeys}
-								virtualKeys={providerVirtualKeys}
-								value={apiKeyId}
-								onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
-							/>
-						</div>
+					{(providerKeys.length > 0 || providerVirtualKeys.length > 0) && !!provider && (
+						<ApiKeySelectorView
+							providerKeys={providerKeys}
+							virtualKeys={providerVirtualKeys}
+							value={apiKeyId}
+							onValueChange={(v) => onApiKeyIdChange(v ?? "__auto__")}
+							disabled={!provider}
+						/>
 					)}
 
-					<Separator />
-
-					{/* Jinja2 Variables */}
-					{Object.keys(variables).length > 0 && (
+					{/* {Object.keys(variables).length > 0 && (
 						<>
-							<VariablesTableView variables={variables} onChange={setVariables} />
 							<Separator />
+							<VariablesTableView variables={variables} onChange={setVariables} />
+						</>
+					)} */}
+
+					{model && (
+						<>
+							<Separator />
+
+							<div className="flex flex-col gap-4">
+								<Label className="text-muted-foreground text-xs font-medium uppercase">Model Parameters</Label>
+								<ModelParameters model={model} config={modelParams} onChange={handleModelParamsChange} hideFields={["promptTools"]} />
+							</div>
 						</>
 					)}
-
-					{/* Model Parameters */}
-					<div className="flex flex-col gap-4">
-						<Label className="text-muted-foreground text-xs font-medium uppercase">Model Parameters</Label>
-						<ModelParameters model={model} config={modelParams} onChange={handleModelParamsChange} hideFields={["promptTools"]} />
-					</div>
 				</div>
 			</ScrollArea>
 		</div>
