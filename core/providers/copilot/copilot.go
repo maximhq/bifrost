@@ -18,7 +18,7 @@ type CopilotProvider struct {
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
-	tokenManagers       sync.Map // map[string]*tokenManagerEntry keyed by Key.ID
+	tokenManagers       sync.Map // map[string]*CopilotTokenManagerEntry keyed by Key.ID
 }
 
 // NewCopilotProvider creates a new Copilot provider instance.
@@ -50,9 +50,9 @@ func (provider *CopilotProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Copilot
 }
 
-// tokenManagerEntry pairs a copilotTokenManager with the OAuth access token it was created for.
+// CopilotTokenManagerEntry pairs a copilotTokenManager with the OAuth access token it was created for.
 // Storing the token value allows detecting key rotations so stale managers are replaced.
-type tokenManagerEntry struct {
+type CopilotTokenManagerEntry struct {
 	tm          *copilotTokenManager
 	accessToken string
 }
@@ -63,14 +63,14 @@ type tokenManagerEntry struct {
 func (provider *CopilotProvider) getOrCreateTokenManager(key schemas.Key) *copilotTokenManager {
 	currentToken := key.Value.GetValue()
 	if val, ok := provider.tokenManagers.Load(key.ID); ok {
-		entry := val.(*tokenManagerEntry)
+		entry := val.(*CopilotTokenManagerEntry)
 		if entry.accessToken == currentToken {
 			return entry.tm
 		}
 		// OAuth token has been rotated — fall through to create a fresh manager
 	}
 	tm := newCopilotTokenManager(currentToken, provider.client, provider.logger)
-	provider.tokenManagers.Store(key.ID, &tokenManagerEntry{tm: tm, accessToken: currentToken})
+	provider.tokenManagers.Store(key.ID, &CopilotTokenManagerEntry{tm: tm, accessToken: currentToken})
 	return tm
 }
 
@@ -122,14 +122,21 @@ func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []
 		}
 	}
 
-	tm := provider.getOrCreateTokenManager(keys[0])
-	token, apiBase, bifrostErr := tm.getToken()
+	// Use keys[0] for the API base URL (the models endpoint is the same across all accounts).
+	tm0 := provider.getOrCreateTokenManager(keys[0])
+	_, apiBase, bifrostErr := tm0.getToken()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
+	// Resolve a Copilot JWT per key so that each key carries its own valid token.
 	copilotKeys := make([]schemas.Key, len(keys))
 	for i, k := range keys {
+		tm := provider.getOrCreateTokenManager(k)
+		token, _, perKeyErr := tm.getToken()
+		if perKeyErr != nil {
+			return nil, perKeyErr
+		}
 		copilotKeys[i] = copilotKey(k, token)
 	}
 

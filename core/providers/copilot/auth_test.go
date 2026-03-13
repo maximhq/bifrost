@@ -81,7 +81,10 @@ func TestTokenManager_TransportErrorPreservesValidCachedToken(t *testing.T) {
 	tm.tokenExchangeURL = "http://127.0.0.1:1"
 	tm.apiToken = "cached-jwt"
 	tm.apiBase = "https://api.githubcopilot.com"
-	tm.expiresAt = time.Now().Add(5 * time.Minute)
+	// Set expiry within the refresh margin (tokenExpiryMargin = 60s) to force a refresh
+	// attempt, while keeping the token technically valid so the transport-error fallback
+	// path can return the cached token instead of an error.
+	tm.expiresAt = time.Now().Add(30 * time.Second)
 
 	token, apiBase, err := tm.getToken()
 	if err != nil {

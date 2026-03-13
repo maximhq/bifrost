@@ -1104,6 +1104,7 @@ function CopilotDeviceLoginSection({
 								size="sm"
 								onClick={resetFlow}
 								className="w-full"
+								data-testid="copilot-cancel-login-button"
 							>
 								Cancel and start over
 							</Button>

@@ -102,11 +102,17 @@ func (tm *copilotTokenManager) refreshTokenLocked() (string, string, *schemas.Bi
 			// Token is still valid — return it despite the refresh failure
 			return tm.apiToken, tm.apiBase, nil
 		}
-		noFallback := false
+		// Only block fallbacks for definitive auth failures (401/403).
+		// For transient errors (5xx, 429), allow the fallback chain to continue.
+		var allowFallbacks *bool
+		if sc == 401 || sc == 403 {
+			noFallback := false
+			allowFallbacks = &noFallback
+		}
 		return "", "", &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     &sc,
-			AllowFallbacks: &noFallback,
+			AllowFallbacks: allowFallbacks,
 			Error: &schemas.ErrorField{
 				Message: fmt.Sprintf("copilot token exchange returned %d: %s", sc, string(body)),
 			},
@@ -125,9 +131,11 @@ func (tm *copilotTokenManager) refreshTokenLocked() (string, string, *schemas.Bi
 	}
 
 	if tokenResp.Token == "" {
+		noFallback := false
 		return "", "", &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     intPtr(401),
+			AllowFallbacks: &noFallback,
 			Error: &schemas.ErrorField{
 				Message: "copilot token exchange returned empty token; ensure the OAuth access token is valid and the GitHub account has an active Copilot subscription",
 			},

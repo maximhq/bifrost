@@ -1079,13 +1079,14 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 					name = *format.Name
 				}
 
-				// Resolve strict: Format.Strict > JSONSchema.Strict
+				// Resolve strict: JSONSchema.Strict takes precedence over the outer Format.Strict
+				// (the inner explicit schema value overrides the top-level convenience field).
 				var strictVal bool
-				if format.JSONSchema != nil && format.JSONSchema.Strict != nil {
-					strictVal = *format.JSONSchema.Strict
-				}
 				if format.Strict != nil {
 					strictVal = *format.Strict
+				}
+				if format.JSONSchema != nil && format.JSONSchema.Strict != nil {
+					strictVal = *format.JSONSchema.Strict
 				}
 
 				// Build the inner schema object
@@ -1098,22 +1099,28 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 						if err == nil {
 							var schemaMap map[string]interface{}
 							if err := json.Unmarshal(data, &schemaMap); err == nil {
-								// Remove metadata fields that are not part of the JSON Schema itself
+								// Remove metadata fields that belong at the json_schema wrapper level
 								delete(schemaMap, "name")
 								delete(schemaMap, "strict")
+								delete(schemaMap, "description")
 								schema = schemaMap
 							}
 						}
 					}
 				}
 
+				jsonSchemaObj := map[string]interface{}{
+					"name":   name,
+					"strict": strictVal,
+					"schema": schema,
+				}
+				// Preserve description at the json_schema wrapper level (not inside the schema object)
+				if format.JSONSchema != nil && format.JSONSchema.Description != nil {
+					jsonSchemaObj["description"] = *format.JSONSchema.Description
+				}
 				var rf interface{} = map[string]interface{}{
-					"type": "json_schema",
-					"json_schema": map[string]interface{}{
-						"name":   name,
-						"strict": strictVal,
-						"schema": schema,
-					},
+					"type":        "json_schema",
+					"json_schema": jsonSchemaObj,
 				}
 				bcr.Params.ResponseFormat = &rf
 			}

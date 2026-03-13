@@ -3,10 +3,12 @@
 package handlers
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -45,13 +47,39 @@ type CopilotHandler struct {
 // maxOAuthResponseBytes caps the body read from GitHub OAuth responses to prevent memory exhaustion.
 const maxOAuthResponseBytes = 64 * 1024
 
-// NewCopilotHandler creates a new Copilot handler instance
-func NewCopilotHandler() *CopilotHandler {
+// NewCopilotHandler creates a new Copilot handler instance.
+// The provided config is used to configure outbound HTTP proxy settings for the OAuth device flow.
+func NewCopilotHandler(config *lib.Config) *CopilotHandler {
 	return &CopilotHandler{
-		httpClient:     &http.Client{Timeout: 30 * time.Second},
+		httpClient:     buildOAuthHTTPClient(config),
 		deviceCodeURL:  githubDeviceCodeURL,
 		accessTokenURL: githubAccessTokenURL,
 	}
+}
+
+// buildOAuthHTTPClient builds an http.Client for GitHub OAuth calls, applying proxy
+// settings from the Bifrost config when present.
+func buildOAuthHTTPClient(config *lib.Config) *http.Client {
+	if config == nil || config.ProxyConfig == nil || !config.ProxyConfig.Enabled || config.ProxyConfig.URL == "" {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	pc := config.ProxyConfig
+	rawURL := pc.URL
+	if pc.Username != "" {
+		if u, err := url.Parse(pc.URL); err == nil {
+			u.User = url.UserPassword(pc.Username, pc.Password)
+			rawURL = u.String()
+		}
+	}
+	proxyURL, err := url.Parse(rawURL)
+	if err != nil {
+		return &http.Client{Timeout: 30 * time.Second}
+	}
+	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if pc.SkipTLSVerify {
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 — user-configured skip
+	}
+	return &http.Client{Timeout: 30 * time.Second, Transport: tr}
 }
 
 // RegisterRoutes registers all Copilot-specific routes
