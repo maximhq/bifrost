@@ -194,6 +194,8 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyID)
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys)
+	ctx.ClearValue(schemas.BifrostContextKeyShouldConvertTextToChat)
+	ctx.ClearValue(schemas.BifrostContextKeyShouldConvertChatToResponses)
 }
 
 var supportedBaseProvidersSet = func() map[schemas.ModelProvider]struct{} {
