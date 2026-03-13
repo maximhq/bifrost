@@ -215,6 +215,12 @@ func (provider *GeminiProvider) listModelsByKey(ctx *schemas.BifrostContext, key
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	if len(geminiResponse.Models) == 0 {
+		var singleModel GeminiModel
+		if err := sonic.Unmarshal(resp.Body(), &singleModel); err == nil && singleModel.Name != "" {
+			geminiResponse.Models = []GeminiModel{singleModel}
+		}
+	}
 
 	response := geminiResponse.ToBifrostListModelsResponse(providerName, key.Models, request.Unfiltered)
 
