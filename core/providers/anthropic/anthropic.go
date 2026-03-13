@@ -137,84 +137,11 @@ func (provider *AnthropicProvider) buildRequestURL(ctx *schemas.BifrostContext, 
 func (provider *AnthropicProvider) resolveKeyValue(ctx context.Context, key schemas.Key) (string, error) {
 	if key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != "" {
 		if provider.oauth2Provider == nil {
-			return "", fmt.Errorf("anthropic OAuth key configured but OAuth2Provider not available")
+			return "", fmt.Errorf("oauth key configured but oauth2 provider not available")
 		}
 		return provider.oauth2Provider.GetAccessToken(ctx, key.AnthropicOAuthKeyConfig.OAuthConfigID)
 	}
 	return key.Value.GetValue(), nil
-}
-
-// isOAuthKey reports whether a key uses Anthropic OAuth rather than a static API key.
-func isOAuthKey(key schemas.Key) bool {
-	return key.AnthropicOAuthKeyConfig != nil && key.AnthropicOAuthKeyConfig.OAuthConfigID != ""
-}
-
-// setAnthropicAuthHeader sets the appropriate authentication header on a fasthttp request.
-// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
-func setAnthropicAuthHeader(req *fasthttp.Request, keyValue string, key schemas.Key) {
-	if keyValue == "" {
-		return
-	}
-	if isOAuthKey(key) {
-		req.Header.Set("Authorization", "Bearer "+keyValue)
-		appendBetaHeader(req, AnthropicOAuthBetaHeader)
-	} else {
-		req.Header.Set("x-api-key", keyValue)
-	}
-}
-
-// setAnthropicAuthHeaderMap sets the appropriate authentication header in a headers map.
-// OAuth tokens use "Authorization: Bearer <token>" + beta header; static API keys use "x-api-key: <key>".
-func setAnthropicAuthHeaderMap(headers map[string]string, keyValue string, key schemas.Key) {
-	if keyValue == "" {
-		return
-	}
-	if isOAuthKey(key) {
-		headers["Authorization"] = "Bearer " + keyValue
-		if existing := headers["anthropic-beta"]; existing != "" {
-			headers["anthropic-beta"] = existing + "," + AnthropicOAuthBetaHeader
-		} else {
-			headers["anthropic-beta"] = AnthropicOAuthBetaHeader
-		}
-	} else {
-		headers["x-api-key"] = keyValue
-	}
-}
-
-func setAnthropicRequestBody(ctx *schemas.BifrostContext, req *fasthttp.Request, body []byte) bool {
-	// Keep one request-body path for both modes:
-	// - normal mode: send converted JSON/multipart bytes
-	// - large payload mode: stream original client body reader
-	// Example failure prevented: duplicating large uploads in memory after passthrough
-	// was already activated at transport layer.
-	usedLargePayloadBody := providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, schemas.Anthropic)
-	if !usedLargePayloadBody {
-		req.SetBody(body)
-	}
-	return usedLargePayloadBody
-}
-
-func extractAnthropicResponsesUsageFromPrefetch(data []byte) *schemas.ResponsesResponseUsage {
-	node, err := sonic.Get(data, "usage")
-	if err != nil {
-		return nil
-	}
-	raw, _ := node.Raw()
-	if raw == "" {
-		return nil
-	}
-	var usage struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	}
-	if err := sonic.UnmarshalString(raw, &usage); err != nil {
-		return nil
-	}
-	return &schemas.ResponsesResponseUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.InputTokens + usage.OutputTokens,
-	}
 }
 
 // completeRequest sends a request to Anthropic's API and handles the response.
@@ -2693,9 +2620,12 @@ func (provider *AnthropicProvider) Passthrough(
 		fasthttpReq.Header.Set(k, v)
 	}
 
-	if key.Value.GetValue() != "" {
-		fasthttpReq.Header.Set("x-api-key", key.Value.GetValue())
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
 	}
+	setAnthropicAuthHeader(fasthttpReq, keyValue, key)
 	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
 
 	fasthttpReq.SetBody(req.Body)
@@ -2769,9 +2699,12 @@ func (provider *AnthropicProvider) PassthroughStream(
 
 	fasthttpReq.Header.Set("Connection", "close")
 
-	if key.Value.GetValue() != "" {
-		fasthttpReq.Header.Set("x-api-key", key.Value.GetValue())
+	// Resolve the key value (may be an OAuth token)
+	keyValue, resolveErr := provider.resolveKeyValue(ctx, key)
+	if resolveErr != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to resolve API key", resolveErr, provider.GetProviderKey())
 	}
+	setAnthropicAuthHeader(fasthttpReq, keyValue, key)
 	fasthttpReq.Header.Set("anthropic-version", provider.apiVersion)
 
 	fasthttpReq.SetBody(req.Body)
