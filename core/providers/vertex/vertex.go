@@ -963,7 +963,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	}
 
 	if schemas.IsAnthropicModel(deployment) {
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, false)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -1286,7 +1286,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			return nil, providerUtils.NewConfigurationError("project ID is not set", providerName)
 		}
 
-		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, true)
+		jsonBody, bifrostErr := getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, true, false)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -2810,37 +2810,10 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	)
 
 	if schemas.IsAnthropicModel(deployment) {
-		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
-			ctx,
-			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
-				return anthropic.ToAnthropicResponsesRequest(ctx, request)
-			},
-			providerName,
-		)
+		jsonBody, bifrostErr = getRequestBodyForAnthropicResponses(ctx, request, deployment, providerName, false, true)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-
-		var payload map[string]any
-		if err := sonic.Unmarshal(jsonBody, &payload); err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err, providerName)
-		}
-
-		payload["model"] = deployment
-		if _, exists := payload["anthropic_version"]; !exists {
-			payload["anthropic_version"] = DefaultVertexAnthropicVersion
-		}
-
-		delete(payload, "region")
-		delete(payload, "max_tokens")
-		delete(payload, "temperature")
-
-		newBody, err := sonic.Marshal(payload)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-		}
-		jsonBody = newBody
 	} else {
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(
 			ctx,

@@ -913,7 +913,7 @@ func (provider *AnthropicProvider) Responses(ctx *schemas.BifrostContext, key sc
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
 	}
-	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), false)
+	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -988,7 +988,7 @@ func (provider *AnthropicProvider) ResponsesStream(ctx *schemas.BifrostContext, 
 	}
 
 	// Convert to Anthropic format using the centralized converter
-	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), true)
+	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2349,37 +2349,12 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.Anthropic, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
-
-	// Convert to Anthropic format and get required beta headers
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			anthropicReq, convErr := ToAnthropicResponsesRequest(ctx, request)
-			if convErr != nil {
-				return nil, convErr
-			}
-			addMissingBetaHeadersToContext(ctx, anthropicReq)
-			return anthropicReq, nil
-		},
-		provider.GetProviderKey())
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	jsonBody, err := getRequestBodyForResponses(ctx, request, provider.GetProviderKey(), false, []string{"max_tokens", "temperature"})
+	if err != nil {
+		return nil, err
 	}
 
-	// Remove max_tokens and temperature for count_tokens endpoint
-	var payload map[string]any
-	if err := sonic.Unmarshal(jsonData, &payload); err == nil {
-		delete(payload, "max_tokens")
-		delete(payload, "temperature")
-		newData, err := sonic.Marshal(payload)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
-		}
-		jsonData = newData
-	}
-
-	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonData, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
+	responseBody, latency, providerResponseHeaders, bifrostErr := provider.completeRequest(ctx, jsonBody, provider.buildRequestURL(ctx, "/v1/messages/count_tokens", schemas.CountTokensRequest), key.Value.GetValue(), &providerUtils.RequestMetadata{
 		Provider:    provider.GetProviderKey(),
 		Model:       request.Model,
 		RequestType: schemas.CountTokensRequest,
@@ -2388,20 +2363,20 @@ func (provider *AnthropicProvider) CountTokens(ctx *schemas.BifrostContext, key 
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	anthropicResponse := &AnthropicCountTokensResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(
 		responseBody,
 		anthropicResponse,
-		jsonData,
+		jsonBody,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 	)
 
 	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
 	response := anthropicResponse.ToBifrostCountTokensResponse(request.Model)

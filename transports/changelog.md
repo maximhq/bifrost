@@ -6,6 +6,7 @@
 - feat: adds attachment support in Maxim plugin
 - feat: add x-bf-api-key-id header support for explicit key selection by ID, with priority over x-bf-api-key name selection
 - fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
+- fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
 
 ## Migration Guide
 
