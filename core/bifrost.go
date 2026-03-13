@@ -3889,10 +3889,11 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 // to getProviderQueue, which is called inside tryRequest/tryStreamRequest after PreLLMHook
 // has run and may have set override credentials and BaseProviderType.
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
-	// Deep-copy the request so mutations (provider, model) do not alias req or other
-	// fallback attempts sharing the same inner pointer. ProviderOverride is cleared so
-	// the fallback PreLLMHook can inject fresh credentials via req.UpdateAPIKey /
-	// req.UpdateProviderBaseURL for the new provider.
+	// Clone the request: routing scalars (Provider, Model) and ProviderOverride get
+	// independent copies; content slices (messages, tools) are intentionally
+	// shallow-shared — see BifrostRequest.Clone() for the full contract.
+	// ProviderOverride is cleared so the fallback PreLLMHook can inject fresh
+	// credentials via req.UpdateAPIKey / req.UpdateProviderBaseURL for the new provider.
 	fallbackReq := req.Clone()
 	fallbackReq.ProviderOverride = nil
 	// SetProvider and SetModel enumerate all BifrostRequest field types in their
