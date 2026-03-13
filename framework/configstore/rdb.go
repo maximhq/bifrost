@@ -354,7 +354,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
-				// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+				// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+				// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+				// by the logout handler — it is never present in config-reload or admin-UI payloads.
+				// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+				// intentionally prevents accidental disconnection during config updates.
 				if dbKey.AnthropicOAuthKeyConfig == nil {
 					dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
 				}
@@ -373,7 +377,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
-					// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+					// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+					// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+					// by the logout handler — it is never present in config-reload or admin-UI payloads.
+					// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+					// intentionally prevents accidental disconnection during config updates.
 					if dbKey.AnthropicOAuthKeyConfig == nil {
 						dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
 					}
@@ -521,7 +529,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 			dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 			dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
-			// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it
+			// Preserve server-managed Anthropic OAuth config if incoming key doesn't set it.
+			// AnthropicOAuthKeyConfig is set exclusively by the OAuth flow handlers and cleared
+			// by the logout handler — it is never present in config-reload or admin-UI payloads.
+			// Both "omitted" and "explicitly null" in JSON deserialize to nil, so this guard
+			// intentionally prevents accidental disconnection during config updates.
 			if dbKey.AnthropicOAuthKeyConfig == nil {
 				dbKey.AnthropicOAuthKeyConfig = existingKey.AnthropicOAuthKeyConfig
 			}
