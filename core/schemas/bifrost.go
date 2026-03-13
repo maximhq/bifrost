@@ -374,7 +374,8 @@ type BifrostRequest struct {
 	// ProviderOverride holds per-request credential and URL overrides set via
 	// UpdateAPIKey and UpdateProviderBaseURL. It is read by Bifrost internally and
 	// should not be set directly; use the Update* methods instead.
-	ProviderOverride *ProviderOverride
+	// Excluded from JSON to prevent accidental serialization of override metadata.
+	ProviderOverride *ProviderOverride `json:"-"`
 }
 
 // GetRequestFields returns the provider, model, and fallbacks from the request.
