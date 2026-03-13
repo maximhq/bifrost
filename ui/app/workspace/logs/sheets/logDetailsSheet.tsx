@@ -99,11 +99,11 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	const isPassthrough = isPassthroughOperation(log.object);
 	const passthroughParams = isPassthrough
 		? (log.params as {
-				method?: string;
-				path?: string;
-				raw_query?: string;
-				status_code?: number;
-		  })
+			method?: string;
+			path?: string;
+			raw_query?: string;
+			status_code?: number;
+		})
 		: null;
 
 	// Taking out tool call
@@ -111,7 +111,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 	if (log.params?.tools) {
 		try {
 			toolsParameter = JSON.stringify(log.params.tools, null, 2);
-		} catch (ignored) {}
+		} catch (ignored) { }
 	}
 
 	// Extract audio format from request params
@@ -242,9 +242,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								label="Type"
 								value={
 									<div
-										className={`${
-											RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
-										} rounded-sm px-3 py-1`}
+										className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"
+											} rounded-sm px-3 py-1`}
 									>
 										{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
 									</div>
@@ -341,14 +340,21 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 									<LogEntryDetailsView className="w-full" label="Cost" value={log.cost != null ? `$${parseFloat(log.cost.toFixed(6))}` : "-"} />
 									{log.token_usage?.prompt_tokens_details && (
 										<>
-											{(log.token_usage.prompt_tokens_details.cached_read_tokens ||
-												log.token_usage.prompt_tokens_details.cached_write_tokens) && (
+											{(log.token_usage.prompt_tokens_details.cached_read_tokens) && (
 												<LogEntryDetailsView
 													className="w-full"
-													label="Cached Tokens"
+													label="Cache Read Tokens"
 													value={
-														(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0) +
-															(log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0) || "-"
+														(log.token_usage.prompt_tokens_details.cached_read_tokens ?? 0)
+													}
+												/>
+											)}
+											{(log.token_usage.prompt_tokens_details.cached_write_tokens) && (
+												<LogEntryDetailsView
+													className="w-full"
+													label="Cache Write Tokens"
+													value={
+														(log.token_usage.prompt_tokens_details.cached_write_tokens ?? 0)
 													}
 												/>
 											)}
@@ -619,7 +625,7 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 				{/* Passthrough request body */}
 				{isPassthrough && passthroughRequestBody && (() => {
 					return (
-						<CollapsibleBox title="Request Body" 									onCopy={() => {
+						<CollapsibleBox title="Request Body" onCopy={() => {
 							try {
 								return JSON.stringify(JSON.parse(passthroughRequestBody || ""), null, 2);
 							} catch {

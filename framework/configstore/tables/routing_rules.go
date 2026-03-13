@@ -89,7 +89,7 @@ type TableRoutingTarget struct {
 	Provider *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"provider,omitempty"` // nil = use incoming provider
 	Model    *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"model,omitempty"`    // nil = use incoming model
 	KeyID    *string `gorm:"type:varchar(255);uniqueIndex:idx_routing_target_config" json:"key_id,omitempty"`   // nil = no key pin
-	Weight   float64 `gorm:"type:double;not null;default:1" json:"weight"` // must sum to 1 across all targets in a rule
+	Weight   float64 `gorm:"not null;default:1" json:"weight"`                                                  // must sum to 1 across all targets in a rule
 }
 
 // TableName for TableRoutingTarget

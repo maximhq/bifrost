@@ -56,10 +56,6 @@ github.com/mattn/go-localereader v0.0.1 h1:ygSAOl7ZXTx4RdPYinUpg6W99U8jWvWi9Ye2J
 github.com/mattn/go-localereader v0.0.1/go.mod h1:8fBrzywKY7BI3czFoHkuzRoWE9C+EiG4R1k4Cjx5p88=
 github.com/mattn/go-runewidth v0.0.19 h1:v++JhqYnZuu5jSKrk9RbgF5v4CGUjqRfBm05byFGLdw=
 github.com/mattn/go-runewidth v0.0.19/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
-github.com/maximhq/vt10x v0.0.0-20260312212154-fef3149e3dc5 h1:ZVX4dGBOnehgcWXbLa3drohKswf7qMkRJStAmD4tnxA=
-github.com/maximhq/vt10x v0.0.0-20260312212154-fef3149e3dc5/go.mod h1:wYVKs3nG8h6lhuE2GYgSEDszozAG0EJLjdyyIJMK1lo=
-github.com/maximhq/vt10x v0.0.0-20260312213043-c4d07331ea7e h1:LDn8Bd8T4giqarXTVKejyMJlyIe3DcajVJaOGK/ZDiM=
-github.com/maximhq/vt10x v0.0.0-20260312213043-c4d07331ea7e/go.mod h1:wYVKs3nG8h6lhuE2GYgSEDszozAG0EJLjdyyIJMK1lo=
 github.com/maximhq/vt10x v0.0.0-20260312213827-20648b37d999 h1:K5tlU7N6HpZVUoQnae2hrw6fedbirVjiyyg/JNp5n8M=
 github.com/maximhq/vt10x v0.0.0-20260312213827-20648b37d999/go.mod h1:wYVKs3nG8h6lhuE2GYgSEDszozAG0EJLjdyyIJMK1lo=
 github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 h1:ZK8zHtRHOkbHy6Mmr5D264iyp3TiX5OmNcI5cIARiQI=

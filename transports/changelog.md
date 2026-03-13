@@ -1,3 +1,6 @@
+- fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
+- fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
+- fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout
 - fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — auto, any, and specific tool constraints now correctly propagate to the model
 - feat: adds option to select specific API key for routing rules
 - feat: adds support for multiple weighted routing targets for probabilistic routing
