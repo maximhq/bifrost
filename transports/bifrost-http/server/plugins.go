@@ -106,7 +106,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal litellmcompat plugin config: %w", err)
 		}
-		return litellmcompat.Init(*litellmConfig, logger)
+		return litellmcompat.InitWithModelCatalog(*litellmConfig, logger, bifrostConfig.ModelCatalog)
 
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
