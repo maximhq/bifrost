@@ -1101,7 +1101,6 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 								// Remove metadata fields that are not part of the JSON Schema itself
 								delete(schemaMap, "name")
 								delete(schemaMap, "strict")
-								delete(schemaMap, "description")
 								schema = schemaMap
 							}
 						}

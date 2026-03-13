@@ -887,14 +887,15 @@ function CopilotDeviceLoginSection({
 
 	const startCountdown = useCallback(() => {
 		clearCountdown();
-		setCountdown(10);
+		const interval = deviceState.interval || 5;
+		setCountdown(interval);
 		countdownRef.current = setInterval(() => {
 			setCountdown(prev => {
 				if (prev === null || prev <= 1) return 0;
 				return prev - 1;
 			});
 		}, 1000);
-	}, [clearCountdown]);
+	}, [clearCountdown, deviceState.interval]);
 
 	const pollOnce = useCallback(async () => {
 		if (!deviceState.deviceCode) return;
@@ -927,7 +928,11 @@ function CopilotDeviceLoginSection({
 				return;
 			}
 
-			// Still pending — restart countdown
+			// Still pending — restart countdown.
+			// If GitHub sent "slow_down", increase the interval by 5s as per the device flow spec.
+			if (data.status === 'slow_down') {
+				setDeviceState(prev => ({ ...prev, interval: (prev.interval || 5) + 5 }));
+			}
 			startCountdown();
 		} catch {
 			setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
@@ -936,12 +941,12 @@ function CopilotDeviceLoginSection({
 		}
 	}, [deviceState.deviceCode, form, clearCountdown, startCountdown]);
 
-	// Trigger poll when countdown reaches 0
+	// Trigger poll when countdown reaches 0 (only in device_login mode)
 	useEffect(() => {
-		if (countdown === 0 && !isChecking) {
+		if (countdown === 0 && !isChecking && props.copilotAuthType === 'device_login') {
 			pollOnce();
 		}
-	}, [countdown, isChecking, pollOnce]);
+	}, [countdown, isChecking, pollOnce, props.copilotAuthType]);
 
 	const copyCode = useCallback(() => {
 		if (deviceState.userCode) {
@@ -973,6 +978,10 @@ function CopilotDeviceLoginSection({
 					setCopilotAuthType(v as 'device_login' | 'manual_token');
 					if (v === 'device_login') {
 						resetFlow();
+					} else {
+						// Switching away from device login — stop any active polling
+						clearCountdown();
+						setIsChecking(false);
 					}
 				}}>
 					<TabsList className="grid w-full grid-cols-2">

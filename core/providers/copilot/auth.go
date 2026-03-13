@@ -82,10 +82,18 @@ func (tm *copilotTokenManager) refreshTokenLocked() (string, string, *schemas.Bi
 		if len(body) > 512 {
 			body = body[:512]
 		}
-		tm.apiToken = "" // Clear any stale JWT so the next request retries the exchange
 		if tm.logger != nil {
 			tm.logger.Warn("copilot: token exchange failed; OAuth token may be revoked or invalid",
 				"status", sc)
+		}
+		// Only clear cached JWT on definitive auth failures (401/403).
+		// For transient errors (5xx, network issues), preserve the cached token
+		// so it can still be used if it hasn't actually expired.
+		if sc == 401 || sc == 403 {
+			tm.apiToken = ""
+		} else if tm.apiToken != "" && time.Now().Before(tm.expiresAt) {
+			// Token is still valid — return it despite the refresh failure
+			return tm.apiToken, tm.apiBase, nil
 		}
 		noFallback := false
 		return "", "", &schemas.BifrostError{

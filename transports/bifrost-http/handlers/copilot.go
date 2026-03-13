@@ -123,7 +123,7 @@ type DeviceLoginPollRequest struct {
 type DeviceLoginPollResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
-	Status      string `json:"status"` // "complete", "pending", "expired", "error"
+	Status      string `json:"status"` // "complete", "pending", "slow_down", "expired", "error"
 	Error       string `json:"error,omitempty"`
 }
 
@@ -178,7 +178,7 @@ func (h *CopilotHandler) pollDeviceLogin(ctx *fasthttp.RequestCtx) {
 		case "authorization_pending":
 			SendJSON(ctx, DeviceLoginPollResponse{Status: "pending"})
 		case "slow_down":
-			SendJSON(ctx, DeviceLoginPollResponse{Status: "pending"})
+			SendJSON(ctx, DeviceLoginPollResponse{Status: "slow_down"})
 		case "expired_token":
 			SendJSON(ctx, DeviceLoginPollResponse{Status: "expired", Error: "device code has expired, please restart the flow"})
 		case "access_denied":

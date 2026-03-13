@@ -300,6 +300,8 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				<button
 					type="button"
 					title="Refresh models"
+					aria-label="Refresh models"
+					data-testid="model-multiselect-refresh"
 					className="text-muted-foreground hover:text-foreground inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors disabled:pointer-events-none disabled:opacity-50"
 					onClick={props.onRefresh}
 					disabled={props.isRefreshing || shouldBeDisabled}

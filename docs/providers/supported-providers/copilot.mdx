@@ -99,6 +99,15 @@ No user interaction is required at runtime.
 ## Configuration
 
 <Tabs>
+  <Tab title="Web UI">
+    1. Navigate to **Providers** in the sidebar
+    2. Click **Add Provider** and select **GitHub Copilot**
+    3. Use the **GitHub Device Login** tab to authenticate (see [Authentication](#authentication) above)
+    4. Select the models you want to enable (e.g., `gpt-4o`, `gpt-4o-mini`)
+    5. Click **Save** to register the provider
+
+    You can also use the **Manual Token** tab to paste a `ghu_` token directly if you already have one.
+  </Tab>
   <Tab title="config.json">
     ```json
     {
@@ -200,10 +209,10 @@ import (
     "github.com/maximhq/bifrost/core/schemas"
 )
 
-response, err := client.ChatCompletion(ctx, schemas.BifrostChatRequest{
+response, err := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
     Model:    "gpt-4o",
     Provider: schemas.Copilot,
-    Messages: []schemas.BifrostMessage{
+    Input: []schemas.ChatMessage{
         {Role: "user", Content: schemas.StringContent("Hello!")},
     },
 })

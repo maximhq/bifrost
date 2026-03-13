@@ -180,7 +180,7 @@ func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.client,
-		apiBase+"/chat/completions",
+		apiBase+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		authHeader,
 		provider.mergedExtraHeaders(),
