@@ -1,4 +1,5 @@
 - feat: add GitHub Copilot provider with two-layer OAuth, device-code flow, and unit tests
+- fix: Copilot provider - also preserve cached token on transport Do() failures
 - fix: preserve JSON Schema description field during Responses-to-Chat mux conversion
 - fix: Copilot provider - use GetPathFromContext in ChatCompletionStream for path consistency
 - fix: Copilot provider - preserve cached token on transient 5xx errors, only clear on 401/403

@@ -67,6 +67,13 @@ func (tm *copilotTokenManager) refreshTokenLocked() (string, string, *schemas.Bi
 	}
 
 	if err := tm.client.Do(req, resp); err != nil {
+		if tm.apiToken != "" && time.Now().Before(tm.expiresAt) {
+			if tm.logger != nil {
+				tm.logger.Warn("copilot: token exchange transport failed; using cached token",
+					"error", err.Error())
+			}
+			return tm.apiToken, tm.apiBase, nil
+		}
 		return "", "", &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     intPtr(500),

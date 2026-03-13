@@ -708,15 +708,24 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 // Query parameters:
 //   - provider: The provider name to refresh models for (required)
 func (h *ProviderHandler) refreshModels(ctx *fasthttp.RequestCtx) {
-	providerParam := string(ctx.QueryArgs().Peek("provider"))
+	providerParam := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider")))
 	if providerParam == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "provider query parameter is required")
 		return
 	}
 
 	provider := schemas.ModelProvider(providerParam)
+	config, err := h.inMemoryStore.GetProviderConfigRaw(provider)
+	if err != nil {
+		if errors.Is(err, lib.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("provider %s not found", providerParam))
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load provider config for provider %s: %v", providerParam, err))
+		return
+	}
 
-	err := h.attemptModelDiscovery(ctx, provider, nil)
+	err = h.attemptModelDiscovery(ctx, provider, config.CustomProviderConfig)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to refresh models for provider %s: %v", providerParam, err))
 		return

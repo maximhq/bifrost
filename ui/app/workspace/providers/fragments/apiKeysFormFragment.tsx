@@ -842,6 +842,12 @@ function CopilotDeviceLoginSection({
 	const [countdown, setCountdown] = useState<number | null>(null);
 	const [isChecking, setIsChecking] = useState(false);
 	const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const authTypeRef = useRef(copilotAuthType);
+	const pollSessionRef = useRef(0);
+
+	useEffect(() => {
+		authTypeRef.current = copilotAuthType;
+	}, [copilotAuthType]);
 
 	const clearCountdown = useCallback(() => {
 		if (countdownRef.current) {
@@ -858,7 +864,12 @@ function CopilotDeviceLoginSection({
 		};
 	}, []);
 
+	const invalidatePolling = useCallback(() => {
+		pollSessionRef.current += 1;
+	}, []);
+
 	const initiateLogin = useCallback(async () => {
+		invalidatePolling();
 		setDeviceState({ status: 'awaiting_auth' });
 		try {
 			const baseUrl = getApiBaseUrl();
@@ -883,11 +894,11 @@ function CopilotDeviceLoginSection({
 		} catch (err) {
 			setDeviceState({ status: 'error', error: 'Failed to connect to server' });
 		}
-	}, []);
+	}, [invalidatePolling]);
 
-	const startCountdown = useCallback(() => {
+	const startCountdown = useCallback((seconds?: number) => {
 		clearCountdown();
-		const interval = deviceState.interval || 5;
+		const interval = (seconds ?? deviceState.interval) || 5;
 		setCountdown(interval);
 		countdownRef.current = setInterval(() => {
 			setCountdown(prev => {
@@ -898,10 +909,11 @@ function CopilotDeviceLoginSection({
 	}, [clearCountdown, deviceState.interval]);
 
 	const pollOnce = useCallback(async () => {
-		if (!deviceState.deviceCode) return;
+		if (!deviceState.deviceCode || authTypeRef.current !== 'device_login') return;
 
 		clearCountdown();
 		setIsChecking(true);
+		const pollSession = pollSessionRef.current;
 
 		try {
 			const baseUrl = getApiBaseUrl();
@@ -911,11 +923,17 @@ function CopilotDeviceLoginSection({
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ device_code: deviceState.deviceCode }),
 			});
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+				return;
+			}
 			if (!resp.ok) {
 				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
 				return;
 			}
 			const data = await resp.json();
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+				return;
+			}
 
 			if (data.status === 'complete' && data.access_token) {
 				form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true, shouldValidate: true });
@@ -930,23 +948,29 @@ function CopilotDeviceLoginSection({
 
 			// Still pending — restart countdown.
 			// If GitHub sent "slow_down", increase the interval by 5s as per the device flow spec.
+			let nextInterval = deviceState.interval || 5;
 			if (data.status === 'slow_down') {
-				setDeviceState(prev => ({ ...prev, interval: (prev.interval || 5) + 5 }));
+				nextInterval += 5;
+				setDeviceState(prev => ({ ...prev, interval: nextInterval }));
 			}
-			startCountdown();
+			startCountdown(nextInterval);
 		} catch {
-			setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+			if (pollSession === pollSessionRef.current && authTypeRef.current === 'device_login') {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+			}
 		} finally {
-			setIsChecking(false);
+			if (pollSession === pollSessionRef.current) {
+				setIsChecking(false);
+			}
 		}
-	}, [deviceState.deviceCode, form, clearCountdown, startCountdown]);
+	}, [deviceState.deviceCode, deviceState.interval, form, clearCountdown, startCountdown]);
 
 	// Trigger poll when countdown reaches 0 (only in device_login mode)
 	useEffect(() => {
-		if (countdown === 0 && !isChecking && props.copilotAuthType === 'device_login') {
+		if (countdown === 0 && !isChecking && copilotAuthType === 'device_login') {
 			pollOnce();
 		}
-	}, [countdown, isChecking, pollOnce, props.copilotAuthType]);
+	}, [countdown, isChecking, pollOnce, copilotAuthType]);
 
 	const copyCode = useCallback(() => {
 		if (deviceState.userCode) {
@@ -964,10 +988,11 @@ function CopilotDeviceLoginSection({
 	}, [deviceState.status, deviceState.userCode, startCountdown]);
 
 	const resetFlow = useCallback(() => {
+		invalidatePolling();
 		clearCountdown();
 		setIsChecking(false);
 		setDeviceState({ status: 'idle' });
-	}, [clearCountdown]);
+	}, [clearCountdown, invalidatePolling]);
 
 	return (
 		<div className="space-y-4">
@@ -980,6 +1005,7 @@ function CopilotDeviceLoginSection({
 						resetFlow();
 					} else {
 						// Switching away from device login — stop any active polling
+						invalidatePolling();
 						clearCountdown();
 						setIsChecking(false);
 					}

@@ -76,6 +76,25 @@ func TestTokenManager_RefreshesExpiredToken(t *testing.T) {
 	}
 }
 
+func TestTokenManager_TransportErrorPreservesValidCachedToken(t *testing.T) {
+	tm := newCopilotTokenManager("oauth-token", &fasthttp.Client{}, nil)
+	tm.tokenExchangeURL = "http://127.0.0.1:1"
+	tm.apiToken = "cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	tm.expiresAt = time.Now().Add(5 * time.Minute)
+
+	token, apiBase, err := tm.getToken()
+	if err != nil {
+		t.Fatalf("expected cached token to be returned on transport failure, got error: %v", err)
+	}
+	if token != "cached-jwt" {
+		t.Errorf("expected cached token, got %q", token)
+	}
+	if apiBase != "https://api.githubcopilot.com" {
+		t.Errorf("expected cached api base to be preserved, got %q", apiBase)
+	}
+}
+
 func TestTokenManager_NonOKResponseSetsAllowFallbacksFalse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
