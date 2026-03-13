@@ -1476,6 +1476,90 @@ func TestProviderOverride(t *testing.T) {
 			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
 		}
 	})
+
+	t.Run("StreamingKeyAndBaseURLAreOverridden", func(t *testing.T) {
+		// Verifies that UpdateAPIKey and UpdateProviderBaseURL are honoured on the
+		// streaming path (tryStreamRequest), not only the non-streaming path (tryRequest).
+		const overrideKey = "sk-stream-override-key"
+
+		var (
+			capturedAuth string
+			capturedHost string
+			capturedPath string
+		)
+
+		// Minimal OpenAI-compatible SSE response: one content chunk then [DONE].
+		sseBody := "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+			"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"," +
+			"\"content\":\"hi\"},\"finish_reason\":null}]}\n\n" +
+			"data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\"," +
+			"\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{}," +
+			"\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3," +
+			"\"completion_tokens\":1,\"total_tokens\":4}}\n\n" +
+			"data: [DONE]\n\n"
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			capturedAuth = r.Header.Get("Authorization")
+			capturedHost = r.Host
+			capturedPath = r.URL.Path
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(sseBody))
+		}))
+		defer server.Close()
+
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.OpenAI, 2, 100, "http://static-should-not-be-called.invalid/v1")
+
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bf, err := Init(ctx, schemas.BifrostConfig{
+			Account:    account,
+			Logger:     NewDefaultLogger(schemas.LogLevelError),
+			LLMPlugins: []schemas.LLMPlugin{newKeyBaseURLPlugin(overrideKey, server.URL)},
+		})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		t.Cleanup(func() { bf.Shutdown() })
+
+		content := schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}
+		reqCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ch, bifrostErr := bf.ChatCompletionStreamRequest(reqCtx, &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &content}},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ChatCompletionStreamRequest failed: %v", bifrostErr)
+		}
+		if ch == nil {
+			t.Fatal("expected non-nil stream channel")
+		}
+
+		// Drain the channel to let the stream complete.
+		var streamErr *schemas.BifrostError
+		for chunk := range ch {
+			if chunk.BifrostError != nil {
+				streamErr = chunk.BifrostError
+			}
+		}
+		if streamErr != nil {
+			t.Fatalf("stream returned error: %v", streamErr)
+		}
+
+		wantAuth := "Bearer " + overrideKey
+		if capturedAuth != wantAuth {
+			t.Errorf("Authorization header: got %q, want %q", capturedAuth, wantAuth)
+		}
+		wantHost := strings.TrimPrefix(server.URL, "http://")
+		if capturedHost != wantHost {
+			t.Errorf("Host header: got %q, want %q", capturedHost, wantHost)
+		}
+		if capturedPath != "/v1/chat/completions" {
+			t.Errorf("URL path: got %q, want %q", capturedPath, "/v1/chat/completions")
+		}
+	})
 }
 
 // keyBaseURLPlugin is a test helper plugin that injects a static API key and base URL

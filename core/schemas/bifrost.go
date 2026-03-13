@@ -260,7 +260,8 @@ const (
 // directly. Use req.Update* methods instead.
 type ProviderOverride struct {
 	// Key is the API credential for this request. If nil, key-pool selection applies normally.
-	Key *Key `json:"key,omitempty"`
+	// Excluded from JSON serialization to prevent accidental credential exposure.
+	Key *Key `json:"-"`
 	// BaseURL overrides NetworkConfig.BaseURL for this request.
 	// Provide the scheme, host, and port only -- no path prefix.
 	// Bifrost appends the provider's full default path (e.g. "/v1/chat/completions").
@@ -882,8 +883,13 @@ func (br *BifrostRequest) UpdateAPIKey(key Key) {
 //
 // Note: BaseURL override is honoured only by providers that resolve their request URL
 // via GetRequestPath (OpenAI, Anthropic, Cohere, HuggingFace, Replicate). Providers that
-// construct their URLs directly (Gemini, Groq, Mistral, etc.) ignore this field; use
-// ctx.SetValue(schemas.BifrostContextKeyURLPath, fullURL) for those providers instead.
+// construct their URLs directly (Gemini, Groq, Mistral, etc.) ignore this field; for those,
+// set a full URL on the BifrostContext before calling the API method:
+//
+//	ctx.SetValue(schemas.BifrostContextKeyURLPath, "https://custom.host.com/v1/chat")
+//
+// Note: BifrostContextKeyURLPath is a restricted key and cannot be set inside a PreLLMHook
+// via ctx.SetValue. Set it on the request context before invoking the Bifrost API method.
 func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
 	if br.ProviderOverride == nil {
 		br.ProviderOverride = &ProviderOverride{}
