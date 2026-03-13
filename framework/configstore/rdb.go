@@ -584,6 +584,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			AzureKeyConfig:     key.AzureKeyConfig,
 			VertexKeyConfig:    key.VertexKeyConfig,
 			BedrockKeyConfig:   key.BedrockKeyConfig,
+			OpenRouterKeyConfig: key.OpenRouterKeyConfig,
 			ReplicateKeyConfig: key.ReplicateKeyConfig,
 			VLLMKeyConfig:      key.VLLMKeyConfig,
 			ConfigHash:         key.ConfigHash,

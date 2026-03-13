@@ -2,13 +2,13 @@
 package openrouter
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -240,7 +240,7 @@ func (provider *OpenRouterProvider) mergeKeyProviderExtraParams(key schemas.Key,
 	}
 
 	var keyProvider map[string]interface{}
-	if err := json.Unmarshal(key.OpenRouterKeyConfig.Provider, &keyProvider); err != nil {
+	if err := sonic.Unmarshal(key.OpenRouterKeyConfig.Provider, &keyProvider); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
 	}
 	if len(keyProvider) == 0 {

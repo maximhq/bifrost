@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -79,6 +80,35 @@ func TestUpdateProvidersConfig_CreateNew(t *testing.T) {
 	assert.Contains(t, result, schemas.ModelProvider("openai"))
 	assert.Len(t, result["openai"].Keys, 1)
 	assert.Equal(t, "openai-primary", result["openai"].Keys[0].Name)
+}
+
+func TestAddProvider_PersistsOpenRouterKeyConfigForNewKeys(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := store.AddProvider(ctx, schemas.OpenRouter, ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:     "openrouter-key-1",
+			Name:   "openrouter-primary",
+			Value:  *schemas.NewEnvVar("sk-openrouter"),
+			Weight: 1.0,
+			OpenRouterKeyConfig: &schemas.OpenRouterKeyConfig{
+				Provider: json.RawMessage(`{"order":["openai","anthropic"],"allow_fallbacks":false}`),
+			},
+		}},
+	})
+	require.NoError(t, err)
+
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	require.Contains(t, result, schemas.OpenRouter)
+	require.Len(t, result[schemas.OpenRouter].Keys, 1)
+	require.NotNil(t, result[schemas.OpenRouter].Keys[0].OpenRouterKeyConfig)
+	assert.JSONEq(
+		t,
+		`{"order":["openai","anthropic"],"allow_fallbacks":false}`,
+		string(result[schemas.OpenRouter].Keys[0].OpenRouterKeyConfig.Provider),
+	)
 }
 
 func TestUpdateProvidersConfig_UpdateExistingByKeyID(t *testing.T) {

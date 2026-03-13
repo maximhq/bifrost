@@ -1,9 +1,11 @@
 package configstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"sort"
 	"strconv"
 
@@ -533,8 +535,8 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		hash.Write(data)
 	}
 	// Hash OpenRouterKeyConfig
-	if key.OpenRouterKeyConfig != nil {
-		data, err := sonic.Marshal(key.OpenRouterKeyConfig)
+	if key.OpenRouterKeyConfig != nil && !key.OpenRouterKeyConfig.IsEmpty() {
+		data, err := canonicalizeJSONForHash(key.OpenRouterKeyConfig.Provider)
 		if err != nil {
 			return "", err
 		}
@@ -569,6 +571,29 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		hash.Write([]byte("useForBatchAPI:true"))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func canonicalizeJSONForHash(raw []byte) ([]byte, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+
+	if err := decoder.Decode(new(struct{})); err != io.EOF {
+		if err == nil {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, err
+	}
+
+	return json.Marshal(value)
 }
 
 // VirtualKeyHashInput represents the fields used for virtual key hash generation.
