@@ -11,6 +11,12 @@ import (
 )
 
 func getRequestBodyForAnthropicResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, deployment string, providerName schemas.ModelProvider, isStreaming bool, isCountTokens bool) ([]byte, *schemas.BifrostError) {
+	// Large payload mode: body streams directly from the LP reader — skip all body building
+	// (matches CheckContextAndGetRequestBody guard).
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
 	var jsonBody []byte
 	var err error
 

@@ -78,6 +78,12 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 }
 
 func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
+	// Large payload mode: body streams directly from the LP reader in completeRequest/
+	// setAnthropicRequestBody — skip all body building here (matches CheckContextAndGetRequestBody).
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, nil
+	}
+
 	var jsonBody []byte
 	var err error
 
