@@ -399,7 +399,9 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 
 		// Pass through Anthropic OAuth config (contains only oauth_config_id, not sensitive)
 		if key.AnthropicOAuthKeyConfig != nil {
-			redactedConfig.Keys[i].AnthropicOAuthKeyConfig = key.AnthropicOAuthKeyConfig
+			redactedConfig.Keys[i].AnthropicOAuthKeyConfig = &schemas.AnthropicOAuthKeyConfig{
+				OAuthConfigID: key.AnthropicOAuthKeyConfig.OAuthConfigID,
+			}
 		}
 	}
 	return &redactedConfig
