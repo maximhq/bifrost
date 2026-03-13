@@ -215,82 +215,82 @@ func buildPredictionURL(ctx *schemas.BifrostContext, baseURL, model string, cust
 // parseTokenUsageFromLogs extracts token counts from Replicate's logs field
 // Handles multiple log formats with varying levels of detail
 func parseTokenUsageFromLogs(logs *string, requestType schemas.RequestType) (inputTokens, outputTokens, totalTokens int, found bool) {
-    if logs == nil || *logs == "" {
-        return 0, 0, 0, false
-    }
-    
-    logText := *logs
-    foundAny := false
-    
-    // Pattern 1: Detailed format with input/output breakdown
-    // "Input token count: 20"
-    // "Input text token count: 15"
-    inputPatterns := []string{
-        `Input token count:\s*(\d+)`,
-        `Input text token count:\s*(\d+)`,
-    }
-    for _, pattern := range inputPatterns {
-        if matches := regexp.MustCompile(pattern).FindStringSubmatch(logText); len(matches) > 1 {
-            if val, err := strconv.Atoi(matches[1]); err == nil {
-                inputTokens = val
-                foundAny = true
-                break
-            }
-        }
-    }
-    
-    // "Input image token count: 0" (for image generation)
-    if matches := regexp.MustCompile(`Input image token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
-        if val, err := strconv.Atoi(matches[1]); err == nil {
-            inputTokens += val // Add to text input tokens
-            foundAny = true
-        }
-    }
-    
-    // "Output token count: 28"
-    if matches := regexp.MustCompile(`Output token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
-        if val, err := strconv.Atoi(matches[1]); err == nil {
-            outputTokens = val
-            foundAny = true
-        }
-    }
-    
-    // "Total token count: 48"
-    if matches := regexp.MustCompile(`Total token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
-        if val, err := strconv.Atoi(matches[1]); err == nil {
-            totalTokens = val
-            foundAny = true
-        }
-    }
-    
-    // Pattern 2: Simple "Tokens: X" format (ambiguous - need heuristic)
-    // Only use if detailed format not found
-    if !foundAny {
-        if matches := regexp.MustCompile(`Tokens:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
-            if val, err := strconv.Atoi(matches[1]); err == nil {
-                // Heuristic based on response type
-                switch requestType {
-                case schemas.ImageGenerationRequest:
-                    // For image generation, "Tokens: X" typically means output tokens
-                    outputTokens = val
-                    totalTokens = val
-                case schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.ResponsesRequest:
-                    // For text, unclear - could be total or output
-                    // Conservative approach: treat as total tokens
-                    totalTokens = val
-                default:
-                    // Unknown type - treat as total
-                    totalTokens = val
-                }
-                foundAny = true
-            }
-        }
-    }
-    
-    // If we found input/output but not total, compute it
-    if foundAny && totalTokens == 0 {
-        totalTokens = inputTokens + outputTokens
-    }
-    
-    return inputTokens, outputTokens, totalTokens, foundAny
+	if logs == nil || *logs == "" {
+		return 0, 0, 0, false
+	}
+
+	logText := *logs
+	foundAny := false
+
+	// Pattern 1: Detailed format with input/output breakdown
+	// "Input token count: 20"
+	// "Input text token count: 15"
+	inputPatterns := []string{
+		`Input token count:\s*(\d+)`,
+		`Input text token count:\s*(\d+)`,
+	}
+	for _, pattern := range inputPatterns {
+		if matches := regexp.MustCompile(pattern).FindStringSubmatch(logText); len(matches) > 1 {
+			if val, err := strconv.Atoi(matches[1]); err == nil {
+				inputTokens = val
+				foundAny = true
+				break
+			}
+		}
+	}
+
+	// "Input image token count: 0" (for image generation)
+	if matches := regexp.MustCompile(`Input image token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+		if val, err := strconv.Atoi(matches[1]); err == nil {
+			inputTokens += val // Add to text input tokens
+			foundAny = true
+		}
+	}
+
+	// "Output token count: 28"
+	if matches := regexp.MustCompile(`Output token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+		if val, err := strconv.Atoi(matches[1]); err == nil {
+			outputTokens = val
+			foundAny = true
+		}
+	}
+
+	// "Total token count: 48"
+	if matches := regexp.MustCompile(`Total token count:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+		if val, err := strconv.Atoi(matches[1]); err == nil {
+			totalTokens = val
+			foundAny = true
+		}
+	}
+
+	// Pattern 2: Simple "Tokens: X" format (ambiguous - need heuristic)
+	// Only use if detailed format not found
+	if !foundAny {
+		if matches := regexp.MustCompile(`Tokens:\s*(\d+)`).FindStringSubmatch(logText); len(matches) > 1 {
+			if val, err := strconv.Atoi(matches[1]); err == nil {
+				// Heuristic based on response type
+				switch requestType {
+				case schemas.ImageGenerationRequest:
+					// For image generation, "Tokens: X" typically means output tokens
+					outputTokens = val
+					totalTokens = val
+				case schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.ResponsesRequest:
+					// For text, unclear - could be total or output
+					// Conservative approach: treat as total tokens
+					totalTokens = val
+				default:
+					// Unknown type - treat as total
+					totalTokens = val
+				}
+				foundAny = true
+			}
+		}
+	}
+
+	// If we found input/output but not total, compute it
+	if foundAny && totalTokens == 0 {
+		totalTokens = inputTokens + outputTokens
+	}
+
+	return inputTokens, outputTokens, totalTokens, foundAny
 }

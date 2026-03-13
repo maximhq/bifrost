@@ -67,8 +67,9 @@ type BifrostImageGenerationResponse struct {
 // for cost calculation but may not be returned by the provider.
 // - NumInputImages on ImageUsage (count of input images from the request)
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
+// - Quality (low, medium, high, auto) only
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
-	numInputImages, size := getNumInputImagesAndSizeFromRequest(req)
+	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
 
 	// Backfill NumInputImages
 	if numInputImages > 0 {
@@ -85,30 +86,47 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.Size = size
 	}
+
+	// Backfill Quality if not already present from provider response
+	if quality != "" && (r.ImageGenerationResponseParameters == nil || r.ImageGenerationResponseParameters.Quality == "") {
+		if r.ImageGenerationResponseParameters == nil {
+			r.ImageGenerationResponseParameters = &ImageGenerationResponseParameters{}
+		}
+		r.ImageGenerationResponseParameters.Quality = quality
+	}
 }
 
-func getNumInputImagesAndSizeFromRequest(req *BifrostRequest) (int, string) {
+// getNumInputImagesSizeAndQualityFromRequest extracts request params for cost calculation.
+// Quality is only returned when it is one of low, medium, high, auto.
+func getNumInputImagesSizeAndQualityFromRequest(req *BifrostRequest) (numInputImages int, size string, quality string) {
 	if req == nil {
-		return 0, ""
+		return 0, "", ""
 	}
-
-	var numInputImages int
-	var size string
 
 	switch {
 	case req.ImageGenerationRequest != nil:
 		if req.ImageGenerationRequest.Params != nil {
-			numInputImages = len(req.ImageGenerationRequest.Params.InputImages)
-			if req.ImageGenerationRequest.Params.Size != nil {
-				size = *req.ImageGenerationRequest.Params.Size
+			p := req.ImageGenerationRequest.Params
+			numInputImages = len(p.InputImages)
+			if p.Size != nil {
+				size = *p.Size
+			}
+			if p.Quality != nil {
+				quality = normalizeImageQuality(*p.Quality)
 			}
 		}
 	case req.ImageEditRequest != nil:
 		if req.ImageEditRequest.Input != nil {
 			numInputImages = len(req.ImageEditRequest.Input.Images)
 		}
-		if req.ImageEditRequest.Params != nil && req.ImageEditRequest.Params.Size != nil {
-			size = *req.ImageEditRequest.Params.Size
+		if req.ImageEditRequest.Params != nil {
+			p := req.ImageEditRequest.Params
+			if p.Size != nil {
+				size = *p.Size
+			}
+			if p.Quality != nil {
+				quality = normalizeImageQuality(*p.Quality)
+			}
 		}
 	case req.ImageVariationRequest != nil:
 		if req.ImageVariationRequest.Input != nil {
@@ -118,7 +136,18 @@ func getNumInputImagesAndSizeFromRequest(req *BifrostRequest) (int, string) {
 			size = *req.ImageVariationRequest.Params.Size
 		}
 	}
-	return numInputImages, size
+	return numInputImages, size, quality
+}
+
+// normalizeImageQuality returns the quality string only if it is supported by gpt-image-1.5 (low, medium, high, auto).
+// All other values (hd, standard, etc.) are discarded and return empty.
+func normalizeImageQuality(q string) string {
+	switch q {
+	case "low", "medium", "high", "auto":
+		return q
+	default:
+		return ""
+	}
 }
 
 type ImageGenerationResponseParameters struct {
@@ -177,8 +206,9 @@ type BifrostImageGenerationStreamResponse struct {
 // for cost calculation but may not be returned by the provider.
 // - NumInputImages on ImageUsage (count of input images from the request)
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
+// - Quality (low, medium, high, auto) only
 func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostRequest) {
-	numInputImages, size := getNumInputImagesAndSizeFromRequest(req)
+	numInputImages, size, quality := getNumInputImagesSizeAndQualityFromRequest(req)
 
 	// Backfill NumInputImages
 	if numInputImages > 0 {
@@ -191,6 +221,11 @@ func (r *BifrostImageGenerationStreamResponse) BackfillParams(req *BifrostReques
 	// Backfill Size if not already present from provider response
 	if size != "" && r.Size == "" {
 		r.Size = size
+	}
+
+	// Backfill Quality if not already present (only low, medium, high, auto)
+	if quality != "" && r.Quality == "" {
+		r.Quality = quality
 	}
 }
 

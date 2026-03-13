@@ -17,6 +17,7 @@ type costInput struct {
 	audioTokenDetails   *schemas.TranscriptionUsageInputTokenDetails
 	imageUsage          *schemas.ImageUsage
 	imageSize           string // e.g. "1024x1024", used for per-pixel pricing
+	imageQuality        string // "low", "medium", "high", "auto" (gpt-image-1.5); empty = use base rate
 	videoSeconds        *int
 }
 
@@ -115,7 +116,7 @@ func (mc *ModelCatalog) calculateBaseCost(result *schemas.BifrostResponse) float
 	case schemas.TranscriptionRequest:
 		return computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails)
 	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
-		return computeImageCost(pricing, input.imageUsage, input.imageSize)
+		return computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
 		return computeVideoCost(pricing, input.usage, input.videoSeconds)
 	default:
@@ -173,6 +174,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 		populateOutputImageCount(input.imageUsage, len(result.ImageGenerationResponse.Data))
 		if result.ImageGenerationResponse.ImageGenerationResponseParameters != nil {
 			input.imageSize = result.ImageGenerationResponse.ImageGenerationResponseParameters.Size
+			input.imageQuality = result.ImageGenerationResponse.ImageGenerationResponseParameters.Quality
 		}
 
 	case result.ImageGenerationStreamResponse != nil:
@@ -182,6 +184,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			input.imageUsage = &schemas.ImageUsage{}
 		}
 		input.imageSize = result.ImageGenerationStreamResponse.Size
+		input.imageQuality = result.ImageGenerationStreamResponse.Quality
 
 	case result.VideoGenerationResponse != nil && result.VideoGenerationResponse.Seconds != nil:
 		seconds, err := strconv.Atoi(*result.VideoGenerationResponse.Seconds)
@@ -430,7 +433,8 @@ func computeAudioOutputCost(pricing *configstoreTables.TableModelPricing, usage 
 // computeImageCost handles image generation requests.
 // Input and output are calculated independently — each tries token-based pricing first,
 // then per-pixel pricing, falling back to per-image count pricing.
-func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string) float64 {
+// imageQuality must be one of "low", "medium", "high", "auto" to use quality-specific rates; other values use base rates.
+func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, imageSize string, imageQuality string) float64 {
 	if imageUsage == nil {
 		return 0
 	}
@@ -438,7 +442,7 @@ func computeImageCost(pricing *configstoreTables.TableModelPricing, imageUsage *
 	totalTokens := imageUsage.TotalTokens
 	pixels := parseImagePixels(imageSize)
 	inputCost := computeImageInputCost(pricing, imageUsage, totalTokens, pixels)
-	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels)
+	outputCost := computeImageOutputCost(pricing, imageUsage, totalTokens, pixels, imageQuality)
 
 	return inputCost + outputCost
 }
@@ -473,7 +477,8 @@ func computeImageInputCost(pricing *configstoreTables.TableModelPricing, imageUs
 }
 
 // computeImageOutputCost calculates output cost: tokens first, then per-pixel, then per-image count fallback.
-func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int) float64 {
+// imageQuality: "low", "medium", "high", "auto" use quality-specific rates when available; other values use base/size-tier rates.
+func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageUsage *schemas.ImageUsage, totalTokens int, pixels int, imageQuality string) float64 {
 	// Try token-based pricing first
 	var outputTextTokens, outputImageTokens int
 	if imageUsage.OutputTokensDetails != nil {
@@ -503,16 +508,46 @@ func computeImageOutputCost(pricing *configstoreTables.TableModelPricing, imageU
 	if imageUsage.OutputTokensDetails != nil && imageUsage.OutputTokensDetails.NImages > 0 {
 		numOutputImages = imageUsage.OutputTokensDetails.NImages
 	}
-	const pixels512x512 = 512 * 512
-	const pixels1024x1024 = 1024 * 1024
 	var perImageRate *float64
-	switch {
-	case pixels > pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
-		perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
-	case pixels > pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
-		perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
-	default:
-		perImageRate = pricing.OutputCostPerImage
+	q := imageQuality
+	if q == "" {
+		q = "auto"
+	}
+	switch q {
+	case "low":
+		if pricing.OutputCostPerImageLowQuality != nil {
+			perImageRate = pricing.OutputCostPerImageLowQuality
+		}
+	case "medium":
+		if pricing.OutputCostPerImageMediumQuality != nil {
+			perImageRate = pricing.OutputCostPerImageMediumQuality
+		}
+	case "high":
+		if pricing.OutputCostPerImageHighQuality != nil {
+			perImageRate = pricing.OutputCostPerImageHighQuality
+		}
+	case "auto":
+		if pricing.OutputCostPerImageAutoQuality != nil {
+			perImageRate = pricing.OutputCostPerImageAutoQuality
+		}
+	}
+	if perImageRate == nil {
+		const pixels512x512 = 512 * 512
+		const pixels1024x1024 = 1024 * 1024
+		const pixels2048x2048 = 2048 * 2048
+		const pixels4096x4096 = 4096 * 4096
+		switch {
+		case pixels > pixels4096x4096 && pricing.OutputCostPerImageAbove4096x4096Pixels != nil:
+			perImageRate = pricing.OutputCostPerImageAbove4096x4096Pixels
+		case pixels > pixels2048x2048 && pricing.OutputCostPerImageAbove2048x2048Pixels != nil:
+			perImageRate = pricing.OutputCostPerImageAbove2048x2048Pixels
+		case pixels > pixels1024x1024 && pricing.OutputCostPerImageAbove1024x1024Pixels != nil:
+			perImageRate = pricing.OutputCostPerImageAbove1024x1024Pixels
+		case pixels > pixels512x512 && pricing.OutputCostPerImageAbove512x512Pixels != nil:
+			perImageRate = pricing.OutputCostPerImageAbove512x512Pixels
+		default:
+			perImageRate = pricing.OutputCostPerImage
+		}
 	}
 	if perImageRate != nil {
 		return float64(numOutputImages) * *perImageRate

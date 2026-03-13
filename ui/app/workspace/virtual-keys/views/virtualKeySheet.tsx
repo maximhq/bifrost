@@ -1056,7 +1056,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												onChangeNumber={(value) => {
 													field.onChange(value);
 												}}
-												onChangeSelect={(value) => form.setValue("budgetResetDuration", value)}
+												onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
 												options={resetDurationOptions}
 											/>
 											<FormMessage />
@@ -1097,7 +1097,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												onChangeNumber={(value) => {
 													field.onChange(value);
 												}}
-												onChangeSelect={(value) => form.setValue("tokenResetDuration", value)}
+												onChangeSelect={(value) => form.setValue("tokenResetDuration", value, { shouldDirty: true })}
 												options={resetDurationOptions}
 											/>
 											<FormMessage />
@@ -1119,7 +1119,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 												onChangeNumber={(value) => {
 													field.onChange(value);
 												}}
-												onChangeSelect={(value) => form.setValue("requestResetDuration", value)}
+												onChangeSelect={(value) => form.setValue("requestResetDuration", value, { shouldDirty: true })}
 												options={resetDurationOptions}
 											/>
 											<FormMessage />

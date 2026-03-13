@@ -262,6 +262,18 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override schemas.
 	if override.OutputCostPerImage != nil {
 		patched.OutputCostPerImage = override.OutputCostPerImage
 	}
+	if override.OutputCostPerImageLowQuality != nil {
+		patched.OutputCostPerImageLowQuality = override.OutputCostPerImageLowQuality
+	}
+	if override.OutputCostPerImageMediumQuality != nil {
+		patched.OutputCostPerImageMediumQuality = override.OutputCostPerImageMediumQuality
+	}
+	if override.OutputCostPerImageHighQuality != nil {
+		patched.OutputCostPerImageHighQuality = override.OutputCostPerImageHighQuality
+	}
+	if override.OutputCostPerImageAutoQuality != nil {
+		patched.OutputCostPerImageAutoQuality = override.OutputCostPerImageAutoQuality
+	}
 
 	return patched
 }

@@ -174,7 +174,9 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 				<div className="pl-4 text-sm">
 					<div className="font-mono">
 						{tokenUsage.total_tokens.toLocaleString()}{" "}
-						{tokenUsage.completion_tokens ? `(${tokenUsage.prompt_tokens}+${tokenUsage.completion_tokens})` : ""}
+						{tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null
+							? `(${tokenUsage.prompt_tokens.toLocaleString()}+${tokenUsage.completion_tokens.toLocaleString()})`
+							: ""}
 					</div>
 				</div>
 			);

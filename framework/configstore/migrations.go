@@ -299,6 +299,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPricingRefactorColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddImageQualityPricingColumns(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddRoutingTargetsTable(ctx, db); err != nil {
 		return err
 	}
@@ -4219,6 +4222,57 @@ func migrationAddPricingRefactorColumns(ctx context.Context, db *gorm.DB) error 
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running pricing refactor columns migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddImageQualityPricingColumns adds quality-based per-image cost columns (low, medium, high, auto).
+func migrationAddImageQualityPricingColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_image_quality_pricing_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"output_cost_per_image_above_2048_and_2048_pixels",
+				"output_cost_per_image_above_4096_and_4096_pixels",
+				"output_cost_per_image_low_quality",
+				"output_cost_per_image_medium_quality",
+				"output_cost_per_image_high_quality",
+				"output_cost_per_image_auto_quality",
+			}
+			for _, field := range columns {
+				if !mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.AddColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to add column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			columns := []string{
+				"output_cost_per_image_above_2048_and_2048_pixels",
+				"output_cost_per_image_above_4096_and_4096_pixels",
+				"output_cost_per_image_low_quality",
+				"output_cost_per_image_medium_quality",
+				"output_cost_per_image_high_quality",
+				"output_cost_per_image_auto_quality",
+			}
+			for _, field := range columns {
+				if mg.HasColumn(&tables.TableModelPricing{}, field) {
+					if err := mg.DropColumn(&tables.TableModelPricing{}, field); err != nil {
+						return fmt.Errorf("failed to drop column %s: %w", field, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running image quality pricing columns migration: %s", err.Error())
 	}
 	return nil
 }

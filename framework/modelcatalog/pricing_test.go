@@ -475,7 +475,7 @@ func TestComputeImageCost_PerImage(t *testing.T) {
 			NImages: 2,
 		},
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// 2 * 0.052 = 0.104
 	assert.InDelta(t, 0.104, cost, 1e-12)
 }
@@ -485,7 +485,7 @@ func TestComputeImageCost_PerImageDefaultsToOne(t *testing.T) {
 		OutputCostPerImage: ptr(0.052),
 	}
 	usage := &schemas.ImageUsage{} // No token details → defaults to 1 image
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	assert.InDelta(t, 0.052, cost, 1e-12)
 }
 
@@ -499,7 +499,7 @@ func TestComputeImageCost_TokenBased(t *testing.T) {
 		OutputTokens: 500,
 		TotalTokens:  1500,
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// 1000*0.000005 + 500*0.000015 = 0.005 + 0.0075 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -522,7 +522,7 @@ func TestComputeImageCost_TokenBasedWithDetails(t *testing.T) {
 			ImageTokens: 800,
 		},
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// Input: (500+1500)*0.000005 = 2000*0.000005 = 0.01
 	// Output: (200+800)*0.000015 = 1000*0.000015 = 0.015
 	// Total: 0.025
@@ -531,7 +531,7 @@ func TestComputeImageCost_TokenBasedWithDetails(t *testing.T) {
 
 func TestComputeImageCost_NilUsage(t *testing.T) {
 	p := configstoreTables.TableModelPricing{OutputCostPerImage: ptr(0.05)}
-	assert.Equal(t, 0.0, computeImageCost(&p, nil, ""))
+	assert.Equal(t, 0.0, computeImageCost(&p, nil, "", ""))
 }
 
 func TestComputeImageCost_InputAndOutputPerImage(t *testing.T) {
@@ -543,7 +543,7 @@ func TestComputeImageCost_InputAndOutputPerImage(t *testing.T) {
 		NumInputImages:      3,
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// 3 input * $0.01 + 2 output * $0.05 = $0.03 + $0.10 = $0.13
 	assert.InDelta(t, 0.13, cost, 1e-12)
 }
@@ -555,7 +555,7 @@ func TestComputeImageCost_PerPixelOutput(t *testing.T) {
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
 	}
-	cost := computeImageCost(&p, usage, "1024x1024")
+	cost := computeImageCost(&p, usage, "1024x1024", "")
 	// 1024*1024 * 1 * 0.000000019 = 1048576 * 0.000000019 ≈ 0.01992
 	assert.InDelta(t, 1048576*0.000000019, cost, 1e-12)
 }
@@ -569,7 +569,7 @@ func TestComputeImageCost_PerPixelInputAndOutput(t *testing.T) {
 		NumInputImages:      2,
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 3},
 	}
-	cost := computeImageCost(&p, usage, "512x512")
+	cost := computeImageCost(&p, usage, "512x512", "")
 	pixels := 512 * 512 // 262144
 	// Input: 262144 * 2 * 0.00000001 = 0.00524288
 	// Output: 262144 * 3 * 0.00000002 = 0.01572864
@@ -589,7 +589,7 @@ func TestComputeImageCost_TokensPreferredOverPixels(t *testing.T) {
 		OutputTokens: 500,
 		TotalTokens:  1500,
 	}
-	cost := computeImageCost(&p, usage, "1024x1024")
+	cost := computeImageCost(&p, usage, "1024x1024", "")
 	// Tokens should win: 1000*0.000005 + 500*0.000015 = 0.0125
 	assert.InDelta(t, 0.0125, cost, 1e-12)
 }
@@ -602,7 +602,7 @@ func TestComputeImageCost_PixelsPreferredOverPerImage(t *testing.T) {
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
 	}
-	cost := computeImageCost(&p, usage, "256x256")
+	cost := computeImageCost(&p, usage, "256x256", "")
 	// Per-pixel should win: 65536 * 1 * 0.00000002 = 0.00131072
 	assert.InDelta(t, 65536*0.00000002, cost, 1e-12)
 }
@@ -615,9 +615,31 @@ func TestComputeImageCost_PerPixelFallsBackToPerImage_WhenNoSize(t *testing.T) {
 	usage := &schemas.ImageUsage{
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// No size → pixels=0, falls through to per-image: 2 * $0.05 = $0.10
 	assert.InDelta(t, 0.10, cost, 1e-12)
+}
+
+func TestComputeImageCost_QualityBasedRates(t *testing.T) {
+	usage := &schemas.ImageUsage{
+		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 1},
+	}
+	// Quality-specific rates take precedence over base/size-tier
+	p := configstoreTables.TableModelPricing{
+		OutputCostPerImage:              ptr(0.01),
+		OutputCostPerImageLowQuality:    ptr(0.02),
+		OutputCostPerImageMediumQuality: ptr(0.03),
+		OutputCostPerImageHighQuality:   ptr(0.04),
+		OutputCostPerImageAutoQuality:   ptr(0.05),
+	}
+	assert.InDelta(t, 0.02, computeImageCost(&p, usage, "", "low"), 1e-12)
+	assert.InDelta(t, 0.03, computeImageCost(&p, usage, "", "medium"), 1e-12)
+	assert.InDelta(t, 0.04, computeImageCost(&p, usage, "", "high"), 1e-12)
+	assert.InDelta(t, 0.05, computeImageCost(&p, usage, "", "auto"), 1e-12)
+	// "hd" does not match any quality case so perImageRate stays nil → size/base fallback.
+	assert.InDelta(t, 0.01, computeImageCost(&p, usage, "", "hd"), 1e-12)
+	// Empty quality is treated as auto
+	assert.InDelta(t, 0.05, computeImageCost(&p, usage, "", ""), 1e-12)
 }
 
 func TestParseImagePixels(t *testing.T) {
@@ -1514,7 +1536,7 @@ func TestComputeImageCost_MixedInputTokensOutputPerImage(t *testing.T) {
 		InputTokens:         500,
 		OutputTokensDetails: &schemas.ImageTokenDetails{NImages: 2},
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// Input: 500 tokens * $0.000005 = $0.0025
 	// Output: no output tokens → falls back to 2 images * $0.04 = $0.08
 	assert.InDelta(t, 0.0825, cost, 1e-12)
@@ -1531,7 +1553,7 @@ func TestComputeImageCost_MixedInputPerImageOutputTokens(t *testing.T) {
 		NumInputImages: 3,
 		OutputTokens:   1000,
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// Input: no input tokens → falls back to 3 images * $0.01 = $0.03
 	// Output: 1000 tokens * $0.000015 = $0.015
 	assert.InDelta(t, 0.045, cost, 1e-12)
@@ -1551,7 +1573,7 @@ func TestComputeImageCost_BothHaveTokens_IgnoresPerImage(t *testing.T) {
 		TotalTokens:    1000,
 		NumInputImages: 3,
 	}
-	cost := computeImageCost(&p, usage, "")
+	cost := computeImageCost(&p, usage, "", "")
 	// Input: 200 * $0.000005 = $0.001 (tokens present, per-image ignored)
 	// Output: 800 * $0.000015 = $0.012 (tokens present, per-image ignored)
 	assert.InDelta(t, 0.013, cost, 1e-12)
