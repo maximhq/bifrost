@@ -1258,6 +1258,10 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		Videos:        responsesResp.Videos,
 	}
 
+	if responsesResp.ID != nil {
+		chatResp.ID = *responsesResp.ID
+	}
+
 	// Create Choices from ResponsesResponse
 	if len(responsesResp.Output) > 0 {
 		// Convert ResponsesMessages back to ChatMessages
@@ -1991,6 +1995,34 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			response.Output = allOutput
 		}
 
+		// Append finalized function call items so the terminal response carries them in Output.
+		for toolCallID, args := range state.ToolArgumentBuffers {
+			if args == "" {
+				continue
+			}
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeFunctionCall
+			callName := state.ToolCallNames[toolCallID]
+			var callNamePtr *string
+			if callName != "" {
+				callNamePtr = &callName
+			}
+			argsValue := args
+			fcMsg := ResponsesMessage{
+				Type:   &messageType,
+				Status: &statusFinal,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    &toolCallID,
+					Name:      callNamePtr,
+					Arguments: &argsValue,
+				},
+			}
+			if itemID := state.ItemIDs[toolCallID]; itemID != "" {
+				fcMsg.ID = &itemID
+			}
+			response.Output = append(response.Output, fcMsg)
+		}
+
 		responses = append(responses, &BifrostResponsesStreamResponse{
 			Type:           terminalEventType,
 			SequenceNumber: state.SequenceNumber,
@@ -2012,6 +2044,232 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	return responses
+}
+
+// ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
+// Returns nil for events that have no meaningful chat completion equivalent (lifecycle events, etc.).
+func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
+	if rsr == nil {
+		return nil
+	}
+
+	extraFields := rsr.ExtraFields
+	extraFields.RequestType = ChatCompletionStreamRequest
+
+	resp := &BifrostChatResponse{
+		Object:        "chat.completion.chunk",
+		ExtraFields:   extraFields,
+		SearchResults: rsr.SearchResults,
+		Videos:        rsr.Videos,
+		Citations:     rsr.Citations,
+	}
+
+	if rsr.Response != nil {
+		if rsr.Response.ID != nil {
+			resp.ID = *rsr.Response.ID
+		}
+		resp.Created = rsr.Response.CreatedAt
+		resp.Model = rsr.Response.Model
+	}
+
+	switch rsr.Type {
+	case ResponsesStreamResponseTypeOutputTextDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Content: rsr.Delta,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Reasoning: rsr.Delta,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeRefusalDelta:
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						Refusal: rsr.Refusal,
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeOutputItemAdded:
+		if rsr.Item == nil || rsr.Item.Type == nil {
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+
+		switch *rsr.Item.Type {
+		case ResponsesMessageTypeFunctionCall:
+			if rsr.Item.ResponsesToolMessage == nil {
+				resp.Choices = []BifrostResponseChoice{
+					{
+						Index: 0,
+						ChatStreamResponseChoice: &ChatStreamResponseChoice{
+							Delta: &ChatStreamResponseChoiceDelta{},
+						},
+					},
+				}
+				return resp
+			}
+			funcType := "function"
+			var idx uint16
+			if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
+				idx = uint16(*rsr.OutputIndex - 1)
+			}
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							ToolCalls: []ChatAssistantMessageToolCall{
+								{
+									Index: idx,
+									Type:  &funcType,
+									ID:    rsr.Item.ResponsesToolMessage.CallID,
+									Function: ChatAssistantMessageToolCallFunction{
+										Name: rsr.Item.ResponsesToolMessage.Name,
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			return resp
+
+		case ResponsesMessageTypeMessage:
+			role := "assistant"
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{
+							Role: &role,
+						},
+					},
+				},
+			}
+			return resp
+
+		default:
+			// reasoning, file_search_call, web_search_call, etc. — no chat equivalent,
+			// actual content arrives via separate delta events.
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+
+	case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+		if rsr.Delta == nil {
+			resp.Choices = []BifrostResponseChoice{
+				{
+					Index: 0,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{
+						Delta: &ChatStreamResponseChoiceDelta{},
+					},
+				},
+			}
+			return resp
+		}
+		var idx uint16
+		if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
+			idx = uint16(*rsr.OutputIndex - 1)
+		}
+
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{
+						ToolCalls: []ChatAssistantMessageToolCall{
+							{
+								Index: idx,
+								Function: ChatAssistantMessageToolCallFunction{
+									Arguments: *rsr.Delta,
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		return resp
+
+	case ResponsesStreamResponseTypeCompleted, ResponsesStreamResponseTypeIncomplete:
+		finishReason := string(BifrostFinishReasonStop)
+		if rsr.Type == ResponsesStreamResponseTypeIncomplete {
+			finishReason = string(BifrostFinishReasonLength)
+		}
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index:        0,
+				FinishReason: &finishReason,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		}
+		if rsr.Response != nil {
+			if rsr.Response.Usage != nil {
+				resp.Usage = rsr.Response.Usage.ToBifrostLLMUsage()
+			}
+			// Check for tool_calls finish reason
+			for _, output := range rsr.Response.Output {
+				if output.Type != nil && *output.Type == ResponsesMessageTypeFunctionCall {
+					finishReason = string(BifrostFinishReasonToolCalls)
+					resp.Choices[0].FinishReason = &finishReason
+					break
+				}
+			}
+		}
+		return resp
+
+	default:
+		// Lifecycle events (created, in_progress, content_part.added/done, output_text.done,
+		// output_item.done, function_call_arguments.done, etc.) → empty chat chunk with no content.
+		resp.Choices = []BifrostResponseChoice{
+			{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{
+					Delta: &ChatStreamResponseChoiceDelta{},
+				},
+			},
+		}
+		return resp
+	}
 }
 
 // =============================================================================
