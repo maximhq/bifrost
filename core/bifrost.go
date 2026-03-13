@@ -4345,7 +4345,6 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		return resp, nil
 	case <-ctx.Done():
 		bifrost.releaseChannelMessage(msg)
-		provider, model, _ := req.GetRequestFields()
 		bifrostErr := &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
