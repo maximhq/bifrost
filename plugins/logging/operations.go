@@ -596,6 +596,14 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	}
 }
 
+// isPassthroughErrorResponse returns true when the result is a passthrough
+// response with a provider-reported HTTP error status (4xx or 5xx).
+func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
+	return result != nil &&
+		result.PassthroughResponse != nil &&
+		result.PassthroughResponse.StatusCode >= 400
+}
+
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
 	if result == nil {

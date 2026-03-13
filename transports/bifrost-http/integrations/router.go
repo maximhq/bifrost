@@ -2643,7 +2643,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		keyStr := strings.ToLower(string(key))
 		switch keyStr {
 		case "authorization", "api-key", "x-api-key", "x-goog-api-key",
-			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization":
+			"host", "connection", "transfer-encoding", "cookie", "set-cookie", "proxy-authorization", "accept-encoding":
 		default:
 			if strings.HasPrefix(keyStr, "x-bf-") {
 				return true // drop internal gateway headers

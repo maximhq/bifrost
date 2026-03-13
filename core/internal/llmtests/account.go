@@ -82,6 +82,7 @@ type TestScenarios struct {
 	ContainerFileDelete    bool // Container File API delete functionality
 	PassThroughExtraParams bool // Pass through extra params functionality
 	Rerank                 bool // Rerank functionality
+	PassthroughAPI         bool // Raw HTTP passthrough API (Passthrough + PassthroughStream)
 }
 
 // ComprehensiveTestConfig extends TestConfig with additional scenarios
@@ -118,6 +119,7 @@ type ComprehensiveTestConfig struct {
 	FileExtraParams          map[string]interface{} // Extra params for file operations (e.g., s3_bucket for Bedrock)
 	DisableParallelFor       []string               // Test scenarios to disable parallel execution for (e.g., "Transcription" for rate-limited APIs)
 	ExpectRawRequestResponse bool                   // When true, validate rawRequest/rawResponse in ExtraFields
+	PassthroughModel         string                 // Model for passthrough API tests; defaults to ChatModel when empty
 }
 
 // ComprehensiveTestAccount provides a test implementation of the Account interface for comprehensive testing.

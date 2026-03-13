@@ -112,6 +112,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunContainerFileUnsupportedTest,
 		RunPassthroughExtraParamsTest,
 		RunStreamErrorStatusCodeTest,
+		RunPassthroughAPITest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -223,6 +224,7 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"ContainerFileUnsupported", !testConfig.Scenarios.ContainerFileCreate && !testConfig.Scenarios.ContainerFileList && !testConfig.Scenarios.ContainerFileRetrieve && !testConfig.Scenarios.ContainerFileContent && !testConfig.Scenarios.ContainerFileDelete},
 		{"PassThroughExtraParams", testConfig.Scenarios.PassThroughExtraParams},
 		{"StreamErrorStatusCode", testConfig.Scenarios.CompletionStream},
+		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
 	}
 
 	supported := 0

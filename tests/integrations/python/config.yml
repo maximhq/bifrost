@@ -13,6 +13,7 @@ bifrost:
     cohere: "cohere"
     google: "genai"
     "gemini_passthrough": "genai_passthrough"
+    "anthropic_passthrough": "anthropic_passthrough"
     litellm: "litellm"
     langchain: "langchain"
     pydanticai: "pydanticai"

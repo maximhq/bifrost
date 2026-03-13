@@ -40,6 +40,8 @@ Tests all core scenarios using Anthropic SDK directly:
 29. Prompt caching - messages checkpoint
 30. Prompt caching - tools checkpoint
 31. Count tokens (Cross-Provider)
+32. Passthrough messages (non-streaming)
+33. Passthrough messages (streaming)
 """
 
 import logging
@@ -133,12 +135,13 @@ def test_config():
     return Config()
 
 
-def get_provider_anthropic_client(provider):
+def get_provider_anthropic_client(provider, passthrough: bool = False):
     """Create Anthropic client with x-model-provider header for given provider"""
     from .utils.config_loader import get_config, get_integration_url
 
     api_key = get_api_key("anthropic")
-    base_url = get_integration_url("anthropic")
+    integration = "anthropic_passthrough" if passthrough else "anthropic"
+    base_url = get_integration_url(integration)
     config = get_config()
     api_config = config.get_api_config()
     integration_settings = config.get_integration_settings("anthropic")
@@ -2833,6 +2836,70 @@ This document is used to verify that the AI can read and understand text documen
                 return
 
         pytest.fail(f"Async job did not complete after {max_polls} polls")
+
+    # =========================================================================
+    # Passthrough Tests
+    # =========================================================================
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("simple_chat", include_providers=["anthropic"]),
+    )
+    def test_51_passthrough_messages(self, test_config, provider, model):
+        """Test Case 51: Passthrough messages (non-streaming) - sends request directly to Anthropic API"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for passthrough scenario")
+
+        print(f"\n=== Testing Passthrough Messages (non-streaming) for provider {provider} ===")
+
+        client = get_provider_anthropic_client(provider, passthrough=True)
+        messages = convert_to_anthropic_messages(SIMPLE_CHAT_MESSAGES)
+
+        response = client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=100,
+        )
+
+        assert_valid_chat_response(response)
+        assert len(response.content) > 0
+        assert response.content[0].type == "text"
+        assert len(response.content[0].text) > 0
+        print(f"  Response: {response.content[0].text[:80]}...")
+        print("✓ Passthrough messages test passed!")
+
+    @pytest.mark.parametrize(
+        "provider,model",
+        get_cross_provider_params_for_scenario("simple_chat", include_providers=["anthropic"]),
+    )
+    def test_52_passthrough_messages_streaming(self, test_config, provider, model):
+        """Test Case 52: Passthrough messages (streaming) - streams response directly from Anthropic API"""
+        _ = test_config
+        if provider == "_no_providers_" or model == "_no_model_":
+            pytest.skip("No providers configured for passthrough scenario")
+
+        print(f"\n=== Testing Passthrough Messages (streaming) for provider {provider} ===")
+
+        client = get_provider_anthropic_client(provider, passthrough=True)
+        messages = convert_to_anthropic_messages(STREAMING_CHAT_MESSAGES)
+
+        stream = client.messages.create(
+            model=format_provider_model(provider, model),
+            messages=messages,
+            max_tokens=200,
+            stream=True,
+        )
+
+        content, chunk_count, tool_calls_detected = collect_streaming_content(
+            stream, "anthropic", timeout=300
+        )
+
+        assert chunk_count > 0, "Should receive at least one chunk"
+        assert len(content) > 0, "Should receive non-empty streamed content"
+        assert not tool_calls_detected, "Basic passthrough streaming should not have tool calls"
+        print(f"  Received {chunk_count} chunks, total content length: {len(content)}")
+        print("✓ Passthrough streaming test passed!")
 
 
 # Additional helper functions specific to Anthropic
