@@ -24,6 +24,7 @@ export enum RbacResource {
 	RBAC = "RBAC",
 	Governance = "Governance",
 	RoutingRules = "RoutingRules",
+	PIIRedactor = "PIIRedactor",
 }
 
 // RBAC Operation Names (must match backend definitions)
