@@ -12,12 +12,12 @@ This guide walks you through creating a native Go plugin for Bifrost using our [
 
 Before you start, ensure you have:
 
-- **Go 1.25.5** installed (must match Bifrost's Go version)
+- **Go 1.26.1** installed (must match Bifrost's Go version)
 - **Linux or macOS** (Go plugins are not supported on Windows)
 - **Bifrost** installed and configured
 - Basic understanding of Go programming
 
-<Note>Make sure your go.mod has the go version pinned to 1.25.5</Note>
+<Note>Make sure your go.mod has the go version pinned to 1.26.1</Note>
 
 ## Project Structure
 
@@ -53,7 +53,7 @@ Your `go.mod` should look like this:
 ```go
 module github.com/yourusername/my-plugin
 
-go 1.25.5
+go 1.26.1
 
 require github.com/maximhq/bifrost/core v1.2.38
 ```
@@ -672,18 +672,18 @@ Use `go version -m` to inspect the build info of both your plugin and the Bifros
 ```bash
 # Check what versions your plugin was built with:
 $ go version -m my-plugin.so
-my-plugin.so: go1.25.5
+my-plugin.so: go1.26.1
   dep  github.com/maximhq/bifrost/core  v1.3.50
   dep  github.com/valyala/fasthttp      v1.51.0
 
 # Check what versions Bifrost was built with:
 $ go version -m bifrost-http
-bifrost-http: go1.25.5
+bifrost-http: go1.26.1
   dep  github.com/maximhq/bifrost/core  v1.3.54   # <-- MISMATCH!
   dep  github.com/valyala/fasthttp      v1.55.0   # <-- MISMATCH!
 ```
 
-Notice that even though the Go version matches (`go1.25.5`), the **package versions** are different — this causes the error.
+Notice that even though the Go version matches (`go1.26.1`), the **package versions** are different — this causes the error.
 
 **Step 2: Update your plugin dependencies**
 
@@ -791,7 +791,7 @@ jobs:
       # 2. Setup Go
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.25.5'
+          go-version: '1.26.1'
       
       # 3. Build Bifrost
       - name: Build Bifrost

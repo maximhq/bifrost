@@ -54,7 +54,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Install Snyk CLI
         uses: snyk/actions/setup@master
@@ -107,7 +107,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Build
         run: make build

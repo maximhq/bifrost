@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/plugins/telemetry
 
-go 1.26
+go 1.26.1
 
 require (
 	github.com/maximhq/bifrost/core v1.4.7

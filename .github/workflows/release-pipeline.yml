@@ -78,7 +78,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -163,7 +163,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Docker Compose
         run: |
@@ -233,7 +233,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Docker Compose
         run: |
@@ -298,7 +298,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -343,7 +343,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -385,7 +385,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -437,7 +437,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -506,7 +506,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -590,7 +590,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -675,7 +675,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Configure Git
         run: |
@@ -773,7 +773,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -873,7 +873,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.26"
+          go-version: "1.26.1"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
