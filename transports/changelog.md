@@ -11,6 +11,7 @@
 - feat: add x-bf-api-key-id header support for explicit key selection by ID, with priority over x-bf-api-key name selection
 - fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
 - fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
+[feat]: add OpenRouter provider routing JSON to key configuration schema and dashboard provider key forms [@dannyball710](https://github.com/dannyball710)
 
 ## Migration Guide
 

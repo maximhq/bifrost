@@ -8,6 +8,7 @@ icon: "split"
 
 OpenRouter is an **OpenAI-compatible provider routing service** that accesses models from multiple providers (OpenAI, Anthropic, Google, Meta, etc.) through a unified interface. Bifrost delegates to the OpenAI implementation with special handling for reasoning models. Key features:
 - **Provider aggregation** - Access 100+ models from multiple vendors
+- **Key-level routing defaults** - Store a default OpenRouter provider object on each API key
 - **Reasoning support** - Extended thinking for supported models
 - **Parameter compatibility** - Intelligent reasoning effort conversion
 - **Streaming support** - Full SSE support with usage tracking
@@ -32,6 +33,37 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 **Unsupported Operations** (❌): Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream OpenRouter API. These return a `BifrostError` with an error code of `"unsupported_operation"`.
 
 **Note**: OpenRouter's Responses API is currently in **beta**.
+</Note>
+
+---
+
+## Configuration
+
+Bifrost supports storing a default OpenRouter routing object on each OpenRouter API key via `openrouter_key_config.provider`.
+
+This lets you attach OpenRouter provider preferences directly to a key, so requests using that key can inherit a default provider routing configuration.
+
+### Dashboard
+
+In the Providers workspace:
+- Open your OpenRouter provider
+- Edit or add an API key
+- Set the **Provider** JSON field on that key
+
+### config.json
+
+Set `openrouter_key_config.provider` on an OpenRouter key.
+
+### Override behavior
+
+If the request already includes a `provider` object, that request-level value takes priority over the key default.
+
+### OpenRouter reference
+
+For the upstream OpenRouter `provider` object and supported fields such as `order`, `allow_fallbacks`, `sort`, `only`, and `ignore`, see [OpenRouter Provider Routing](https://openrouter.ai/docs/guides/routing/provider-selection).
+
+<Note>
+This feature is available for OpenRouter API keys in both the dashboard and config.json.
 </Note>
 
 ---

@@ -396,6 +396,12 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vllmConfig.URL = *key.VLLMKeyConfig.URL.Redacted()
 			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
 		}
+
+		if key.OpenRouterKeyConfig != nil {
+			redactedConfig.Keys[i].OpenRouterKeyConfig = &schemas.OpenRouterKeyConfig{
+				Provider: append([]byte(nil), key.OpenRouterKeyConfig.Provider...),
+			}
+		}
 	}
 	return &redactedConfig
 }
@@ -521,6 +527,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash BedrockKeyConfig
 	if key.BedrockKeyConfig != nil {
 		data, err := sonic.Marshal(key.BedrockKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OpenRouterKeyConfig
+	if key.OpenRouterKeyConfig != nil {
+		data, err := sonic.Marshal(key.OpenRouterKeyConfig)
 		if err != nil {
 			return "", err
 		}

@@ -2,6 +2,7 @@
 package openrouter
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -225,13 +226,132 @@ func (provider *OpenRouterProvider) ListModels(ctx *schemas.BifrostContext, keys
 	)
 }
 
+func (provider *OpenRouterProvider) mergeKeyProviderExtraParams(key schemas.Key, existing map[string]interface{}) (map[string]interface{}, *schemas.BifrostError) {
+	if key.OpenRouterKeyConfig == nil || len(key.OpenRouterKeyConfig.Provider) == 0 {
+		if len(existing) == 0 {
+			return nil, nil
+		}
+		return mapsClone(existing), nil
+	}
+
+	merged := mapsClone(existing)
+	if _, exists := merged["provider"]; exists {
+		return merged, nil
+	}
+
+	var keyProvider map[string]interface{}
+	if err := json.Unmarshal(key.OpenRouterKeyConfig.Provider, &keyProvider); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, provider.GetProviderKey())
+	}
+	if len(keyProvider) == 0 {
+		return merged, nil
+	}
+	merged["provider"] = keyProvider
+	return merged, nil
+}
+
+func mapsClone(input map[string]interface{}) map[string]interface{} {
+	if len(input) == 0 {
+		return map[string]interface{}{}
+	}
+	cloned := make(map[string]interface{}, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func ensureProviderPassthrough(ctx *schemas.BifrostContext, extraParams map[string]interface{}) {
+	if len(extraParams) == 0 {
+		return
+	}
+	if _, exists := extraParams["provider"]; exists {
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	}
+}
+
+func (provider *OpenRouterProvider) withKeyProviderTextRequest(key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionRequest, *schemas.BifrostError) {
+	var requestExtraParams map[string]interface{}
+	if request.Params != nil {
+		requestExtraParams = request.Params.ExtraParams
+	}
+	extraParams, bifrostErr := provider.mergeKeyProviderExtraParams(key, requestExtraParams)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if extraParams == nil {
+		return request, nil
+	}
+
+	cloned := *request
+	if request.Params != nil {
+		paramsCopy := *request.Params
+		paramsCopy.ExtraParams = extraParams
+		cloned.Params = &paramsCopy
+	} else {
+		cloned.Params = &schemas.TextCompletionParameters{ExtraParams: extraParams}
+	}
+	return &cloned, nil
+}
+
+func (provider *OpenRouterProvider) withKeyProviderChatRequest(key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, *schemas.BifrostError) {
+	extraParams, bifrostErr := provider.mergeKeyProviderExtraParams(key, request.GetExtraParams())
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if extraParams == nil {
+		return request, nil
+	}
+
+	cloned := *request
+	if request.Params != nil {
+		paramsCopy := *request.Params
+		paramsCopy.ExtraParams = extraParams
+		cloned.Params = &paramsCopy
+	} else {
+		cloned.Params = &schemas.ChatParameters{ExtraParams: extraParams}
+	}
+	return &cloned, nil
+}
+
+func (provider *OpenRouterProvider) withKeyProviderResponsesRequest(key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
+	var requestExtraParams map[string]interface{}
+	if request.Params != nil {
+		requestExtraParams = request.Params.ExtraParams
+	}
+	extraParams, bifrostErr := provider.mergeKeyProviderExtraParams(key, requestExtraParams)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if extraParams == nil {
+		return request, nil
+	}
+
+	cloned := *request
+	if request.Params != nil {
+		paramsCopy := *request.Params
+		paramsCopy.ExtraParams = extraParams
+		cloned.Params = &paramsCopy
+	} else {
+		cloned.Params = &schemas.ResponsesParameters{ExtraParams: extraParams}
+	}
+	return &cloned, nil
+}
+
 // TextCompletion performs a text completion request to the OpenRouter API.
 func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderTextRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
-		request,
+		requestWithProvider,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -247,6 +367,13 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 // It formats the request, sends it to OpenRouter, and processes the response.
 // Returns a channel of BifrostStreamChunk objects or an error if the request fails.
 func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderTextRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -256,7 +383,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+"/v1/completions",
-		request,
+		requestWithProvider,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -272,11 +399,18 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 
 // ChatCompletion performs a chat completion request to the OpenRouter API.
 func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderChatRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
-		request,
+		requestWithProvider,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -293,6 +427,13 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 // Uses OpenRouter's OpenAI-compatible streaming format.
 // Returns a channel containing BifrostStreamChunk objects representing the stream or an error if the request fails.
 func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderChatRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -303,7 +444,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
-		request,
+		requestWithProvider,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -321,11 +462,18 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 
 // Responses performs a responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderResponsesRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
+		requestWithProvider,
 		key,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
@@ -339,6 +487,13 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 
 // ResponsesStream performs a streaming responses request to the OpenRouter API.
 func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	requestWithProvider, bifrostErr := provider.withKeyProviderResponsesRequest(key, request)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if requestWithProvider.Params != nil {
+		ensureProviderPassthrough(ctx, requestWithProvider.Params.ExtraParams)
+	}
 	var authHeader map[string]string
 	keyValue := key.Value.GetValue()
 	if keyValue != "" {
@@ -348,7 +503,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		ctx,
 		provider.client,
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
-		request,
+		requestWithProvider,
 		authHeader,
 		provider.networkConfig.ExtraHeaders,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),

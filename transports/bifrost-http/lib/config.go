@@ -189,6 +189,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 								AzureKeyConfig:   tableKey.AzureKeyConfig,
 								VertexKeyConfig:  tableKey.VertexKeyConfig,
 								BedrockKeyConfig: tableKey.BedrockKeyConfig,
+								OpenRouterKeyConfig: tableKey.OpenRouterKeyConfig,
 								ConfigHash:       tableKey.ConfigHash,
 							})
 						}
@@ -744,6 +745,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []schema
 					AzureKeyConfig:   dbKey.AzureKeyConfig,
 					VertexKeyConfig:  dbKey.VertexKeyConfig,
 					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					OpenRouterKeyConfig: dbKey.OpenRouterKeyConfig,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v, falling back to name comparison", dbKey.Name, provider, err)
@@ -817,6 +819,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, fileKeys, dbKeys []sc
 					AzureKeyConfig:   dbKey.AzureKeyConfig,
 					VertexKeyConfig:  dbKey.VertexKeyConfig,
 					BedrockKeyConfig: dbKey.BedrockKeyConfig,
+					OpenRouterKeyConfig: dbKey.OpenRouterKeyConfig,
 				})
 				if err != nil {
 					logger.Warn("failed to generate key hash for db key %s (%s): %v", dbKey.Name, provider, err)
@@ -2114,6 +2117,7 @@ func loadDefaultProviders(ctx context.Context, config *Config) error {
 					AzureKeyConfig:     dbKey.AzureKeyConfig,
 					VertexKeyConfig:    dbKey.VertexKeyConfig,
 					BedrockKeyConfig:   dbKey.BedrockKeyConfig,
+					OpenRouterKeyConfig: dbKey.OpenRouterKeyConfig,
 					ReplicateKeyConfig: dbKey.ReplicateKeyConfig,
 					ConfigHash:         dbKey.ConfigHash,
 					Status:             dbKey.Status,
