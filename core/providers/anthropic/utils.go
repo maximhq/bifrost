@@ -77,7 +77,7 @@ func setEffortOnOutputConfig(req *AnthropicMessageRequest, effort string) {
 	req.OutputConfig.Effort = &effort
 }
 
-func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool) ([]byte, *schemas.BifrostError) {
+func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest, providerName schemas.ModelProvider, isStreaming bool, excludeFields []string) ([]byte, *schemas.BifrostError) {
 	var jsonBody []byte
 	var err error
 
@@ -103,6 +103,12 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 		// Add stream if not present
 		if isStreaming {
 			requestBody["stream"] = true
+		}
+		// Remove excluded fields
+		if len(excludeFields) > 0 {
+			for _, field := range excludeFields {
+				delete(requestBody, field)
+			}
 		}
 		jsonBody, err = sonic.Marshal(requestBody)
 		if err != nil {
@@ -134,10 +140,32 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
+				// Remove excluded fields
+				if len(excludeFields) > 0 {
+					for _, field := range excludeFields {
+						delete(jsonMap, field)
+					}
+				}
 				// Merge ExtraParams recursively (handles nested maps)
 				providerUtils.MergeExtraParams(jsonMap, extraParams)
 				// Re-marshal the merged map
 				jsonBody, err = providerUtils.MarshalSorted(jsonMap)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+			}
+		} else {
+			// Remove excluded fields
+			if len(excludeFields) > 0 {
+				var jsonMap map[string]interface{}
+				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
+					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
+				}
+				for _, field := range excludeFields {
+					delete(jsonMap, field)
+				}
+				// Re-marshal the map
+				jsonBody, err = sonic.Marshal(jsonMap)
 				if err != nil {
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
