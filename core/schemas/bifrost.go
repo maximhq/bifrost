@@ -186,6 +186,7 @@ const (
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"               // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
 	BifrostContextKeyShouldConvertTextToChat             BifrostContextKey = "bifrost-should-convert-text-to-chat"              // bool (set by plugins to trigger text->chat provider conversion in core)
+	BifrostContextKeyShouldConvertChatToResponses        BifrostContextKey = "bifrost-should-convert-chat-to-responses"         // bool (set by plugins to trigger chat->responses provider conversion in core)
 	BifrostContextKeySendBackRawRequest                  BifrostContextKey = "bifrost-send-back-raw-request"                    // bool
 	BifrostContextKeySendBackRawResponse                 BifrostContextKey = "bifrost-send-back-raw-response"                   // bool
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)

@@ -231,3 +231,18 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
 	}
 }
+
+// normalizeEndpointToOutputType converts a supported_endpoints URL path to a normalized output type.
+// Returns empty string for unrecognized endpoints.
+func normalizeEndpointToOutputType(endpoint string) string {
+	switch {
+	case strings.Contains(endpoint, "/chat/completions"):
+		return "chat_completion"
+	case strings.Contains(endpoint, "/responses"):
+		return "responses"
+	case strings.Contains(endpoint, "/completions"):
+		return "text_completion"
+	default:
+		return ""
+	}
+}
