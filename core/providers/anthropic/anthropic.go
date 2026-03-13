@@ -321,7 +321,12 @@ func (provider *AnthropicProvider) ListModels(ctx *schemas.BifrostContext, keys 
 		}
 	}
 	if len(apiKeys) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("no API keys available for model listing (OAuth keys cannot list models)", nil, provider.GetProviderKey())
+		// OAuth keys cannot call /v1/models. Return empty response so server-level
+		// fallback populates the static model catalog and the public HTTP endpoint
+		// does not surface an error to clients.
+		return &schemas.BifrostListModelsResponse{
+			Data: make([]schemas.Model, 0),
+		}, nil
 	}
 	return providerUtils.HandleMultipleListModelsRequests(
 		ctx,
