@@ -1426,10 +1426,10 @@ func TestProviderOverride(t *testing.T) {
 		}
 	})
 
-	// ArbitraryProviderViaBaseProviderType verifies that a provider name not present in
-	// any static config and not in dynamicallyConfigurableProviders can still be used
-	// when the plugin specifies a BaseProviderType (dialect) via UpdateBaseProviderType.
-	// This is the multi-tenant use case: "my-org-openai" routes through the OpenAI dialect.
+	// ArbitraryProviderViaBaseProviderType verifies that a non-built-in provider alias
+	// (e.g. "my-org-openai") is routed through the base type's queue when a plugin
+	// specifies a BaseProviderType via UpdateBaseProviderType. No static config entry
+	// is required; credentials and URL are supplied per-request via ProviderOverride.
 	t.Run("ArbitraryProviderViaBaseProviderType", func(t *testing.T) {
 		const arbitraryKey = "sk-arbitrary-tenant-key"
 		var capturedAuth string
@@ -1583,9 +1583,9 @@ func (p *keyBaseURLPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.
 	return resp, err, nil
 }
 
-// arbitraryProviderPlugin is a test helper plugin that routes a request to a provider name
-// that is not in static config and not in dynamicallyConfigurableProviders, by setting a
-// BaseProviderType (dialect) alongside credentials and base URL.
+// arbitraryProviderPlugin is a test helper plugin that routes a request through a
+// non-built-in provider alias by setting BaseProviderType (dialect), API key, and
+// base URL — exercising the ProviderOverride path in getProviderQueue.
 type arbitraryProviderPlugin struct {
 	providerName schemas.ModelProvider
 	baseType     schemas.ModelProvider

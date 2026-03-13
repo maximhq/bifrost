@@ -3616,9 +3616,18 @@ func (bifrost *Bifrost) prepareProvider(providerKey schemas.ModelProvider, confi
 // This function uses read locks to prevent race conditions during provider updates.
 // Callers must check the closing flag or select on the done channel before sending.
 //
-// override is optional; when provided its BaseProviderType enables auto-initialisation of
-// arbitrary provider names (e.g. "my-tenant-openai") without a static config entry.
+// When override.BaseProviderType is set for a non-standard providerKey (e.g. a
+// tenant-scoped alias like "acme-openai"), the lookup is redirected to the base
+// type's queue. This avoids materialising a permanent worker pool per alias and
+// ensures adapter selection is always consistent with BaseProviderType.
 func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, override *schemas.ProviderOverride) (*ProviderQueue, error) {
+	// Redirect non-standard aliases to their base provider's queue.
+	// "acme-openai" + BaseProviderType="openai" → use the "openai" queue.
+	// Credentials (Key) and URL (BaseURL) are still injected per-request via ProviderOverride.
+	if override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey) {
+		providerKey = override.BaseProviderType
+	}
+
 	// Use read lock to allow concurrent reads but prevent concurrent updates
 	providerMutex := bifrost.getProviderMutex(providerKey)
 	providerMutex.RLock()
@@ -3650,25 +3659,14 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 		return nil, fmt.Errorf("failed to get config for provider: %v", err)
 	}
 	if config == nil {
-		// No static config entry exists. Auto-init if the plugin has provided enough
-		// information, or fail with a clear message.
+		// No static config entry exists. Auto-init well-known providers or fail.
+		// Non-standard aliases have already been resolved to their base type above,
+		// so providerKey here is always a built-in name.
 		baseConfig := &schemas.ProviderConfig{
 			NetworkConfig:            schemas.DefaultNetworkConfig,
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}
 		switch {
-		case override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey):
-			// Arbitrary (non-built-in) provider name with an explicit dialect: auto-initialise
-			// using the specified base type so no static config entry is required.
-			// The StandardProviders check prevents BaseProviderType from retargeting any
-			// built-in provider key (e.g. providerKey="ollama", BaseProviderType="openai")
-			// which would initialise the built-in queue with the wrong adapter.
-			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s as %s dialect (no static config found)", providerKey, override.BaseProviderType))
-			baseConfig.CustomProviderConfig = &schemas.CustomProviderConfig{
-				BaseProviderType:  override.BaseProviderType,
-				CustomProviderKey: string(providerKey),
-			}
-			config = baseConfig
 		case slices.Contains(dynamicallyConfigurableProviders, providerKey):
 			// Well-known provider with no static config: auto-initialise using its own dialect.
 			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s with default config (no static config found)", providerKey))

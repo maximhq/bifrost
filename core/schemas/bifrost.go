@@ -271,10 +271,11 @@ type ProviderOverride struct {
 	// Cohere, HuggingFace, Replicate). Other providers construct their URLs directly.
 	BaseURL string `json:"base_url,omitempty"`
 	// BaseProviderType specifies the API dialect to use when the provider name set via
-	// UpdateProvider is not a built-in provider (e.g. "my-tenant-openai").
+	// UpdateProvider is not a built-in provider (e.g. "acme-openai").
 	// Must be a supported built-in provider (e.g. schemas.OpenAI, schemas.Anthropic).
-	// When set, Bifrost auto-initialises the provider at runtime without requiring a
-	// static config entry — enabling fully arbitrary provider names in multi-tenant scenarios.
+	// Bifrost routes the request through the base type's queue, so no separate static
+	// config entry is needed for the alias. Per-request credentials and URL are
+	// supplied via Key and BaseURL.
 	BaseProviderType ModelProvider `json:"base_provider_type,omitempty"`
 }
 
@@ -848,8 +849,8 @@ func (br *BifrostRequest) Clone() BifrostRequest {
 // UpdateProvider sets the provider for this request. It is equivalent to changing the
 // Provider field on the underlying request type but works regardless of request type.
 // If provider is empty, the request's existing provider is used unchanged.
-// For providers not in static config, pair with UpdateBaseProviderType to specify the
-// API dialect; well-known providers (e.g. OpenAI, Gemini) auto-initialise without it.
+// For non-built-in names, pair with UpdateBaseProviderType to specify the API dialect;
+// built-in providers (e.g. OpenAI, Gemini) auto-initialise without it.
 func (br *BifrostRequest) UpdateProvider(provider ModelProvider) error {
 	if provider == "" {
 		return nil
@@ -898,9 +899,9 @@ func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
 }
 
 // UpdateBaseProviderType sets the API dialect for this request when the provider name
-// (set via UpdateProvider) is not a built-in provider. This allows arbitrary provider
-// names to be used without a static config entry, as long as a supported dialect is
-// specified (e.g. schemas.OpenAI for any OpenAI-compatible endpoint).
+// (set via UpdateProvider) is not a built-in provider name. Bifrost routes the request
+// through the base type's existing queue (e.g. schemas.OpenAI for any OpenAI-compatible
+// endpoint), so no separate static config entry is needed for the alias.
 func (br *BifrostRequest) UpdateBaseProviderType(bt ModelProvider) {
 	if bt == "" {
 		return
