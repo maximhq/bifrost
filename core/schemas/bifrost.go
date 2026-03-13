@@ -720,6 +720,9 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 //     immediately nils ProviderOverride after Clone(), and hooks create a fresh one
 //     via req.UpdateAPIKey if needed.
 func (br *BifrostRequest) Clone() BifrostRequest {
+	if br == nil {
+		return BifrostRequest{}
+	}
 	clone := *br
 	if br.ProviderOverride != nil {
 		ovr := *br.ProviderOverride // copies BaseURL and BaseProviderType by value
@@ -853,6 +856,9 @@ func (br *BifrostRequest) Clone() BifrostRequest {
 // For non-built-in names, pair with UpdateBaseProviderType to specify the API dialect;
 // built-in providers (e.g. OpenAI, Gemini) auto-initialise without it.
 func (br *BifrostRequest) UpdateProvider(provider ModelProvider) error {
+	if br == nil {
+		return errors.New("bifrost request is nil")
+	}
 	if provider == "" {
 		return nil
 	}
@@ -863,6 +869,9 @@ func (br *BifrostRequest) UpdateProvider(provider ModelProvider) error {
 // UpdateModel sets the model for this request. It is equivalent to changing the Model
 // field on the underlying request type but works regardless of request type.
 func (br *BifrostRequest) UpdateModel(model string) error {
+	if br == nil {
+		return errors.New("bifrost request is nil")
+	}
 	if model == "" {
 		return nil
 	}
@@ -873,6 +882,9 @@ func (br *BifrostRequest) UpdateModel(model string) error {
 // UpdateAPIKey sets a per-request API credential, bypassing the key pool for this request.
 // This is the recommended way for plugins to inject dynamic credentials at request time.
 func (br *BifrostRequest) UpdateAPIKey(key Key) {
+	if br == nil {
+		return
+	}
 	if br.ProviderOverride == nil {
 		br.ProviderOverride = &ProviderOverride{}
 	}
@@ -893,6 +905,9 @@ func (br *BifrostRequest) UpdateAPIKey(key Key) {
 // Note: BifrostContextKeyURLPath is a restricted key and cannot be set inside a PreLLMHook
 // via ctx.SetValue. Set it on the request context before invoking the Bifrost API method.
 func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
+	if br == nil {
+		return
+	}
 	if br.ProviderOverride == nil {
 		br.ProviderOverride = &ProviderOverride{}
 	}
@@ -904,6 +919,9 @@ func (br *BifrostRequest) UpdateProviderBaseURL(baseURL string) {
 // through the base type's existing queue (e.g. schemas.OpenAI for any OpenAI-compatible
 // endpoint), so no separate static config entry is needed for the alias.
 func (br *BifrostRequest) UpdateBaseProviderType(bt ModelProvider) {
+	if br == nil {
+		return
+	}
 	if bt == "" {
 		return
 	}
