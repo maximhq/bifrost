@@ -3657,12 +3657,12 @@ func (bifrost *Bifrost) getProviderQueue(providerKey schemas.ModelProvider, over
 			ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
 		}
 		switch {
-		case override != nil && override.BaseProviderType != "" && !slices.Contains(dynamicallyConfigurableProviders, providerKey):
+		case override != nil && override.BaseProviderType != "" && !slices.Contains(schemas.StandardProviders, providerKey):
 			// Arbitrary (non-built-in) provider name with an explicit dialect: auto-initialise
 			// using the specified base type so no static config entry is required.
-			// The built-in provider check prevents BaseProviderType from retargeting a
-			// well-known provider key (e.g. providerKey="openai", BaseProviderType="anthropic")
-			// which would initialise the openai queue with the wrong adapter.
+			// The StandardProviders check prevents BaseProviderType from retargeting any
+			// built-in provider key (e.g. providerKey="ollama", BaseProviderType="openai")
+			// which would initialise the built-in queue with the wrong adapter.
 			bifrost.logger.Info(fmt.Sprintf("auto-initialising provider %s as %s dialect (no static config found)", providerKey, override.BaseProviderType))
 			baseConfig.CustomProviderConfig = &schemas.CustomProviderConfig{
 				BaseProviderType:  override.BaseProviderType,
