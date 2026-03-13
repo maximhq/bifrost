@@ -4225,6 +4225,8 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 // getProviderByKey retrieves a provider instance from the providers array by its provider key.
 // Returns the provider if found, or nil if no provider with the given key exists.
+// NOTE: This helper is used only from test code. Production request paths use
+// getProviderQueue, which also handles auto-initialisation of dynamic providers.
 func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) schemas.Provider {
 	providers := bifrost.providers.Load()
 	if providers == nil {
@@ -4325,8 +4327,8 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 	fallbackReq := req.Clone()
 	fallbackReq.ProviderOverride = nil
 
-	// SetProvider and UpdateModel cover every request type in the union, so this
-	// is always exhaustive even as new request types are added.
+	// SetProvider and SetModel enumerate all BifrostRequest field types in their
+	// switch statements. Keep them in sync when adding new request types.
 	fallbackReq.SetProvider(fallback.Provider)
 	_ = fallbackReq.UpdateModel(fallback.Model) // no-op when fallback.Model is ""
 	return &fallbackReq
