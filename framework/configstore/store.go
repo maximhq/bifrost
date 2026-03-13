@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/pricingoverrides"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"gorm.io/gorm"
 )
@@ -167,6 +168,13 @@ type ConfigStore interface {
 	UpsertModelPrices(ctx context.Context, pricing *tables.TableModelPricing, tx ...*gorm.DB) error
 	DeleteModelPrices(ctx context.Context, tx ...*gorm.DB) error
 
+	// Governance pricing overrides CRUD
+	GetPricingOverrides(ctx context.Context, filter PricingOverrideFilter) ([]tables.TablePricingOverride, error)
+	GetPricingOverrideByID(ctx context.Context, id string) (*tables.TablePricingOverride, error)
+	CreatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
+	UpdatePricingOverride(ctx context.Context, override *tables.TablePricingOverride, tx ...*gorm.DB) error
+	DeletePricingOverride(ctx context.Context, id string, tx ...*gorm.DB) error
+
 	// Key management
 	GetKeysByIDs(ctx context.Context, ids []string) ([]tables.TableKey, error)
 	GetKeysByProvider(ctx context.Context, provider string) ([]tables.TableKey, error)
@@ -223,6 +231,13 @@ type ConfigStore interface {
 
 	// Cleanup
 	Close(ctx context.Context) error
+}
+
+type PricingOverrideFilter struct {
+	ScopeKind     *pricingoverrides.ScopeKind
+	VirtualKeyID  *string
+	ProviderID    *string
+	ProviderKeyID *string
 }
 
 // NewConfigStore creates a new config store based on the configuration
