@@ -135,7 +135,7 @@ export function SettingsPanel() {
 		<div className="flex h-full flex-col">
 			<ScrollArea className="grow overflow-y-auto" viewportClassName="no-table">
 				<div className="space-y-6 p-4">
-					<div className="flex flex-col gap-2">
+					<div className="flex flex-col gap-2" data-testid="settings-provider">
 						<Label className="text-muted-foreground text-xs font-medium uppercase">Provider</Label>
 						<ComboboxSelect
 							options={providerOptions}
@@ -146,7 +146,7 @@ export function SettingsPanel() {
 						/>
 					</div>
 
-					<div className="flex flex-col gap-2">
+					<div className="flex flex-col gap-2" data-testid="settings-model">
 						<Label className="text-muted-foreground text-xs font-medium uppercase">Model</Label>
 						<ComboboxSelect
 							options={availableModels.map((m) => ({ label: m, value: m }))}

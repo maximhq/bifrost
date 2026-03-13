@@ -151,7 +151,7 @@ export default function PromptsViewHeader() {
 			<h3 className="truncate font-semibold">{selectedPrompt?.name || "Playground"}</h3>
 			<div className="flex shrink-0 items-center gap-4">
 				{messages.length > 1 && (
-					<Button variant="ghost" size="sm" onClick={handleClearConversation} disabled={isStreaming}>
+					<Button variant="ghost" size="sm" data-testid="header-clear" onClick={handleClearConversation} disabled={isStreaming}>
 						<Trash2 className="h-4 w-4" />
 						Clear
 					</Button>
@@ -160,6 +160,7 @@ export default function PromptsViewHeader() {
 					<Button
 						variant="outline"
 						className="h-8 rounded-r-none border bg-transparent"
+						data-testid="header-save-session"
 						onClick={handleSaveSession}
 						disabled={isCreatingSession || !hasChanges || isStreaming}
 					>
@@ -170,6 +171,7 @@ export default function PromptsViewHeader() {
 						<PopoverTrigger asChild>
 							<Button
 								variant="outline"
+								data-testid="header-sessions-dropdown"
 								className={cn(
 									"h-8 w-8 rounded-l-none border border-l-0 bg-transparent p-0",
 									isCreatingSession || !hasChanges || isStreaming ? "border-border/50" : "",
@@ -180,7 +182,7 @@ export default function PromptsViewHeader() {
 						</PopoverTrigger>
 						<PopoverContent className="w-72 p-0" align="end">
 							<Command>
-								<CommandInput placeholder="Search sessions..." />
+								<CommandInput placeholder="Search sessions..." data-testid="header-sessions-search" />
 								<CommandList>
 									<CommandEmpty>No sessions found.</CommandEmpty>
 									<CommandGroup>
@@ -205,6 +207,7 @@ export default function PromptsViewHeader() {
 				<SplitButton
 					onClick={handleCommitVersion}
 					disabled={isCreatingSession || isStreaming}
+					data-testid="header-commit-version"
 					dropdownContent={{
 						className: "w-64 max-h-72 overflow-y-auto",
 						children: (
@@ -296,6 +299,7 @@ function SessionItem({
 					defaultValue={session.name}
 					placeholder="Session name"
 					className="h-7 text-sm"
+					data-testid="session-rename-input"
 					autoFocus
 					onKeyDown={(e) => {
 						if (e.key === "Enter") handleRenameSubmit();
@@ -323,6 +327,7 @@ function SessionItem({
 				<button
 					type="button"
 					aria-label="Rename session"
+					data-testid="session-rename"
 					onPointerDown={(e) => {
 						e.preventDefault();
 						e.stopPropagation();

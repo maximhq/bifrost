@@ -13,7 +13,7 @@ export function EmptyState() {
 				<p className="text-lg font-medium">No prompt selected</p>
 				<p className="text-sm">
 					Select a prompt from the sidebar or{" "}
-					<Button variant="link" className="h-auto p-0 text-sm" onClick={() => setPromptSheet({ open: true })}>
+					<Button variant="link" className="h-auto p-0 text-sm" data-testid="empty-state-create-prompt-link" onClick={() => setPromptSheet({ open: true })}>
 						create a new one
 					</Button>
 				</p>
@@ -39,6 +39,7 @@ export function PromptsEmptyState() {
 					<Button
 						variant="outline"
 						aria-label="Read more about prompt repository (opens in new tab)"
+						data-testid="empty-state-read-more"
 						onClick={() => {
 							window.open(`${PROMPTS_DOCS_URL}?utm_source=bfd`, "_blank", "noopener,noreferrer");
 						}}
@@ -47,6 +48,7 @@ export function PromptsEmptyState() {
 					</Button>
 					<Button
 						aria-label="Create your first prompt"
+						data-testid="empty-state-create-prompt"
 						onClick={() => setPromptSheet({ open: true })}
 					>
 						Create Prompt

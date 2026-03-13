@@ -11,7 +11,7 @@ export default function ErrorMessageView({ message, disabled, onRemove }: { mess
 				</span>
 				<div className="ml-auto">
 					{!disabled && onRemove && (
-						<button type="button" aria-label="Delete message" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
+						<button type="button" aria-label="Delete message" data-testid="error-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
 							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
 						</button>
 					)}

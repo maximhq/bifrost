@@ -24,10 +24,10 @@ export function DeleteFolderDialog() {
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={() => setDeleteFolderDialog({ open: false })} disabled={isDeletingFolder}>
+					<AlertDialogCancel data-testid="delete-folder-cancel" onClick={() => setDeleteFolderDialog({ open: false })} disabled={isDeletingFolder}>
 						Cancel
 					</AlertDialogCancel>
-					<AlertDialogAction onClick={handleDeleteFolder} disabled={isDeletingFolder}>
+					<AlertDialogAction data-testid="delete-folder-confirm" onClick={handleDeleteFolder} disabled={isDeletingFolder}>
 						{isDeletingFolder ? "Deleting..." : "Delete"}
 					</AlertDialogAction>
 				</AlertDialogFooter>
@@ -50,10 +50,10 @@ export function DeletePromptDialog() {
 					</AlertDialogDescription>
 				</AlertDialogHeader>
 				<AlertDialogFooter>
-					<AlertDialogCancel onClick={() => setDeletePromptDialog({ open: false })} disabled={isDeletingPrompt}>
+					<AlertDialogCancel data-testid="delete-prompt-cancel" onClick={() => setDeletePromptDialog({ open: false })} disabled={isDeletingPrompt}>
 						Cancel
 					</AlertDialogCancel>
-					<AlertDialogAction onClick={handleDeletePrompt} disabled={isDeletingPrompt}>
+					<AlertDialogAction data-testid="delete-prompt-confirm" onClick={handleDeletePrompt} disabled={isDeletingPrompt}>
 						{isDeletingPrompt ? "Deleting..." : "Delete"}
 					</AlertDialogAction>
 				</AlertDialogFooter>

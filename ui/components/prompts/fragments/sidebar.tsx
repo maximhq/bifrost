@@ -178,17 +178,19 @@ export function PromptSidebar() {
 							placeholder="Search prompts..."
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
+							data-testid="sidebar-search"
 							className="h-8 pl-8"
 						/>
 					</div>
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
-							<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" aria-label="Create prompt or folder">
+							<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" data-testid="sidebar-create-menu" aria-label="Create prompt or folder">
 								<PlusIcon className="h-3.5 w-3.5" />
 							</Button>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">
 							<DropdownMenuItem
+								data-testid="sidebar-create-prompt"
 								onClick={(e) => {
 									e.stopPropagation();
 									onCreatePrompt();
@@ -197,6 +199,7 @@ export function PromptSidebar() {
 								New Prompt
 							</DropdownMenuItem>
 							<DropdownMenuItem
+								data-testid="sidebar-create-folder"
 								onClick={(e) => {
 									e.stopPropagation();
 									onCreateFolder();
@@ -330,6 +333,7 @@ function DroppableFolder({
 					isDragOver && "bg-primary/10 ring-primary/30 ring-1",
 				)}
 				onClick={onToggle}
+				data-testid={`sidebar-folder-${folder.id}`}
 			>
 				<button className="flex shrink-0 items-center" aria-label="Toggle folder">
 					{isExpanded ? (
@@ -347,12 +351,13 @@ function DroppableFolder({
 				<span className="text-muted-foreground mr-1 shrink-0 text-xs">{prompts.length}</span>
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()} className="bg-card absolute top-1/2 right-2 -translate-y-1/2">
-						<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" aria-label="Folder actions">
+						<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-folder-actions-${folder.id}`} aria-label="Folder actions">
 							<MoreHorizontal className="h-4 w-4" />
 						</Button>
 					</DropdownMenuTrigger>
 					<DropdownMenuContent align="end">
 						<DropdownMenuItem
+							data-testid="folder-action-new-prompt"
 							onClick={(e) => {
 								e.stopPropagation();
 								onCreatePrompt();
@@ -363,6 +368,7 @@ function DroppableFolder({
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
 						<DropdownMenuItem
+							data-testid="folder-action-edit"
 							onClick={(e) => {
 								e.stopPropagation();
 								onEdit();
@@ -373,6 +379,7 @@ function DroppableFolder({
 						</DropdownMenuItem>
 						<DropdownMenuItem
 							className="text-destructive"
+							data-testid="folder-action-delete"
 							onClick={(e) => {
 								e.stopPropagation();
 								onDelete();
@@ -423,6 +430,7 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 	return (
 		<div
 			ref={ref}
+			data-testid={`sidebar-prompt-${prompt.id}`}
 			className={cn(
 				"group flex cursor-pointer items-center gap-2 rounded-sm px-2 h-[30px] mb-1 last:mb-0",
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
@@ -438,13 +446,14 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 			<span className="flex-1 truncate text-sm">{prompt.name}</span>
 			<DropdownMenu>
 				<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-					<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" aria-label="Prompt actions">
+					<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-prompt-actions-${prompt.id}`} aria-label="Prompt actions">
 						<MoreHorizontal className="h-4 w-4" />
 					</Button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="end">
 					<DropdownMenuItem
 						className="cursor-pointer"
+						data-testid="prompt-action-rename"
 						onClick={(e) => {
 							e.stopPropagation();
 							onEdit();
@@ -455,6 +464,7 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 					</DropdownMenuItem>
 					<DropdownMenuItem
 						className="text-destructive hover:text-destructive cursor-pointer"
+						data-testid="prompt-action-delete"
 						onClick={(e) => {
 							e.stopPropagation();
 							onDelete();
