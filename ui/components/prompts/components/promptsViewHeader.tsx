@@ -74,7 +74,7 @@ export default function PromptsViewHeader() {
 	}, [modelParams, apiKeyId]);
 
 	const handleSaveSession = useCallback(async () => {
-		if (!selectedPrompt || !hasChanges) return;
+		if (!selectedPrompt || !hasChanges || isStreaming) return;
 		try {
 			const result = await createSession({
 				promptId: selectedPrompt.id,
@@ -90,7 +90,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges, isStreaming]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -99,9 +99,9 @@ export default function PromptsViewHeader() {
 		{
 			preventDefault: true,
 			enableOnFormTags: ["input", "textarea", "select"],
-			enabled: !!selectedPrompt && !isCreatingSession,
+			enabled: !!selectedPrompt && !isCreatingSession && !isStreaming,
 		},
-		[handleSaveSession, selectedPrompt, isCreatingSession],
+		[handleSaveSession, selectedPrompt, isCreatingSession, isStreaming],
 	);
 
 	const handleCommitVersion = useCallback(async () => {
@@ -117,7 +117,7 @@ export default function PromptsViewHeader() {
 					model,
 				},
 			}).unwrap();
-			setUrlState({ sessionId: result.session.id });
+			setUrlState({ sessionId: result.session.id, versionId: null });
 			onSessionSaved(result.session);
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });

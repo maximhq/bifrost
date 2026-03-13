@@ -151,8 +151,9 @@ export function SettingsPanel() {
               options={availableModels.map((m) => ({ label: m, value: m }))}
               value={model}
               onValueChange={(v) => v && onModelChange(v)}
-              placeholder="Select model"
+              placeholder={!provider ? "Select a provider first" : "Select model"}
               hideClear
+              disabled={!provider}
             />
           </div>
 
@@ -165,22 +166,27 @@ export function SettingsPanel() {
                 virtualKeys={providerVirtualKeys}
                 value={apiKeyId}
                 onValueChange={(v) => onApiKeyIdChange(v ?? '__auto__')}
+                disabled={!provider}
               />
             </div>
           )}
 
-          <Separator />
+          {model && (
+            <>
+              <Separator />
 
-          {/* Model Parameters */}
-          <div className="flex flex-col gap-4">
-            <Label className="text-muted-foreground text-xs font-medium uppercase">Model Parameters</Label>
-            <ModelParameters
-              model={model}
-              config={modelParams}
-              onChange={handleModelParamsChange}
-              hideFields={['promptTools']}
-            />
-          </div>
+              {/* Model Parameters */}
+              <div className="flex flex-col gap-4">
+                <Label className="text-muted-foreground text-xs font-medium uppercase">Model Parameters</Label>
+                <ModelParameters
+                  model={model}
+                  config={modelParams}
+                  onChange={handleModelParamsChange}
+                  hideFields={['promptTools']}
+                />
+              </div>
+            </>
+          )}
         </div>
       </ScrollArea>
 
@@ -197,11 +203,13 @@ function ApiKeyCombobox({
   virtualKeys,
   value,
   onValueChange,
+  disabled = false,
 }: {
   providerKeys: DBKey[]
   virtualKeys: VirtualKey[]
   value: string
   onValueChange: (v: string | null) => void
+  disabled?: boolean
 }) {
   const [query, setQuery] = useState('')
 
@@ -235,8 +243,9 @@ function ApiKeyCombobox({
       itemToStringLabel={getLabel}
     >
       <ComboboxInput
-        placeholder="Select API key"
-        showClear={value !== '__auto__'}
+        placeholder={disabled ? "Select a provider first" : "Select API key"}
+        disabled={disabled}
+        showClear={value !== '__auto__' && !disabled}
         showTrigger
       />
       <ComboboxContent>

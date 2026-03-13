@@ -76,9 +76,9 @@ export function AssistantMessageView({
 			<div>
 				{isStreaming && isEmpty ? (
 					<div className="flex items-center gap-1 py-1">
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "0ms" }} />
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "150ms" }} />
-						<span className="bg-muted-foreground h-2 w-2 animate-bounce rounded-full opacity-60" style={{ animationDelay: "300ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "0ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "150ms" }} />
+						<span className="bg-muted-foreground h-1.5 w-1.5 animate-bounce rounded-full opacity-60" style={{ animationDelay: "300ms" }} />
 					</div>
 				) : editMode ? (
 					<Textarea

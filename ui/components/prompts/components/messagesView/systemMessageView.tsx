@@ -55,7 +55,7 @@ export function SystemMessageView({
 				</div>
 			</div>
 
-			<div>
+			<div onClick={() => { if (!disabled && !editMode) setEditMode(true); }} className={!disabled && !editMode ? "cursor-text" : ""}>
 				{editMode ? (
 					<Textarea
 						autoFocus
