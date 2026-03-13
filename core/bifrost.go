@@ -4732,7 +4732,6 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		// never calls releaseChannelMessage itself, so this message leaks from the
 		// pool and is GC'd. That is intentional: a small pool leak on cancellation
 		// is far safer than corrupting another request's channels.
-		provider, model, _ := req.GetRequestFields()
 		bifrostErr := newBifrostCtxDoneError(ctx, "waiting for provider response")
 		bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		return nil, bifrostErr
