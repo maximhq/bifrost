@@ -4,10 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 func TestCreateGenAIRerankRouteConfig(t *testing.T) {
@@ -124,4 +126,62 @@ func TestGenAIRerankResponseConverterFallsBackWhenNotVertex(t *testing.T) {
 	converted, err := route.RerankResponseConverter(nil, resp)
 	require.NoError(t, err)
 	assert.Equal(t, resp, converted)
+}
+
+func TestCreateGenAIRouteConfigsIncludesModelMetadataRoute(t *testing.T) {
+	routes := CreateGenAIRouteConfigs("/genai")
+
+	found := false
+	for _, route := range routes {
+		if route.Path == "/genai/v1beta/models/{model}" && route.Method == "GET" {
+			found = true
+			assert.Equal(t, schemas.ListModelsRequest, route.GetHTTPRequestType(nil))
+			require.NotNil(t, route.PreCallback)
+			require.NotNil(t, route.ListModelsResponseConverter)
+			break
+		}
+	}
+
+	assert.True(t, found, "expected model metadata route in genai route configs")
+}
+
+func TestExtractGeminiModelMetadataParams(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "models/gemini-3-pro-preview")
+
+	listReq := &schemas.BifrostListModelsRequest{}
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	err := extractGeminiModelMetadataParams(ctx, bifrostCtx, listReq)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.Gemini, listReq.Provider)
+	assert.Equal(t, "/models/gemini-3-pro-preview", bifrostCtx.Value(schemas.BifrostContextKeyURLPath))
+	assert.Equal(t, "gemini-3-pro-preview", bifrostCtx.Value(requestedGeminiModelMetadataContextKey))
+}
+
+func TestConvertGeminiModelMetadataResponse(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp := &schemas.BifrostListModelsResponse{
+		Data: []schemas.Model{{ID: "gemini/gemini-2.5-pro", Name: schemas.Ptr("Gemini 2.5 Pro")}},
+	}
+
+	converted, err := convertGeminiModelMetadataResponse(bifrostCtx, resp)
+	require.NoError(t, err)
+
+	model, ok := converted.(gemini.GeminiModel)
+	require.True(t, ok, "expected gemini.GeminiModel")
+	assert.Equal(t, "models/gemini-2.5-pro", model.Name)
+	assert.Equal(t, "Gemini 2.5 Pro", model.DisplayName)
+}
+
+func TestConvertGeminiModelMetadataResponse_EmptyReturnsMinimalModel(t *testing.T) {
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, "gemini-3-pro-preview")
+
+	converted, err := convertGeminiModelMetadataResponse(bifrostCtx, &schemas.BifrostListModelsResponse{Data: []schemas.Model{}})
+	require.NoError(t, err)
+	model, ok := converted.(gemini.GeminiModel)
+	require.True(t, ok, "expected gemini.GeminiModel")
+	assert.Equal(t, "models/gemini-3-pro-preview", model.Name)
 }

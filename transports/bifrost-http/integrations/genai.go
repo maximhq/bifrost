@@ -28,6 +28,8 @@ const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifr
 
 const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
 
+const requestedGeminiModelMetadataContextKey schemas.BifrostContextKey = "bifrost-requested-gemini-model-metadata"
+
 // GenAIRouter holds route registrations for genai endpoints.
 type GenAIRouter struct {
 	*GenericRouter
@@ -247,6 +249,31 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			},
 		},
 		PreCallback: extractAndSetModelAndRequestType,
+	})
+
+	routes = append(routes, RouteConfig{
+		Type:   RouteConfigTypeGenAI,
+		Path:   pathPrefix + "/v1beta/models/{model}",
+		Method: "GET",
+		GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+			return schemas.ListModelsRequest
+		},
+		GetRequestTypeInstance: func(ctx context.Context) interface{} {
+			return &schemas.BifrostListModelsRequest{}
+		},
+		RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+			if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
+				return &schemas.BifrostRequest{
+					ListModelsRequest: listModelsReq,
+				}, nil
+			}
+			return nil, errors.New("invalid request type")
+		},
+		ListModelsResponseConverter: convertGeminiModelMetadataResponse,
+		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+			return gemini.ToGeminiError(err)
+		},
+		PreCallback: extractGeminiModelMetadataParams,
 	})
 
 	routes = append(routes, RouteConfig{
@@ -1166,8 +1193,8 @@ func isImageEditRequest(req *gemini.GeminiGenerationRequest) bool {
 // extractGeminiListModelsParams extracts query parameters for list models request
 func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 	if listModelsReq, ok := req.(*schemas.BifrostListModelsRequest); ok {
-		// Set provider to Gemini
-		listModelsReq.Provider = schemas.Gemini
+		// Set provider to Gemini unless explicitly overridden.
+		listModelsReq.Provider = getProviderFromHeader(ctx, schemas.Gemini)
 
 		// Extract pageSize from query parameters (Gemini uses pageSize instead of limit)
 		if pageSizeStr := string(ctx.QueryArgs().Peek("pageSize")); pageSizeStr != "" {
@@ -1184,6 +1211,55 @@ func extractGeminiListModelsParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas
 		return nil
 	}
 	return errors.New("invalid request type for Gemini list models")
+}
+
+func extractGeminiModelMetadataParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	listModelsReq, ok := req.(*schemas.BifrostListModelsRequest)
+	if !ok {
+		return errors.New("invalid request type for Gemini model metadata")
+	}
+
+	model := ctx.UserValue("model")
+	if model == nil {
+		return errors.New("model parameter is required")
+	}
+
+	provider := getProviderFromHeader(ctx, schemas.Gemini)
+	listModelsReq.Provider = provider
+
+	modelStr, ok := model.(string)
+	if !ok || modelStr == "" {
+		return errors.New("model parameter must be a non-empty string")
+	}
+
+	modelStr = strings.TrimPrefix(modelStr, "models/")
+	bifrostCtx.SetValue(requestedGeminiModelMetadataContextKey, modelStr)
+
+	if provider == schemas.Gemini {
+		// Use Gemini native metadata endpoint for direct model lookup.
+		bifrostCtx.SetValue(schemas.BifrostContextKeyURLPath, "/models/"+modelStr)
+	}
+
+	return nil
+}
+
+func convertGeminiModelMetadataResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostListModelsResponse) (interface{}, error) {
+	geminiResp := gemini.ToGeminiListModelsResponse(resp)
+	if geminiResp == nil {
+		return nil, errors.New("gemini model metadata response is nil")
+	}
+
+	if len(geminiResp.Models) > 0 {
+		return geminiResp.Models[0], nil
+	}
+
+	if requestedModel, ok := ctx.Value(requestedGeminiModelMetadataContextKey).(string); ok && requestedModel != "" {
+		// Gracefully return a minimal metadata object so SDK metadata discovery
+		// does not fail when no models are configured yet.
+		return gemini.GeminiModel{Name: "models/" + requestedModel}, nil
+	}
+
+	return nil, errors.New("no model metadata returned")
 }
 
 // extractGeminiVideoOperationFromPath extracts model and operation_id from path
