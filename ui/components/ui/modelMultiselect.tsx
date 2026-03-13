@@ -18,6 +18,8 @@ interface ModelMultiselectPropsBase {
 	onRefresh?: () => void;
 	/** Whether a refresh is currently in progress */
 	isRefreshing?: boolean;
+	/** Disable only the refresh button (e.g. no token available yet) */
+	refreshDisabled?: boolean;
 	/** Load models even when no provider is selected.
 	 * - `true`: loads all models from all providers
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
@@ -304,7 +306,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					data-testid="model-multiselect-refresh"
 					className="text-muted-foreground hover:text-foreground inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors disabled:pointer-events-none disabled:opacity-50"
 					onClick={props.onRefresh}
-					disabled={props.isRefreshing || shouldBeDisabled}
+					disabled={props.isRefreshing || props.refreshDisabled || shouldBeDisabled}
 				>
 					<RefreshCw className={cn("h-4 w-4", props.isRefreshing && "animate-spin")} />
 				</button>

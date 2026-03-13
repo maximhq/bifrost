@@ -64,6 +64,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
 	const supportsModelRefresh = MODEL_REFRESH_PROVIDERS.includes(providerName);
 	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshModelsMutation();
+	// For providers that support model refresh, enable the button only when a token
+	// is available — either a freshly obtained local token (device-login / manual)
+	// or a saved/redacted one from the server.
+	const copilotKeyValue = supportsModelRefresh ? form.watch('key.value') : undefined;
+	const hasToken = !!(copilotKeyValue?.value);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<'api_key' | 'entra_id' | 'default_credential'>('api_key')
@@ -235,6 +240,7 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 									{...(supportsModelRefresh ? {
 										onRefresh: () => refreshModels(providerName),
 										isRefreshing: isRefreshingModels,
+										refreshDisabled: !hasToken,
 									} : {})}
 								/>
 							</FormControl>
