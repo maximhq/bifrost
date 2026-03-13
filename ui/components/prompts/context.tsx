@@ -140,8 +140,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			return next.map((msg, i) => msg.withIndex(i));
 		});
 	}, []);
-	const [provider, setProvider] = useState("openai");
-	const [model, setModel] = useState("gpt-4o");
+	const [provider, setProvider] = useState("");
+	const [model, setModel] = useState("");
 	const [modelParams, setModelParams] = useState<ModelParams>({});
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
@@ -194,8 +194,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const { api_key_id, ...rest } = params || ({} as ModelParams);
 			setModelParams(rest);
 			setApiKeyId(api_key_id || "__auto__");
-			setProvider(prov || "openai");
-			setModel(mod || "gpt-4o");
+			setProvider(prov || "");
+			setModel(mod || "");
 		};
 
 		const loadMessages = (msgs: Message[]) => {
@@ -227,9 +227,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 				setUrlState({ versionId: version.id });
 			}
 		} else {
-			loadMessages([Message.system("")]);
-			setProvider("openai");
-			setModel("gpt-4o");
+			setMessages([Message.system("")]);
+			setProvider("");
+			setModel("");
 			setModelParams({});
 			setApiKeyId("__auto__");
 		}
@@ -288,8 +288,8 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	const handleSelectPrompt = useCallback(
 		(id: string) => {
 			setMessages([Message.system("")]);
-			setProvider("openai");
-			setModel("gpt-4o");
+			setProvider("");
+			setModel("");
 			setModelParams({});
 			setApiKeyId("__auto__");
 			setUrlState({ promptId: id, sessionId: null, versionId: null });

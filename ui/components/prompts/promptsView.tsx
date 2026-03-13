@@ -7,12 +7,12 @@ import { PlaygroundPanel } from "./fragments/playgroundPanel";
 import { SettingsPanel } from "./fragments/settingsPanel";
 import { DeleteFolderDialog, DeletePromptDialog } from "./components/alerts";
 import { PromptSheets } from "./components/sheets";
-import { EmptyState } from "./components/emptyState";
+import { EmptyState, PromptsEmptyState } from "./components/emptyState";
 import PromptsViewHeader from "./components/promptsViewHeader";
 import { usePromptContext } from "./context";
 
 export default function PromptsView() {
-	const { foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } = usePromptContext();
+	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } = usePromptContext();
 
 	if (foldersLoading || promptsLoading) {
 		return <FullPageLoader />;
@@ -25,6 +25,15 @@ export default function PromptsView() {
 					<AlertCircle className="h-4 w-4" />
 					<AlertDescription>Failed to load prompt repository</AlertDescription>
 				</Alert>
+			</div>
+		);
+	}
+
+	if (folders.length === 0 && prompts.length === 0) {
+		return (
+			<div className="no-padding-parent no-border-parent h-[calc(100dvh_-_18px)] w-full flex items-center">
+				<PromptSheets />
+				<PromptsEmptyState />
 			</div>
 		);
 	}

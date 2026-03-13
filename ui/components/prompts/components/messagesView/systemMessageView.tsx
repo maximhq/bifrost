@@ -24,6 +24,7 @@ export function SystemMessageView({
 	const content = message.content;
 	const isEmpty = !content;
 	const hasVariables = JINJA_VAR_REGEX.test(content);
+	JINJA_VAR_REGEX.lastIndex = 0;
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -60,7 +61,7 @@ export function SystemMessageView({
 	};
 
 	return (
-		<div className="group hover:border-border focus-within:border-border rounded-lg border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
+		<div className="group hover:border-border focus-within:border-border rounded-sm border border-transparent px-3 py-2 transition-colors" ref={containerRef}>
 			<div className="mb-1 flex items-center">
 				<MessageRoleSwitcher role={message.role ?? ""} disabled={disabled} onRoleChange={handleRoleChange} />
 				<div className="ml-auto flex items-center gap-0.5 h-5">
@@ -77,7 +78,7 @@ export function SystemMessageView({
 				</div>
 			</div>
 
-			<div>
+			<div onClick={() => { if (!disabled && !editMode) setEditMode(true); }} className={!disabled && !editMode ? "cursor-text" : ""}>
 				{editMode ? (
 					<RichTextarea
 						autoFocus

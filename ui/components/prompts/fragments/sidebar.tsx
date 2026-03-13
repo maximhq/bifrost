@@ -273,7 +273,7 @@ function RootDropZone({
 	const { ref } = useDroppable({ id: "root-drop-zone" });
 
 	return (
-		<div ref={ref} className={cn("min-h-[8px] grow rounded-md transition-colors", isDragOver && "bg-primary/10 ring-primary/30 ring-1")}>
+		<div ref={ref} className={cn("min-h-[8px] grow rounded-sm transition-colors", isDragOver && "bg-primary/10 ring-primary/30 ring-1")}>
 			{rootPrompts.map((prompt) => (
 				<DraggablePromptItem
 					key={prompt.id}
@@ -323,10 +323,10 @@ function DroppableFolder({
 	const { ref } = useDroppable({ id: `folder-${folder.id}` });
 
 	return (
-		<div ref={ref} className="mb-1">
+		<div ref={ref} className="mb-1 last:mb-0">
 			<div
 				className={cn(
-					"hover:bg-muted/50 group relative flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 transition-colors",
+					"hover:bg-muted/50 group relative flex cursor-pointer items-center gap-1 rounded-sm px-2 h-[30px] transition-colors",
 					isDragOver && "bg-primary/10 ring-primary/30 ring-1",
 				)}
 				onClick={onToggle}
@@ -424,7 +424,7 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 		<div
 			ref={ref}
 			className={cn(
-				"group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5",
+				"group flex cursor-pointer items-center gap-2 rounded-sm px-2 h-[30px] mb-1 last:mb-0",
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
 				isDragging && "opacity-50",
 			)}

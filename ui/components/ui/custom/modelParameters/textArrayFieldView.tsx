@@ -70,7 +70,7 @@ export default function TextArrayFieldView(props: Props) {
 			<Button
 				variant={"link"}
 				disabled={invalid || props.disabled}
-				className="h-auto px-0"
+				className="h-auto px-0 py-0"
 				onClick={() => {
 					if (invalid) return;
 					setShouldFocus(true);
