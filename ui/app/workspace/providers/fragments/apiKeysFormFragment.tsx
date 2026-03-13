@@ -13,6 +13,7 @@ import { TagInput } from "@/components/ui/tagInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
+import { useRefreshModelsMutation } from "@/lib/store/apis/providersApi";
 import { getApiBaseUrl } from "@/lib/utils/port";
 import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -20,6 +21,9 @@ import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure"];
+
+// Providers that support live model refresh (dynamic model discovery)
+const MODEL_REFRESH_PROVIDERS = ["copilot"];
 
 interface Props {
 	control: Control<any>;
@@ -58,6 +62,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isVLLM = providerName === "vllm";
 	const isCopilot = providerName === "copilot";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+	const supportsModelRefresh = MODEL_REFRESH_PROVIDERS.includes(providerName);
+	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshModelsMutation();
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<'api_key' | 'entra_id' | 'default_credential'>('api_key')
@@ -221,7 +227,16 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 								</TooltipProvider>
 							</div>
 							<FormControl>
-								<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+								<ModelMultiselect
+									provider={providerName}
+									value={field.value || []}
+									onChange={field.onChange}
+									unfiltered={true}
+									{...(supportsModelRefresh ? {
+										onRefresh: () => refreshModels(providerName),
+										isRefreshing: isRefreshingModels,
+									} : {})}
+								/>
 							</FormControl>
 							<FormMessage />
 						</FormItem>
@@ -815,7 +830,7 @@ function CopilotDeviceLoginSection({
 	setCopilotAuthType: (v: 'device_login' | 'manual_token') => void;
 }) {
 	const [deviceState, setDeviceState] = useState<{
-		status: 'idle' | 'awaiting_auth' | 'polling' | 'complete' | 'error';
+		status: 'idle' | 'awaiting_auth' | 'complete' | 'error';
 		userCode?: string;
 		verificationUri?: string;
 		deviceCode?: string;
@@ -824,12 +839,22 @@ function CopilotDeviceLoginSection({
 	}>({ status: 'idle' });
 
 	const [copied, setCopied] = useState(false);
-	const pollingRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const [countdown, setCountdown] = useState<number | null>(null);
+	const [isChecking, setIsChecking] = useState(false);
+	const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-	// Clean up polling on unmount
+	const clearCountdown = useCallback(() => {
+		if (countdownRef.current) {
+			clearInterval(countdownRef.current);
+			countdownRef.current = null;
+		}
+		setCountdown(null);
+	}, []);
+
+	// Clean up on unmount
 	useEffect(() => {
 		return () => {
-			if (pollingRef.current) clearTimeout(pollingRef.current);
+			if (countdownRef.current) clearInterval(countdownRef.current);
 		};
 	}, []);
 
@@ -860,47 +885,63 @@ function CopilotDeviceLoginSection({
 		}
 	}, []);
 
-	const startPolling = useCallback(() => {
-		if (!deviceState.deviceCode || !deviceState.interval) return;
+	const startCountdown = useCallback(() => {
+		clearCountdown();
+		setCountdown(10);
+		countdownRef.current = setInterval(() => {
+			setCountdown(prev => {
+				if (prev === null || prev <= 1) return 0;
+				return prev - 1;
+			});
+		}, 1000);
+	}, [clearCountdown]);
 
-		setDeviceState(prev => ({ ...prev, status: 'polling' }));
+	const pollOnce = useCallback(async () => {
+		if (!deviceState.deviceCode) return;
 
-		const poll = async () => {
-			try {
-				const baseUrl = getApiBaseUrl();
-				const resp = await fetch(`${baseUrl}/providers/copilot/device-login/poll`, {
-					method: 'POST',
-					credentials: 'include',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ device_code: deviceState.deviceCode }),
-				});
-				if (!resp.ok) {
-					setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
-					return;
-				}
-				const data = await resp.json();
+		clearCountdown();
+		setIsChecking(true);
 
-				if (data.status === 'complete' && data.access_token) {
-					// Set the access token as the key value
-					form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true });
-					setDeviceState(prev => ({ ...prev, status: 'complete' }));
-					return;
-				}
-
-				if (data.status === 'expired' || data.status === 'error') {
-					setDeviceState(prev => ({ ...prev, status: 'error', error: data.error || 'Authorization failed' }));
-					return;
-				}
-
-				// Still pending — schedule next poll
-				pollingRef.current = setTimeout(poll, (deviceState.interval || 5) * 1000);
-			} catch {
-				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+		try {
+			const baseUrl = getApiBaseUrl();
+			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/poll`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ device_code: deviceState.deviceCode }),
+			});
+			if (!resp.ok) {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
+				return;
 			}
-		};
+			const data = await resp.json();
 
-		poll();
-	}, [deviceState.deviceCode, deviceState.interval, form]);
+			if (data.status === 'complete' && data.access_token) {
+				form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true, shouldValidate: true });
+				setDeviceState(prev => ({ ...prev, status: 'complete' }));
+				return;
+			}
+
+			if (data.status === 'expired' || data.status === 'error') {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: data.error || 'Authorization failed' }));
+				return;
+			}
+
+			// Still pending — restart countdown
+			startCountdown();
+		} catch {
+			setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+		} finally {
+			setIsChecking(false);
+		}
+	}, [deviceState.deviceCode, form, clearCountdown, startCountdown]);
+
+	// Trigger poll when countdown reaches 0
+	useEffect(() => {
+		if (countdown === 0 && !isChecking) {
+			pollOnce();
+		}
+	}, [countdown, isChecking, pollOnce]);
 
 	const copyCode = useCallback(() => {
 		if (deviceState.userCode) {
@@ -910,10 +951,18 @@ function CopilotDeviceLoginSection({
 		}
 	}, [deviceState.userCode]);
 
+	// Auto-start countdown when user code is obtained
+	useEffect(() => {
+		if (deviceState.status === 'awaiting_auth' && deviceState.userCode) {
+			startCountdown();
+		}
+	}, [deviceState.status, deviceState.userCode, startCountdown]);
+
 	const resetFlow = useCallback(() => {
-		if (pollingRef.current) clearTimeout(pollingRef.current);
+		clearCountdown();
+		setIsChecking(false);
 		setDeviceState({ status: 'idle' });
-	}, []);
+	}, [clearCountdown]);
 
 	return (
 		<div className="space-y-4">
@@ -956,7 +1005,7 @@ function CopilotDeviceLoginSection({
 						</>
 					)}
 
-					{(deviceState.status === 'awaiting_auth' || deviceState.status === 'polling') && deviceState.userCode && (
+					{deviceState.status === 'awaiting_auth' && deviceState.userCode && (
 						<div className="space-y-4">
 							<Alert variant="default">
 								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
@@ -992,23 +1041,21 @@ function CopilotDeviceLoginSection({
 								</AlertDescription>
 							</Alert>
 
-							{deviceState.status === 'awaiting_auth' && (
-								<Button
-									type="button"
-									data-testid="copilot-confirm-auth-button"
-									onClick={startPolling}
-									className="w-full"
-								>
-									I&apos;ve entered the code — check authorization
-								</Button>
-							)}
-
-							{deviceState.status === 'polling' && (
-								<div className="flex items-center justify-center gap-2 py-2 text-sm text-muted-foreground">
-									<Loader2 className="h-4 w-4 animate-spin" />
-									Waiting for authorization...
-								</div>
-							)}
+							<Button
+								type="button"
+								data-testid="copilot-confirm-auth-button"
+								onClick={pollOnce}
+								disabled={isChecking}
+								className="w-full"
+							>
+								{isChecking ? (
+									<><Loader2 className="h-4 w-4 animate-spin" /> Checking authorization...</>
+								) : countdown !== null && countdown > 0 ? (
+									<>Check authorization ({countdown}s)</>
+								) : (
+									<>Check authorization</>
+								)}
+							</Button>
 
 							<Button
 								type="button"
