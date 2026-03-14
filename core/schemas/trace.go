@@ -142,6 +142,12 @@ const (
 	SpanKindTranscription SpanKind = "transcription"
 	// SpanKindInternal represents internal operations (key selection, etc.)
 	SpanKindInternal SpanKind = "internal"
+	// SpanKindTrace represents a root trace span (groups child spans into a logical trace)
+	SpanKindTrace SpanKind = "trace"
+	// SpanKindRouting represents a routing decision span (key selection, routing rules, load balancing)
+	SpanKindRouting SpanKind = "routing"
+	// SpanKindEvent represents a discrete event within a trace (progress notifications, etc.)
+	SpanKindEvent SpanKind = "event"
 )
 
 // SpanStatus represents the status of a span's operation

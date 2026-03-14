@@ -3,13 +3,11 @@ package logging
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/streaming"
 )
 
 type testLogger struct{}
@@ -41,205 +39,181 @@ func newTestStore(t *testing.T) logstore.LogStore {
 	return store
 }
 
-func TestUpdateLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
+func TestInjectTraceAndSearchTraces(t *testing.T) {
 	store := newTestStore(t)
 	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
 		store:  store,
 		logger: testLogger{},
+		done:   make(chan struct{}),
 	}
 
-	requestID := "req-1"
 	now := time.Now().UTC()
-	inputText := "request-side text"
-	initial := &InitialLogData{
-		Object:   "responses",
-		Provider: "openai",
-		Model:    "gpt-4o-mini",
-		ResponsesInputHistory: []schemas.ResponsesMessage{{
-			Content: &schemas.ResponsesMessageContent{
-				ContentStr: &inputText,
-			},
-		}},
-	}
 
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
-		t.Fatalf("insertInitialLogEntry() error = %v", err)
-	}
-
-	responsesText := "responses output"
-	update := &UpdateLogData{
-		Status: "success",
-		ResponsesOutput: []schemas.ResponsesMessage{{
-			Content: &schemas.ResponsesMessageContent{
-				ContentStr: &responsesText,
-			},
-		}},
-	}
-
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
-		t.Fatalf("updateLogEntry() error = %v", err)
-	}
-
-	logEntry, err := store.FindByID(context.Background(), requestID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
-	}
-	if !strings.Contains(logEntry.ContentSummary, inputText) {
-		t.Fatalf("expected content summary to preserve responses input, got %q", logEntry.ContentSummary)
-	}
-	if strings.Contains(logEntry.ContentSummary, responsesText) {
-		t.Fatalf("expected content summary to avoid overwriting with responses output-only data, got %q", logEntry.ContentSummary)
-	}
-}
-
-func TestUpdateLogEntryUpdatesContentSummaryForChatOutput(t *testing.T) {
-	store := newTestStore(t)
-	plugin := &LoggerPlugin{
-		store:  store,
-		logger: testLogger{},
-	}
-
-	requestID := "req-chat"
-	now := time.Now().UTC()
-	initial := &InitialLogData{
-		Object:   "chat_completion",
-		Provider: "openai",
-		Model:    "gpt-4o-mini",
-	}
-
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
-		t.Fatalf("insertInitialLogEntry() error = %v", err)
-	}
-
-	chatText := "assistant output"
-	update := &UpdateLogData{
-		Status: "success",
-		ChatOutput: &schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleAssistant,
-			Content: &schemas.ChatMessageContent{
-				ContentStr: &chatText,
-			},
+	// Create a trace with one LLM span
+	trace := &schemas.Trace{
+		TraceID:   "trace-1",
+		StartTime: now,
+		EndTime:   now.Add(100 * time.Millisecond),
+		Attributes: map[string]interface{}{
+			"trace_name": "test-trace",
 		},
-	}
-
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
-		t.Fatalf("updateLogEntry() error = %v", err)
-	}
-
-	logEntry, err := store.FindByID(context.Background(), requestID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
-	}
-	if !strings.Contains(logEntry.ContentSummary, chatText) {
-		t.Fatalf("expected content summary to include chat output, got %q", logEntry.ContentSummary)
-	}
-}
-
-func TestUpdateLogEntrySuppressesChatOutputWhenContentLoggingDisabled(t *testing.T) {
-	store := newTestStore(t)
-	disableContentLogging := true
-	plugin := &LoggerPlugin{
-		store:                 store,
-		logger:                testLogger{},
-		disableContentLogging: &disableContentLogging,
-	}
-
-	requestID := "req-chat-disabled"
-	now := time.Now().UTC()
-	initial := &InitialLogData{
-		Object:   "chat_completion",
-		Provider: "openai",
-		Model:    "gpt-4o-mini",
-	}
-
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
-		t.Fatalf("insertInitialLogEntry() error = %v", err)
-	}
-
-	chatText := "assistant output should not be logged"
-	update := &UpdateLogData{
-		Status: "success",
-		ChatOutput: &schemas.ChatMessage{
-			Role: schemas.ChatMessageRoleAssistant,
-			Content: &schemas.ChatMessageContent{
-				ContentStr: &chatText,
-			},
-		},
-	}
-
-	if err := plugin.updateLogEntry(context.Background(), requestID, "", "", 10, "", "", "", "", 0, nil, "", update); err != nil {
-		t.Fatalf("updateLogEntry() error = %v", err)
-	}
-
-	logEntry, err := store.FindByID(context.Background(), requestID)
-	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
-	}
-	if logEntry.OutputMessage != "" {
-		t.Fatalf("expected output_message to be suppressed, got %q", logEntry.OutputMessage)
-	}
-	if strings.Contains(logEntry.ContentSummary, chatText) {
-		t.Fatalf("expected content summary to suppress chat output, got %q", logEntry.ContentSummary)
-	}
-}
-
-func TestUpdateStreamingLogEntryPreservesResponsesInputContentSummary(t *testing.T) {
-	store := newTestStore(t)
-	plugin := &LoggerPlugin{
-		store:  store,
-		logger: testLogger{},
-	}
-
-	requestID := "req-stream"
-	now := time.Now().UTC()
-	inputText := "stream request-side text"
-	initial := &InitialLogData{
-		Object:   "responses_stream",
-		Provider: "openai",
-		Model:    "gpt-4o-mini",
-		ResponsesInputHistory: []schemas.ResponsesMessage{{
-			Content: &schemas.ResponsesMessageContent{
-				ContentStr: &inputText,
-			},
-		}},
-	}
-
-	if err := plugin.insertInitialLogEntry(context.Background(), requestID, "", now, 0, nil, initial); err != nil {
-		t.Fatalf("insertInitialLogEntry() error = %v", err)
-	}
-
-	responsesText := "streamed response text"
-	streamResponse := &streaming.ProcessedStreamResponse{
-		Data: &streaming.AccumulatedData{
-			Latency: 25,
-			TokenUsage: &schemas.BifrostLLMUsage{
-				PromptTokens:     10,
-				CompletionTokens: 5,
-				TotalTokens:      15,
-			},
-			OutputMessages: []schemas.ResponsesMessage{{
-				Content: &schemas.ResponsesMessageContent{
-					ContentStr: &responsesText,
+		Spans: []*schemas.Span{
+			{
+				SpanID:    "span-1",
+				Kind:      schemas.SpanKindLLMCall,
+				Name:      "llm-call",
+				StartTime: now,
+				EndTime:   now.Add(100 * time.Millisecond),
+				Status:    schemas.SpanStatusOk,
+				Attributes: map[string]interface{}{
+					schemas.AttrProviderName:  "openai",
+					schemas.AttrRequestModel:  "gpt-4o-mini",
+					schemas.AttrPromptTokens:     10,
+					schemas.AttrCompletionTokens: 5,
+					schemas.AttrTotalTokens:      15,
 				},
-			}},
+			},
 		},
 	}
 
-	if err := plugin.updateStreamingLogEntry(context.Background(), requestID, "", "", "", "", "", "", 0, nil, "", streamResponse, true, false, false); err != nil {
-		t.Fatalf("updateStreamingLogEntry() error = %v", err)
+	rootSpan, childSpans := plugin.convertTraceToSpanLogs(trace)
+	if rootSpan == nil {
+		t.Fatal("expected root span, got nil")
 	}
 
-	logEntry, err := store.FindByID(context.Background(), requestID)
+	// Persist directly
+	if err := store.CreateRootSpanWithChildren(context.Background(), rootSpan, childSpans); err != nil {
+		t.Fatalf("CreateRootSpanWithChildren() error = %v", err)
+	}
+
+	// Search traces
+	result, err := plugin.SearchTraces(context.Background(), logstore.SearchFilters{}, logstore.PaginationOptions{
+		Limit:  50,
+		SortBy: "timestamp",
+		Order:  "desc",
+	})
 	if err != nil {
-		t.Fatalf("FindByID() error = %v", err)
+		t.Fatalf("SearchTraces() error = %v", err)
 	}
-	if logEntry.TokenUsageParsed == nil || logEntry.TokenUsageParsed.TotalTokens != 15 {
-		t.Fatalf("expected token usage to be updated, got %+v", logEntry.TokenUsageParsed)
+
+	if len(result.Traces) != 1 {
+		t.Fatalf("expected 1 trace, got %d", len(result.Traces))
 	}
-	if !strings.Contains(logEntry.ContentSummary, inputText) {
-		t.Fatalf("expected content summary to preserve responses input, got %q", logEntry.ContentSummary)
+
+	if result.Traces[0].ID != "trace-1" {
+		t.Fatalf("expected trace ID 'trace-1', got %q", result.Traces[0].ID)
 	}
-	if strings.Contains(logEntry.ContentSummary, responsesText) {
-		t.Fatalf("expected content summary to avoid overwriting with streamed responses output-only data, got %q", logEntry.ContentSummary)
+
+	if result.Traces[0].TotalTokens != 15 {
+		t.Fatalf("expected total tokens 15, got %d", result.Traces[0].TotalTokens)
+	}
+}
+
+func TestGetTraceReturnsRootAndChildren(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
+		store:  store,
+		logger: testLogger{},
+		done:   make(chan struct{}),
+	}
+
+	now := time.Now().UTC()
+
+	trace := &schemas.Trace{
+		TraceID:   "trace-2",
+		StartTime: now,
+		EndTime:   now.Add(200 * time.Millisecond),
+		Spans: []*schemas.Span{
+			{
+				SpanID:    "span-a",
+				Kind:      schemas.SpanKindLLMCall,
+				Name:      "first-call",
+				StartTime: now,
+				EndTime:   now.Add(100 * time.Millisecond),
+				Status:    schemas.SpanStatusOk,
+				Attributes: map[string]interface{}{
+					schemas.AttrProviderName: "anthropic",
+					schemas.AttrRequestModel: "claude-3",
+				},
+			},
+			{
+				SpanID:    "span-b",
+				Kind:      schemas.SpanKindLLMCall,
+				Name:      "second-call",
+				StartTime: now.Add(100 * time.Millisecond),
+				EndTime:   now.Add(200 * time.Millisecond),
+				Status:    schemas.SpanStatusOk,
+				Attributes: map[string]interface{}{
+					schemas.AttrProviderName: "openai",
+					schemas.AttrRequestModel: "gpt-4",
+				},
+			},
+		},
+	}
+
+	rootSpan, childSpans := plugin.convertTraceToSpanLogs(trace)
+	if err := store.CreateRootSpanWithChildren(context.Background(), rootSpan, childSpans); err != nil {
+		t.Fatalf("CreateRootSpanWithChildren() error = %v", err)
+	}
+
+	root, children, err := plugin.GetTrace(context.Background(), "trace-2")
+	if err != nil {
+		t.Fatalf("GetTrace() error = %v", err)
+	}
+
+	if root == nil {
+		t.Fatal("expected root span, got nil")
+	}
+
+	if len(children) != 2 {
+		t.Fatalf("expected 2 child spans, got %d", len(children))
+	}
+}
+
+func TestDeleteTraces(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{
+		ctx:    context.Background(),
+		store:  store,
+		logger: testLogger{},
+		done:   make(chan struct{}),
+	}
+
+	now := time.Now().UTC()
+
+	trace := &schemas.Trace{
+		TraceID:   "trace-del",
+		StartTime: now,
+		EndTime:   now.Add(100 * time.Millisecond),
+		Spans: []*schemas.Span{
+			{
+				SpanID:    "span-del-1",
+				Kind:      schemas.SpanKindLLMCall,
+				Name:      "call",
+				StartTime: now,
+				EndTime:   now.Add(100 * time.Millisecond),
+				Status:    schemas.SpanStatusOk,
+				Attributes: map[string]interface{}{
+					schemas.AttrProviderName: "openai",
+					schemas.AttrRequestModel: "gpt-4",
+				},
+			},
+		},
+	}
+
+	rootSpan, childSpans := plugin.convertTraceToSpanLogs(trace)
+	if err := store.CreateRootSpanWithChildren(context.Background(), rootSpan, childSpans); err != nil {
+		t.Fatalf("CreateRootSpanWithChildren() error = %v", err)
+	}
+
+	if err := plugin.DeleteTraces(context.Background(), []string{"trace-del"}); err != nil {
+		t.Fatalf("DeleteTraces() error = %v", err)
+	}
+
+	root, _, err := plugin.GetTrace(context.Background(), "trace-del")
+	if err == nil && root != nil {
+		t.Fatal("expected trace to be deleted")
 	}
 }

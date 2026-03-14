@@ -64,6 +64,21 @@ type LogStore interface {
 	GetAvailableServerLabels(ctx context.Context) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context) ([]MCPToolLog, error)
 
+	// Span/Trace methods
+	CreateRootSpanWithChildren(ctx context.Context, root *SpanLog, children []*SpanLog) error
+	BatchCreateRootSpansWithChildren(ctx context.Context, entries []RootSpanWithChildren) error
+	SearchTraces(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*TraceSearchResult, error)
+	FindTraceWithSpans(ctx context.Context, rootSpanID string) (*SpanLog, []*SpanLog, error)
+	UpdateRootSpanAggregates(ctx context.Context, rootSpanID string) error
+	DeleteTraces(ctx context.Context, ids []string) error
+	CreateSpan(ctx context.Context, span *SpanLog) error
+	BatchCreateSpans(ctx context.Context, spans []*SpanLog) error
+	FindSpanByID(ctx context.Context, id string) (*SpanLog, error)
+	FindSpansByParent(ctx context.Context, parentSpanID string) ([]*SpanLog, error)
+	UpdateSpan(ctx context.Context, id string, updates any) error
+	HasTraces(ctx context.Context) (bool, error)
+	DeleteSpansBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error)
+
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
 	FindAsyncJobByID(ctx context.Context, id string) (*AsyncJob, error)

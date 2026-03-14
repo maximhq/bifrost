@@ -12,6 +12,7 @@ import {
 	ProviderLatencyHistogramResponse,
 	ProviderTokenHistogramResponse,
 	RecalculateCostResponse,
+	SpanEntry,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
 import { baseApi } from "./baseApi";
@@ -59,13 +60,13 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 
 export const logsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
-		// Get logs with filters and pagination
+		// Get traces with filters and pagination
 		getLogs: builder.query<
 			{
-				logs: LogEntry[];
+				traces: LogEntry[];
 				pagination: Pagination;
 				stats: LogStats;
-				has_logs: boolean;
+				has_traces: boolean;
 			},
 			{
 				filters: LogFilters;
@@ -115,14 +116,14 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.content_search) params.content_search = filters.content_search;
 
 				return {
-					url: "/logs",
+					url: "/traces",
 					params,
 				};
 			},
 			providesTags: ["Logs"],
 		}),
 
-		// Get logs statistics with filters
+		// Get traces statistics with filters
 		getLogsStats: builder.query<
 			LogStats,
 			{
@@ -167,14 +168,14 @@ export const logsApi = baseApi.injectEndpoints({
 				if (filters.content_search) params.content_search = filters.content_search;
 
 				return {
-					url: "/logs/stats",
+					url: "/traces/stats",
 					params,
 				};
 			},
 			providesTags: ["Logs"],
 		}),
 
-		// Get logs histogram with filters
+		// Get traces histogram with filters
 		getLogsHistogram: builder.query<
 			LogsHistogramResponse,
 			{
@@ -182,7 +183,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram",
+				url: "/traces/histogram",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -196,7 +197,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/tokens",
+				url: "/traces/histogram/tokens",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -210,7 +211,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/cost",
+				url: "/traces/histogram/cost",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -224,7 +225,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/models",
+				url: "/traces/histogram/models",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -238,7 +239,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/latency",
+				url: "/traces/histogram/latency",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -252,7 +253,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/cost/by-provider",
+				url: "/traces/histogram/cost/by-provider",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -266,7 +267,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/tokens/by-provider",
+				url: "/traces/histogram/tokens/by-provider",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -280,7 +281,7 @@ export const logsApi = baseApi.injectEndpoints({
 			}
 		>({
 			query: ({ filters }) => ({
-				url: "/logs/histogram/latency/by-provider",
+				url: "/traces/histogram/latency/by-provider",
 				params: buildFilterParams(filters),
 			}),
 			providesTags: ["Logs"],
@@ -288,11 +289,11 @@ export const logsApi = baseApi.injectEndpoints({
 
 		// Get dropped requests count
 		getDroppedRequests: builder.query<{ dropped_requests: number }, void>({
-			query: () => "/logs/dropped",
+			query: () => "/traces/dropped",
 			providesTags: ["Logs"],
 		}),
 
-		// Get available models
+		// Get available filter data
 		getAvailableFilterData: builder.query<
 			{
 				models: string[];
@@ -303,14 +304,14 @@ export const logsApi = baseApi.injectEndpoints({
 			},
 			void
 		>({
-			query: () => "/logs/filterdata",
+			query: () => "/traces/filterdata",
 			providesTags: ["Logs"],
 		}),
 
-		// Delete logs by their IDs
+		// Delete traces by their IDs
 		deleteLogs: builder.mutation<void, { ids: string[] }>({
 			query: ({ ids }) => ({
-				url: "/logs",
+				url: "/traces",
 				method: "DELETE",
 				body: { ids },
 			}),
@@ -319,16 +320,22 @@ export const logsApi = baseApi.injectEndpoints({
 
 		recalculateLogCosts: builder.mutation<RecalculateCostResponse, { filters: LogFilters; limit?: number }>({
 			query: ({ filters, limit }) => ({
-				url: "/logs/recalculate-cost",
+				url: "/traces/recalculate-cost",
 				method: "POST",
 				body: { filters, limit },
 			}),
 			invalidatesTags: ["Logs"],
 		}),
 
-		// Get a single log entry by ID (includes raw_request and raw_response)
+		// Get a single trace by ID (returns trace + spans)
 		getLogById: builder.query<LogEntry, string>({
-			query: (id) => `/logs/${encodeURIComponent(id)}`,
+			query: (id) => `/traces/${encodeURIComponent(id)}`,
+			providesTags: (result, error, id) => [{ type: "Logs", id }],
+		}),
+
+		// Get a trace by ID with full span details
+		getTraceById: builder.query<{ trace: SpanEntry; spans: SpanEntry[] }, string>({
+			query: (id) => `/traces/${encodeURIComponent(id)}`,
 			providesTags: (result, error, id) => [{ type: "Logs", id }],
 		}),
 	}),
@@ -362,4 +369,5 @@ export const {
 	useDeleteLogsMutation,
 	useRecalculateLogCostsMutation,
 	useLazyGetLogByIdQuery,
+	useLazyGetTraceByIdQuery,
 } = logsApi;

@@ -160,78 +160,33 @@ func (h *WebSocketHandler) sendMessageSafely(client *WebSocketClient, messageTyp
 	return err
 }
 
-// BroadcastLogUpdate sends a log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastLogUpdate(logEntry *logstore.Log) {
+// BroadcastTraceUpdate sends a trace update to all connected WebSocket clients
+func (h *WebSocketHandler) BroadcastTraceUpdate(root *logstore.SpanLog, children []*logstore.SpanLog) {
 	// Nil guard to prevent panics
-	if logEntry == nil {
+	if root == nil {
 		return
 	}
 
 	// Add panic recovery to prevent server crashes
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastLogUpdate: %v", r)
+			logger.Error("panic in BroadcastTraceUpdate: %v", r)
 		}
 	}()
 
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
-	}
-
 	message := struct {
-		Type      string        `json:"type"`
-		Operation string        `json:"operation"` // "create" or "update"
-		Payload   *logstore.Log `json:"payload"`
+		Type     string             `json:"type"`
+		Trace    *logstore.SpanLog  `json:"trace"`
+		Children []*logstore.SpanLog `json:"children,omitempty"`
 	}{
-		Type:      "log",
-		Operation: operationType,
-		Payload:   logEntry,
+		Type:     "trace",
+		Trace:    root,
+		Children: children,
 	}
 
 	data, err := sonic.Marshal(message)
 	if err != nil {
-		logger.Error("failed to marshal log entry: %v", err)
-		return
-	}
-
-	h.BroadcastMarshaledMessage(data)
-}
-
-// BroadcastMCPLogUpdate sends an MCP tool log update to all connected WebSocket clients
-func (h *WebSocketHandler) BroadcastMCPLogUpdate(logEntry *logstore.MCPToolLog) {
-	// Nil guard to prevent panics
-	if logEntry == nil {
-		return
-	}
-
-	// Add panic recovery to prevent server crashes
-	defer func() {
-		if r := recover(); r != nil {
-			logger.Error("panic in BroadcastMCPLogUpdate: %v", r)
-		}
-	}()
-
-	// Determine operation type based on log status and timestamp
-	operationType := "update"
-	if logEntry.Status == "processing" && logEntry.CreatedAt.Equal(logEntry.Timestamp) {
-		operationType = "create"
-	}
-
-	message := struct {
-		Type      string               `json:"type"`
-		Operation string               `json:"operation"` // "create" or "update"
-		Payload   *logstore.MCPToolLog `json:"payload"`
-	}{
-		Type:      "mcp_log",
-		Operation: operationType,
-		Payload:   logEntry,
-	}
-
-	data, err := sonic.Marshal(message)
-	if err != nil {
-		logger.Error("failed to marshal MCP log entry: %v", err)
+		logger.Error("failed to marshal trace entry: %v", err)
 		return
 	}
 

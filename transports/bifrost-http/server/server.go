@@ -90,8 +90,6 @@ type ServerCallbacks interface {
 	UpdateMCPClient(ctx context.Context, id string, updatedConfig *schemas.MCPClientConfig) error
 	UpdateMCPToolManagerConfig(ctx context.Context, maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string) error
 	ReconnectMCPClient(ctx context.Context, id string) error
-	// Logging related callbacks
-	NewLogEntryAdded(ctx context.Context, logEntry *logstore.Log) error
 }
 
 // BifrostHTTPServer represents a HTTP server instance.
@@ -209,14 +207,6 @@ func (s *BifrostHTTPServer) UpdateMCPClient(ctx context.Context, id string, upda
 	return nil
 }
 
-// NewLogEntryAdded broadcasts a new log entry to the websocket clients
-func (s *BifrostHTTPServer) NewLogEntryAdded(_ context.Context, logEntry *logstore.Log) error {
-	if s.WebSocketHandler == nil {
-		return nil
-	}
-	s.WebSocketHandler.BroadcastLogUpdate(logEntry)
-	return nil
-}
 
 // RemoveMCPClient removes an MCP client from the in-memory store
 func (s *BifrostHTTPServer) RemoveMCPClient(ctx context.Context, id string) error {
@@ -973,13 +963,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.WebSocketHandler = handlers.NewWebSocketHandler(s.Ctx, s.Config.ClientConfig.AllowedOrigins)
 	}
 	if loggerPlugin != nil {
-		loggerPlugin.SetLogCallback(func(ctx context.Context, logEntry *logstore.Log) {
-			err := s.NewLogEntryAdded(ctx, logEntry)
-			if err != nil {
-				logger.Error("failed to add log entry: %v", err)
-			}
+		loggerPlugin.SetTraceCallback(func(ctx context.Context, root *logstore.SpanLog, children []*logstore.SpanLog) {
+			s.WebSocketHandler.BroadcastTraceUpdate(root, children)
 		})
-		loggerPlugin.SetMCPToolLogCallback(s.WebSocketHandler.BroadcastMCPLogUpdate)
 	}
 	// Start WebSocket heartbeat
 	s.WebSocketHandler.StartHeartbeat()
