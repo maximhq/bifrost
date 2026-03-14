@@ -12,9 +12,10 @@ import (
 // Streaming State Management Methods
 
 // createStreamAccumulator creates a new stream accumulator for a request
-func (plugin *Plugin) createStreamAccumulator(requestID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
+func (plugin *Plugin) createStreamAccumulator(requestID string, storageID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
 	accumulator := &StreamAccumulator{
 		RequestID:  requestID,
+		StorageID:  storageID,
 		Chunks:     make([]*StreamChunk, 0),
 		IsComplete: false,
 		Embedding:  embedding,
@@ -28,13 +29,13 @@ func (plugin *Plugin) createStreamAccumulator(requestID string, embedding []floa
 }
 
 // getOrCreateStreamAccumulator gets or creates a stream accumulator for a request
-func (plugin *Plugin) getOrCreateStreamAccumulator(requestID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
+func (plugin *Plugin) getOrCreateStreamAccumulator(requestID string, storageID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
 	if accumulator, exists := plugin.streamAccumulators.Load(requestID); exists {
 		return accumulator.(*StreamAccumulator)
 	}
 
 	// Create new accumulator if it doesn't exist
-	return plugin.createStreamAccumulator(requestID, embedding, metadata, ttl)
+	return plugin.createStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
 }
 
 // addStreamChunk adds a chunk to the stream accumulator
@@ -153,12 +154,12 @@ func (plugin *Plugin) processAccumulatedStream(ctx context.Context, requestID st
 	}
 	finalMetadata["stream_chunks"] = streamResponses
 
-	// Store complete unified entry using original requestID - this is the final .Add() call
-	if err := plugin.store.Add(ctx, plugin.config.VectorStoreNamespace, requestID, accumulator.Embedding, finalMetadata); err != nil {
+	// Store complete unified entry using the final cache storage ID.
+	if err := plugin.store.Add(ctx, plugin.config.VectorStoreNamespace, accumulator.StorageID, accumulator.Embedding, finalMetadata); err != nil {
 		return fmt.Errorf("failed to store complete streaming cache entry: %w", err)
 	}
 
-	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached complete stream with %d ordered chunks, ID: %s", PluginLoggerPrefix, len(streamResponses), requestID))
+	plugin.logger.Debug(fmt.Sprintf("%s Successfully cached complete stream with %d ordered chunks, ID: %s", PluginLoggerPrefix, len(streamResponses), accumulator.StorageID))
 	return nil
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -13,24 +14,57 @@ import (
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
-func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
-	// Generate hash for the request
+func (plugin *Plugin) prepareDirectCacheLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (string, error) {
 	hash, err := plugin.generateRequestHash(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate request hash: %w", err)
+		return "", fmt.Errorf("failed to generate request hash: %w", err)
 	}
 
 	plugin.logger.Debug(PluginLoggerPrefix + " Generated Hash for Request: " + hash)
 
-	// Extract metadata for strict filtering
 	_, paramsHash, err := plugin.extractTextForEmbedding(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract metadata for filtering: %w", err)
+		return "", fmt.Errorf("failed to extract metadata for filtering: %w", err)
 	}
 
-	// Store has and metadata in context
 	ctx.SetValue(requestHashKey, hash)
 	ctx.SetValue(requestParamsHashKey, paramsHash)
+
+	provider, model, _ := req.GetRequestFields()
+	directCacheID := plugin.generateDirectCacheID(provider, model, cacheKey, hash, paramsHash)
+
+	return directCacheID, nil
+}
+
+func (plugin *Plugin) performDirectChunkLookup(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	directCacheID, err := plugin.prepareDirectCacheLookup(ctx, req, cacheKey)
+	if err != nil {
+		return nil, err
+	}
+	ctx.SetValue(requestStorageIDKey, directCacheID)
+
+	result, err := plugin.store.GetChunk(ctx, plugin.config.VectorStoreNamespace, directCacheID)
+	if err != nil {
+		errMsg := strings.ToLower(err.Error())
+		if errors.Is(err, vectorstore.ErrNotFound) || strings.Contains(errMsg, "not found") {
+			plugin.logger.Debug(PluginLoggerPrefix + " No direct chunk match found")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to fetch direct cache chunk: %w", err)
+	}
+
+	plugin.logger.Debug(fmt.Sprintf("%s Found direct chunk match with ID: %s", PluginLoggerPrefix, result.ID))
+	return plugin.buildResponseFromResult(ctx, req, result, CacheTypeDirect, 1.0, 0)
+}
+
+func (plugin *Plugin) performDirectSearch(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, cacheKey string) (*schemas.LLMPluginShortCircuit, error) {
+	_, err := plugin.prepareDirectCacheLookup(ctx, req, cacheKey)
+	if err != nil {
+		return nil, err
+	}
+
+	hash, _ := ctx.Value(requestHashKey).(string)
+	paramsHash, _ := ctx.Value(requestParamsHashKey).(string)
 
 	provider, model, _ := req.GetRequestFields()
 

@@ -118,6 +118,7 @@ type StreamChunk struct {
 // StreamAccumulator manages accumulation of streaming chunks for caching
 type StreamAccumulator struct {
 	RequestID      string                 // The request ID
+	StorageID      string                 // The final cache entry ID
 	Chunks         []*StreamChunk         // All chunks for this stream
 	IsComplete     bool                   // Whether the stream is complete
 	HasError       bool                   // Whether any chunk in the stream had an error
@@ -248,6 +249,7 @@ const (
 
 	// context keys for internal usage
 	requestIDKey              schemas.BifrostContextKey = "semantic_cache_request_id"
+	requestStorageIDKey       schemas.BifrostContextKey = "semantic_cache_request_storage_id"
 	requestHashKey            schemas.BifrostContextKey = "semantic_cache_request_hash"
 	requestEmbeddingKey       schemas.BifrostContextKey = "semantic_cache_embedding"
 	requestEmbeddingTokensKey schemas.BifrostContextKey = "semantic_cache_embedding_tokens"
@@ -428,7 +430,12 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	}
 
 	if performDirectSearch {
-		shortCircuit, err := plugin.performDirectSearch(ctx, req, cacheKey)
+		directSearchFn := plugin.performDirectSearch
+		if ctx.Value(CacheTypeKey) == CacheTypeDirect {
+			directSearchFn = plugin.performDirectChunkLookup
+		}
+
+		shortCircuit, err := directSearchFn(ctx, req, cacheKey)
 		if err != nil {
 			plugin.logger.Warn(PluginLoggerPrefix + " Direct search failed: " + err.Error())
 			// Don't return - continue to semantic search fallback
@@ -560,6 +567,10 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 	if !ok {
 		return res, nil, nil
 	}
+	storageID, ok := ctx.Value(requestStorageIDKey).(string)
+	if !ok || storageID == "" {
+		storageID = requestID
+	}
 	// Check cache type to optimize embedding handling
 	var embedding []float32
 	var hash string
@@ -687,11 +698,11 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, res *schemas.Bifr
 		}
 
 		if bifrost.IsStreamRequestType(requestType) {
-			if err := plugin.addStreamingResponse(cacheCtx, requestID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
+			if err := plugin.addStreamingResponse(cacheCtx, requestID, storageID, res, bifrostErr, embeddingToStore, unifiedMetadata, cacheTTL, isFinalChunk); err != nil {
 				plugin.logger.Warn("%s Failed to cache streaming response: %v", PluginLoggerPrefix, err)
 			}
 		} else {
-			if err := plugin.addSingleResponse(cacheCtx, requestID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
+			if err := plugin.addSingleResponse(cacheCtx, storageID, res, embeddingToStore, unifiedMetadata, cacheTTL); err != nil {
 				plugin.logger.Warn("%s Failed to cache single response: %v", PluginLoggerPrefix, err)
 			}
 		}

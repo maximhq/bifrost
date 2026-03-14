@@ -1,10 +1,14 @@
 package semanticcache
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 // TestCacheTypeDirectOnly tests that CacheTypeKey set to "direct" only performs direct hash matching
@@ -252,4 +256,226 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 	// Both should be fast since they hit direct cache
 	// Direct-only might be slightly faster as it doesn't need to prepare for semantic fallback
 	t.Log("✅ Cache type performance characteristics validated")
+}
+
+type directFastPathStore struct {
+	chunks         map[string]vectorstore.SearchResult
+	addIDs         []string
+	getChunkCalls  int
+	getAllCalls    int
+	lastGetChunkID string
+}
+
+func newDirectFastPathStore() *directFastPathStore {
+	return &directFastPathStore{
+		chunks: make(map[string]vectorstore.SearchResult),
+	}
+}
+
+func (s *directFastPathStore) Ping(ctx context.Context) error { return nil }
+
+func (s *directFastPathStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]vectorstore.VectorStoreProperties) error {
+	return nil
+}
+
+func (s *directFastPathStore) DeleteNamespace(ctx context.Context, namespace string) error {
+	return nil
+}
+
+func (s *directFastPathStore) GetChunk(ctx context.Context, namespace string, id string) (vectorstore.SearchResult, error) {
+	s.getChunkCalls++
+	s.lastGetChunkID = id
+	result, ok := s.chunks[id]
+	if !ok {
+		return vectorstore.SearchResult{}, vectorstore.ErrNotFound
+	}
+	return result, nil
+}
+
+func (s *directFastPathStore) GetChunks(ctx context.Context, namespace string, ids []string) ([]vectorstore.SearchResult, error) {
+	return nil, vectorstore.ErrNotSupported
+}
+
+func (s *directFastPathStore) GetAll(ctx context.Context, namespace string, queries []vectorstore.Query, selectFields []string, cursor *string, limit int64) ([]vectorstore.SearchResult, *string, error) {
+	s.getAllCalls++
+	return nil, nil, vectorstore.ErrNotSupported
+}
+
+func (s *directFastPathStore) GetNearest(ctx context.Context, namespace string, vector []float32, queries []vectorstore.Query, selectFields []string, threshold float64, limit int64) ([]vectorstore.SearchResult, error) {
+	return nil, vectorstore.ErrNotSupported
+}
+
+func (s *directFastPathStore) RequiresVectors() bool { return false }
+
+func (s *directFastPathStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
+	s.addIDs = append(s.addIDs, id)
+	s.chunks[id] = vectorstore.SearchResult{
+		ID:         id,
+		Properties: metadata,
+	}
+	return nil
+}
+
+func (s *directFastPathStore) Delete(ctx context.Context, namespace string, id string) error {
+	return nil
+}
+
+func (s *directFastPathStore) DeleteAll(ctx context.Context, namespace string, queries []vectorstore.Query) ([]vectorstore.DeleteResult, error) {
+	return nil, vectorstore.ErrNotSupported
+}
+
+func (s *directFastPathStore) Close(ctx context.Context, namespace string) error { return nil }
+
+func TestCacheTypeDirectUsesChunkLookup(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	ctx := CreateContextWithCacheKeyAndType("chunk-fast-path", CacheTypeDirect)
+	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "chunk-fast-path")
+	if err != nil {
+		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	}
+
+	cachedContent := "cached response"
+	cachedResponse := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: &cachedContent,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	responseJSON, err := schemas.MarshalDeeplySorted(cachedResponse)
+	if err != nil {
+		t.Fatalf("failed to marshal cached response: %v", err)
+	}
+
+	store.chunks[directID] = vectorstore.SearchResult{
+		ID: directID,
+		Properties: map[string]interface{}{
+			"response":   string(responseJSON),
+			"expires_at": time.Now().Add(time.Minute).Unix(),
+		},
+	}
+
+	shortCircuit, err := plugin.performDirectChunkLookup(ctx, req, "chunk-fast-path")
+	if err != nil {
+		t.Fatalf("performDirectChunkLookup failed: %v", err)
+	}
+	if shortCircuit == nil || shortCircuit.Response == nil || shortCircuit.Response.ChatResponse == nil {
+		t.Fatal("expected direct chunk lookup to return cached response")
+	}
+	if store.getChunkCalls != 1 {
+		t.Fatalf("expected one GetChunk call, got %d", store.getChunkCalls)
+	}
+	if store.getAllCalls != 0 {
+		t.Fatalf("expected no GetAll calls, got %d", store.getAllCalls)
+	}
+	if store.lastGetChunkID != directID {
+		t.Fatalf("expected GetChunk to use %q, got %q", directID, store.lastGetChunkID)
+	}
+}
+
+func TestDefaultDirectSearchDoesNotSetStorageID(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	plugin := &Plugin{
+		store:  store,
+		config: getDefaultTestConfig(),
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+
+	ctx := CreateContextWithCacheKey("default-mode")
+	_, err := plugin.performDirectSearch(ctx, req, "default-mode")
+	if err != nil && !errors.Is(err, vectorstore.ErrNotSupported) {
+		t.Fatalf("performDirectSearch failed: %v", err)
+	}
+
+	if storageID := ctx.Value(requestStorageIDKey); storageID != nil {
+		t.Fatalf("expected default direct search not to set requestStorageIDKey, got %v", storageID)
+	}
+}
+
+func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	store := newDirectFastPathStore()
+	config := getDefaultTestConfig()
+	plugin := &Plugin{
+		store:  store,
+		config: config,
+		logger: logger,
+	}
+
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: CreateBasicChatRequest("What is Bifrost?", 0.7, 50),
+	}
+	ctx := CreateContextWithCacheKeyAndType("deterministic-store", CacheTypeDirect)
+	ctx.SetValue(requestIDKey, "request-uuid")
+	ctx.SetValue(requestProviderKey, schemas.OpenAI)
+	ctx.SetValue(requestModelKey, req.ChatRequest.Model)
+
+	directID, err := plugin.prepareDirectCacheLookup(ctx, req, "deterministic-store")
+	if err != nil {
+		t.Fatalf("prepareDirectCacheLookup failed: %v", err)
+	}
+	ctx.SetValue(requestStorageIDKey, directID)
+
+	content := "stored response"
+	response := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{
+				{
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role: schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{
+								ContentStr: &content,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	response.ChatResponse.ExtraFields.RequestType = schemas.ChatCompletionRequest
+
+	if _, _, err := plugin.PostLLMHook(ctx, response, nil); err != nil {
+		t.Fatalf("PostLLMHook failed: %v", err)
+	}
+
+	plugin.WaitForPendingOperations()
+
+	if len(store.addIDs) != 1 {
+		t.Fatalf("expected one store.Add call, got %d", len(store.addIDs))
+	}
+	if store.addIDs[0] != directID {
+		t.Fatalf("expected deterministic storage id %q, got %q", directID, store.addIDs[0])
+	}
+	if store.addIDs[0] == "request-uuid" {
+		t.Fatal("expected storage id to differ from request UUID")
+	}
 }
