@@ -20,8 +20,10 @@ import (
 )
 
 const (
-	// defaultGithubClientID is the default GitHub OAuth application client ID.
-	// Override via the BIFROST_GITHUB_CLIENT_ID environment variable.
+	// defaultGithubClientID is the GitHub OAuth client ID from the VS Code
+	// Copilot extension. The Copilot API is not officially documented, so this
+	// ID is required for the device-code flow. Override for a custom GitHub
+	// OAuth app via the BIFROST_GITHUB_CLIENT_ID environment variable.
 	defaultGithubClientID = "Iv1.b507a08c87ecfe98"
 
 	// GitHub OAuth endpoints for device code flow
