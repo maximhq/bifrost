@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// directCacheNamespace is a fixed UUID v5 namespace used for deterministic direct cache ID generation.
+// Using a fixed namespace ensures IDs are reproducible across restarts and store types.
+var directCacheNamespace = uuid.MustParse("b1f3c2d4-e5a6-7890-abcd-ef1234567890")
 
 // normalizeText applies consistent normalization to text inputs for better cache hit rates.
 // It converts text to lowercase and trims whitespace to reduce cache misses due to minor variations.
@@ -384,10 +389,12 @@ func (plugin *Plugin) generateDirectCacheID(provider schemas.ModelProvider, mode
 
 	idJSON, err := schemas.MarshalDeeplySorted(idInput)
 	if err != nil {
-		return fmt.Sprintf("direct-%x", xxhash.Sum64String(cacheKey+requestHash+paramsHash+string(provider)+model))
+		// Fallback: derive deterministic UUID from concatenated inputs
+		fallbackData := []byte(cacheKey + requestHash + paramsHash + string(provider) + model)
+		return uuid.NewSHA1(directCacheNamespace, fallbackData).String()
 	}
 
-	return fmt.Sprintf("direct-%x", xxhash.Sum64(idJSON))
+	return uuid.NewSHA1(directCacheNamespace, idJSON).String()
 }
 
 // buildUnifiedMetadata constructs the unified metadata structure for VectorEntry

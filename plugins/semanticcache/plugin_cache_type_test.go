@@ -16,8 +16,8 @@ func TestCacheTypeDirectOnly(t *testing.T) {
 	setup := NewTestSetup(t)
 	defer setup.Cleanup()
 
-	// First, cache a response using normal behavior (both direct and semantic)
-	ctx1 := CreateContextWithCacheKey("test-cache-type-direct")
+	// First, cache a response using CacheTypeDirect so it is stored under the deterministic ID
+	ctx1 := CreateContextWithCacheKeyAndType("test-cache-type-direct", CacheTypeDirect)
 	testRequest := CreateBasicChatRequest("What is Bifrost?", 0.7, 50)
 
 	t.Log("Making first request to populate cache...")
@@ -218,8 +218,8 @@ func TestCacheTypePerformanceCharacteristics(t *testing.T) {
 
 	testRequest := CreateBasicChatRequest("Performance test for cache types", 0.7, 50)
 
-	// Cache first request
-	ctx1 := CreateContextWithCacheKey("test-cache-performance")
+	// Cache first request using CacheTypeDirect so it is stored under the deterministic ID
+	ctx1 := CreateContextWithCacheKeyAndType("test-cache-performance", CacheTypeDirect)
 	t.Log("Making first request to populate cache...")
 	response1, err1 := setup.Client.ChatCompletionRequest(ctx1, testRequest)
 	if err1 != nil {

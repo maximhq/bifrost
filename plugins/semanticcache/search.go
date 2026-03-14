@@ -46,7 +46,10 @@ func (plugin *Plugin) performDirectChunkLookup(ctx *schemas.BifrostContext, req 
 	result, err := plugin.store.GetChunk(ctx, plugin.config.VectorStoreNamespace, directCacheID)
 	if err != nil {
 		errMsg := strings.ToLower(err.Error())
-		if errors.Is(err, vectorstore.ErrNotFound) || strings.Contains(errMsg, "not found") {
+		isMiss := errors.Is(err, vectorstore.ErrNotFound) ||
+			strings.Contains(errMsg, "not found") ||
+			strings.Contains(errMsg, "status code: 404")
+		if isMiss {
 			plugin.logger.Debug(PluginLoggerPrefix + " No direct chunk match found")
 			return nil, nil
 		}
