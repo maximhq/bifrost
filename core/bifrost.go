@@ -3524,6 +3524,7 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 	case schemas.OpenAI:
 		return openai.NewOpenAIProvider(config, bifrost.logger), nil
 	case schemas.Anthropic:
+		config.OAuth2Provider = bifrost.oauth2Provider
 		return anthropic.NewAnthropicProvider(config, bifrost.logger), nil
 	case schemas.Bedrock:
 		return bedrock.NewBedrockProvider(config, bifrost.logger)
@@ -5996,7 +5997,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 		if k.Enabled != nil && !*k.Enabled {
 			continue
 		}
-		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAnthropicOAuthCredentials(baseProviderType, k) {
 			supportedKeys = append(supportedKeys, k)
 		}
 	}
@@ -6055,8 +6056,8 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 			}
 		}
 
-		// Check key value (or if provider allows empty keys or has Azure Entra ID credentials)
-		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+		// Check key value (or if provider allows empty keys or has Anthropic OAuth credentials)
+		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAnthropicOAuthCredentials(baseProviderType, k) {
 			filteredKeys = append(filteredKeys, k)
 		}
 	}
@@ -6131,7 +6132,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if k.Enabled != nil && !*k.Enabled {
 				continue
 			}
-			if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+			if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAnthropicOAuthCredentials(baseProviderType, k) {
 				supportedKeys = append(supportedKeys, k)
 			}
 		}
@@ -6142,7 +6143,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if key.Enabled != nil && !*key.Enabled {
 				continue
 			}
-			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
+			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAnthropicOAuthCredentials(baseProviderType, key)
 			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true

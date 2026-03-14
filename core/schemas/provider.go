@@ -462,6 +462,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse   bool                      `json:"store_raw_request_response"`    // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig *CustomProviderConfig     `json:"custom_provider_config,omitempty"`
 	PricingOverrides     []ProviderPricingOverride `json:"pricing_overrides,omitempty"`
+	OAuth2Provider       OAuth2Provider            `json:"-"` // For providers needing OAuth token resolution
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

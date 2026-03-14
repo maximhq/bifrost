@@ -29,6 +29,18 @@ func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	}
 }
 
+// SendJSONRaw sends a JSON response with 200 OK status without HTML escaping.
+// Use only for endpoints returning URLs where \u0026 escaping of & is undesirable.
+func SendJSONRaw(ctx *fasthttp.RequestCtx, data interface{}) {
+	ctx.SetContentType("application/json")
+	encoder := json.NewEncoder(ctx)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(data); err != nil {
+		logger.Warn(fmt.Sprintf("Failed to encode JSON response: %v", err))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
+	}
+}
+
 // SendJSONWithStatus sends a JSON response with a custom status code
 func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode int) {
 	ctx.SetContentType("application/json")

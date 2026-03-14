@@ -29,6 +29,8 @@ const (
 	AnthropicCompactionBetaHeader = "compact-2026-01-12"
 	// AnthropicContextManagementBetaHeader is required for context management.
 	AnthropicContextManagementBetaHeader = "context-management-2025-06-27"
+	// AnthropicOAuthBetaHeader is required for OAuth Bearer token authentication (Claude Pro/Max).
+	AnthropicOAuthBetaHeader = "oauth-2025-04-20"
 
 	// Prefixes for Vertex-unsupported beta headers (version-bump proof).
 	// Use these with strings.HasPrefix when filtering headers for Vertex AI,
