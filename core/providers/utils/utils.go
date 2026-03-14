@@ -82,84 +82,81 @@ func getLogger() schemas.Logger {
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 
-// MakeRequestWithContext makes a request with a context and returns the latency and error.
-// IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
-// context is done. The fasthttp client call will continue in its goroutine until it completes
-// or times out based on its own settings. This function merely stops *waiting* for the
-// fasthttp call and returns an error related to the context.
+// MakeRequestWithContext makes a request with a context deadline and returns the latency and error.
+// When the context carries a deadline, DoDeadline is used to avoid goroutine leaks and
+// use-after-free on context cancellation. When no deadline is set (e.g. long-running
+// requests), it falls back to client.Do which respects the client's own timeout settings.
 // Returns the request latency and any error that occurred.
 func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
 	startTime := time.Now()
-	errChan := make(chan error, 1)
 
-	go func() {
-		// client.Do is a blocking call.
-		// It will send an error (or nil for success) to errChan when it completes.
-		errChan <- client.Do(req, resp)
-	}()
+	var err error
+	deadline, ok := ctx.Deadline()
+	if ok {
+		err = client.DoDeadline(req, resp, deadline)
+	} else {
+		err = client.Do(req, resp)
+	}
+	latency := time.Since(startTime)
 
-	select {
-	case <-ctx.Done():
-		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
-		// Calculate latency even for cancelled requests
-		latency := time.Since(startTime)
-		return latency, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr(schemas.RequestCancelled),
-				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
-				Error:   ctx.Err(),
-			},
+	if err != nil {
+		// Check if the context was cancelled while the request was in flight
+		if ctx.Err() != nil {
+			return latency, &schemas.BifrostError{
+				IsBifrostError: true,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: fmt.Sprintf("request cancelled or timed out by context: %v", ctx.Err()),
+					Error:   ctx.Err(),
+				},
+			}
 		}
-	case err := <-errChan:
-		// The fasthttp.Do call completed.
-		// Calculate latency for both successful and failed requests
-		latency := time.Since(startTime)
-		if err != nil {
-			if errors.Is(err, context.Canceled) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Type:    schemas.Ptr(schemas.RequestCancelled),
-						Message: schemas.ErrRequestCancelled,
-						Error:   err,
-					},
-				}
-			}
-			// Check for timeout errors first before checking net.OpError to avoid misclassification
-			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
-			}
-			// Check if error implements net.Error and has Timeout() == true
-			var netErr net.Error
-			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
-			}
-			// Check for DNS lookup and network errors after timeout checks
-			var opErr *net.OpError
-			var dnsErr *net.DNSError
-			if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-				return latency, &schemas.BifrostError{
-					IsBifrostError: false,
-					Error: &schemas.ErrorField{
-						Message: schemas.ErrProviderNetworkError,
-						Error:   err,
-					},
-				}
-			}
-			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
+		// Handles edge cases where the error chain contains context.Canceled but the
+		// parent context is still valid (e.g., a nested/derived context was cancelled).
+		// IsBifrostError is false since this may indicate a transient provider-side issue.
+		if errors.Is(err, context.Canceled) {
 			return latency, &schemas.BifrostError{
 				IsBifrostError: false,
 				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderDoRequest,
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
 					Error:   err,
 				},
 			}
 		}
-		// HTTP request was successful from fasthttp's perspective (err is nil).
-		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
-		return latency, nil
+		// Check for timeout errors first before checking net.OpError to avoid misclassification
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+		}
+		// Check if error implements net.Error and has Timeout() == true
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+		}
+		// Check for DNS lookup and network errors after timeout checks
+		var opErr *net.OpError
+		var dnsErr *net.DNSError
+		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+			return latency, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: schemas.ErrProviderNetworkError,
+					Error:   err,
+				},
+			}
+		}
+		// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
+		return latency, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: schemas.ErrProviderDoRequest,
+				Error:   err,
+			},
+		}
 	}
+	// HTTP request was successful from fasthttp's perspective (err is nil).
+	// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
+	return latency, nil
 }
 
 // Deprecated: ConfigureRetry is now handled internally by ConfigureDialer.
