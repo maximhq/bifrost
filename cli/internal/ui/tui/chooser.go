@@ -272,7 +272,12 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.backToTabs = true
 			return m, tea.Quit
 		}
-		if (s == "y" || s == "Y") && strings.TrimSpace(m.cfg.UpdateVersion) != "" {
+		canTriggerUpdate := strings.TrimSpace(m.cfg.UpdateVersion) != "" &&
+			m.phase != phaseBaseURL &&
+			m.phase != phaseVirtualKey &&
+			m.phase != phaseModel &&
+			m.phase != phaseWorktree
+		if canTriggerUpdate && (s == "y" || s == "Y") {
 			m.updateRequested = true
 			return m, tea.Quit
 		}

@@ -193,6 +193,11 @@ func resolveManagedBinaryTarget(binaryName string) (string, error) {
 		if isWrapperManagedBinaryPath(execPath, binaryName) {
 			return execPath, nil
 		}
+		// If the running binary has the expected name, update it in place
+		// even if it's not under a wrapper-managed path.
+		if filepath.Base(execPath) == binaryName {
+			return execPath, nil
+		}
 	}
 
 	return bifrostCLIManagedBinaryPath(binaryName)
@@ -256,7 +261,7 @@ func wrapperCacheRoot() (string, error) {
 		}
 		userProfile := strings.TrimSpace(os.Getenv("USERPROFILE"))
 		if userProfile == "" {
-			return "", fmt.Errorf("USERPROFILE is not set")
+			return "", fmt.Errorf("userprofile is not set")
 		}
 		return filepath.Join(userProfile, "AppData", "Local"), nil
 	default:

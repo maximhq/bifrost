@@ -7,9 +7,18 @@ import (
 	"testing"
 )
 
+func setTestHome(t *testing.T, home string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+		return
+	}
+	t.Setenv("HOME", home)
+}
+
 func TestResolveManagedBinaryTargetFallsBackToCLIInstallLocation(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	binaryName := "bifrost"
 	if runtime.GOOS == "windows" {
@@ -29,7 +38,7 @@ func TestResolveManagedBinaryTargetFallsBackToCLIInstallLocation(t *testing.T) {
 
 func TestIsWrapperManagedBinaryPathMatchesCLIInstallLocation(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 
 	binaryName := "bifrost"
 	if runtime.GOOS == "windows" {
@@ -54,7 +63,7 @@ func TestIsWrapperManagedBinaryPathMatchesCacheInstallLocation(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	if runtime.GOOS == "linux" {
 		xdg := filepath.Join(home, ".custom-cache")
 		t.Setenv("XDG_CACHE_HOME", xdg)

@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/apis"
@@ -283,7 +282,7 @@ func (a *App) Run(ctx context.Context) error {
 			fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
 			return nil
 		}
-		return syscall.Exec(execPath, os.Args, os.Environ())
+		return reexecSelf(execPath, os.Args, os.Environ())
 	}
 
 	if errors.Is(err, runtime.ErrQuit) {
