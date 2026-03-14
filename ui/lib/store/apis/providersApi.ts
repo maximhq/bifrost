@@ -206,7 +206,12 @@ export const providersApi = baseApi.injectEndpoints({
 				url: `/models/refresh?provider=${encodeURIComponent(provider)}`,
 				method: "POST",
 			}),
-			invalidatesTags: ["Models", "BaseModels"],
+			invalidatesTags: (_result, _error, provider) => [
+				"Models",
+				"BaseModels",
+				"Providers",
+				{ type: "Providers" as const, id: provider },
+			],
 		}),
 
 		// Get model parameters (parameters, capabilities) from local API
