@@ -3,6 +3,7 @@ package semanticcache
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -477,5 +478,61 @@ func TestCacheTypeDirectStoresDeterministicID(t *testing.T) {
 	}
 	if store.addIDs[0] == "request-uuid" {
 		t.Fatal("expected storage id to differ from request UUID")
+	}
+}
+
+func TestGetOrCreateStreamAccumulatorUsesSingleAccumulatorPerRequest(t *testing.T) {
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelDebug)
+	plugin := &Plugin{
+		logger: logger,
+	}
+
+	requestID := "stream-request"
+	storageID := "stream-storage"
+	embedding := []float32{1, 2, 3}
+	metadata := map[string]interface{}{"cache_key": "stream-cache"}
+	ttl := time.Minute
+
+	const workers = 8
+	results := make(chan *StreamAccumulator, workers)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			results <- plugin.getOrCreateStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	var first *StreamAccumulator
+	for accumulator := range results {
+		if accumulator == nil {
+			t.Fatal("expected accumulator")
+		}
+		if first == nil {
+			first = accumulator
+			continue
+		}
+		if accumulator != first {
+			t.Fatal("expected all callers to receive the same accumulator instance")
+		}
+	}
+
+	stored, ok := plugin.streamAccumulators.Load(requestID)
+	if !ok {
+		t.Fatal("expected accumulator to be stored")
+	}
+	if stored.(*StreamAccumulator) != first {
+		t.Fatal("expected stored accumulator to match returned accumulator")
+	}
+	if first.StorageID != storageID {
+		t.Fatalf("expected storage id %q, got %q", storageID, first.StorageID)
+	}
+	if first.TTL != ttl {
+		t.Fatalf("expected ttl %v, got %v", ttl, first.TTL)
 	}
 }

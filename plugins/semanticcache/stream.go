@@ -13,7 +13,7 @@ import (
 
 // createStreamAccumulator creates a new stream accumulator for a request
 func (plugin *Plugin) createStreamAccumulator(requestID string, storageID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
-	accumulator := &StreamAccumulator{
+	return &StreamAccumulator{
 		RequestID:  requestID,
 		StorageID:  storageID,
 		Chunks:     make([]*StreamChunk, 0),
@@ -23,19 +23,17 @@ func (plugin *Plugin) createStreamAccumulator(requestID string, storageID string
 		TTL:        ttl,
 		mu:         sync.Mutex{},
 	}
-
-	plugin.streamAccumulators.Store(requestID, accumulator)
-	return accumulator
 }
 
 // getOrCreateStreamAccumulator gets or creates a stream accumulator for a request
 func (plugin *Plugin) getOrCreateStreamAccumulator(requestID string, storageID string, embedding []float32, metadata map[string]interface{}, ttl time.Duration) *StreamAccumulator {
-	if accumulator, exists := plugin.streamAccumulators.Load(requestID); exists {
-		return accumulator.(*StreamAccumulator)
+	newAccumulator := plugin.createStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
+	actual, loaded := plugin.streamAccumulators.LoadOrStore(requestID, newAccumulator)
+	if loaded {
+		return actual.(*StreamAccumulator)
 	}
 
-	// Create new accumulator if it doesn't exist
-	return plugin.createStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
+	return newAccumulator
 }
 
 // addStreamChunk adds a chunk to the stream accumulator

@@ -419,6 +419,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	ctx.SetValue(requestProviderKey, provider)
 
 	performDirectSearch, performSemanticSearch := true, true
+	useDirectChunkLookup := false
 	if ctx.Value(CacheTypeKey) != nil {
 		cacheTypeVal, ok := ctx.Value(CacheTypeKey).(CacheType)
 		if !ok {
@@ -426,12 +427,13 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 		} else {
 			performDirectSearch = cacheTypeVal == CacheTypeDirect
 			performSemanticSearch = cacheTypeVal == CacheTypeSemantic
+			useDirectChunkLookup = cacheTypeVal == CacheTypeDirect
 		}
 	}
 
 	if performDirectSearch {
 		directSearchFn := plugin.performDirectSearch
-		if ctx.Value(CacheTypeKey) == CacheTypeDirect {
+		if useDirectChunkLookup {
 			directSearchFn = plugin.performDirectChunkLookup
 		}
 
