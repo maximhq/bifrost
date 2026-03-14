@@ -3181,13 +3181,21 @@ func convertContentBlockToGeminiPart(block schemas.ResponsesMessageContentBlock)
 					mimeType = *fileBlock.FileType
 				}
 
-				part := &Part{
-					FileData: &FileData{
-						MIMEType: mimeType,
-						FileURI:  *fileBlock.FileURL,
-					},
+				fileURL := *fileBlock.FileURL
+
+				if isGeminiNativeURI(fileURL) {
+					return &Part{
+						FileData: &FileData{
+							MIMEType: mimeType,
+							FileURI:  fileURL,
+						},
+					}, nil
 				}
 
+				part, err := fetchFileURLToInlineData(fileURL, mimeType)
+				if err != nil {
+					return nil, fmt.Errorf("converting file URL to inline data: %w", err)
+				}
 				return part, nil
 			}
 
