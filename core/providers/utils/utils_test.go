@@ -426,6 +426,7 @@ func TestGetRequestPath(t *testing.T) {
 	tests := []struct {
 		name                 string
 		contextPath          *string
+		providerOverride     *schemas.ProviderOverride
 		customProviderConfig *schemas.CustomProviderConfig
 		defaultPath          string
 		requestType          schemas.RequestType
@@ -532,6 +533,77 @@ func TestGetRequestPath(t *testing.T) {
 			expectedPath:  "/context/path",
 			expectedIsURL: false,
 		},
+		// ProviderOverride.BaseURL cases
+		{
+			name:             "BaseURL override combines with default path",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://eu.api.openai.com"},
+			defaultPath:      "/v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "https://eu.api.openai.com/v1/chat/completions",
+			expectedIsURL:    true,
+		},
+		{
+			name:             "BaseURL override combines with RequestPathOverrides path",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v2/chat",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/v2/chat",
+			expectedIsURL: true,
+		},
+		{
+			name:             "BaseURL override with absolute RequestPathOverrides returns override path directly",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "https://other.host.com/v1/completions",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://other.host.com/v1/completions",
+			expectedIsURL: true,
+		},
+		{
+			name:             "Context path takes precedence over RequestPathOverrides when BaseURL is set",
+			contextPath:      schemas.Ptr("/context/path"),
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/config/path",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/context/path",
+			expectedIsURL: true,
+		},
+		{
+			name:             "BaseURL with path lacking leading slash gets slash added",
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			defaultPath:      "v1/chat/completions",
+			requestType:      schemas.ChatCompletionRequest,
+			expectedPath:     "https://custom.host.com/v1/chat/completions",
+			expectedIsURL:    true,
+		},
+		{
+			name:             "Empty context path does not count as pathFromContext — RequestPathOverrides still applied",
+			contextPath:      schemas.Ptr(""),
+			providerOverride: &schemas.ProviderOverride{BaseURL: "https://custom.host.com"},
+			customProviderConfig: &schemas.CustomProviderConfig{
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v2/chat",
+				},
+			},
+			defaultPath:   "/v1/chat/completions",
+			requestType:   schemas.ChatCompletionRequest,
+			expectedPath:  "https://custom.host.com/v2/chat",
+			expectedIsURL: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -539,6 +611,9 @@ func TestGetRequestPath(t *testing.T) {
 			ctx := context.Background()
 			if tt.contextPath != nil {
 				ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, *tt.contextPath)
+			}
+			if tt.providerOverride != nil {
+				ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderOverride, tt.providerOverride)
 			}
 
 			path, isURL := GetRequestPath(ctx, tt.defaultPath, tt.customProviderConfig, tt.requestType)
