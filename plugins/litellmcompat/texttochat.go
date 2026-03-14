@@ -5,17 +5,21 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
-// transformTextToChatRequest converts a text completion request to a chat completion request
-// if the model doesn't support text completion natively.
-// It updates the TransformContext with the transformation state.
-func transformTextToChatRequest(_ *schemas.BifrostContext, req *schemas.BifrostRequest, tc *TransformContext, mc *modelcatalog.ModelCatalog, logger schemas.Logger) *schemas.BifrostRequest {
+const (
+	OriginalRequestTypeContextKey schemas.BifrostContextKey = "litellmcompat-original-request-type"
+	OriginalModelContextKey       schemas.BifrostContextKey = "litellmcompat-original-model"
+)
+
+// transformTextToChatRequest determines whether a text request should be converted by core.
+// It stores conversion intent in context; core performs the actual conversion.
+func transformTextToChatRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, mc *modelcatalog.ModelCatalog, logger schemas.Logger) *schemas.BifrostRequest {
 	// Only process text completion requests
 	if req.RequestType != schemas.TextCompletionRequest && req.RequestType != schemas.TextCompletionStreamRequest {
 		return req
 	}
 
 	// Check if text completion request is present
-	if req.TextCompletionRequest == nil || tc == nil {
+	if req.TextCompletionRequest == nil {
 		return req
 	}
 
@@ -24,6 +28,9 @@ func transformTextToChatRequest(_ *schemas.BifrostContext, req *schemas.BifrostR
 		provider := req.TextCompletionRequest.Provider
 		model := req.TextCompletionRequest.Model
 		if mc.IsTextCompletionSupported(model, provider) {
+			if ctx != nil {
+				ctx.SetValue(schemas.BifrostContextKeyShouldConvertTextToChat, false)
+			}
 			if logger != nil {
 				logger.Debug("litellmcompat: model %s/%s supports text completion, skipping conversion", provider, model)
 			}
@@ -31,121 +38,75 @@ func transformTextToChatRequest(_ *schemas.BifrostContext, req *schemas.BifrostR
 		}
 	}
 
-	// Convert text completion to chat completion
-	chatRequest := req.TextCompletionRequest.ToBifrostChatRequest()
-	if chatRequest == nil {
-		return req
-	}
-
-	// Track the transformation
-	tc.TextToChatApplied = true
-	tc.OriginalRequestType = req.RequestType
-	tc.OriginalModel = req.TextCompletionRequest.Model
-	tc.IsStreaming = req.RequestType == schemas.TextCompletionStreamRequest
-
-	// Create a new request with the chat completion
-	transformedReq := &schemas.BifrostRequest{
-		ChatRequest: chatRequest,
-	}
-
-	// Set the appropriate request type
-	if tc.IsStreaming {
-		transformedReq.RequestType = schemas.ChatCompletionStreamRequest
-	} else {
-		transformedReq.RequestType = schemas.ChatCompletionRequest
+	// Track conversion intent. Core will do the actual conversion during provider dispatch.
+	if ctx != nil {
+		ctx.SetValue(schemas.BifrostContextKeyShouldConvertTextToChat, true)
+		ctx.SetValue(OriginalRequestTypeContextKey, req.RequestType)
+		ctx.SetValue(OriginalModelContextKey, req.TextCompletionRequest.Model)
 	}
 
 	if logger != nil {
-		logger.Debug("litellmcompat: converted text completion to chat completion for model %s (text completion not supported)", tc.OriginalModel)
+		logger.Debug("litellmcompat: marked text completion for core text->chat conversion for model %s (text completion not supported)", req.TextCompletionRequest.Model)
 	}
 
-	return transformedReq
+	return req
 }
 
-// transformTextToChatResponse converts a chat response back to text completion format
-// if the original request was a text completion that was converted.
-func transformTextToChatResponse(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, tc *TransformContext, logger schemas.Logger) *schemas.BifrostResponse {
-	// Only transform if we converted text completion to chat
-	if !tc.TextToChatApplied {
+func getOriginalTextRequestMetadata(ctx *schemas.BifrostContext) (schemas.RequestType, string) {
+	requestType := schemas.TextCompletionRequest
+	if ctx == nil {
+		return requestType, ""
+	}
+	if value, ok := ctx.Value(OriginalRequestTypeContextKey).(schemas.RequestType); ok {
+		requestType = value
+	}
+	model, _ := ctx.Value(OriginalModelContextKey).(string)
+	return requestType, model
+}
+
+// transformTextToChatResponse normalizes metadata on converted text-completion responses.
+// Core performs the actual stream/non-stream payload conversion.
+func transformTextToChatResponse(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, logger schemas.Logger) *schemas.BifrostResponse {
+	if resp == nil || resp.TextCompletionResponse == nil || ctx == nil {
 		return resp
 	}
 
-	// Check if we have a chat response to transform
-	if resp == nil || resp.ChatResponse == nil {
+	shouldConvert, ok := ctx.Value(schemas.BifrostContextKeyShouldConvertTextToChat).(bool)
+	if !ok || !shouldConvert {
 		return resp
 	}
 
-	// Convert chat response to text completion response
-	textCompletionResponse := resp.ChatResponse.ToTextCompletionResponse()
-	if textCompletionResponse == nil {
-		return resp
-	}
-
-	// Restore original request type metadata
-	textCompletionResponse.ExtraFields.RequestType = tc.OriginalRequestType
-	textCompletionResponse.ExtraFields.ModelRequested = tc.OriginalModel
-	textCompletionResponse.ExtraFields.LiteLLMCompat = true
+	originalRequestType, originalModel := getOriginalTextRequestMetadata(ctx)
+	resp.TextCompletionResponse.ExtraFields.RequestType = originalRequestType
+	resp.TextCompletionResponse.ExtraFields.ModelRequested = originalModel
+	resp.TextCompletionResponse.ExtraFields.LiteLLMCompat = true
 
 	if logger != nil {
-		logger.Debug("litellmcompat: converted chat response back to text completion for model %s", tc.OriginalModel)
+		logger.Debug("litellmcompat: normalized converted text completion metadata for model %s", originalModel)
 	}
 
-	// Return a new response with the text completion
-	return &schemas.BifrostResponse{
-		TextCompletionResponse: textCompletionResponse,
-	}
+	return resp
 }
 
-// transformTextToChatError ensures error metadata reflects the original request type
-// if a text completion request was converted to chat.
-func transformTextToChatError(_ *schemas.BifrostContext, err *schemas.BifrostError, tc *TransformContext) *schemas.BifrostError {
-	if tc == nil || err == nil {
+// transformTextToChatError restores original text-completion metadata on errors
+// generated from chat fallback execution.
+func transformTextToChatError(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostError {
+	if err == nil || ctx == nil {
+		return err
+	}
+	shouldConvert, ok := ctx.Value(schemas.BifrostContextKeyShouldConvertTextToChat).(bool)
+	if !ok || !shouldConvert {
 		return err
 	}
 
-	// Only transform if we converted text completion to chat
-	if !tc.TextToChatApplied {
+	requestType := err.ExtraFields.RequestType
+	if requestType != schemas.ChatCompletionRequest && requestType != schemas.ChatCompletionStreamRequest {
 		return err
 	}
 
-	// Restore original request type in error metadata
-	err.ExtraFields.RequestType = tc.OriginalRequestType
-	err.ExtraFields.ModelRequested = tc.OriginalModel
+	originalRequestType, originalModel := getOriginalTextRequestMetadata(ctx)
+	err.ExtraFields.RequestType = originalRequestType
+	err.ExtraFields.ModelRequested = originalModel
 	err.ExtraFields.LiteLLMCompat = true
-
 	return err
-}
-
-// TransformTextToChatStreamResponse transforms a streaming chat response back to text completion format.
-// This is exported for use by streaming handlers.
-func TransformTextToChatStreamResponse(ctx *schemas.BifrostContext, stream *schemas.BifrostStreamChunk, tc *TransformContext) *schemas.BifrostStreamChunk {
-	if tc == nil {
-		return stream
-	}
-
-	// Only transform if we converted text completion to chat
-	if !tc.TextToChatApplied {
-		return stream
-	}
-
-	// Check if we have a chat response in the stream to transform
-	if stream == nil || stream.BifrostChatResponse == nil {
-		return stream
-	}
-
-	// Convert chat response to text completion response
-	textCompletionResponse := stream.BifrostChatResponse.ToTextCompletionResponse()
-	if textCompletionResponse == nil {
-		return stream
-	}
-
-	// Restore original request type metadata
-	textCompletionResponse.ExtraFields.RequestType = tc.OriginalRequestType
-	textCompletionResponse.ExtraFields.ModelRequested = tc.OriginalModel
-	textCompletionResponse.ExtraFields.LiteLLMCompat = true
-
-	// Return a new stream with the text completion response
-	return &schemas.BifrostStreamChunk{
-		BifrostTextCompletionResponse: textCompletionResponse,
-	}
 }
