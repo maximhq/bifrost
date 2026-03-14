@@ -60,6 +60,8 @@ func TestChooserUpdateShortcutRequestsUpdate(t *testing.T) {
 	m := newChooserModel(ChooserConfig{
 		UpdateVersion: "v1.2.3",
 	})
+	// Move to a non-text-entry phase so 'y' isn't consumed by the input field.
+	m.phase = phaseSummary
 
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	got := next.(chooserModel)
