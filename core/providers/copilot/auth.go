@@ -121,6 +121,13 @@ func (tm *copilotTokenManager) refreshTokenLocked() (string, string, *schemas.Bi
 
 	var tokenResp CopilotTokenResponse
 	if err := sonic.Unmarshal(resp.Body(), &tokenResp); err != nil {
+		if tm.apiToken != "" && time.Now().Before(tm.expiresAt) {
+			if tm.logger != nil {
+				tm.logger.Warn("copilot: token exchange returned invalid JSON; using cached token",
+					"error", err.Error())
+			}
+			return tm.apiToken, tm.apiBase, nil
+		}
 		return "", "", &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     intPtr(500),

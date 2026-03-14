@@ -238,3 +238,49 @@ func TestTokenManager_BearerHeaderSentWithOAuthToken(t *testing.T) {
 		t.Errorf("expected Authorization header 'Bearer my-github-oauth-token', got %q", receivedAuth)
 	}
 }
+
+func TestTokenManager_MalformedJSONPreservesValidCachedToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+	// Pre-set a valid cached token inside the refresh margin (so refresh is attempted)
+	tm.apiToken = "cached-jwt"
+	tm.apiBase = "https://api.githubcopilot.com"
+	tm.expiresAt = time.Now().Add(30 * time.Second) // inside 60s margin
+
+	token, apiBase, err := tm.getToken()
+	if err != nil {
+		t.Fatalf("expected cached token to be returned on malformed JSON, got error: %v", err)
+	}
+	if token != "cached-jwt" {
+		t.Errorf("expected cached token, got %q", token)
+	}
+	if apiBase != "https://api.githubcopilot.com" {
+		t.Errorf("expected cached api base, got %q", apiBase)
+	}
+}
+
+func TestTokenManager_MalformedJSONWithNoCachedTokenReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	tm := newTestTokenManager("oauth-token", srv.URL)
+	// No cached token
+	_, _, bifrostErr := tm.getToken()
+
+	if bifrostErr == nil {
+		t.Fatal("expected error when no cached token available and JSON is malformed")
+	}
+	if *bifrostErr.StatusCode != 500 {
+		t.Errorf("expected status 500, got %d", *bifrostErr.StatusCode)
+	}
+}
