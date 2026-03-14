@@ -583,6 +583,20 @@ func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
 	return parsed, nil
 }
 
+func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
+	if len(values) == 1 {
+		trimmed := strings.TrimSpace(values[0])
+		if trimmed != "" {
+			var parsed FallbacksInput
+			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err == nil {
+				return parsed, nil
+			}
+		}
+	}
+
+	return fallbackStringsToInput(values)
+}
+
 // extractExtraParams processes unknown fields from JSON data into ExtraParams
 func extractExtraParams(data []byte, knownFields map[string]bool) (map[string]any, error) {
 	// Parse JSON to extract unknown fields
@@ -2034,7 +2048,7 @@ func prepareImageEditRequest(ctx *fasthttp.RequestCtx) (*ImageEditHTTPRequest, *
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		parsedFallbacks, parseErr := fallbackStringsToInput(fallbackValues)
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
 		if parseErr != nil {
 			return nil, nil, parseErr
 		}
@@ -2179,7 +2193,7 @@ func prepareImageVariationRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostIma
 		}
 	}
 	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
-		rawFallbacks, parseErr := fallbackStringsToInput(fallbackValues)
+		rawFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
 		if parseErr != nil {
 			return nil, parseErr
 		}
