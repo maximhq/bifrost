@@ -113,9 +113,11 @@ func copilotKey(key schemas.Key, token string) schemas.Key {
 // ListModels performs a list models request to the Copilot API.
 func (provider *CopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
+		noFallback := false
 		return nil, &schemas.BifrostError{
 			IsBifrostError: true,
 			StatusCode:     intPtr(401),
+			AllowFallbacks: &noFallback,
 			Error: &schemas.ErrorField{
 				Message: "no keys configured for copilot provider",
 			},
