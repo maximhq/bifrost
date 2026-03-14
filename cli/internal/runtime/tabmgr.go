@@ -33,6 +33,10 @@ var ErrQuit = errors.New("user quit")
 // to dismiss the chooser and return to tab command mode.
 var ErrBackToTabs = errors.New("back to tabs")
 
+// ErrUpdateRequested is returned by RunTabbed when the user presses U in
+// tab command mode to trigger a self-update and re-exec.
+var ErrUpdateRequested = errors.New("update requested")
+
 const pendingTabLabel = "Bifrost"
 
 // Tab represents a single CLI session running in a PTY.
@@ -81,7 +85,8 @@ type belParserState struct {
 // harness chooser) and return the launch spec. Return a nil spec to cancel.
 // When seed is non-nil, the chooser should use it to prefill the current tab.
 // stdinReader provides keyboard input; when nil the callback should read os.Stdin.
-type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), stdinReader io.Reader, seed *LaunchSpec) (*LaunchSpec, error)
+// tabBarLine returns the current tab bar content for embedding in the chooser view.
+type NewTabFunc func(ctx context.Context, notify func(level TabNoticeLevel, message string), tabBarLine func() string, stdinReader io.Reader, seed *LaunchSpec) (*LaunchSpec, error)
 
 // TabManager multiplexes multiple CLI sessions. Each session runs in its own PTY,
 // with a virtual terminal emulator capturing output. A 30fps render loop composites
@@ -116,6 +121,8 @@ type TabManager struct {
 
 	cursorTraceMu sync.Mutex
 	cursorTrace   io.WriteCloser
+
+	updateVersion string // non-empty when an update is available
 }
 
 // stdinResult carries data from the dedicated stdin-reading goroutine.
@@ -128,19 +135,20 @@ type stdinResult struct {
 // immediately opens the chooser via newTabFn for the first tab, then enters
 // the main event loop. Returns ErrQuit if the user quits the initial chooser
 // without creating any tabs.
-func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, newTabFn NewTabFunc) error {
+func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, updateVersion string, newTabFn NewTabFunc) error {
 	tm := &TabManager{
-		stdout:  stdout,
-		stderr:  stderr,
-		version: version,
-		closeCh: make(chan struct{}),
+		stdout:        stdout,
+		stderr:        stderr,
+		version:       version,
+		updateVersion: updateVersion,
+		closeCh:       make(chan struct{}),
 	}
 
 	// Get terminal size
 	if c, r, err := term.GetSize(int(os.Stdout.Fd())); err == nil {
-		tm.rows, tm.cols = uint16(r), uint16(c)
+		tm.cols, tm.rows = normalizeTerminalSize(c, r)
 	} else {
-		tm.rows, tm.cols = 24, 80
+		tm.cols, tm.rows = normalizeTerminalSize(80, 24)
 	}
 
 	tm.initCursorTrace()
@@ -150,7 +158,7 @@ func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, ne
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		// Can't go raw — fall back: open chooser directly, then single-session
-		spec, err := newTabFn(ctx, tm.emitNotice, nil, nil)
+		spec, err := newTabFn(ctx, tm.emitNotice, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -174,7 +182,9 @@ func RunTabbed(ctx context.Context, stdout, stderr io.Writer, version string, ne
 	defer tm.signalClose()
 
 	// Open the chooser within the tab content area.
-	tm.openNewTab(ctx, newTabFn, oldState)
+	if err := tm.openNewTab(ctx, newTabFn, oldState); err != nil {
+		return err
+	}
 
 	// If the user quit the chooser without creating a tab, exit
 	if tm.shouldExitWithoutTabs() {
@@ -349,6 +359,7 @@ func (tm *TabManager) addPendingTab() (*Tab, int) {
 	return tab, prevActive
 }
 
+// removePendingTab removes the pending tab and restores the previous active tab.
 func (tm *TabManager) removePendingTab(tab *Tab, restoreActive int) *Tab {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -499,6 +510,7 @@ const prefix = 0x02
 //	X               — close current tab
 //	H/L or J/K      — move left/right
 //	1…9             — jump to tab N
+//	U               — update bifrost (if available)
 //	Esc/Enter/Ctrl+B — resume the active tab
 func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termState *term.State) error {
 	pending := make([]byte, 0, 4096)
@@ -530,7 +542,9 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 
 			if isPrefix {
 				if tm.isCommandMode() {
-					tm.handleCommandKey(ctx, newTabFn, termState, prefix)
+					if err := tm.handleCommandKey(ctx, newTabFn, termState, prefix); err != nil {
+						return err
+					}
 				} else {
 					tm.enterCommandMode()
 				}
@@ -566,7 +580,9 @@ func (tm *TabManager) inputLoop(ctx context.Context, newTabFn NewTabFunc, termSt
 
 			if tm.isCommandMode() {
 				if b, ok := decodeCommandByte(token); ok {
-					tm.handleCommandKey(ctx, newTabFn, termState, b)
+					if err := tm.handleCommandKey(ctx, newTabFn, termState, b); err != nil {
+						return err
+					}
 				}
 				continue
 			}
@@ -1131,6 +1147,7 @@ func (tm *TabManager) enterCommandMode() {
 	tm.mu.Unlock()
 
 	if !hasTabs {
+		tm.writeString("\x1b[2J\x1b[H")
 		tm.drawTabBar()
 	}
 }
@@ -1142,12 +1159,12 @@ func (tm *TabManager) exitCommandMode() {
 	tm.mu.Unlock()
 }
 
-func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc, termState *term.State, b byte) {
+func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc, termState *term.State, b byte) error {
 	switch {
 	case b == ' ':
 		if tm.hasStickyErrorNotice() {
 			tm.clearNoticeAndStayInCommandMode()
-			return
+			return nil
 		}
 		tm.clearNoticeAndResume()
 	case b == prefix || b == 0x1b || b == '\r' || b == '\n':
@@ -1155,26 +1172,35 @@ func (tm *TabManager) handleCommandKey(ctx context.Context, newTabFn NewTabFunc,
 			if b == 0x1b {
 				tm.clearNoticeAndStayInCommandMode()
 			}
-			return
+			return nil
 		}
 		if !tm.hasTabs() {
+			if b == 0x1b {
+				return tm.openNewTab(ctx, newTabFn, termState)
+			}
 			tm.drawTabBar()
-			return
+			return nil
 		}
 		tm.exitCommandMode()
 	case b >= '1' && b <= '9':
 		tm.switchTabAndResume(int(b - '1'))
 	case b == 'n' || b == 'N':
-		tm.openNewTab(ctx, newTabFn, termState)
+		return tm.openNewTab(ctx, newTabFn, termState)
 	case isEditSessionKey(b):
-		tm.openCurrentTabChooser(ctx, newTabFn, termState)
+		return tm.openCurrentTabChooser(ctx, newTabFn, termState)
 	case b == 'x' || b == 'X' || b == 'w' || b == 'W':
 		tm.closeCurrentTab()
 	case b == 'l' || b == 'L' || b == 'j' || b == 'J' || b == '\t':
 		tm.moveTabSelection(1)
 	case b == 'h' || b == 'H' || b == 'k' || b == 'K' || b == 'p' || b == 'P':
 		tm.moveTabSelection(-1)
+	case b == 'u' || b == 'U':
+		if tm.updateVersion != "" {
+			return ErrUpdateRequested
+		}
+		tm.emitNotice(TabNoticeInfo, "already up to date")
 	}
+	return nil
 }
 
 func isEditSessionKey(b byte) bool {
@@ -1427,9 +1453,9 @@ func (tm *TabManager) removeTab(tab *Tab) {
 
 // openNewTab pauses PTY rendering, restores the terminal, runs the chooser,
 // then resumes the multiplexer with the new tab.
-func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termState *term.State) {
+func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termState *term.State) error {
 	if newTabFn == nil {
-		return
+		return nil
 	}
 
 	pendingTab, prevActive := tm.addPendingTab()
@@ -1439,10 +1465,14 @@ func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termS
 		// Cancelled — remove the placeholder tab and resume the previous session.
 		activeTab := tm.removePendingTab(pendingTab, prevActive)
 
+		if errors.Is(err, ErrUpdateRequested) {
+			return err
+		}
+
 		// Ctrl+B → enter command mode so the user lands on the tab bar.
 		if errors.Is(err, ErrBackToTabs) {
 			tm.enterCommandMode()
-			return
+			return nil
 		}
 		if err != nil {
 			tm.emitNotice(TabNoticeError, err.Error())
@@ -1455,7 +1485,7 @@ func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termS
 		} else {
 			tm.drawTabBar()
 		}
-		return
+		return nil
 	}
 
 	activeTab := tm.removePendingTab(pendingTab, prevActive)
@@ -1471,7 +1501,7 @@ func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termS
 		} else {
 			tm.drawTabBar()
 		}
-		return
+		return nil
 	}
 
 	// Resume — always exit command mode so the new tab renders.
@@ -1480,16 +1510,17 @@ func (tm *TabManager) openNewTab(ctx context.Context, newTabFn NewTabFunc, termS
 	tm.commandMode = false
 	tm.needsRender = true
 	tm.mu.Unlock()
+	return nil
 }
 
-func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTabFunc, termState *term.State) {
+func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTabFunc, termState *term.State) error {
 	if newTabFn == nil {
-		return
+		return nil
 	}
 
 	currentTab, current, ok := tm.activeTabSeed()
 	if !ok {
-		return
+		return nil
 	}
 
 	tm.mu.Lock()
@@ -1500,6 +1531,9 @@ func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTab
 
 	spec, err := tm.runChooser(ctx, newTabFn, termState, &current)
 	if err != nil || spec == nil {
+		if errors.Is(err, ErrUpdateRequested) {
+			return err
+		}
 		tm.mu.Lock()
 		tm.paused = false
 		tm.needsRender = true
@@ -1507,12 +1541,12 @@ func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTab
 
 		if errors.Is(err, ErrBackToTabs) {
 			tm.enterCommandMode()
-			return
+			return nil
 		}
 		if err != nil {
 			tm.emitNotice(TabNoticeError, err.Error())
 		}
-		return
+		return nil
 	}
 
 	if err := tm.replaceTab(ctx, currentTab, *spec); err != nil {
@@ -1521,7 +1555,7 @@ func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTab
 		tm.needsRender = true
 		tm.mu.Unlock()
 		tm.emitNotice(TabNoticeError, fmt.Sprintf("tab relaunch failed: %v", err))
-		return
+		return nil
 	}
 
 	tm.mu.Lock()
@@ -1529,6 +1563,7 @@ func (tm *TabManager) openCurrentTabChooser(ctx context.Context, newTabFn NewTab
 	tm.commandMode = false
 	tm.needsRender = true
 	tm.mu.Unlock()
+	return nil
 }
 
 func (tm *TabManager) activeTabSeed() (*Tab, LaunchSpec, bool) {
@@ -1609,7 +1644,7 @@ func (tm *TabManager) runChooser(ctx context.Context, newTabFn NewTabFunc, termS
 	}
 drained:
 
-	spec, err := newTabFn(ctx, tm.emitNotice, nil, seed)
+	spec, err := newTabFn(ctx, tm.emitNotice, tm.buildTabBarString, nil, seed)
 
 	if tm.stdinPollFd != nil {
 		_ = tm.stdinPollFd.SetReadDeadline(time.Time{})
@@ -1619,7 +1654,7 @@ drained:
 	if termState != nil {
 		_, _ = term.MakeRaw(int(os.Stdin.Fd()))
 	}
-	tm.writeString("\x1b[r")
+	tm.writeString("\x1b[r\x1b[?6l")
 
 	return spec, err
 }
@@ -2117,7 +2152,11 @@ func (tm *TabManager) buildTabBarString() string {
 			hint = " " + noticeText + " "
 		}
 	} else if cmdMode {
-		hint = " n:new e:edit session x:close h/l:move 1-9:jump Esc:resume "
+		hint = " n:new e:edit session x:close h/l:move 1-9:jump"
+		if tm.updateVersion != "" {
+			hint += " u:update"
+		}
+		hint += " Esc:resume "
 	}
 	used := tm.tabBarContentWidth(tabs) + len(hint) + len(versionLabel)
 	if cols > used {
@@ -2127,8 +2166,7 @@ func (tm *TabManager) buildTabBarString() string {
 	if versionLabel != "" {
 		b.WriteString(bg + "\x1b[36m" + versionLabel)
 	}
-	b.WriteString(reset)
-
+	b.WriteString(reset)	
 	return b.String()
 }
 
@@ -2144,6 +2182,8 @@ func (tm *TabManager) drawTabBar() {
 
 	var b strings.Builder
 	b.WriteString(tm.syncHostInputModes(0))
+	b.WriteString("\x1b[r")   // reset scroll region before absolute positioning
+	b.WriteString("\x1b[?6l") // absolute origin mode
 	b.WriteString("\x1b[s")
 	fmt.Fprintf(&b, "\x1b[%d;1H", rows)
 	b.WriteString(content)
@@ -2159,25 +2199,28 @@ func (tm *TabManager) handleResize() {
 	if err != nil {
 		return
 	}
+	cols, rows := normalizeTerminalSize(c, r)
 
 	tm.mu.Lock()
-	tm.rows, tm.cols = uint16(r), uint16(c)
+	tm.rows, tm.cols = rows, cols
 	tabs := make([]*Tab, len(tm.tabs))
 	copy(tabs, tm.tabs)
 	tm.needsRender = true
 	tm.mu.Unlock()
 
 	contentRows := int(tm.contentRows())
-	sz := &pty.Winsize{Rows: uint16(contentRows), Cols: uint16(c)}
+	sz := &pty.Winsize{Rows: uint16(contentRows), Cols: cols}
 	for _, tab := range tabs {
 		if tab.vt != nil {
 			// Resize is self-locking
-			tab.vt.Resize(c, contentRows)
+			tab.vt.Resize(int(cols), contentRows)
 		}
 		if !tab.exited.Load() && tab.ptmx != nil {
 			pty.Setsize(tab.ptmx, sz)
 		}
 	}
+	// When paused (chooser active), the chooser's View includes the tab bar
+	// via TabBarLine — Bubble Tea redraws it as part of its own render cycle.
 }
 
 func (tm *TabManager) redrawActiveTab() {
@@ -2353,6 +2396,16 @@ func (tm *TabManager) contentRows() uint16 {
 		return 1
 	}
 	return tm.rows - 1 // bottom tab bar
+}
+
+func normalizeTerminalSize(cols, rows int) (uint16, uint16) {
+	if cols < 20 {
+		cols = 20
+	}
+	if rows < 2 {
+		rows = 2
+	}
+	return uint16(cols), uint16(rows)
 }
 
 func (tm *TabManager) writeBytes(data []byte) {

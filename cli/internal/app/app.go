@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/apis"
 	"github.com/maximhq/bifrost/cli/internal/config"
@@ -108,11 +110,12 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	worktree := strings.TrimSpace(a.opts.Worktree)
+	var updateVersion string
 
 	// chooseAndPrepare runs the chooser TUI, handles installation flows,
 	// persists state, and returns a launch spec. Loops internally until
 	// the user picks a valid harness or quits.
-	chooseAndPrepare := func(_ context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader, msg string, isAfterSession bool, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+	chooseAndPrepare := func(_ context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, msg string, isAfterSession bool, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
 		seedApplied := false
 		for {
 			harnesses := a.harnessOptions()
@@ -130,20 +133,22 @@ func (a *App) Run(ctx context.Context) error {
 			}
 
 			choice, err := tui.RunChooser(tui.ChooserConfig{
-				Version:      a.opts.Version,
-				Commit:       a.opts.Commit,
-				ConfigSrc:    a.configSource,
-				Message:      msg,
-				BaseURL:      baseURL,
-				VirtualKey:   currentVK,
-				Harness:      currentSelection.Harness,
-				Model:        currentSelection.Model,
-				Worktree:     currentWorktree,
-				AfterSession: isAfterSession,
-				ReservedRows: 1, // bottom tab bar
-				Harnesses:    harnesses,
-				FetchModels:  a.apiClient.ListModels,
-				Input:        stdinReader,
+				Version:       a.opts.Version,
+				Commit:        a.opts.Commit,
+				ConfigSrc:     a.configSource,
+				Message:       msg,
+				UpdateVersion: updateVersion,
+				BaseURL:       baseURL,
+				VirtualKey:    currentVK,
+				Harness:       currentSelection.Harness,
+				Model:         currentSelection.Model,
+				Worktree:      currentWorktree,
+				AfterSession:  isAfterSession,
+				ReservedRows:  1, // bottom tab bar
+				Harnesses:     harnesses,
+				TabBarLine:    tabBarLine,
+				FetchModels:   a.apiClient.ListModels,
+				Input:         stdinReader,
 				Notify: func(message string, isError bool) {
 					level := runtime.TabNoticeInfo
 					if isError {
@@ -159,6 +164,9 @@ func (a *App) Run(ctx context.Context) error {
 			}
 			if choice.BackToTabs {
 				return nil, runtime.ErrBackToTabs
+			}
+			if choice.UpdateRequested {
+				return nil, runtime.ErrUpdateRequested
 			}
 			if choice.Quit {
 				return nil, nil
@@ -247,23 +255,36 @@ func (a *App) Run(ctx context.Context) error {
 	message := ""
 	afterSession := false
 
-	// Check for update result (non-blocking)
+	// Wait for update check to complete (up to 4s — the HTTP request has a 3s timeout).
 	select {
 	case result := <-updateCh:
 		if result != nil && result.UpdateAvailable {
-			message = fmt.Sprintf("bifrost %s available — run 'bifrost update'", result.LatestVersion)
+			updateVersion = result.LatestVersion
 			a.state.LastVersionCheck = result.CheckedAt
 			a.state.LastKnownVersion = result.LatestVersion
 			_ = config.SaveState(a.statePath, a.state) // best-effort
 		}
 		updateCh = nil
-	default:
+	case <-time.After(4 * time.Second):
 	}
 
 	// Enter tabbed mode — draws chrome, opens chooser, runs tabs.
-	err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
-		return chooseAndPrepare(tabCtx, notify, stdinReader, message, afterSession, seed)
+	err = runtime.RunTabbed(ctx, a.out, a.errOut, a.opts.Version, updateVersion, func(tabCtx context.Context, notify func(runtime.TabNoticeLevel, string), tabBarLine func() string, stdinReader io.Reader, seed *runtime.LaunchSpec) (*runtime.LaunchSpec, error) {
+		return chooseAndPrepare(tabCtx, notify, tabBarLine, stdinReader, message, afterSession, seed)
 	})
+
+	if errors.Is(err, runtime.ErrUpdateRequested) {
+		if err := update.RunSelfUpdate(a.opts.Version); err != nil {
+			return fmt.Errorf("update failed: %w", err)
+		}
+		// Re-exec with the updated binary.
+		execPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(a.out, "Updated successfully. Please restart bifrost.\n")
+			return nil
+		}
+		return syscall.Exec(execPath, os.Args, os.Environ())
+	}
 
 	if errors.Is(err, runtime.ErrQuit) {
 		return nil

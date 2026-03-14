@@ -1,0 +1,5 @@
+- feat: added in-tab self-update via U key in command mode when update is available
+- feat: improved tab bar to show update hint when newer version is detected
+- fix: terminal resize handling with proper size normalization and scroll region reset
+- fix: improved chooser integration with tab bar rendering via TabBarLine callback
+- fix: enhanced cursor positioning with absolute origin mode after scroll region reset
