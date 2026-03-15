@@ -555,6 +555,8 @@ paths:
     $ref: './paths/management/session.yaml#/logout'
   /api/session/is-auth-enabled:
     $ref: './paths/management/session.yaml#/is-auth-enabled'
+  /api/session/ws-ticket:
+    $ref: './paths/management/session.yaml#/ws-ticket'
 
   # Providers
   /api/providers:
@@ -565,6 +567,10 @@ paths:
     $ref: './paths/management/providers.yaml#/keys'
   /api/models:
     $ref: './paths/management/providers.yaml#/models'
+  /api/models/parameters:
+    $ref: './paths/management/providers.yaml#/models-parameters'
+  /api/models/base:
+    $ref: './paths/management/providers.yaml#/models-base'
 
   # Plugins
   /api/plugins:
@@ -633,8 +639,26 @@ paths:
   # Logging
   /api/logs:
     $ref: './paths/management/logging.yaml#/logs'
+  /api/logs/{id}:
+    $ref: './paths/management/logging.yaml#/logs-by-id'
   /api/logs/stats:
     $ref: './paths/management/logging.yaml#/logs-stats'
+  /api/logs/histogram:
+    $ref: './paths/management/logging.yaml#/logs-histogram'
+  /api/logs/histogram/tokens:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens'
+  /api/logs/histogram/cost:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost'
+  /api/logs/histogram/models:
+    $ref: './paths/management/logging.yaml#/logs-histogram-models'
+  /api/logs/histogram/latency:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency'
+  /api/logs/histogram/cost/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-cost-by-provider'
+  /api/logs/histogram/tokens/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-tokens-by-provider'
+  /api/logs/histogram/latency/by-provider:
+    $ref: './paths/management/logging.yaml#/logs-histogram-latency-by-provider'
   /api/logs/dropped:
     $ref: './paths/management/logging.yaml#/logs-dropped'
   /api/logs/filterdata:
@@ -642,11 +666,49 @@ paths:
   /api/logs/recalculate-cost:
     $ref: './paths/management/logging.yaml#/logs-recalculate-cost'
 
+  # MCP Logs
+  /api/mcp-logs:
+    $ref: './paths/management/logging.yaml#/mcp-logs'
+  /api/mcp-logs/stats:
+    $ref: './paths/management/logging.yaml#/mcp-logs-stats'
+  /api/mcp-logs/filterdata:
+    $ref: './paths/management/logging.yaml#/mcp-logs-filterdata'
+
+  # Prompt Repository
+  /api/prompt-repo/folders:
+    $ref: './paths/management/prompts.yaml#/folders'
+  /api/prompt-repo/folders/{id}:
+    $ref: './paths/management/prompts.yaml#/folders-by-id'
+  /api/prompt-repo/prompts:
+    $ref: './paths/management/prompts.yaml#/prompts'
+  /api/prompt-repo/prompts/{id}:
+    $ref: './paths/management/prompts.yaml#/prompts-by-id'
+  /api/prompt-repo/prompts/{id}/versions:
+    $ref: './paths/management/prompts.yaml#/prompt-versions'
+  /api/prompt-repo/versions/{id}:
+    $ref: './paths/management/prompts.yaml#/versions-by-id'
+  /api/prompt-repo/prompts/{id}/sessions:
+    $ref: './paths/management/prompts.yaml#/prompt-sessions'
+  /api/prompt-repo/sessions/{id}:
+    $ref: './paths/management/prompts.yaml#/sessions-by-id'
+  /api/prompt-repo/sessions/{id}/rename:
+    $ref: './paths/management/prompts.yaml#/sessions-rename'
+  /api/prompt-repo/sessions/{id}/commit:
+    $ref: './paths/management/prompts.yaml#/sessions-commit'
+
   # Cache
   /api/cache/clear/{requestId}:
     $ref: './paths/management/cache.yaml#/clear-by-request-id'
   /api/cache/clear-by-key/{cacheKey}:
     $ref: './paths/management/cache.yaml#/clear-by-cache-key'
+
+  # Infrastructure
+  /ws:
+    $ref: './paths/management/infrastructure.yaml#/websocket'
+  /mcp:
+    $ref: './paths/management/infrastructure.yaml#/mcp-server'
+  /metrics:
+    $ref: './paths/management/infrastructure.yaml#/metrics'
 
 components:
   responses:

@@ -6,6 +6,74 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
+	// Create tool parameters with keys in non-alphabetical order:
+	// "required" before "properties" before "type" — Normalized() should reorder to
+	// type → description → properties → required, then alphabetical.
+	unsortedParams := &schemas.ToolFunctionParameters{
+		Type: "object",
+		Properties: schemas.NewOrderedMapFromPairs(
+			schemas.KV("zebra", map[string]interface{}{"type": "string"}),
+			schemas.KV("alpha", map[string]interface{}{"type": "number"}),
+		),
+		Required: []string{"zebra"},
+	}
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: "function",
+					Function: &schemas.ChatToolFunction{
+						Name:       "test_func",
+						Parameters: unsortedParams,
+					},
+				},
+				{
+					Type:     "function",
+					Function: &schemas.ChatToolFunction{Name: "no_params_func"},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify parameters are normalized: Properties keys should be sorted alphabetically
+	normalizedParams := result.ChatParameters.Tools[0].Function.Parameters
+	if normalizedParams == nil {
+		t.Fatal("expected normalized parameters to be non-nil")
+	}
+	keys := normalizedParams.Properties.Keys()
+	if len(keys) != 2 || keys[0] != "alpha" || keys[1] != "zebra" {
+		t.Errorf("expected Properties keys sorted as [alpha, zebra], got %v", keys)
+	}
+
+	// Verify tool without parameters is unaffected
+	if result.ChatParameters.Tools[1].Function.Parameters != nil {
+		t.Error("expected nil parameters for tool without parameters")
+	}
+
+	// Verify original bifrostReq.Params.Tools was NOT mutated
+	origKeys := bifrostReq.Params.Tools[0].Function.Parameters.Properties.Keys()
+	if len(origKeys) != 2 || origKeys[0] != "zebra" || origKeys[1] != "alpha" {
+		t.Errorf("original parameters were mutated: expected [zebra, alpha], got %v", origKeys)
+	}
+
+	// Verify the Function pointer is a different object (deep copy)
+	if result.ChatParameters.Tools[0].Function == bifrostReq.Params.Tools[0].Function {
+		t.Error("expected Function pointer to be a copy, not the original")
+	}
+}
+
 func TestApplyXAICompatibility(t *testing.T) {
 	tests := []struct {
 		name     string
