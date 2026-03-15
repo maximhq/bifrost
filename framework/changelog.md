@@ -2,3 +2,17 @@
 - feat: add `routing_targets` table with 1:many relationship to `routing_rules`; migrates existing single-target rules to the new table with `weight=1`; drops legacy `provider` and `model` columns from `routing_rules`
 - feat: add per-target `key_id` pinning support in `routing_targets`
 - fix: avoid postgres cached-plan failures during provider hash backfill [@dannyball710](https://github.com/dannyball710)
+- feat: prompt repository with folder, prompt, version, and session schemas and backend
+- feat: model parameters table and API endpoint with in-memory caching
+- feat: large payload awareness for plugins and logstore
+- feat: large payload transport hooks and response streaming
+- feat: chat token detail OTEL span attributes
+- feat: hide deleted virtual keys from filter options
+- feat: virtual key search/filtering and pagination
+- feat: allow storing raw request/response without returning to clients (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- fix: MCP client reconnection with exponential backoff and connection timeout
+- fix: prevent SQLite CASCADE deletion during routing targets migration
+- fix: reduce logstore serialization overhead and batch cost updates
+- fix: video pricing fixes
+- fix: avoid loading raw_request/raw_response in log list queries (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- chore: upgraded core to v1.4.8

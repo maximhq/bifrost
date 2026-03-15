@@ -1375,13 +1375,7 @@ func (s *BifrostHTTPServer) Start() error {
 			s.Client.Shutdown()
 			logger.Info("bifrost client shutdown completed")
 			logger.Info("cleaning up storage engines...")
-			// Cleaning up storage engines
-			if s.Config != nil && s.Config.ModelCatalog != nil {
-				s.Config.ModelCatalog.Cleanup()
-			}
-			if s.Config != nil && s.Config.ConfigStore != nil {
-				s.Config.ConfigStore.Close(shutdownCtx)
-			}
+			// Cleanup server-specific components
 			if s.LogsCleaner != nil {
 				logger.Info("stopping log retention cleaner...")
 				s.LogsCleaner.StopCleanupRoutine()
@@ -1389,10 +1383,6 @@ func (s *BifrostHTTPServer) Start() error {
 			if s.AsyncJobCleaner != nil {
 				logger.Info("stopping async job cleaner...")
 				s.AsyncJobCleaner.StopCleanupRoutine()
-			}
-			if s.Config != nil && s.Config.TokenRefreshWorker != nil {
-				logger.Info("stopping token refresh worker...")
-				s.Config.TokenRefreshWorker.Stop()
 			}
 			if s.WSTicketStore != nil {
 				logger.Info("stopping ws ticket store...")
@@ -1406,16 +1396,9 @@ func (s *BifrostHTTPServer) Start() error {
 				logger.Info("closing websocket connection pool...")
 				s.wsPool.Close()
 			}
-			if s.Config != nil && s.Config.LogsStore != nil {
-				s.Config.LogsStore.Close(shutdownCtx)
-			}
-			if s.Config != nil && s.Config.VectorStore != nil {
-				s.Config.VectorStore.Close(shutdownCtx, "")
-			}
-			if s.Config != nil && s.Config.KVStore != nil {
-				if err := s.Config.KVStore.Close(); err != nil {
-					logger.Warn("failed to close kvstore: %v", err)
-				}
+			// Cleanup Config and all its background components
+			if s.Config != nil {
+				s.Config.Close(shutdownCtx)
 			}
 			logger.Info("storage engines cleanup completed")
 		}()

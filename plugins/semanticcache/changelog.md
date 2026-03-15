@@ -1,0 +1,3 @@
+- feat: add Enabled field to ChatReasoning struct (thanks [@mango766](https://github.com/mango766)!)
+- feat: large payload awareness
+- chore: upgraded core to v1.4.8 and framework to v1.2.27

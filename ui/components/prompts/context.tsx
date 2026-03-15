@@ -19,6 +19,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { toast } from "sonner";
 import { executePrompt } from "./utils/executor";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 interface PromptContextValue {
 	// Data
@@ -92,6 +93,11 @@ interface PromptContextValue {
 	handleDeletePrompt: () => Promise<void>;
 	handleSendMessage: (pendingMessage?: Message) => Promise<void>;
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
+
+	// RBAC permissions
+	canCreate: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
 }
 
 const PromptContext = createContext<PromptContextValue | null>(null);
@@ -105,6 +111,11 @@ export function usePromptContext() {
 }
 
 export function PromptProvider({ children }: { children: ReactNode }) {
+	// RBAC permissions
+	const canCreate = useRbac(RbacResource.PromptRepository, RbacOperation.Create);
+	const canUpdate = useRbac(RbacResource.PromptRepository, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.PromptRepository, RbacOperation.Delete);
+
 	// API queries
 	const { data: foldersData, isLoading: foldersLoading, error: foldersError } = useGetFoldersQuery();
 	const { data: promptsData, isLoading: promptsLoading, error: promptsError } = useGetPromptsQuery();
@@ -569,6 +580,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		handleDeletePrompt,
 		handleSendMessage,
 		handleSubmitToolResult,
+		canCreate,
+		canUpdate,
+		canDelete,
 	};
 
 	return <PromptContext.Provider value={value}>{children}</PromptContext.Provider>;

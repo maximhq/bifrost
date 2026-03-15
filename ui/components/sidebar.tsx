@@ -15,7 +15,6 @@ import {
 	FlaskConical,
 	FolderGit,
 	Globe,
-	HardDriveUpload,
 	KeyRound,
 	Landmark,
 	LayoutGrid,
@@ -25,7 +24,6 @@ import {
 	PanelLeftClose,
 	Puzzle,
 	Router,
-	ScanEye,
 	ScrollText,
 	Search,
 	SearchCheck,
@@ -393,10 +391,11 @@ export default function AppSidebar() {
 	const hasRoutingRulesAccess = useRbac(RbacResource.RoutingRules, RbacOperation.View);
 	const hasGuardrailsProvidersAccess = useRbac(RbacResource.GuardrailsProviders, RbacOperation.View);
 	const hasGuardrailsConfigAccess = useRbac(RbacResource.GuardrailsConfig, RbacOperation.View);
-	const hasPiiRedactorAccess = useRbac(RbacResource.PIIRedactor, RbacOperation.View);
 	const hasClusterConfigAccess = useRbac(RbacResource.Cluster, RbacOperation.View);
 	const isAdaptiveRoutingAllowed = useRbac(RbacResource.AdaptiveRouter, RbacOperation.View);
 	const hasSettingsAccess = useRbac(RbacResource.Settings, RbacOperation.View);
+	const hasPromptRepositoryAccess = useRbac(RbacResource.PromptRepository, RbacOperation.View);
+	const hasPromptDeploymentStrategyAccess = useRbac(RbacResource.PromptDeploymentStrategy, RbacOperation.View);
 	const { data: coreConfig } = useGetCoreConfigQuery({});
 	const isDbConnected = coreConfig?.is_db_connected ?? false;
 
@@ -609,29 +608,6 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "PII Redactor",
-				url: "/workspace/pii-redactor",
-				icon: ScanEye,
-				description: "PII detection and redaction",
-				hasAccess: hasPiiRedactorAccess,
-				subItems: [
-					{
-						title: "Rules",
-						url: "/workspace/pii-redactor/rules",
-						icon: SearchCheck,
-						description: "PII redaction rules",
-						hasAccess: hasPiiRedactorAccess,
-					},
-					{
-						title: "Providers",
-						url: "/workspace/pii-redactor/providers",
-						icon: Boxes,
-						description: "PII redaction providers",
-						hasAccess: hasPiiRedactorAccess,
-					},
-				],
-			},
-			{
 				title: "Cluster Config",
 				url: "/workspace/cluster",
 				icon: Network,
@@ -645,34 +621,34 @@ export default function AppSidebar() {
 				description: "Manage adaptive load balancer",
 				hasAccess: isAdaptiveRoutingAllowed,
 			},
-			...(isDbConnected
-				? [
-						{
-							title: "Prompt Repository",
-							url: "/workspace/prompt-repo",
-							icon: FolderGit,
-							description: "Prompt repository",
-							hasAccess: true,
-							subItems: [
-								{
-									title: "Prompts",
-									url: "/workspace/prompt-repo/prompts",
-									icon: SquareTerminal,
-									description: "Manage prompts",
-									hasAccess: true,
-									tag: "Beta",
-								},
-								{
-									title: "Deployments",
-									url: "/workspace/prompt-repo/deployments",
-									icon: Router,
-									description: "Manage deployment",
-									hasAccess: true,
-								},
-							],
-						},
-					]
-				: []),
+		...(isDbConnected
+			? [
+					{
+						title: "Prompt Repository",
+						url: "/workspace/prompt-repo",
+						icon: FolderGit,
+						description: "Prompt repository",
+						hasAccess: hasPromptRepositoryAccess || hasPromptDeploymentStrategyAccess,
+						subItems: [
+							{
+								title: "Prompts",
+								url: "/workspace/prompt-repo/prompts",
+								icon: SquareTerminal,
+								description: "Manage prompts",
+								hasAccess: hasPromptRepositoryAccess,
+								tag: "Beta",
+							},
+							{
+								title: "Deployments",
+								url: "/workspace/prompt-repo/deployments",
+								icon: Router,
+								description: "Manage deployment",
+								hasAccess: hasPromptDeploymentStrategyAccess,
+							},
+						],
+					},
+				]
+			: []),
 			{
 				title: "Evals",
 				url: "https://www.getmaxim.ai",
@@ -734,17 +710,6 @@ export default function AppSidebar() {
 						description: "Performance tuning settings",
 						hasAccess: hasSettingsAccess,
 					},
-					...(IS_ENTERPRISE
-						? [
-								{
-									title: "Large Payload",
-									url: "/workspace/config/large-payload",
-									icon: HardDriveUpload,
-									description: "Large payload streaming optimization",
-									hasAccess: hasSettingsAccess,
-								},
-							]
-						: []),
 				],
 			},
 		],
@@ -765,10 +730,11 @@ export default function AppSidebar() {
 			hasRoutingRulesAccess,
 			hasGuardrailsProvidersAccess,
 			hasGuardrailsConfigAccess,
-			hasPiiRedactorAccess,
 			hasClusterConfigAccess,
 			isAdaptiveRoutingAllowed,
 			hasSettingsAccess,
+			hasPromptRepositoryAccess,
+			hasPromptDeploymentStrategyAccess,
 			isDbConnected,
 		],
 	);

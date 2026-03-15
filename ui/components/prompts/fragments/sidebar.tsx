@@ -39,6 +39,9 @@ export function PromptSidebar() {
 		setPromptSheet,
 		setDeletePromptDialog,
 		handleMovePrompt: onMovePrompt,
+		canCreate,
+		canUpdate,
+		canDelete,
 	} = usePromptContext();
 
 	const onCreateFolder = useCallback(() => setFolderSheet({ open: true }), [setFolderSheet]);
@@ -140,11 +143,13 @@ export function PromptSidebar() {
 	return (
 		<DragDropProvider
 			onDragOver={(event) => {
+				if (!canUpdate) return;
 				const targetId = event.operation.target?.id as string | undefined;
 				setDragOverTarget(targetId ?? null);
 			}}
 			onDragEnd={(event) => {
 				setDragOverTarget(null);
+				if (!canUpdate) return;
 				if (event.canceled || !onMovePrompt) return;
 
 				const sourceId = event.operation.source?.id as string | undefined;
@@ -182,33 +187,35 @@ export function PromptSidebar() {
 							className="h-8 pl-8"
 						/>
 					</div>
-					<DropdownMenu>
-						<DropdownMenuTrigger asChild>
-							<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" data-testid="sidebar-create-menu" aria-label="Create prompt or folder">
-								<PlusIcon className="h-3.5 w-3.5" />
-							</Button>
-						</DropdownMenuTrigger>
-						<DropdownMenuContent align="end">
-							<DropdownMenuItem
-								data-testid="sidebar-create-prompt"
-								onClick={(e) => {
-									e.stopPropagation();
-									onCreatePrompt();
-								}}
-							>
-								New Prompt
-							</DropdownMenuItem>
-							<DropdownMenuItem
-								data-testid="sidebar-create-folder"
-								onClick={(e) => {
-									e.stopPropagation();
-									onCreateFolder();
-								}}
-							>
-								New Folder
-							</DropdownMenuItem>
-						</DropdownMenuContent>
-					</DropdownMenu>
+					{canCreate && (
+						<DropdownMenu>
+							<DropdownMenuTrigger asChild>
+								<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" data-testid="sidebar-create-menu" aria-label="Create prompt or folder">
+									<PlusIcon className="h-3.5 w-3.5" />
+								</Button>
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="end">
+								<DropdownMenuItem
+									data-testid="sidebar-create-prompt"
+									onClick={(e) => {
+										e.stopPropagation();
+										onCreatePrompt();
+									}}
+								>
+									New Prompt
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									data-testid="sidebar-create-folder"
+									onClick={(e) => {
+										e.stopPropagation();
+										onCreateFolder();
+									}}
+								>
+									New Folder
+								</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+					)}
 				</div>
 
 				{/* Tree content */}
@@ -234,6 +241,9 @@ export function PromptSidebar() {
 										onCreatePrompt={() => onCreatePrompt(folder.id)}
 										onEditPrompt={onEditPrompt}
 										onDeletePrompt={onDeletePrompt}
+										canCreate={canCreate}
+										canUpdate={canUpdate}
+										canDelete={canDelete}
 									/>
 								))}
 								<RootDropZone
@@ -244,6 +254,8 @@ export function PromptSidebar() {
 									onSelectPrompt={onSelectPrompt}
 									onEditPrompt={onEditPrompt}
 									onDeletePrompt={onDeletePrompt}
+									canUpdate={canUpdate}
+									canDelete={canDelete}
 								/>
 							</>
 						)}
@@ -262,6 +274,8 @@ interface RootDropZoneProps {
 	onSelectPrompt: (promptId: string) => void;
 	onEditPrompt: (prompt: Prompt) => void;
 	onDeletePrompt: (prompt: Prompt) => void;
+	canUpdate: boolean;
+	canDelete: boolean;
 }
 
 function RootDropZone({
@@ -272,6 +286,8 @@ function RootDropZone({
 	onSelectPrompt,
 	onEditPrompt,
 	onDeletePrompt,
+	canUpdate,
+	canDelete,
 }: RootDropZoneProps) {
 	const { ref } = useDroppable({ id: "root-drop-zone" });
 
@@ -286,6 +302,8 @@ function RootDropZone({
 					onSelect={() => onSelectPrompt(prompt.id)}
 					onEdit={() => onEditPrompt(prompt)}
 					onDelete={() => onDeletePrompt(prompt)}
+					canUpdate={canUpdate}
+					canDelete={canDelete}
 				/>
 			))}
 		</div>
@@ -306,6 +324,9 @@ interface DroppableFolderProps {
 	onCreatePrompt: () => void;
 	onEditPrompt: (prompt: Prompt) => void;
 	onDeletePrompt: (prompt: Prompt) => void;
+	canCreate: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
 }
 
 function DroppableFolder({
@@ -322,8 +343,12 @@ function DroppableFolder({
 	onCreatePrompt,
 	onEditPrompt,
 	onDeletePrompt,
+	canCreate,
+	canUpdate,
+	canDelete,
 }: DroppableFolderProps) {
 	const { ref } = useDroppable({ id: `folder-${folder.id}` });
+	const showActions = canCreate || canUpdate || canDelete;
 
 	return (
 		<div ref={ref} className="mb-1 last:mb-0">
@@ -349,47 +374,55 @@ function DroppableFolder({
 				)}
 				<span className="flex-1 truncate text-sm font-medium">{folder.name}</span>
 				<span className="text-muted-foreground mr-1 shrink-0 text-xs">{prompts.length}</span>
-				<DropdownMenu>
-					<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()} className="bg-card absolute top-1/2 right-2 -translate-y-1/2">
-						<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-folder-actions-${folder.id}`} aria-label="Folder actions">
-							<MoreHorizontal className="h-4 w-4" />
-						</Button>
-					</DropdownMenuTrigger>
-					<DropdownMenuContent align="end">
-						<DropdownMenuItem
-							data-testid="folder-action-new-prompt"
-							onClick={(e) => {
-								e.stopPropagation();
-								onCreatePrompt();
-							}}
-						>
-							<Plus className="mr-2 h-4 w-4" />
-							New Prompt
-						</DropdownMenuItem>
-						<DropdownMenuSeparator />
-						<DropdownMenuItem
-							data-testid="folder-action-edit"
-							onClick={(e) => {
-								e.stopPropagation();
-								onEdit();
-							}}
-						>
-							<Pencil className="mr-2 h-4 w-4" />
-							Edit Folder
-						</DropdownMenuItem>
-						<DropdownMenuItem
-							className="text-destructive"
-							data-testid="folder-action-delete"
-							onClick={(e) => {
-								e.stopPropagation();
-								onDelete();
-							}}
-						>
-							<Trash2 className="mr-2 h-4 w-4" />
-							Delete Folder
-						</DropdownMenuItem>
-					</DropdownMenuContent>
-				</DropdownMenu>
+				{showActions && (
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()} className="bg-card absolute top-1/2 right-2 -translate-y-1/2">
+							<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-folder-actions-${folder.id}`} aria-label="Folder actions">
+								<MoreHorizontal className="h-4 w-4" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="end">
+							{canCreate && (
+								<DropdownMenuItem
+									data-testid="folder-create-prompt"
+									onClick={(e) => {
+										e.stopPropagation();
+										onCreatePrompt();
+									}}
+								>
+									<Plus className="mr-2 h-4 w-4" />
+									New Prompt
+								</DropdownMenuItem>
+							)}
+							{canCreate && (canUpdate || canDelete) && <DropdownMenuSeparator />}
+							{canUpdate && (
+								<DropdownMenuItem
+									data-testid="folder-action-edit"
+									onClick={(e) => {
+										e.stopPropagation();
+										onEdit();
+									}}
+								>
+									<Pencil className="mr-2 h-4 w-4" />
+									Edit Folder
+								</DropdownMenuItem>
+							)}
+							{canDelete && (
+								<DropdownMenuItem
+									className="text-destructive"
+									data-testid="folder-action-delete"
+									onClick={(e) => {
+										e.stopPropagation();
+										onDelete();
+									}}
+								>
+									<Trash2 className="mr-2 h-4 w-4" />
+									Delete Folder
+								</DropdownMenuItem>
+							)}
+						</DropdownMenuContent>
+					</DropdownMenu>
+				)}
 			</div>
 
 			{isExpanded && (
@@ -406,6 +439,8 @@ function DroppableFolder({
 								onSelect={() => onSelectPrompt(prompt.id)}
 								onEdit={() => onEditPrompt(prompt)}
 								onDelete={() => onDeletePrompt(prompt)}
+								canUpdate={canUpdate}
+								canDelete={canDelete}
 							/>
 						))
 					)}
@@ -422,10 +457,13 @@ interface DraggablePromptItemProps {
 	onSelect: () => void;
 	onEdit: () => void;
 	onDelete: () => void;
+	canUpdate: boolean;
+	canDelete: boolean;
 }
 
-function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDelete }: DraggablePromptItemProps) {
-	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}` });
+function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
+	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}`, disabled: !canUpdate });
+	const showActions = canUpdate || canDelete;
 
 	return (
 		<div
@@ -444,37 +482,43 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 		>
 			<FileText className="h-4 w-4 shrink-0" />
 			<span className="flex-1 truncate text-sm">{prompt.name}</span>
-			<DropdownMenu>
-				<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-					<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-prompt-actions-${prompt.id}`} aria-label="Prompt actions">
-						<MoreHorizontal className="h-4 w-4" />
-					</Button>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent align="end">
-					<DropdownMenuItem
-						className="cursor-pointer"
-						data-testid="prompt-action-rename"
-						onClick={(e) => {
-							e.stopPropagation();
-							onEdit();
-						}}
-					>
-						<Pencil className="h-4 w-4" />
-						Rename
-					</DropdownMenuItem>
-					<DropdownMenuItem
-						className="text-destructive hover:text-destructive cursor-pointer"
-						data-testid="prompt-action-delete"
-						onClick={(e) => {
-							e.stopPropagation();
-							onDelete();
-						}}
-					>
-						<Trash2 className="text-destructive h-4 w-4" />
-						Delete
-					</DropdownMenuItem>
-				</DropdownMenuContent>
-			</DropdownMenu>
+			{showActions && (
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
+						<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-prompt-actions-${prompt.id}`} aria-label="Prompt actions">
+							<MoreHorizontal className="h-4 w-4" />
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="end">
+						{canUpdate && (
+							<DropdownMenuItem
+								className="cursor-pointer"
+								data-testid="prompt-action-rename"
+								onClick={(e) => {
+									e.stopPropagation();
+									onEdit();
+								}}
+							>
+								<Pencil className="h-4 w-4" />
+								Rename
+							</DropdownMenuItem>
+						)}
+						{canDelete && (
+							<DropdownMenuItem
+								className="text-destructive hover:text-destructive cursor-pointer"
+								data-testid="prompt-action-delete"
+								onClick={(e) => {
+									e.stopPropagation();
+									onDelete();
+								}}
+							>
+								<Trash2 className="text-destructive h-4 w-4" />
+								Delete
+							</DropdownMenuItem>
+						)}
+					</DropdownMenuContent>
+				</DropdownMenu>
+			)}
 		</div>
 	);
 }

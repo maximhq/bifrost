@@ -2585,6 +2585,31 @@ func (c *Config) GetKVStore() *kvstore.Store {
 	return c.KVStore
 }
 
+// Close gracefully shuts down all background components associated with the Config.
+// This includes ModelCatalog sync worker, TokenRefreshWorker, KVStore cleanup loop,
+// ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
+// no longer needed to prevent goroutine leaks.
+func (c *Config) Close(ctx context.Context) {
+	if c.ModelCatalog != nil {
+		c.ModelCatalog.Cleanup()
+	}
+	if c.TokenRefreshWorker != nil {
+		c.TokenRefreshWorker.Stop()
+	}
+	if c.KVStore != nil {
+		c.KVStore.Close()
+	}
+	if c.ConfigStore != nil {
+		c.ConfigStore.Close(ctx)
+	}
+	if c.LogsStore != nil {
+		c.LogsStore.Close(ctx)
+	}
+	if c.VectorStore != nil {
+		c.VectorStore.Close(ctx, "")
+	}
+}
+
 // initKVStore initializes the kvstore for the config
 func initKVStore(config *Config) error {
 	var err error

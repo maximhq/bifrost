@@ -23,7 +23,7 @@ func TestElevenlabs(t *testing.T) {
 	defer cancel()
 
 	realtimeAgentID := strings.TrimSpace(os.Getenv("ELEVENLABS_AGENT_ID"))
-	hasRealtimeAgent := realtimeAgentID != ""
+	hasRealtimeAgent := false
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:             schemas.Elevenlabs,

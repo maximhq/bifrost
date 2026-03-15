@@ -25,6 +25,8 @@ export enum RbacResource {
 	Governance = "Governance",
 	RoutingRules = "RoutingRules",
 	PIIRedactor = "PIIRedactor",
+	PromptRepository = "PromptRepository",
+	PromptDeploymentStrategy = "PromptDeploymentStrategy",
 }
 
 // RBAC Operation Names (must match backend definitions)
