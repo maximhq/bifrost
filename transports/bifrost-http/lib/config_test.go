@@ -7223,7 +7223,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify provider exists in memory
 	if _, exists := config.Providers[schemas.OpenAI]; !exists {
@@ -7265,14 +7265,14 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 	// Get the hash from first load
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	firstHash := dbProviders1[schemas.OpenAI].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is still the same
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7308,7 +7308,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	// Get original hash
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	originalHash := dbProviders1[schemas.OpenAI].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change the BaseURL
 	providers2 := map[string]configstore.ProviderConfig{
@@ -7322,7 +7322,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash changed
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7381,14 +7381,14 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add Anthropic to DB: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (no Anthropic) - should preserve DB-added provider
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both providers exist
 	if _, exists := config2.Providers[schemas.OpenAI]; !exists {
@@ -7434,14 +7434,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to update provider in DB: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json - should preserve DB changes since hash matches
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7483,7 +7483,7 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify the key exists
 	dbProviders, _ := config.ConfigStore.GetProvidersConfig(ctx)
@@ -7522,14 +7522,14 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	// Get original key ID
 	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
 	originalKeyID := dbProviders1[schemas.OpenAI].Keys[0].ID
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify key ID is preserved (same key, not recreated)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7583,14 +7583,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (still has only file-key)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both keys exist (dashboard-added key preserved)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7641,7 +7641,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	if dbProviders1[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-original-123" {
 		t.Errorf("Expected original key value, got %v", dbProviders1[schemas.OpenAI].Keys[0].Value)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change key value AND network config to trigger hash mismatch
 	providers2 := map[string]configstore.ProviderConfig{
@@ -7660,7 +7660,7 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// When hash mismatches (provider config changed), file key value should be synced
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7715,14 +7715,14 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to add third key: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (still has key-1 and key-2)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify all three keys exist
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -7765,7 +7765,7 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify virtual key exists in DB
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -7809,14 +7809,14 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 	// Get original hash
 	dbVK1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
 	originalHash := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
 	dbVK2 := verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -7853,7 +7853,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected name 'original-name', got '%s'", dbVK1.Name)
 	}
 	originalHash := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change VK name and description
 	vks2 := []tables.TableVirtualKey{
@@ -7873,7 +7873,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify name was updated
 	dbVK2 := verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -7923,14 +7923,14 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create dashboard VK: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json (only has vk-file)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-file")
@@ -7983,7 +7983,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists with hash
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8047,7 +8047,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 
 	// Verify initial VK exists
 	verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 2: Update config.json to add a NEW VK with ProviderConfigs
 	vks2 := []tables.TableVirtualKey{
@@ -8075,7 +8075,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -8159,7 +8159,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 
 	// Verify initial VK exists
 	verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 2: Update config.json to add a NEW VK with ProviderConfigs that reference the existing key
 	// The key reference uses the TableKey from DB which has the proper uint ID
@@ -8191,7 +8191,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify both VKs exist
 	verifyVirtualKeyInDB(t, config2.ConfigStore, "vk-1")
@@ -8337,7 +8337,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8409,7 +8409,7 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK exists
 	dbVK := verifyVirtualKeyInDB(t, config.ConfigStore, "vk-1")
@@ -8717,7 +8717,7 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify providers
 	verifyProviderInDB(t, config.ConfigStore, schemas.OpenAI, 2)
@@ -8782,14 +8782,14 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 	providerHash1 := dbProviders1[schemas.OpenAI].ConfigHash
 	dbVK1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-1")
 	vkHash1 := dbVK1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with same config.json
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify hashes are unchanged (no writes needed)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -8840,7 +8840,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	vk1Hash1 := dbVK1_1.ConfigHash
 	dbVK2_1 := verifyVirtualKeyInDB(t, config1.ConfigStore, "vk-2")
 	vk2Hash1 := dbVK2_1.ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Modify config.json - change only OpenAI and vk-1
 	providers2 := map[string]configstore.ProviderConfig{
@@ -8864,7 +8864,7 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify OpenAI hash changed (config changed)
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -8951,14 +8951,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create dashboard VK: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load with SAME config.json (unchanged)
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify dashboard-added key is preserved
 	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
@@ -9226,7 +9226,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 		t.Logf("✓ MCP config created successfully with MCPClientID: %d", mcpConfigs[0].MCPClientID)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 }
 
 // TestSQLite_VKMCPConfig_Reconciliation tests MCP config reconciliation on hash mismatch.
@@ -9315,7 +9315,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 		t.Fatalf("Failed to update VK hash: %v", err)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json with a NEW MCP config (different client)
 	// This triggers hash mismatch and reconciliation
@@ -9343,7 +9343,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify MCP configs after reconciliation
 	mcpConfigs, err := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
@@ -9476,7 +9476,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	}
 	t.Logf("✓ Dashboard added anthropic provider config, now have 2 configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 4: Modify config.json - change openai weight (causes hash mismatch)
 	vks2 := []tables.TableVirtualKey{
@@ -9504,7 +9504,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// CRITICAL ASSERTION: Dashboard-added "anthropic" config should be DELETED (file is source of truth)
 	providerConfigs3, err := config2.ConfigStore.GetVirtualKeyProviderConfigs(ctx, "vk-1")
@@ -9652,7 +9652,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	}
 	t.Logf("✓ Dashboard added MCP config for client 2, now have 2 MCP configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Step 4: Modify config.json - change tools for client 1 (causes hash mismatch)
 	vks2 := []tables.TableVirtualKey{
@@ -9679,7 +9679,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// CRITICAL ASSERTION: Dashboard-added MCP config for client 2 should be DELETED (file is source of truth)
 	mcpConfigs2, err := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
@@ -9773,7 +9773,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 	t.Log("✓ Initial state: No MCP configs")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json to ADD MCP configs
 	vks2 := []tables.TableVirtualKey{
@@ -9804,7 +9804,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	}
 	t.Logf("✓ After add: %d MCP configs", len(mcpConfigs))
 
-	config2.ConfigStore.Close(ctx)
+	config2.Close(ctx)
 
 	// Update config.json to remove one MCP config from the file
 	// With file-is-source-of-truth, configs ARE deleted when removed from file (hash change)
@@ -9829,7 +9829,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
-	defer config3.ConfigStore.Close(ctx)
+	defer config3.Close(ctx)
 
 	mcpConfigs, _ = config3.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
 	// Only client1 config should remain (file is source of truth)
@@ -9907,7 +9907,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	}
 	config1.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &mcpConfigToCreate)
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config.json with different tools for same MCP client
 	vks := []tables.TableVirtualKey{
@@ -9930,7 +9930,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	mcpConfigs, _ := config2.ConfigStore.GetVirtualKeyMCPConfigs(ctx, "vk-1")
 	if len(mcpConfigs) != 1 {
@@ -9979,7 +9979,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{ID: "mcp-client", Name: "mcp-client", ConnectionType: schemas.MCPConnectionTypeHTTP})
 	mcpClient, _ := config1.ConfigStore.GetMCPClientByName(ctx, "mcp-client")
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Create config.json with VK having both provider and MCP configs
 	vks := []tables.TableVirtualKey{
@@ -10012,7 +10012,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify VK exists
 	vk, err := config2.ConfigStore.GetVirtualKey(ctx, "vk-1")
@@ -10119,7 +10119,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	}
 	t.Logf("MCP clients created: WeatherService ID=%d, CalendarService ID=%d", weatherClient.ID, calendarClient.ID)
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Now create config.json with virtual key using mcp_client_name (not mcp_client_id)
 	// This simulates the real-world scenario where config.json uses human-readable names
@@ -10202,7 +10202,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig with mcp_client_name failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	// Verify VK was created
 	vk, err := config2.ConfigStore.GetVirtualKey(ctx, "vk-with-mcp-names")
@@ -10321,7 +10321,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig should not fail when MCP client name is not found: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify VK was still created
 	vk, err := config.ConfigStore.GetVirtualKey(ctx, "vk-missing-mcp")
@@ -11089,7 +11089,7 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify budget in memory
 	if config.GovernanceConfig == nil || len(config.GovernanceConfig.Budgets) != 1 {
@@ -11136,14 +11136,14 @@ func TestSQLite_Budget_HashMatch_DBPreserved(t *testing.T) {
 	// Get hash from first load
 	gov1, _ := config1.ConfigStore.GetGovernanceConfig(ctx)
 	firstHash := gov1.Budgets[0].ConfigHash
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load - same config
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Budgets[0].ConfigHash != firstHash {
@@ -11171,7 +11171,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file with different MaxLimit
 	configData.Governance.Budgets[0].MaxLimit = 200.0
@@ -11182,7 +11182,7 @@ func TestSQLite_Budget_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Budgets[0].MaxLimit != 200.0 {
@@ -11220,14 +11220,14 @@ func TestSQLite_Budget_DBOnly_Preserved(t *testing.T) {
 	if err := config1.ConfigStore.CreateBudget(ctx, dashboardBudget); err != nil {
 		t.Fatalf("Failed to create dashboard budget: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Reload - dashboard budget should be preserved
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if len(gov2.Budgets) != 2 {
@@ -11361,7 +11361,7 @@ func TestSQLite_RateLimit_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify in DB
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
@@ -11399,7 +11399,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file
 	newTokenMax := int64(2000)
@@ -11411,7 +11411,7 @@ func TestSQLite_RateLimit_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if *gov2.RateLimits[0].TokenMaxLimit != 2000 {
@@ -11504,7 +11504,7 @@ func TestSQLite_Customer_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
 	if err != nil {
@@ -11538,7 +11538,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file
 	configData.Governance.Customers[0].Name = "Updated Customer"
@@ -11548,7 +11548,7 @@ func TestSQLite_Customer_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Customers[0].Name != "Updated Customer" {
@@ -11679,7 +11679,7 @@ func TestSQLite_Team_NewFromFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	govConfig, err := config.ConfigStore.GetGovernanceConfig(ctx)
 	if err != nil {
@@ -11714,7 +11714,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update config file with different Name (which affects hash)
 	configData.Governance.Teams[0].Name = "Updated Team"
@@ -11724,7 +11724,7 @@ func TestSQLite_Team_HashMismatch_FileSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 	if gov2.Teams[0].Name != "Updated Team" {
@@ -12109,7 +12109,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	if gov1.Teams[0].ConfigHash == "" {
 		t.Error("Team hash not set")
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Update all entities in config file
 	configData.Governance.Budgets[0].MaxLimit = 200.0
@@ -12124,7 +12124,7 @@ func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 
@@ -12188,14 +12188,14 @@ func TestSQLite_Governance_DBOnly_AllPreserved(t *testing.T) {
 		t.Fatalf("Failed to create dashboard team: %v", err)
 	}
 
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Reload - all dashboard entities should be preserved
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	gov2, _ := config2.ConfigStore.GetGovernanceConfig(ctx)
 
@@ -13107,7 +13107,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	openaiConfig, exists := config.Providers[schemas.OpenAI]
 	if !exists {
@@ -13144,7 +13144,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	openaiConfig, exists := config.Providers[schemas.OpenAI]
 	if !exists {
@@ -13184,14 +13184,14 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	if config1.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
 		t.Errorf("First load: Expected weight 0, got %f", config1.Providers[schemas.OpenAI].Keys[0].Weight)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load - reads from DB
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	if config2.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
 		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
@@ -13237,7 +13237,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(ctx)
+	defer config.Close(ctx)
 
 	// Verify virtual key exists and has provider config with weight=0
 	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
@@ -13310,14 +13310,14 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	if *vk1.ProviderConfigs[0].Weight != 0 {
 		t.Errorf("First load: Expected provider config weight 0, got %f", *vk1.ProviderConfigs[0].Weight)
 	}
-	config1.ConfigStore.Close(ctx)
+	config1.Close(ctx)
 
 	// Second load from DB
 	config2, err := LoadConfig(ctx, tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(ctx)
+	defer config2.Close(ctx)
 
 	vk2 := config2.GovernanceConfig.VirtualKeys[0]
 	if len(vk2.ProviderConfigs) == 0 {
@@ -13502,7 +13502,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Close first config before second load
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Update config with Enabled=false
 	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
@@ -13525,7 +13525,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify Enabled changed to false in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
@@ -13665,7 +13665,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	defer config1.ConfigStore.Close(context.Background())
+	defer config1.Close(context.Background())
 
 	// Verify initial state in the in-memory config
 	openaiConfig1 := config1.Providers[schemas.OpenAI]
@@ -13694,7 +13694,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify UseForBatchAPI changed to true in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
@@ -13950,7 +13950,7 @@ func TestSQLite_VKProviderConfig_BudgetAndRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	// Verify the governance config has the VK with provider configs
 	if config.GovernanceConfig == nil {
@@ -14318,7 +14318,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	defer config1.ConfigStore.Close(context.Background())
+	defer config1.Close(context.Background())
 
 	// Verify initial state
 	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
@@ -14354,7 +14354,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify Region changed
 	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
@@ -14368,7 +14368,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
-	defer config3.ConfigStore.Close(context.Background())
+	defer config3.Close(context.Background())
 
 	providers3, _ := config3.ConfigStore.GetProvidersConfig(context.Background())
 	vertexConfig3 := providers3[schemas.Vertex]
@@ -14406,7 +14406,7 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig failed: %v", err)
 	}
-	defer config.ConfigStore.Close(context.Background())
+	defer config.Close(context.Background())
 
 	// Verify Vertex provider was created
 	providers, _ := config.ConfigStore.GetProvidersConfig(context.Background())
@@ -14462,14 +14462,14 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	vertexConfig := providers1[schemas.Vertex]
 	vertexConfig.Keys[0].VertexKeyConfig.AuthCredentials = *schemas.NewEnvVar(`{"type":"service_account","edited":true}`)
 	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1)
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Reload with same config file - DB value should be preserved since hash matches
 	config2, err := LoadConfig(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Note: With hash-based reconciliation, when the file hash doesn't change,
 	// the DB values are preserved. Since we modified the DB but not the file,
@@ -14513,7 +14513,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	config1.ConfigStore.Close(context.Background())
+	config1.Close(context.Background())
 
 	// Update config file with different ProjectID
 	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
@@ -14538,7 +14538,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.ConfigStore.Close(context.Background())
+	defer config2.Close(context.Background())
 
 	// Verify file value wins
 	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
