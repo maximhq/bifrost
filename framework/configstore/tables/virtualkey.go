@@ -133,6 +133,7 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			// Clear all Replicate-related sensitive fields
 			key.ReplicateDeploymentsJSON = nil
 			key.ReplicateKeyConfig = nil
+			key.OpenRouterProviderJSON = nil
 
 			pc.Keys[i] = *key
 		}

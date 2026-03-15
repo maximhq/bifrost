@@ -1,7 +1,11 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+)
 
 type KeyStatusType string
 
@@ -22,6 +26,7 @@ type Key struct {
 	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration
 	BedrockKeyConfig     *BedrockKeyConfig     `json:"bedrock_key_config,omitempty"`     // AWS Bedrock-specific key configuration
 	HuggingFaceKeyConfig *HuggingFaceKeyConfig `json:"huggingface_key_config,omitempty"` // Hugging Face-specific key configuration
+	OpenRouterKeyConfig  *OpenRouterKeyConfig  `json:"openrouter_key_config,omitempty"`  // OpenRouter-specific key configuration
 	ReplicateKeyConfig   *ReplicateKeyConfig   `json:"replicate_key_config,omitempty"`   // Replicate-specific key configuration
 	VLLMKeyConfig        *VLLMKeyConfig        `json:"vllm_key_config,omitempty"`        // vLLM-specific key configuration
 	Enabled              *bool                 `json:"enabled,omitempty"`                // Whether the key is active (default:true)
@@ -98,6 +103,35 @@ type BedrockKeyConfig struct {
 
 type HuggingFaceKeyConfig struct {
 	Deployments map[string]string `json:"deployments,omitempty"` // Mapping of model identifiers to deployment names
+}
+
+type OpenRouterKeyConfig struct {
+	Provider json.RawMessage `json:"provider,omitempty"`
+}
+
+func (c *OpenRouterKeyConfig) Validate() error {
+	if c == nil || len(c.Provider) == 0 {
+		return nil
+	}
+
+	var provider map[string]any
+	if err := json.Unmarshal(c.Provider, &provider); err != nil {
+		return fmt.Errorf("provider must be a valid JSON object: %w", err)
+	}
+
+	if provider == nil {
+		return fmt.Errorf("provider must be a JSON object")
+	}
+
+	return nil
+}
+
+func (c *OpenRouterKeyConfig) IsEmpty() bool {
+	if c == nil {
+		return true
+	}
+
+	return len(c.Provider) == 0
 }
 
 type ReplicateKeyConfig struct {
