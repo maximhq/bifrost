@@ -1,3 +1,5 @@
+- fix: Copilot handler - clarify defaultGithubClientID as VS Code extension client ID
+- fix: invalidate provider caches on model refresh for updated UI status
 - feat: add Copilot OAuth device-code callback handler and register Copilot routes
 - fix: refreshModels - look up stored provider config and return 404 for unknown providers
 - fix: Copilot handler - pass through slow_down status instead of mapping to pending

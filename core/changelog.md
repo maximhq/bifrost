@@ -1,3 +1,6 @@
+- fix: Copilot provider - fallback to cached token on malformed JSON in token exchange
+- fix: Copilot provider - set AllowFallbacks=false on ListModels no-keys error
+- test: Copilot provider - fix transport-error test to exercise refresh fallback path
 - feat: add GitHub Copilot provider with two-layer OAuth, device-code flow, and unit tests
 - fix: Copilot provider - also preserve cached token on transport Do() failures
 - fix: preserve JSON Schema description field during Responses-to-Chat mux conversion
