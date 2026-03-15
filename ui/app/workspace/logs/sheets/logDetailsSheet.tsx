@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
-import { useLazyGetLogByIdQuery } from "@/lib/store/apis/logsApi";
+import { useEffect, useState, useMemo } from "react";
+import { useLazyGetLogByIdQuery, useLazyGetTraceByIdQuery } from "@/lib/store/apis/logsApi";
+import type { SpanEntry } from "@/lib/types/logs";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -77,14 +78,145 @@ const isContainerOperation = (object: string) => {
 	return containerTypes.includes(object?.toLowerCase());
 };
 
+// Icons for span kinds
+const spanKindIcons: Record<string, string> = {
+	"trace": "T",
+	"llm.call": "L",
+	"plugin": "P",
+	"mcp.tool": "M",
+	"event": "E",
+	"routing": "R",
+	"retry": "r",
+	"fallback": "F",
+	"internal": "i",
+};
+
+const spanKindColors: Record<string, string> = {
+	"trace": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+	"llm.call": "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+	"plugin": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
+	"mcp.tool": "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
+	"event": "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
+	"routing": "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200",
+	"retry": "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
+	"fallback": "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+	"internal": "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400",
+};
+
+// Build a tree from flat span list
+function buildSpanTree(spans: SpanEntry[]): SpanEntry[] {
+	const map = new Map<string, SpanEntry>();
+	const roots: SpanEntry[] = [];
+
+	for (const span of spans) {
+		map.set(span.id, { ...span, children: [] });
+	}
+
+	for (const span of spans) {
+		const node = map.get(span.id)!;
+		if (span.parent_span_id && map.has(span.parent_span_id)) {
+			map.get(span.parent_span_id)!.children!.push(node);
+		} else {
+			roots.push(node);
+		}
+	}
+
+	return roots;
+}
+
+// Span tree item component
+function SpanTreeItem({
+	span,
+	depth,
+	selectedSpanId,
+	onSelect,
+}: {
+	span: SpanEntry;
+	depth: number;
+	selectedSpanId: string | null;
+	onSelect: (span: SpanEntry) => void;
+}) {
+	const [expanded, setExpanded] = useState(true);
+	const hasChildren = span.children && span.children.length > 0;
+	const isSelected = selectedSpanId === span.id;
+	const durationMs = span.latency != null ? `${span.latency.toFixed(0)}ms` : "-";
+
+	return (
+		<div>
+			<div
+				className={`flex cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-xs hover:bg-muted ${isSelected ? "bg-muted ring-1 ring-primary" : ""}`}
+				style={{ paddingLeft: `${depth * 16 + 8}px` }}
+				onClick={() => onSelect(span)}
+			>
+				{hasChildren ? (
+					<button
+						className="flex h-4 w-4 shrink-0 items-center justify-center text-muted-foreground"
+						onClick={(e) => {
+							e.stopPropagation();
+							setExpanded(!expanded);
+						}}
+					>
+						{expanded ? "v" : ">"}
+					</button>
+				) : (
+					<span className="h-4 w-4 shrink-0" />
+				)}
+				<span
+					className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px] font-bold ${spanKindColors[span.kind] || spanKindColors["internal"]}`}
+					title={span.kind}
+				>
+					{spanKindIcons[span.kind] || "?"}
+				</span>
+				<span className="truncate font-medium">{span.name}</span>
+				<span className={`ml-auto shrink-0 font-mono ${span.status === "error" ? "text-red-500" : "text-muted-foreground"}`}>
+					{durationMs}
+				</span>
+				{span.status === "error" && (
+					<span className="shrink-0 rounded bg-red-100 px-1 text-[10px] text-red-700 dark:bg-red-900 dark:text-red-300">ERR</span>
+				)}
+				{span.status === "processing" && (
+					<span className="shrink-0 rounded bg-yellow-100 px-1 text-[10px] text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300">...</span>
+				)}
+			</div>
+			{expanded && hasChildren && (
+				<div>
+					{span.children!.map((child) => (
+						<SpanTreeItem key={child.id} span={child} depth={depth + 1} selectedSpanId={selectedSpanId} onSelect={onSelect} />
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
 export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDetailSheetProps) {
 	const [fetchLog, { data: fullLog }] = useLazyGetLogByIdQuery();
+	const [fetchTrace, { data: traceData }] = useLazyGetTraceByIdQuery();
+	const [selectedSpan, setSelectedSpan] = useState<SpanEntry | null>(null);
 
 	useEffect(() => {
 		if (open && log?.id) {
 			fetchLog(log.id);
+			fetchTrace(log.id);
 		}
-	}, [open, log?.id, fetchLog]);
+	}, [open, log?.id, fetchLog, fetchTrace]);
+
+	// Reset selected span when sheet closes or log changes
+	useEffect(() => {
+		if (!open) {
+			setSelectedSpan(null);
+		}
+	}, [open, log?.id]);
+
+	// Build span tree from trace data — always show trace root with children nested
+	const spanTree = useMemo(() => {
+		if (!traceData?.trace) return null;
+		const root: SpanEntry = { ...traceData.trace, children: [] };
+		if (traceData.spans && traceData.spans.length > 0) {
+			root.children = buildSpanTree(traceData.spans);
+		}
+		return [root];
+	}, [traceData]);
 
 	if (!log) return null;
 
@@ -122,19 +254,20 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="dark:bg-card flex w-full flex-col gap-4 overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
-				<SheetHeader className="flex flex-row items-center px-0">
+			<SheetContent className="dark:bg-card flex w-full flex-col gap-0 overflow-hidden bg-white p-0 sm:max-w-[75%]">
+				{/* Header */}
+				<SheetHeader className="flex flex-row items-center border-b px-6 py-4">
 					<div className="flex w-full items-center justify-between">
 						<SheetTitle className="flex w-fit items-center gap-2 font-medium">
 							{log.id && (
 								<p className="text-md max-w-full truncate">
-									Request ID:{" "}
+									Trace:{" "}
 									<code
 										className="text-normal cursor-pointer"
 										onClick={() => {
 											navigator.clipboard
 												.writeText(log.id)
-												.then(() => toast.success("Request ID copied"))
+												.then(() => toast.success("Trace ID copied"))
 												.catch(() => toast.error("Failed to copy"));
 										}}
 									>
@@ -175,15 +308,15 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 								<AlertDialogTrigger asChild>
 									<DropdownMenuItem variant="destructive">
 										<Trash2 className="h-4 w-4" />
-										Delete log
+										Delete trace
 									</DropdownMenuItem>
 								</AlertDialogTrigger>
 							</DropdownMenuContent>
 						</DropdownMenu>
 						<AlertDialogContent>
 							<AlertDialogHeader>
-								<AlertDialogTitle>Are you sure you want to delete this log?</AlertDialogTitle>
-								<AlertDialogDescription>This action cannot be undone. This will permanently delete the log entry.</AlertDialogDescription>
+								<AlertDialogTitle>Are you sure you want to delete this trace?</AlertDialogTitle>
+								<AlertDialogDescription>This action cannot be undone. This will permanently delete the trace and all its spans.</AlertDialogDescription>
 							</AlertDialogHeader>
 							<AlertDialogFooter>
 								<AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -199,7 +332,49 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						</AlertDialogContent>
 					</AlertDialog>
 				</SheetHeader>
-				<div className="-mt-6 space-y-4 rounded-sm border px-6 py-4">
+
+				{/* Two-panel layout: span tree on left, details on right */}
+				<div className="flex min-h-0 flex-1">
+					{/* Left panel: Span tree (shown when trace has spans) */}
+					{spanTree && spanTree.length > 0 && (
+						<div className="flex w-[300px] shrink-0 flex-col border-r">
+							<div className="border-b px-4 py-2">
+								<div className="text-sm font-medium">Trace ({(traceData?.spans?.length || 0) + 1} spans)</div>
+							</div>
+							<div className="flex-1 overflow-y-auto px-1 py-2">
+								{spanTree.map((span) => (
+									<SpanTreeItem
+										key={span.id}
+										span={span}
+										depth={0}
+										selectedSpanId={selectedSpan?.id || null}
+										onSelect={setSelectedSpan}
+									/>
+								))}
+							</div>
+						</div>
+					)}
+
+					{/* Right panel: Detail content */}
+					<div className="flex-1 overflow-y-auto px-6 py-4">
+						{/* Selected span indicator */}
+						{selectedSpan && (
+							<div className="mb-4 flex items-center gap-2 rounded-sm border border-primary/20 bg-primary/5 px-4 py-2">
+								<span className="text-xs text-muted-foreground">Viewing span:</span>
+								<Badge variant="outline" className={spanKindColors[selectedSpan.kind] || ""}>
+									{selectedSpan.kind}
+								</Badge>
+								<span className="text-sm font-medium">{selectedSpan.name}</span>
+								<button
+									className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+									onClick={() => setSelectedSpan(null)}
+								>
+									Clear
+								</button>
+							</div>
+						)}
+
+				<div className="space-y-4 rounded-sm border px-6 py-4">
 					<div className="space-y-4">
 						<BlockHeader title="Timings" />
 						<div className="grid w-full grid-cols-3 items-center justify-between gap-4">
@@ -853,6 +1028,8 @@ export function LogDetailSheet({ log, open, onOpenChange, handleDelete }: LogDet
 						)}
 					</>
 				)}
+					</div> {/* close right panel */}
+				</div> {/* close two-panel flex */}
 			</SheetContent>
 		</Sheet>
 	);

@@ -9,7 +9,8 @@ import { getErrorMessage, useDeleteMCPLogsMutation, useLazyGetMCPLogsQuery, useL
 import type { MCPToolLogEntry, MCPToolLogFilters, MCPToolLogStats, Pagination } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { AlertCircle, CheckCircle, Clock, DollarSign, Hash } from "lucide-react";
+import { AlertCircle, CheckCircle, Clock, DollarSign, Hash, Info } from "lucide-react";
+import Link from "next/link";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createMCPColumns } from "./views/columns";
@@ -450,6 +451,16 @@ export default function MCPLogsPage() {
 
 	return (
 		<div className="dark:bg-card bg-white">
+			<Alert className="mx-4 mt-4 border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950">
+				<Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+				<AlertDescription className="text-blue-800 dark:text-blue-200">
+					MCP tool executions are now visible within trace details on the{" "}
+					<Link href="/workspace/logs" className="font-medium underline">
+						Traces page
+					</Link>
+					. This page shows legacy MCP logs.
+				</AlertDescription>
+			</Alert>
 			{initialLoading ? (
 				<FullPageLoader />
 			) : showEmptyState ? (

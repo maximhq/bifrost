@@ -897,11 +897,107 @@ export interface ResponsesResponseIncompleteDetails {
 	reason: string;
 }
 
+// Span event type for trace spans
+export interface SpanEvent {
+	name: string;
+	timestamp: string;
+	attributes?: Record<string, any>;
+}
+
+// Span kind type
+export type SpanKind = "trace" | "llm.call" | "plugin" | "mcp.tool" | "event" | "routing" | "retry" | "fallback" | "internal";
+
+// SpanEntry interface for the new trace/span architecture
+export interface SpanEntry {
+	// Span-specific fields
+	id: string;
+	parent_span_id: string | null;
+	name: string;
+	kind: SpanKind;
+	timestamp: string;
+	status: "processing" | "success" | "error";
+	status_message?: string;
+	attributes?: Record<string, any>;
+	events?: SpanEvent[];
+
+	// Trace-level fields (kind = "trace")
+	span_count?: number;
+	tags?: Record<string, string>;
+	user_agent?: string;
+	user_agent_label?: string;
+
+	// All existing LogEntry fields (for LLM spans and aggregated on trace root spans)
+	object?: string;
+	provider?: string;
+	model?: string;
+	number_of_retries?: number;
+	fallback_index?: number;
+	selected_key_id?: string;
+	virtual_key_id?: string;
+	routing_engines_used?: string[];
+	routing_rule_id?: string;
+	routing_engine_logs?: string;
+	selected_key?: DBKey;
+	virtual_key?: VirtualKey;
+	routing_rule?: RoutingRule;
+	input_history?: ChatMessage[];
+	responses_input_history?: ResponsesMessage[];
+	output_message?: ChatMessage;
+	responses_output?: ResponsesMessage[];
+	embedding_output?: BifrostEmbedding[];
+	rerank_output?: RerankResult[];
+	image_generation_output?: BifrostImageGenerationOutput;
+	video_generation_output?: BifrostVideoGenerationOutput;
+	video_retrieve_output?: BifrostVideoGenerationOutput;
+	video_download_output?: BifrostVideoDownloadOutput;
+	video_list_output?: BifrostVideoListOutput;
+	video_delete_output?: BifrostVideoDeleteOutput;
+	params?: ModelParameters;
+	speech_input?: SpeechInput;
+	transcription_input?: TranscriptionInput;
+	image_generation_input?: { prompt: string };
+	video_generation_input?: { prompt: string };
+	speech_output?: BifrostSpeech;
+	transcription_output?: BifrostTranscribe;
+	list_models_output?: Model[];
+	tools?: Tool[];
+	tool_calls?: ToolCall[];
+	latency?: number;
+	token_usage?: LLMUsage;
+	cache_debug?: CacheDebug;
+	cost?: number;
+	error_details?: BifrostError;
+	stream?: boolean;
+	created_at?: string;
+	raw_request?: string;
+	raw_response?: string;
+	is_large_payload_request?: boolean;
+	is_large_payload_response?: boolean;
+	passthrough_request_body?: string;
+	passthrough_response_body?: string;
+	metadata?: Record<string, string>;
+
+	// MCP fields (kind = "mcp.tool")
+	tool_name?: string;
+	server_label?: string;
+	arguments?: any;
+	result?: any;
+
+	// Client-side tree building
+	children?: SpanEntry[];
+}
+
 // WebSocket message types
 export interface WebSocketLogMessage {
 	type: "log";
 	operation: "create" | "update";
 	payload: LogEntry;
+}
+
+export interface WebSocketTraceMessage {
+	type: "trace";
+	operation: "create" | "update";
+	payload: SpanEntry;
 }
 
 // ============================================================================

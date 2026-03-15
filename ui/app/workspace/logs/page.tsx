@@ -456,7 +456,7 @@ export default function LogsPage() {
 			return;
 		}
 
-		const unsubscribe = subscribe("log", (data) => {
+		const unsubscribe = subscribe("trace", (data) => {
 			const { payload, operation } = data;
 			handleLogMessage(payload, operation);
 		});
@@ -485,14 +485,14 @@ export default function LogsPage() {
 				setLogs([]);
 				setTotalItems(0);
 			} else if (result.data) {
-				setLogs(result.data.logs || []);
+				setLogs(result.data.traces || []);
 				setTotalItems(result.data.stats.total_requests);
 			}
 
-			// Only set showEmptyState on initial load and only based on total logs
+			// Only set showEmptyState on initial load and only based on total traces
 			if (initialLoading) {
-				// Check if there are any logs globally, not just in the current filter
-				setShowEmptyState(result.data ? !result.data.has_logs : true);
+				// Check if there are any traces globally, not just in the current filter
+				setShowEmptyState(result.data ? !result.data.has_traces : true);
 			}
 		} catch {
 			setError("Cannot fetch logs. Please check if logs are enabled in your Bifrost config.");

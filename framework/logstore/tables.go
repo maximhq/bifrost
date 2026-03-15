@@ -45,8 +45,10 @@ type SearchFilters struct {
 	MaxTokens         *int       `json:"max_tokens,omitempty"`
 	MinCost           *float64   `json:"min_cost,omitempty"`
 	MaxCost           *float64   `json:"max_cost,omitempty"`
-	MissingCostOnly   bool       `json:"missing_cost_only,omitempty"`
-	ContentSearch     string     `json:"content_search,omitempty"`
+	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	Tags              map[string]string `json:"tags,omitempty"`              // Filter by tag key-value on root spans
+	UserAgentLabels   []string          `json:"user_agent_labels,omitempty"` // Filter by classified user-agent label
 }
 
 // PaginationOptions represents pagination parameters
@@ -848,6 +850,675 @@ func (j *AsyncJob) ToResponse() *schemas.AsyncJobResponse {
 	}
 
 	return resp
+}
+
+// SpanLog represents a span in the trace/span hierarchy.
+// A trace is a root span with Kind="trace" and ParentSpanID=nil.
+// Child spans (LLM calls, plugins, MCP tools, etc.) link to their parent via ParentSpanID.
+// This is a wide table: LLM-specific columns are only populated for Kind="llm.call",
+// MCP columns only for Kind="mcp.tool", etc.
+type SpanLog struct {
+	// Span-specific fields
+	ID            string  `gorm:"primaryKey;type:varchar(255)" json:"id"`
+	ParentSpanID  *string `gorm:"type:varchar(255);index:idx_spans_parent_span_id" json:"parent_span_id"`
+	Name          string  `gorm:"type:varchar(255)" json:"name"`
+	Kind          string  `gorm:"type:varchar(50);index:idx_spans_kind;index:idx_spans_kind_parent,priority:1;not null" json:"kind"` // trace, llm.call, plugin, mcp.tool, event, routing, retry, fallback
+	StatusMessage string  `gorm:"type:text" json:"status_message,omitempty"`
+	Attributes    string  `gorm:"type:text" json:"-"`            // JSON serialized map[string]any
+	Events        string  `gorm:"type:text" json:"-"`            // JSON serialized []schemas.SpanEvent
+
+	// Trace-level fields (populated on root spans with Kind="trace")
+	SpanCount      int    `gorm:"default:0" json:"span_count,omitempty"`
+	Tags           string `gorm:"type:text" json:"-"`             // JSON serialized map[string]string
+	UserAgent      string `gorm:"type:varchar(512)" json:"user_agent,omitempty"`
+	UserAgentLabel string `gorm:"type:varchar(50);index:idx_spans_user_agent_label" json:"user_agent_label,omitempty"`
+
+	// All existing Log columns (populated for Kind="llm.call", aggregated for Kind="trace")
+	Timestamp              time.Time `gorm:"index:idx_spans_timestamp;index:idx_spans_ts_provider_status,priority:1;not null" json:"timestamp"`
+	Object                 string    `gorm:"type:varchar(255);index:idx_spans_object;column:object_type" json:"object,omitempty"`
+	Provider               string    `gorm:"type:varchar(255);index:idx_spans_provider;index:idx_spans_ts_provider_status,priority:2" json:"provider,omitempty"`
+	Model                  string    `gorm:"type:varchar(255);index:idx_spans_model" json:"model,omitempty"`
+	NumberOfRetries        int       `gorm:"default:0" json:"number_of_retries,omitempty"`
+	FallbackIndex          int       `gorm:"default:0" json:"fallback_index,omitempty"`
+	SelectedKeyID          string    `gorm:"type:varchar(255);index:idx_spans_selected_key_id" json:"selected_key_id,omitempty"`
+	SelectedKeyName        string    `gorm:"type:varchar(255)" json:"selected_key_name,omitempty"`
+	VirtualKeyID           *string   `gorm:"type:varchar(255);index:idx_spans_virtual_key_id" json:"virtual_key_id,omitempty"`
+	VirtualKeyName         *string   `gorm:"type:varchar(255)" json:"virtual_key_name,omitempty"`
+	RoutingEnginesUsedStr  *string   `gorm:"type:varchar(255);column:routing_engines_used" json:"-"`
+	RoutingRuleID          *string   `gorm:"type:varchar(255);index:idx_spans_routing_rule_id" json:"routing_rule_id,omitempty"`
+	RoutingRuleName        *string   `gorm:"type:varchar(255)" json:"routing_rule_name,omitempty"`
+	InputHistory           string    `gorm:"type:text" json:"-"`
+	ResponsesInputHistory  string    `gorm:"type:text" json:"-"`
+	OutputMessage          string    `gorm:"type:text" json:"-"`
+	ResponsesOutput        string    `gorm:"type:text" json:"-"`
+	EmbeddingOutput        string    `gorm:"type:text" json:"-"`
+	RerankOutput           string    `gorm:"type:text" json:"-"`
+	Params                 string    `gorm:"type:text" json:"-"`
+	Tools                  string    `gorm:"type:text" json:"-"`
+	ToolCalls              string    `gorm:"type:text" json:"-"`
+	SpeechInput            string    `gorm:"type:text" json:"-"`
+	TranscriptionInput     string    `gorm:"type:text" json:"-"`
+	ImageGenerationInput   string    `gorm:"type:text" json:"-"`
+	VideoGenerationInput   string    `gorm:"type:text" json:"-"`
+	SpeechOutput           string    `gorm:"type:text" json:"-"`
+	TranscriptionOutput    string    `gorm:"type:text" json:"-"`
+	ImageGenerationOutput  string    `gorm:"type:text" json:"-"`
+	ListModelsOutput       string    `gorm:"type:text" json:"-"`
+	VideoGenerationOutput  string    `gorm:"type:text" json:"-"`
+	VideoRetrieveOutput    string    `gorm:"type:text" json:"-"`
+	VideoDownloadOutput    string    `gorm:"type:text" json:"-"`
+	VideoListOutput        string    `gorm:"type:text" json:"-"`
+	VideoDeleteOutput      string    `gorm:"type:text" json:"-"`
+	CacheDebug             string    `gorm:"type:text" json:"-"`
+	Latency                *float64  `gorm:"index:idx_spans_latency" json:"latency,omitempty"`
+	TokenUsage             string    `gorm:"type:text" json:"-"`
+	Cost                   *float64  `gorm:"index:idx_spans_cost" json:"cost,omitempty"`
+	Status                 string    `gorm:"type:varchar(50);index:idx_spans_status;index:idx_spans_ts_provider_status,priority:3;not null" json:"status"`
+	ErrorDetails           string    `gorm:"type:text" json:"-"`
+	Stream                 bool      `gorm:"default:false" json:"stream,omitempty"`
+	ContentSummary         string    `gorm:"type:text" json:"-"`
+	RawRequest             string    `gorm:"type:text" json:"raw_request,omitempty"`
+	RawResponse            string    `gorm:"type:text" json:"raw_response,omitempty"`
+	PassthroughRequestBody  string   `gorm:"type:text" json:"passthrough_request_body,omitempty"`
+	PassthroughResponseBody string   `gorm:"type:text" json:"passthrough_response_body,omitempty"`
+	RoutingEngineLogs      string    `gorm:"type:text" json:"routing_engine_logs,omitempty"`
+	Metadata               string    `gorm:"type:text" json:"-"`
+	IsLargePayloadRequest  bool      `gorm:"default:false" json:"is_large_payload_request,omitempty"`
+	IsLargePayloadResponse bool      `gorm:"default:false" json:"is_large_payload_response,omitempty"`
+
+	// Denormalized token fields
+	PromptTokens     int `gorm:"default:0" json:"-"`
+	CompletionTokens int `gorm:"default:0" json:"-"`
+	TotalTokens      int `gorm:"index:idx_spans_total_tokens;default:0" json:"-"`
+
+	CreatedAt time.Time `gorm:"index:idx_spans_created_at;not null" json:"created_at"`
+
+	// MCP-specific fields (populated for Kind="mcp.tool")
+	ToolName    string `gorm:"type:varchar(255)" json:"tool_name,omitempty"`
+	ServerLabel string `gorm:"type:varchar(255)" json:"server_label,omitempty"`
+	Arguments   string `gorm:"type:text" json:"-"` // JSON serialized tool arguments
+	Result      string `gorm:"type:text" json:"-"` // JSON serialized tool result
+
+	// Virtual fields for JSON output - populated by AfterFind/deserialization
+	RoutingEnginesUsed          []string                                `gorm:"-" json:"routing_engines_used,omitempty"`
+	InputHistoryParsed          []schemas.ChatMessage                   `gorm:"-" json:"input_history,omitempty"`
+	ResponsesInputHistoryParsed []schemas.ResponsesMessage              `gorm:"-" json:"responses_input_history,omitempty"`
+	OutputMessageParsed         *schemas.ChatMessage                    `gorm:"-" json:"output_message,omitempty"`
+	ResponsesOutputParsed       []schemas.ResponsesMessage              `gorm:"-" json:"responses_output,omitempty"`
+	EmbeddingOutputParsed       []schemas.EmbeddingData                 `gorm:"-" json:"embedding_output,omitempty"`
+	RerankOutputParsed          []schemas.RerankResult                  `gorm:"-" json:"rerank_output,omitempty"`
+	ParamsParsed                interface{}                             `gorm:"-" json:"params,omitempty"`
+	ToolsParsed                 []schemas.ChatTool                      `gorm:"-" json:"tools,omitempty"`
+	ToolCallsParsed             []schemas.ChatAssistantMessageToolCall  `gorm:"-" json:"tool_calls,omitempty"`
+	TokenUsageParsed            *schemas.BifrostLLMUsage                `gorm:"-" json:"token_usage,omitempty"`
+	ErrorDetailsParsed          *schemas.BifrostError                   `gorm:"-" json:"error_details,omitempty"`
+	SpeechInputParsed           *schemas.SpeechInput                    `gorm:"-" json:"speech_input,omitempty"`
+	TranscriptionInputParsed    *schemas.TranscriptionInput             `gorm:"-" json:"transcription_input,omitempty"`
+	ImageGenerationInputParsed  *schemas.ImageGenerationInput           `gorm:"-" json:"image_generation_input,omitempty"`
+	SpeechOutputParsed          *schemas.BifrostSpeechResponse          `gorm:"-" json:"speech_output,omitempty"`
+	TranscriptionOutputParsed   *schemas.BifrostTranscriptionResponse   `gorm:"-" json:"transcription_output,omitempty"`
+	ImageGenerationOutputParsed *schemas.BifrostImageGenerationResponse `gorm:"-" json:"image_generation_output,omitempty"`
+	CacheDebugParsed            *schemas.BifrostCacheDebug              `gorm:"-" json:"cache_debug,omitempty"`
+	ListModelsOutputParsed      []schemas.Model                         `gorm:"-" json:"list_models_output,omitempty"`
+	MetadataParsed              map[string]interface{}                  `gorm:"-" json:"metadata,omitempty"`
+	VideoGenerationInputParsed  *schemas.VideoGenerationInput           `gorm:"-" json:"video_generation_input,omitempty"`
+	VideoGenerationOutputParsed *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_generation_output,omitempty"`
+	VideoRetrieveOutputParsed   *schemas.BifrostVideoGenerationResponse `gorm:"-" json:"video_retrieve_output,omitempty"`
+	VideoDownloadOutputParsed   *schemas.BifrostVideoDownloadResponse   `gorm:"-" json:"video_download_output,omitempty"`
+	VideoListOutputParsed       *schemas.BifrostVideoListResponse       `gorm:"-" json:"video_list_output,omitempty"`
+	VideoDeleteOutputParsed     *schemas.BifrostVideoDeleteResponse     `gorm:"-" json:"video_delete_output,omitempty"`
+	// Span-specific virtual fields
+	AttributesParsed map[string]interface{}  `gorm:"-" json:"attributes,omitempty"`
+	EventsParsed     []schemas.SpanEvent     `gorm:"-" json:"events,omitempty"`
+	TagsParsed       map[string]string       `gorm:"-" json:"tags,omitempty"`
+	// MCP virtual fields
+	ArgumentsParsed interface{} `gorm:"-" json:"arguments,omitempty"`
+	ResultParsed    interface{} `gorm:"-" json:"result,omitempty"`
+	// Populated in handlers
+	VirtualKey  *tables.TableVirtualKey  `gorm:"-" json:"virtual_key,omitempty"`
+	SelectedKey *schemas.Key             `gorm:"-" json:"selected_key,omitempty"`
+	RoutingRule *tables.TableRoutingRule `gorm:"-" json:"routing_rule,omitempty"`
+}
+
+// TableName sets the table name for GORM
+func (SpanLog) TableName() string {
+	return "spans"
+}
+
+// BeforeCreate GORM hook to set created_at and serialize JSON fields
+func (s *SpanLog) BeforeCreate(tx *gorm.DB) error {
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = time.Now().UTC()
+	}
+	if s.Timestamp.IsZero() {
+		s.Timestamp = time.Now().UTC()
+	}
+	return s.SerializeFields()
+}
+
+// AfterFind GORM hook to deserialize JSON fields
+func (s *SpanLog) AfterFind(tx *gorm.DB) error {
+	return s.DeserializeFields()
+}
+
+// SerializeFields converts Go structs to JSON strings for storage
+func (s *SpanLog) SerializeFields() error {
+	// Serialize routing engines
+	if len(s.RoutingEnginesUsed) > 0 {
+		engineStr := strings.Join(s.RoutingEnginesUsed, ",")
+		s.RoutingEnginesUsedStr = &engineStr
+	} else {
+		s.RoutingEnginesUsedStr = nil
+	}
+
+	// Span-specific fields
+	if s.AttributesParsed != nil {
+		if data, err := sonic.Marshal(s.AttributesParsed); err != nil {
+			return err
+		} else {
+			s.Attributes = string(data)
+		}
+	}
+	if s.EventsParsed != nil {
+		if data, err := sonic.Marshal(s.EventsParsed); err != nil {
+			return err
+		} else {
+			s.Events = string(data)
+		}
+	}
+	if s.TagsParsed != nil {
+		if data, err := sonic.Marshal(s.TagsParsed); err != nil {
+			return err
+		} else {
+			s.Tags = string(data)
+		}
+	}
+
+	// LLM fields (same as Log.SerializeFields)
+	if s.InputHistoryParsed != nil {
+		if data, err := sonic.Marshal(s.InputHistoryParsed); err != nil {
+			return err
+		} else {
+			s.InputHistory = string(data)
+		}
+	}
+	if s.ResponsesInputHistoryParsed != nil {
+		if data, err := sonic.Marshal(s.ResponsesInputHistoryParsed); err != nil {
+			return err
+		} else {
+			s.ResponsesInputHistory = string(data)
+		}
+	}
+	if s.OutputMessageParsed != nil {
+		if data, err := sonic.Marshal(s.OutputMessageParsed); err != nil {
+			return err
+		} else {
+			s.OutputMessage = string(data)
+		}
+	}
+	if s.ResponsesOutputParsed != nil {
+		if data, err := sonic.Marshal(s.ResponsesOutputParsed); err != nil {
+			return err
+		} else {
+			s.ResponsesOutput = string(data)
+		}
+	}
+	if s.EmbeddingOutputParsed != nil {
+		if data, err := sonic.Marshal(s.EmbeddingOutputParsed); err != nil {
+			return err
+		} else {
+			s.EmbeddingOutput = string(data)
+		}
+	}
+	if s.RerankOutputParsed != nil {
+		if data, err := sonic.Marshal(s.RerankOutputParsed); err != nil {
+			return err
+		} else {
+			s.RerankOutput = string(data)
+		}
+	}
+	if s.SpeechInputParsed != nil {
+		if data, err := sonic.Marshal(s.SpeechInputParsed); err != nil {
+			return err
+		} else {
+			s.SpeechInput = string(data)
+		}
+	}
+	if s.TranscriptionInputParsed != nil {
+		if data, err := sonic.Marshal(s.TranscriptionInputParsed); err != nil {
+			return err
+		} else {
+			s.TranscriptionInput = string(data)
+		}
+	}
+	if s.ImageGenerationInputParsed != nil {
+		if data, err := sonic.Marshal(s.ImageGenerationInputParsed); err != nil {
+			return err
+		} else {
+			s.ImageGenerationInput = string(data)
+		}
+	}
+	if s.VideoGenerationInputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoGenerationInputParsed); err != nil {
+			return err
+		} else {
+			s.VideoGenerationInput = string(data)
+		}
+	}
+	if s.SpeechOutputParsed != nil {
+		if data, err := sonic.Marshal(s.SpeechOutputParsed); err != nil {
+			return err
+		} else {
+			s.SpeechOutput = string(data)
+		}
+	}
+	if s.TranscriptionOutputParsed != nil {
+		if data, err := sonic.Marshal(s.TranscriptionOutputParsed); err != nil {
+			return err
+		} else {
+			s.TranscriptionOutput = string(data)
+		}
+	}
+	if s.ImageGenerationOutputParsed != nil {
+		if data, err := sonic.Marshal(s.ImageGenerationOutputParsed); err != nil {
+			return err
+		} else {
+			s.ImageGenerationOutput = string(data)
+		}
+	}
+	if s.VideoGenerationOutputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoGenerationOutputParsed); err != nil {
+			return err
+		} else {
+			s.VideoGenerationOutput = string(data)
+		}
+	}
+	if s.VideoRetrieveOutputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoRetrieveOutputParsed); err != nil {
+			return err
+		} else {
+			s.VideoRetrieveOutput = string(data)
+		}
+	}
+	if s.VideoDownloadOutputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoDownloadOutputParsed); err != nil {
+			return err
+		} else {
+			s.VideoDownloadOutput = string(data)
+		}
+	}
+	if s.VideoListOutputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoListOutputParsed); err != nil {
+			return err
+		} else {
+			s.VideoListOutput = string(data)
+		}
+	}
+	if s.VideoDeleteOutputParsed != nil {
+		if data, err := sonic.Marshal(s.VideoDeleteOutputParsed); err != nil {
+			return err
+		} else {
+			s.VideoDeleteOutput = string(data)
+		}
+	}
+	if s.ListModelsOutputParsed != nil {
+		if data, err := sonic.Marshal(s.ListModelsOutputParsed); err != nil {
+			return err
+		} else {
+			s.ListModelsOutput = string(data)
+		}
+	}
+	if s.ParamsParsed != nil {
+		if data, err := sonic.Marshal(s.ParamsParsed); err != nil {
+			return err
+		} else {
+			s.Params = string(data)
+		}
+	}
+	if s.ToolsParsed != nil {
+		if data, err := sonic.Marshal(s.ToolsParsed); err != nil {
+			return err
+		} else {
+			s.Tools = string(data)
+		}
+	}
+	if s.ToolCallsParsed != nil {
+		if data, err := sonic.Marshal(s.ToolCallsParsed); err != nil {
+			return err
+		} else {
+			s.ToolCalls = string(data)
+		}
+	}
+	if s.TokenUsageParsed != nil {
+		if data, err := sonic.Marshal(s.TokenUsageParsed); err != nil {
+			return err
+		} else {
+			s.TokenUsage = string(data)
+		}
+		s.PromptTokens = s.TokenUsageParsed.PromptTokens
+		s.CompletionTokens = s.TokenUsageParsed.CompletionTokens
+		s.TotalTokens = s.TokenUsageParsed.TotalTokens
+	}
+	if s.ErrorDetailsParsed != nil {
+		if data, err := sonic.Marshal(s.ErrorDetailsParsed); err != nil {
+			return err
+		} else {
+			s.ErrorDetails = string(data)
+		}
+	}
+	if s.CacheDebugParsed != nil {
+		if data, err := sonic.Marshal(s.CacheDebugParsed); err != nil {
+			return err
+		} else {
+			s.CacheDebug = string(data)
+		}
+	}
+	if s.MetadataParsed != nil {
+		if data, err := sonic.Marshal(s.MetadataParsed); err != nil {
+			return err
+		} else {
+			s.Metadata = string(data)
+		}
+	}
+
+	// MCP fields
+	if s.ArgumentsParsed != nil {
+		if data, err := sonic.Marshal(s.ArgumentsParsed); err != nil {
+			return err
+		} else {
+			s.Arguments = string(data)
+		}
+	}
+	if s.ResultParsed != nil {
+		if data, err := sonic.Marshal(s.ResultParsed); err != nil {
+			return err
+		} else {
+			s.Result = string(data)
+		}
+	}
+
+	// Build content summary for search
+	s.ContentSummary = s.BuildContentSummary()
+
+	return nil
+}
+
+// DeserializeFields converts JSON strings back to Go structs
+func (s *SpanLog) DeserializeFields() error {
+	// Span-specific fields
+	if s.Attributes != "" {
+		if err := sonic.Unmarshal([]byte(s.Attributes), &s.AttributesParsed); err != nil {
+			s.AttributesParsed = nil
+		}
+	}
+	if s.Events != "" {
+		if err := sonic.Unmarshal([]byte(s.Events), &s.EventsParsed); err != nil {
+			s.EventsParsed = nil
+		}
+	}
+	if s.Tags != "" {
+		if err := sonic.Unmarshal([]byte(s.Tags), &s.TagsParsed); err != nil {
+			s.TagsParsed = nil
+		}
+	}
+
+	// LLM fields (same as Log.DeserializeFields)
+	if s.InputHistory != "" {
+		if err := sonic.Unmarshal([]byte(s.InputHistory), &s.InputHistoryParsed); err != nil {
+			s.InputHistoryParsed = []schemas.ChatMessage{}
+		}
+	}
+	if s.ResponsesInputHistory != "" {
+		if err := sonic.Unmarshal([]byte(s.ResponsesInputHistory), &s.ResponsesInputHistoryParsed); err != nil {
+			s.ResponsesInputHistoryParsed = []schemas.ResponsesMessage{}
+		}
+	}
+	if s.OutputMessage != "" {
+		if err := sonic.Unmarshal([]byte(s.OutputMessage), &s.OutputMessageParsed); err != nil {
+			s.OutputMessageParsed = nil
+		}
+	}
+	if s.ResponsesOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.ResponsesOutput), &s.ResponsesOutputParsed); err != nil {
+			s.ResponsesOutputParsed = []schemas.ResponsesMessage{}
+		}
+	}
+	if s.EmbeddingOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.EmbeddingOutput), &s.EmbeddingOutputParsed); err != nil {
+			s.EmbeddingOutputParsed = nil
+		}
+	}
+	if s.RerankOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.RerankOutput), &s.RerankOutputParsed); err != nil {
+			s.RerankOutputParsed = nil
+		}
+	}
+	if s.Params != "" {
+		if err := sonic.Unmarshal([]byte(s.Params), &s.ParamsParsed); err != nil {
+			s.ParamsParsed = nil
+		}
+	}
+	if s.Tools != "" {
+		if err := sonic.Unmarshal([]byte(s.Tools), &s.ToolsParsed); err != nil {
+			s.ToolsParsed = nil
+		}
+	}
+	if s.ToolCalls != "" {
+		if err := sonic.Unmarshal([]byte(s.ToolCalls), &s.ToolCallsParsed); err != nil {
+			s.ToolCallsParsed = nil
+		}
+	}
+	if s.TokenUsage != "" {
+		if err := sonic.Unmarshal([]byte(s.TokenUsage), &s.TokenUsageParsed); err != nil {
+			s.TokenUsageParsed = nil
+		}
+	}
+	if s.ErrorDetails != "" {
+		if err := sonic.Unmarshal([]byte(s.ErrorDetails), &s.ErrorDetailsParsed); err != nil {
+			s.ErrorDetailsParsed = nil
+		}
+	}
+	if s.SpeechInput != "" {
+		if err := sonic.Unmarshal([]byte(s.SpeechInput), &s.SpeechInputParsed); err != nil {
+			s.SpeechInputParsed = nil
+		}
+	}
+	if s.TranscriptionInput != "" {
+		if err := sonic.Unmarshal([]byte(s.TranscriptionInput), &s.TranscriptionInputParsed); err != nil {
+			s.TranscriptionInputParsed = nil
+		}
+	}
+	if s.ImageGenerationInput != "" {
+		if err := sonic.Unmarshal([]byte(s.ImageGenerationInput), &s.ImageGenerationInputParsed); err != nil {
+			s.ImageGenerationInputParsed = nil
+		}
+	}
+	if s.SpeechOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.SpeechOutput), &s.SpeechOutputParsed); err != nil {
+			s.SpeechOutputParsed = nil
+		}
+	}
+	if s.TranscriptionOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.TranscriptionOutput), &s.TranscriptionOutputParsed); err != nil {
+			s.TranscriptionOutputParsed = nil
+		}
+	}
+	if s.ImageGenerationOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.ImageGenerationOutput), &s.ImageGenerationOutputParsed); err != nil {
+			s.ImageGenerationOutputParsed = nil
+		}
+	}
+	if s.VideoGenerationOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoGenerationOutput), &s.VideoGenerationOutputParsed); err != nil {
+			s.VideoGenerationOutputParsed = nil
+		}
+	}
+	if s.VideoRetrieveOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoRetrieveOutput), &s.VideoRetrieveOutputParsed); err != nil {
+			s.VideoRetrieveOutputParsed = nil
+		}
+	}
+	if s.VideoDownloadOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoDownloadOutput), &s.VideoDownloadOutputParsed); err != nil {
+			s.VideoDownloadOutputParsed = nil
+		}
+	}
+	if s.VideoListOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoListOutput), &s.VideoListOutputParsed); err != nil {
+			s.VideoListOutputParsed = nil
+		}
+	}
+	if s.VideoDeleteOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoDeleteOutput), &s.VideoDeleteOutputParsed); err != nil {
+			s.VideoDeleteOutputParsed = nil
+		}
+	}
+	if s.VideoGenerationInput != "" {
+		if err := sonic.Unmarshal([]byte(s.VideoGenerationInput), &s.VideoGenerationInputParsed); err != nil {
+			s.VideoGenerationInputParsed = nil
+		}
+	}
+	if s.ListModelsOutput != "" {
+		if err := sonic.Unmarshal([]byte(s.ListModelsOutput), &s.ListModelsOutputParsed); err != nil {
+			s.ListModelsOutputParsed = nil
+		}
+	}
+	if s.CacheDebug != "" {
+		if err := sonic.Unmarshal([]byte(s.CacheDebug), &s.CacheDebugParsed); err != nil {
+			s.CacheDebugParsed = nil
+		}
+	}
+	if s.Metadata != "" {
+		if err := sonic.Unmarshal([]byte(s.Metadata), &s.MetadataParsed); err != nil {
+			s.MetadataParsed = nil
+		}
+	}
+	if s.RoutingEnginesUsedStr != nil && *s.RoutingEnginesUsedStr != "" {
+		s.RoutingEnginesUsed = strings.Split(*s.RoutingEnginesUsedStr, ",")
+	} else {
+		s.RoutingEnginesUsed = []string{}
+	}
+
+	// MCP fields
+	if s.Arguments != "" {
+		if err := sonic.Unmarshal([]byte(s.Arguments), &s.ArgumentsParsed); err != nil {
+			s.ArgumentsParsed = nil
+		}
+	}
+	if s.Result != "" {
+		if err := sonic.Unmarshal([]byte(s.Result), &s.ResultParsed); err != nil {
+			s.ResultParsed = nil
+		}
+	}
+
+	return nil
+}
+
+// BuildContentSummary creates a searchable text summary from the span's content fields.
+// Delegates to the same logic as Log.BuildContentSummary for LLM spans.
+func (s *SpanLog) BuildContentSummary() string {
+	var parts []string
+
+	for _, msg := range s.InputHistoryParsed {
+		if msg.Content != nil {
+			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+				parts = append(parts, *msg.Content.ContentStr)
+			}
+			if msg.Content.ContentBlocks != nil {
+				for _, block := range msg.Content.ContentBlocks {
+					if block.Text != nil && *block.Text != "" {
+						parts = append(parts, *block.Text)
+					}
+				}
+			}
+		}
+	}
+
+	if s.ResponsesInputHistoryParsed != nil {
+		for _, msg := range s.ResponsesInputHistoryParsed {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+					parts = append(parts, *msg.Content.ContentStr)
+				}
+				if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							parts = append(parts, *block.Text)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if s.OutputMessageParsed != nil && s.OutputMessageParsed.Content != nil {
+		if s.OutputMessageParsed.Content.ContentStr != nil && *s.OutputMessageParsed.Content.ContentStr != "" {
+			parts = append(parts, *s.OutputMessageParsed.Content.ContentStr)
+		}
+		if s.OutputMessageParsed.Content.ContentBlocks != nil {
+			for _, block := range s.OutputMessageParsed.Content.ContentBlocks {
+				if block.Text != nil && *block.Text != "" {
+					parts = append(parts, *block.Text)
+				}
+			}
+		}
+	}
+
+	if s.ResponsesOutputParsed != nil {
+		for _, msg := range s.ResponsesOutputParsed {
+			if msg.Content != nil {
+				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
+					parts = append(parts, *msg.Content.ContentStr)
+				}
+				if msg.Content.ContentBlocks != nil {
+					for _, block := range msg.Content.ContentBlocks {
+						if block.Text != nil && *block.Text != "" {
+							parts = append(parts, *block.Text)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if s.RerankOutputParsed != nil {
+		for _, result := range s.RerankOutputParsed {
+			if result.Document != nil && result.Document.Text != "" {
+				parts = append(parts, result.Document.Text)
+			}
+		}
+	}
+	if s.SpeechInputParsed != nil && s.SpeechInputParsed.Input != "" {
+		parts = append(parts, s.SpeechInputParsed.Input)
+	}
+	if s.TranscriptionOutputParsed != nil && s.TranscriptionOutputParsed.Text != "" {
+		parts = append(parts, s.TranscriptionOutputParsed.Text)
+	}
+	if s.ImageGenerationInputParsed != nil && s.ImageGenerationInputParsed.Prompt != "" {
+		parts = append(parts, s.ImageGenerationInputParsed.Prompt)
+	}
+	if s.VideoGenerationInputParsed != nil && s.VideoGenerationInputParsed.Prompt != "" {
+		parts = append(parts, s.VideoGenerationInputParsed.Prompt)
+	}
+	if s.ErrorDetailsParsed != nil && s.ErrorDetailsParsed.Error != nil && s.ErrorDetailsParsed.Error.Message != "" {
+		parts = append(parts, s.ErrorDetailsParsed.Error.Message)
+	}
+
+	return strings.Join(parts, " ")
+}
+
+// TraceSearchResult represents the result of a trace search (root spans)
+type TraceSearchResult struct {
+	Traces     []SpanLog         `json:"traces"`
+	Pagination PaginationOptions `json:"pagination"`
+	Stats      SearchStats       `json:"stats"`
+	HasTraces  bool              `json:"has_traces"`
+}
+
+// RootSpanWithChildren groups a root span with its child spans for atomic creation
+type RootSpanWithChildren struct {
+	Root     *SpanLog
+	Children []*SpanLog
 }
 
 // MCPToolLogSearchFilters represents the available filters for MCP tool log searches

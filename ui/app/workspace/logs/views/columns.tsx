@@ -183,6 +183,28 @@ export const createColumns = (onDelete: (log: LogEntry) => void, hasDeleteAccess
 		},
 	},
 	{
+		id: "span_count",
+		header: "Spans",
+		cell: ({ row }) => {
+			const spanCount = (row.original as any).span_count;
+			if (!spanCount || spanCount <= 1) {
+				return <div className="pl-2 font-mono text-xs text-muted-foreground">1</div>;
+			}
+			return <div className="pl-2 font-mono text-xs">{spanCount}</div>;
+		},
+	},
+	{
+		id: "user_agent",
+		header: "User Agent",
+		cell: ({ row }) => {
+			const label = (row.original as any).user_agent_label;
+			if (!label) {
+				return <div className="font-mono text-xs text-muted-foreground">-</div>;
+			}
+			return <div className="max-w-[120px] truncate font-mono text-xs" title={label}>{label}</div>;
+		},
+	},
+	{
 		accessorKey: "cost",
 		header: ({ column }) => (
 			<Button variant="ghost" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>

@@ -20,6 +20,7 @@ const (
 // LogRetentionManager defines the interface for managing log retention and deletion
 type LogRetentionManager interface {
 	DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
+	DeleteSpansBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
 // CleanerConfig holds configuration for the log cleaner
@@ -111,47 +112,58 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 
 	// Calculate cutoff time
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
-	c.logger.Info("starting log cleanup: deleting logs older than %s (retention: %d days)", cutoff.Format(time.RFC3339), retentionDays)
+	c.logger.Info("starting log cleanup: deleting entries older than %s (retention: %d days)", cutoff.Format(time.RFC3339), retentionDays)
 
+	// Clean spans table (traces + child spans)
+	spansDeleted := c.cleanupTable(ctx, "spans", func(ctx context.Context, cutoff time.Time, bs int) (int64, error) {
+		return c.manager.DeleteSpansBatch(ctx, cutoff, bs)
+	}, cutoff)
+
+	// Clean legacy logs table
+	logsDeleted := c.cleanupTable(ctx, "logs", func(ctx context.Context, cutoff time.Time, bs int) (int64, error) {
+		return c.manager.DeleteLogsBatch(ctx, cutoff, bs)
+	}, cutoff)
+
+	totalDeleted := spansDeleted + logsDeleted
+	if totalDeleted > 0 {
+		c.logger.Info("log cleanup completed: deleted %d spans + %d logs", spansDeleted, logsDeleted)
+	} else {
+		c.logger.Debug("log cleanup completed: no old entries to delete")
+	}
+}
+
+// cleanupTable deletes old entries from a table in batches, returning total deleted count.
+func (c *LogsCleaner) cleanupTable(ctx context.Context, tableName string, deleteFn func(context.Context, time.Time, int) (int64, error), cutoff time.Time) int64 {
 	totalDeleted := int64(0)
 	batchCount := 0
 
 	for {
-		// Check if context is cancelled
 		select {
 		case <-ctx.Done():
-			c.logger.Warn("log cleanup cancelled: %v", ctx.Err())
-			return
+			c.logger.Warn("%s cleanup cancelled: %v", tableName, ctx.Err())
+			return totalDeleted
 		default:
 		}
 
-		// Delete logs in batches using the manager
-		deleted, err := c.manager.DeleteLogsBatch(ctx, cutoff, batchSize)
+		deleted, err := deleteFn(ctx, cutoff, batchSize)
 		if err != nil {
-			c.logger.Error("failed to delete old logs: %v", err)
-			return
+			c.logger.Error("failed to delete old %s: %v", tableName, err)
+			return totalDeleted
 		}
 
 		if deleted == 0 {
-			// No more logs to delete
 			break
 		}
 
 		totalDeleted += deleted
 		batchCount++
-		c.logger.Debug("deleted batch %d: %d logs", batchCount, deleted)
+		c.logger.Debug("deleted %s batch %d: %d entries", tableName, batchCount, deleted)
 
-		// If we deleted fewer than the batch size, we're done
 		if deleted < int64(batchSize) {
 			break
 		}
 	}
-
-	if totalDeleted > 0 {
-		c.logger.Info("log cleanup completed: deleted %d logs in %d batches", totalDeleted, batchCount)
-	} else {
-		c.logger.Debug("log cleanup completed: no old logs to delete")
-	}
+	return totalDeleted
 }
 
 // calculateNextRunDuration returns 24 hours plus a random jitter between 15-30 minutes

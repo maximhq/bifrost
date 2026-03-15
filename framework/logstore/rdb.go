@@ -1979,3 +1979,294 @@ func (s *RDBLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.
 		Delete(&AsyncJob{})
 	return result.RowsAffected, result.Error
 }
+
+// ─────────────────────────────────────────────────
+// Span/Trace methods
+// ─────────────────────────────────────────────────
+
+// CreateSpan inserts a single span entry.
+func (s *RDBLogStore) CreateSpan(ctx context.Context, span *SpanLog) error {
+	return s.db.WithContext(ctx).Create(span).Error
+}
+
+// BatchCreateSpans inserts multiple span entries with ON CONFLICT DO NOTHING.
+func (s *RDBLogStore) BatchCreateSpans(ctx context.Context, spans []*SpanLog) error {
+	if len(spans) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(&spans).Error
+}
+
+// CreateRootSpanWithChildren atomically inserts a root span and its children in a transaction.
+func (s *RDBLogStore) CreateRootSpanWithChildren(ctx context.Context, root *SpanLog, children []*SpanLog) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Upsert root span — if it already exists (multi-request trace), update aggregates
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"total_tokens", "cost", "prompt_tokens", "completion_tokens",
+				"span_count", "status", "output_message", "latency",
+				"content_summary", "model", "provider", "object_type",
+			}),
+		}).Create(root).Error; err != nil {
+			return err
+		}
+		// Insert children
+		if len(children) > 0 {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				DoNothing: true,
+			}).Create(&children).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// BatchCreateRootSpansWithChildren inserts multiple root+children groups.
+func (s *RDBLogStore) BatchCreateRootSpansWithChildren(ctx context.Context, entries []RootSpanWithChildren) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, entry := range entries {
+			if entry.Root != nil {
+				if err := tx.Clauses(clause.OnConflict{
+					Columns: []clause.Column{{Name: "id"}},
+					DoUpdates: clause.AssignmentColumns([]string{
+						"total_tokens", "cost", "prompt_tokens", "completion_tokens",
+						"span_count", "status", "output_message", "latency",
+						"content_summary", "model", "provider", "object_type",
+					}),
+				}).Create(entry.Root).Error; err != nil {
+					return err
+				}
+			}
+			if len(entry.Children) > 0 {
+				if err := tx.Clauses(clause.OnConflict{
+					Columns:   []clause.Column{{Name: "id"}},
+					DoNothing: true,
+				}).Create(&entry.Children).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// FindSpanByID retrieves a single span by ID.
+func (s *RDBLogStore) FindSpanByID(ctx context.Context, id string) (*SpanLog, error) {
+	var span SpanLog
+	result := s.db.WithContext(ctx).Where("id = ?", id).First(&span)
+	if result.Error != nil {
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, result.Error
+	}
+	return &span, nil
+}
+
+// FindSpansByParent retrieves all spans with the given parent_span_id, ordered by timestamp.
+func (s *RDBLogStore) FindSpansByParent(ctx context.Context, parentSpanID string) ([]*SpanLog, error) {
+	var spans []*SpanLog
+	result := s.db.WithContext(ctx).
+		Where("parent_span_id = ?", parentSpanID).
+		Order("timestamp ASC").
+		Find(&spans)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return spans, nil
+}
+
+// FindTraceWithSpans retrieves a root span and all its descendants.
+func (s *RDBLogStore) FindTraceWithSpans(ctx context.Context, rootSpanID string) (*SpanLog, []*SpanLog, error) {
+	// Get root span
+	root, err := s.FindSpanByID(ctx, rootSpanID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Get all descendants — for now, query direct children.
+	// For deep nesting, we'd need recursive queries, but most traces are 2-3 levels.
+	var allSpans []*SpanLog
+	result := s.db.WithContext(ctx).
+		Where("parent_span_id = ? OR (parent_span_id IN (SELECT id FROM spans WHERE parent_span_id = ?))", rootSpanID, rootSpanID).
+		Order("timestamp ASC").
+		Find(&allSpans)
+	if result.Error != nil {
+		return nil, nil, result.Error
+	}
+
+	return root, allSpans, nil
+}
+
+// UpdateSpan updates a span entry.
+func (s *RDBLogStore) UpdateSpan(ctx context.Context, id string, updates any) error {
+	return s.db.WithContext(ctx).Model(&SpanLog{}).Where("id = ?", id).Updates(updates).Error
+}
+
+// UpdateRootSpanAggregates recalculates a root span's aggregate fields from its children.
+func (s *RDBLogStore) UpdateRootSpanAggregates(ctx context.Context, rootSpanID string) error {
+	return s.db.WithContext(ctx).Exec(`
+		UPDATE spans SET
+			total_tokens = COALESCE((SELECT SUM(total_tokens) FROM spans WHERE parent_span_id = ?), 0),
+			prompt_tokens = COALESCE((SELECT SUM(prompt_tokens) FROM spans WHERE parent_span_id = ?), 0),
+			completion_tokens = COALESCE((SELECT SUM(completion_tokens) FROM spans WHERE parent_span_id = ?), 0),
+			cost = (SELECT SUM(cost) FROM spans WHERE parent_span_id = ?),
+			span_count = (SELECT COUNT(*) FROM spans WHERE parent_span_id = ?)
+		WHERE id = ?
+	`, rootSpanID, rootSpanID, rootSpanID, rootSpanID, rootSpanID, rootSpanID).Error
+}
+
+// SearchTraces searches root spans (kind='trace') with filters and pagination.
+func (s *RDBLogStore) SearchTraces(ctx context.Context, filters SearchFilters, pagination PaginationOptions) (*TraceSearchResult, error) {
+	query := s.db.WithContext(ctx).Model(&SpanLog{}).Where("kind = ?", string(schemas.SpanKindTrace))
+	query = s.applyFilters(query, filters)
+
+	// Apply user_agent_label filter
+	if len(filters.UserAgentLabels) > 0 {
+		query = query.Where("user_agent_label IN ?", filters.UserAgentLabels)
+	}
+
+	// Count total
+	var totalCount int64
+	if err := query.Count(&totalCount).Error; err != nil {
+		return nil, err
+	}
+
+	// Apply sorting
+	sortColumn := "timestamp"
+	if pagination.SortBy != "" {
+		switch SortBy(pagination.SortBy) {
+		case SortByLatency:
+			sortColumn = "latency"
+		case SortByTokens:
+			sortColumn = "total_tokens"
+		case SortByCost:
+			sortColumn = "cost"
+		default:
+			sortColumn = "timestamp"
+		}
+	}
+	order := "DESC"
+	if pagination.Order == string(SortAsc) {
+		order = "ASC"
+	}
+	query = query.Order(fmt.Sprintf("%s %s", sortColumn, order))
+
+	// Apply pagination
+	if pagination.Limit <= 0 {
+		pagination.Limit = 50
+	}
+	if pagination.Limit > 1000 {
+		pagination.Limit = 1000
+	}
+	query = query.Limit(pagination.Limit).Offset(pagination.Offset)
+
+	// Omit large fields for list view
+	query = query.Omit("raw_request", "raw_response", "passthrough_request_body", "passthrough_response_body")
+
+	var traces []SpanLog
+	if err := query.Find(&traces).Error; err != nil {
+		return nil, err
+	}
+
+	pagination.TotalCount = totalCount
+
+	// Calculate stats
+	statsQuery := s.db.WithContext(ctx).Model(&SpanLog{}).Where("kind = ?", string(schemas.SpanKindTrace))
+	statsQuery = s.applyFilters(statsQuery, filters)
+	if len(filters.UserAgentLabels) > 0 {
+		statsQuery = statsQuery.Where("user_agent_label IN ?", filters.UserAgentLabels)
+	}
+
+	var stats SearchStats
+	statsQuery.Select(`
+		COUNT(*) as total_requests,
+		COALESCE(AVG(CASE WHEN status IN ('success', 'error') THEN latency END), 0) as average_latency,
+		COALESCE(SUM(total_tokens), 0) as total_tokens,
+		COALESCE(SUM(cost), 0) as total_cost
+	`).Scan(&stats)
+
+	if stats.TotalRequests > 0 {
+		var successCount int64
+		statsQuery.Where("status = ?", "success").Count(&successCount)
+		var completedCount int64
+		s.db.WithContext(ctx).Model(&SpanLog{}).Where("kind = ?", string(schemas.SpanKindTrace)).Where("status IN ?", []string{"success", "error"}).Count(&completedCount)
+		if completedCount > 0 {
+			stats.SuccessRate = float64(successCount) / float64(completedCount) * 100
+		}
+	}
+
+	// Check if any traces exist at all
+	var hasTraces bool
+	var anyCount int64
+	s.db.WithContext(ctx).Model(&SpanLog{}).Where("kind = ?", string(schemas.SpanKindTrace)).Limit(1).Count(&anyCount)
+	hasTraces = anyCount > 0
+
+	return &TraceSearchResult{
+		Traces:     traces,
+		Pagination: pagination,
+		Stats:      stats,
+		HasTraces:  hasTraces,
+	}, nil
+}
+
+// DeleteTraces deletes root spans and all their children.
+func (s *RDBLogStore) DeleteTraces(ctx context.Context, ids []string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Delete children first
+		if err := tx.Where("parent_span_id IN ?", ids).Delete(&SpanLog{}).Error; err != nil {
+			return err
+		}
+		// Also delete grandchildren (spans whose parent is a child of these traces)
+		if err := tx.Where("parent_span_id IN (SELECT id FROM spans WHERE parent_span_id IN ?)", ids).Delete(&SpanLog{}).Error; err != nil {
+			return err
+		}
+		// Delete root spans
+		return tx.Where("id IN ?", ids).Delete(&SpanLog{}).Error
+	})
+}
+
+// HasTraces checks if any trace spans exist.
+func (s *RDBLogStore) HasTraces(ctx context.Context) (bool, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&SpanLog{}).Where("kind = ?", string(schemas.SpanKindTrace)).Limit(1).Count(&count).Error
+	return count > 0, err
+}
+
+// DeleteSpansBatch deletes root spans (and cascades to children) older than cutoff.
+func (s *RDBLogStore) DeleteSpansBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		batchSize = 100
+	}
+
+	// Find root span IDs to delete
+	var ids []string
+	if err := s.db.WithContext(ctx).Model(&SpanLog{}).
+		Select("id").
+		Where("kind = ? AND created_at < ?", string(schemas.SpanKindTrace), cutoff).
+		Limit(batchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// Delete children then roots
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("parent_span_id IN ?", ids).Delete(&SpanLog{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("id IN ?", ids).Delete(&SpanLog{}).Error
+	})
+	return int64(len(ids)), err
+}

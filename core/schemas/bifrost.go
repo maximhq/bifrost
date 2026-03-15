@@ -243,6 +243,10 @@ const (
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
 	BifrostContextKeySessionID                           BifrostContextKey = "bifrost-session-id"                         // string session ID for the request (session stickiness)
 	BifrostContextKeySessionTTL                          BifrostContextKey = "bifrost-session-ttl"                        // time.Duration session TTL for the request (session stickiness)
+	BifrostContextKeyUserTraceID                         BifrostContextKey = "x-bf-trace-id"                             // string (caller-supplied trace ID for grouping requests - from X-Bf-Trace-Id header)
+	BifrostContextKeyUserTraceName                       BifrostContextKey = "x-bf-trace-name"                           // string (caller-supplied trace name - from X-Bf-Trace-Name header)
+	BifrostContextKeyUserSpanName                        BifrostContextKey = "x-bf-span-name"                            // string (caller-supplied span name - from X-Bf-Span-Name header)
+	BifrostContextKeyUserTraceTags                       BifrostContextKey = "x-bf-trace-tags"                           // string (JSON-encoded trace tags - from X-Bf-Trace-Tags header)
 )
 
 const (

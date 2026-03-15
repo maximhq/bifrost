@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 )
@@ -164,6 +165,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 		return err
 	}
 	if err := migrationAddPassthroughResponseBodyColumn(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationCreateSpansTable(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationMigrateLogsToSpans(ctx, db); err != nil {
 		return err
 	}
 	return nil
@@ -1677,6 +1684,277 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB)
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding passthrough response body column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationCreateSpansTable creates the spans table with all columns and indexes
+func migrationCreateSpansTable(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "spans_create_table",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasTable(&SpanLog{}) {
+				if err := migrator.CreateTable(&SpanLog{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasTable(&SpanLog{}) {
+				if err := migrator.DropTable(&SpanLog{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while creating spans table: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationMigrateLogsToSpans copies existing logs and mcp_tool_logs into the spans table.
+// Each log becomes a root span (kind="trace") + child span (kind="llm.call").
+// Each MCP tool log becomes a child span (kind="mcp.tool") under its parent LLM span's root.
+func migrationMigrateLogsToSpans(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false // We handle batching ourselves
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "spans_migrate_logs_data",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// Check if spans table already has data (idempotent)
+			var count int64
+			if err := tx.Model(&SpanLog{}).Count(&count).Error; err != nil {
+				return fmt.Errorf("failed to count spans: %w", err)
+			}
+			if count > 0 {
+				return nil // Already migrated
+			}
+
+			// Check if logs table exists and has data
+			if !tx.Migrator().HasTable(&Log{}) {
+				return nil
+			}
+
+			// Migrate logs in batches
+			const batchSize = 1000
+			offset := 0
+			for {
+				var logs []Log
+				result := tx.Model(&Log{}).Order("created_at ASC").Offset(offset).Limit(batchSize).Find(&logs)
+				if result.Error != nil {
+					return fmt.Errorf("failed to read logs batch at offset %d: %w", offset, result.Error)
+				}
+				if len(logs) == 0 {
+					break
+				}
+
+				// Build spans from logs
+				spans := make([]*SpanLog, 0, len(logs)*2)
+				for i := range logs {
+					log := &logs[i]
+					rootID := log.ID + "-trace"
+
+					// Root span (kind="trace") with aggregated fields
+					root := &SpanLog{
+						ID:            rootID,
+						Kind:          string(schemas.SpanKindTrace),
+						Name:          log.Model,
+						Timestamp:     log.Timestamp,
+						Status:        log.Status,
+						CreatedAt:     log.CreatedAt,
+						// Aggregated fields from the single log
+						Object:                  log.Object,
+						Provider:                log.Provider,
+						Model:                   log.Model,
+						SelectedKeyID:           log.SelectedKeyID,
+						SelectedKeyName:         log.SelectedKeyName,
+						VirtualKeyID:            log.VirtualKeyID,
+						VirtualKeyName:          log.VirtualKeyName,
+						RoutingRuleID:           log.RoutingRuleID,
+						RoutingRuleName:         log.RoutingRuleName,
+						RoutingEnginesUsedStr:   log.RoutingEnginesUsedStr,
+						Latency:                 log.Latency,
+						Cost:                    log.Cost,
+						TokenUsage:              log.TokenUsage,
+						PromptTokens:            log.PromptTokens,
+						CompletionTokens:        log.CompletionTokens,
+						TotalTokens:             log.TotalTokens,
+						InputHistory:            log.InputHistory,
+						OutputMessage:            log.OutputMessage,
+						ResponsesInputHistory:   log.ResponsesInputHistory,
+						ResponsesOutput:         log.ResponsesOutput,
+						ContentSummary:           log.ContentSummary,
+						ErrorDetails:             log.ErrorDetails,
+						Metadata:                 log.Metadata,
+						SpanCount:               1,
+					}
+
+					// Child LLM span with all the detail
+					child := &SpanLog{
+						ID:                      log.ID,
+						ParentSpanID:            &rootID,
+						Kind:                    string(schemas.SpanKindLLMCall),
+						Name:                    log.Provider + "/" + log.Model,
+						Timestamp:               log.Timestamp,
+						Status:                  log.Status,
+						CreatedAt:               log.CreatedAt,
+						Object:                  log.Object,
+						Provider:                log.Provider,
+						Model:                   log.Model,
+						NumberOfRetries:         log.NumberOfRetries,
+						FallbackIndex:           log.FallbackIndex,
+						SelectedKeyID:           log.SelectedKeyID,
+						SelectedKeyName:         log.SelectedKeyName,
+						VirtualKeyID:            log.VirtualKeyID,
+						VirtualKeyName:          log.VirtualKeyName,
+						RoutingEnginesUsedStr:   log.RoutingEnginesUsedStr,
+						RoutingRuleID:           log.RoutingRuleID,
+						RoutingRuleName:         log.RoutingRuleName,
+						InputHistory:            log.InputHistory,
+						ResponsesInputHistory:   log.ResponsesInputHistory,
+						OutputMessage:            log.OutputMessage,
+						ResponsesOutput:         log.ResponsesOutput,
+						EmbeddingOutput:         log.EmbeddingOutput,
+						RerankOutput:            log.RerankOutput,
+						Params:                  log.Params,
+						Tools:                   log.Tools,
+						ToolCalls:               log.ToolCalls,
+						SpeechInput:             log.SpeechInput,
+						TranscriptionInput:      log.TranscriptionInput,
+						ImageGenerationInput:    log.ImageGenerationInput,
+						VideoGenerationInput:    log.VideoGenerationInput,
+						SpeechOutput:            log.SpeechOutput,
+						TranscriptionOutput:     log.TranscriptionOutput,
+						ImageGenerationOutput:   log.ImageGenerationOutput,
+						ListModelsOutput:        log.ListModelsOutput,
+						VideoGenerationOutput:   log.VideoGenerationOutput,
+						VideoRetrieveOutput:     log.VideoRetrieveOutput,
+						VideoDownloadOutput:     log.VideoDownloadOutput,
+						VideoListOutput:         log.VideoListOutput,
+						VideoDeleteOutput:       log.VideoDeleteOutput,
+						CacheDebug:              log.CacheDebug,
+						Latency:                 log.Latency,
+						TokenUsage:              log.TokenUsage,
+						Cost:                    log.Cost,
+						ErrorDetails:            log.ErrorDetails,
+						Stream:                  log.Stream,
+						ContentSummary:          log.ContentSummary,
+						RawRequest:              log.RawRequest,
+						RawResponse:             log.RawResponse,
+						PassthroughRequestBody:  log.PassthroughRequestBody,
+						PassthroughResponseBody: log.PassthroughResponseBody,
+						RoutingEngineLogs:       log.RoutingEngineLogs,
+						Metadata:                log.Metadata,
+						IsLargePayloadRequest:   log.IsLargePayloadRequest,
+						IsLargePayloadResponse:  log.IsLargePayloadResponse,
+						PromptTokens:            log.PromptTokens,
+						CompletionTokens:        log.CompletionTokens,
+						TotalTokens:             log.TotalTokens,
+					}
+
+					spans = append(spans, root, child)
+				}
+
+				// Batch insert
+				if err := tx.CreateInBatches(spans, batchSize).Error; err != nil {
+					return fmt.Errorf("failed to insert span batch at offset %d: %w", offset, err)
+				}
+
+				offset += len(logs)
+			}
+
+			// Migrate MCP tool logs
+			if !tx.Migrator().HasTable(&MCPToolLog{}) {
+				return nil
+			}
+
+			offset = 0
+			for {
+				var mcpLogs []MCPToolLog
+				result := tx.Model(&MCPToolLog{}).Order("created_at ASC").Offset(offset).Limit(batchSize).Find(&mcpLogs)
+				if result.Error != nil {
+					return fmt.Errorf("failed to read mcp_tool_logs batch at offset %d: %w", offset, result.Error)
+				}
+				if len(mcpLogs) == 0 {
+					break
+				}
+
+				spans := make([]*SpanLog, 0, len(mcpLogs))
+				for i := range mcpLogs {
+					mcpLog := &mcpLogs[i]
+
+					span := &SpanLog{
+						ID:           mcpLog.ID,
+						Kind:         string(schemas.SpanKindMCPTool),
+						Name:         mcpLog.ToolName,
+						Timestamp:    mcpLog.Timestamp,
+						Status:       mcpLog.Status,
+						CreatedAt:    mcpLog.CreatedAt,
+						ToolName:     mcpLog.ToolName,
+						ServerLabel:  mcpLog.ServerLabel,
+						Arguments:    mcpLog.Arguments,
+						Result:       mcpLog.Result,
+						ErrorDetails: mcpLog.ErrorDetails,
+						Latency:      mcpLog.Latency,
+						Cost:         mcpLog.Cost,
+						Metadata:     mcpLog.Metadata,
+						VirtualKeyID: mcpLog.VirtualKeyID,
+						VirtualKeyName: mcpLog.VirtualKeyName,
+					}
+
+					// Link to parent LLM span if available
+					if mcpLog.LLMRequestID != nil && *mcpLog.LLMRequestID != "" {
+						span.ParentSpanID = mcpLog.LLMRequestID
+					} else {
+						// Orphan MCP log — create its own root span
+						rootID := mcpLog.ID + "-trace"
+						orphanRoot := &SpanLog{
+							ID:        rootID,
+							Kind:      string(schemas.SpanKindTrace),
+							Name:      mcpLog.ToolName,
+							Timestamp: mcpLog.Timestamp,
+							Status:    mcpLog.Status,
+							CreatedAt: mcpLog.CreatedAt,
+							SpanCount: 1,
+							ToolName:  mcpLog.ToolName,
+							Latency:   mcpLog.Latency,
+							Cost:      mcpLog.Cost,
+						}
+						spans = append(spans, orphanRoot)
+						span.ParentSpanID = &rootID
+					}
+
+					spans = append(spans, span)
+				}
+
+				if err := tx.CreateInBatches(spans, batchSize).Error; err != nil {
+					return fmt.Errorf("failed to insert mcp span batch at offset %d: %w", offset, err)
+				}
+
+				offset += len(mcpLogs)
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Rollback: clear all migrated data from spans table
+			return tx.Exec("DELETE FROM spans").Error
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while migrating logs to spans: %s", err.Error())
 	}
 	return nil
 }
