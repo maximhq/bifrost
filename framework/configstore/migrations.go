@@ -329,7 +329,21 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 			// dirty after upgrade. StoreRawRequestResponse is now part of the
 			// hash input; rows written before this migration have stale hashes.
 			var providers []tables.TableProvider
-			if err := tx.Find(&providers).Error; err != nil {
+			if err := tx.
+				Select(
+					"id",
+					"name",
+					"network_config_json",
+					"concurrency_buffer_json",
+					"proxy_config_json",
+					"custom_provider_config_json",
+					"pricing_overrides_json",
+					"send_back_raw_request",
+					"send_back_raw_response",
+					"store_raw_request_response",
+					"encryption_status",
+				).
+				Find(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
 			}
 			for _, provider := range providers {
@@ -341,6 +355,7 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
+					PricingOverrides:         provider.PricingOverrides,
 				}
 				hash, err := providerConfig.GenerateConfigHash(provider.Name)
 				if err != nil {
