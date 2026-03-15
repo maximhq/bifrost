@@ -1,0 +1,2 @@
+- feat: WebSocket and Realtime API support
+- chore: upgraded core to v1.4.8 and framework to v1.2.27

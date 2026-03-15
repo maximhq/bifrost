@@ -1,11 +1,18 @@
-- fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
-- fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
-- fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout
-- fix: toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints — now correctly passes auto, any, and specific tool constraints to the model
-- feat: add BifrostContextKeyAPIKeyID for explicit key selection by ID, with priority over key name selection
-- feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
-- feat: add Filename field to TranscriptionInput schema to carry original filename through the request pipeline
-- fix: add AudioFilenameFromBytes utility to detect audio format from file headers with mp3 fallback
-- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
-- fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
-- fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
+- feat: WebSocket and Realtime API support
+- feat: Anthropic passthrough support
+- feat: threshold-gated streaming request decompression with pooled readers
+- feat: refactored model catalog pricing engine with unified cost calculation
+- feat: quality-based image pricing and image size/aspect ratio for Gemini
+- feat: size-to-resolution conversion for Replicate image models
+- feat: session stickiness in key selection
+- feat: add Enabled field to ChatReasoning struct (thanks [@mango766](https://github.com/mango766)!)
+- feat: allow storing raw request/response without returning to clients (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: RBAC for prompt repository
+- fix: deterministic tool schema serialization for prompt caching (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
+- fix: skip body building for large payload flow
+- fix: TLS termination inside Bifrost server through config
+- fix: map chat finish_reason to responses status and preserve terminal stream semantics
+- fix: set responses input messages in gen_ai.input.messages
+- fix: video pricing fixes
+- fix: remove resolution parameter from image generation
+- fix: MCP client reconnection with exponential backoff and connection timeout

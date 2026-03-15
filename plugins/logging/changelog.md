@@ -1,1 +1,6 @@
-- fix: adds metadata back to the new log writer flow
+- feat: passthrough support for log capture
+- feat: large payload awareness for logstore
+- feat: async log write improvements
+- fix: reduce logstore serialization overhead and batch cost updates
+- fix: avoid loading raw_request/raw_response in log list queries (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- chore: upgraded core to v1.4.8 and framework to v1.2.27

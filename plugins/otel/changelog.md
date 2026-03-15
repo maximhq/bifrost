@@ -1,2 +1,2 @@
 - fix: set responses input messages in gen_ai.input.messages
-- fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
+- chore: upgraded core to v1.4.8 and framework to v1.2.27

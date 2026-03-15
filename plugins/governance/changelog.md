@@ -1,2 +1,3 @@
-- feat: routing rules now support multiple weighted targets for probabilistic routing
-- feat: target-level key pinning: each entry in `targets[]` can specify `key_id` to pin a specific API key for that target, bypassing load-balanced key selection
+- feat: pricing engine integration with unified cost calculation
+- feat: large payload awareness
+- chore: upgraded core to v1.4.8 and framework to v1.2.27
