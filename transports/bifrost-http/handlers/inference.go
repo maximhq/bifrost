@@ -586,11 +586,12 @@ func fallbackStringsToInput(fallbackStrings []string) (FallbacksInput, error) {
 func parseMultipartFallbacks(values []string) (FallbacksInput, error) {
 	if len(values) == 1 {
 		trimmed := strings.TrimSpace(values[0])
-		if trimmed != "" {
+		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 			var parsed FallbacksInput
-			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err == nil {
-				return parsed, nil
+			if err := sonic.Unmarshal([]byte(trimmed), &parsed); err != nil {
+				return nil, err
 			}
+			return parsed, nil
 		}
 	}
 
@@ -1451,6 +1452,18 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx) (*schemas.BifrostTran
 		Provider: schemas.ModelProvider(provider),
 		Input:    transcriptionInput,
 		Params:   transcriptionParams,
+	}
+	if fallbackValues := form.Value["fallbacks"]; len(fallbackValues) > 0 {
+		parsedFallbacks, parseErr := parseMultipartFallbacks(fallbackValues)
+		if parseErr != nil {
+			return nil, false, parseErr
+		}
+
+		fallbacks, parseFallbackErr := parseFallbacks(parsedFallbacks)
+		if parseFallbackErr != nil {
+			return nil, false, parseFallbackErr
+		}
+		bifrostTranscriptionReq.Fallbacks = fallbacks
 	}
 	return bifrostTranscriptionReq, stream, nil
 }
