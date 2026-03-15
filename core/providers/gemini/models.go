@@ -7,6 +7,16 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func toGeminiModelResourceName(modelID string) string {
+	if strings.HasPrefix(modelID, "models/") {
+		return modelID
+	}
+	if idx := strings.Index(modelID, "/"); idx >= 0 && idx+1 < len(modelID) {
+		return "models/" + modelID[idx+1:]
+	}
+	return "models/" + modelID
+}
+
 func (response *GeminiListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
@@ -64,7 +74,7 @@ func ToGeminiListModelsResponse(resp *schemas.BifrostListModelsResponse) *Gemini
 
 	for _, model := range resp.Data {
 		geminiModel := GeminiModel{
-			Name:                       model.ID,
+			Name:                       toGeminiModelResourceName(model.ID),
 			SupportedGenerationMethods: model.SupportedMethods,
 		}
 		if model.Name != nil {
