@@ -21,11 +21,9 @@ module "bifrost" {
   providers_config = {
     openai = { keys = [{ value = var.openai_key, weight = 1 }] }
   }
-  config_store = {
-    enabled = true
-    type    = "postgres"
-    config  = { host = var.db_host, port = "5432", user = "bifrost", password = var.db_password, db_name = "bifrost" }
-  }
+
+  # Option C: Let Terraform provision PostgreSQL and auto-wire config_store / logs_store
+  create_postgresql = true
 }
 ```
 
@@ -66,6 +64,9 @@ terraform/
       services/aks/             # AKS + K8s resources
       services/aci/             # Azure Container Instances
     kubernetes/                 # Generic K8s (any cluster, no cloud APIs)
+    aws/postgresql/             # AWS RDS PostgreSQL
+    gcp/postgresql/             # GCP Cloud SQL PostgreSQL
+    azure/postgresql/           # Azure Flexible Server PostgreSQL
   examples/
     aws-ecs/                    # Deploy on ECS Fargate
     gcp-gke/                    # Deploy on GKE
@@ -104,9 +105,36 @@ terraform apply
 | `ingress_class_name` | `"nginx"` | Ingress controller class (generic K8s only) |
 | `ingress_annotations` | `{}` | Ingress annotations (generic K8s only) |
 
+### PostgreSQL Variables
+
+When `create_postgresql = true`, Bifrost provisions a managed PostgreSQL instance (or K8s StatefulSet) and automatically configures `config_store` and `logs_store` to use it.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `create_postgresql` | `false` | Create a managed PostgreSQL instance |
+| `postgresql_engine_version` | `"16"` | PostgreSQL engine version |
+| `postgresql_instance_class` | `null` | Instance class (uses cloud-specific defaults) |
+| `postgresql_storage_gb` | `20` | Allocated storage in GB |
+| `postgresql_database_name` | `"bifrost"` | Initial database name |
+| `postgresql_username` | `"bifrost"` | Master username |
+| `postgresql_password` | `null` | Master password (auto-generated if null) |
+| `postgresql_backup_retention_days` | `7` | Backup retention in days |
+| `postgresql_multi_az` | `false` | Enable multi-AZ / HA deployment |
+| `postgresql_publicly_accessible` | `false` | Allow public access (AWS only) |
+
+**Auto-wiring behavior**: When `create_postgresql = true`, the module automatically sets `config_store` and `logs_store` to use the provisioned PostgreSQL instance. If you explicitly set either variable, your value takes precedence.
+
+**Cloud-specific implementations**:
+- **AWS**: RDS PostgreSQL instance with encrypted storage, private subnets, security group restricted to Bifrost
+- **GCP**: Cloud SQL PostgreSQL with private IP via VPC peering, automatic backups, SSL required
+- **Azure**: Flexible Server with VNet integration via delegated subnet, private DNS zone
+- **Kubernetes**: PostgreSQL StatefulSet with PVC, ClusterIP service, health probes
+
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
 | `service_url` | URL to access Bifrost |
 | `health_check_url` | Health endpoint URL |
+| `postgresql_endpoint` | PostgreSQL host:port (null when `create_postgresql = false`) |
+| `postgresql_password` | PostgreSQL password (sensitive, null when `create_postgresql = false`) |
