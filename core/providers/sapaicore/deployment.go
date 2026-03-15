@@ -37,14 +37,14 @@ type deploymentFetchResult struct {
 	bifError    *schemas.BifrostError
 }
 
-// NewDeploymentCache creates a new deployment cache with default TTL
-func NewDeploymentCache(client *fasthttp.Client, tokenCache *TokenCache) *DeploymentCache {
-	return NewDeploymentCacheWithTTL(client, tokenCache, defaultDeploymentCacheTTL)
+// newDeploymentCache creates a new deployment cache with default TTL
+func newDeploymentCache(client *fasthttp.Client, tokenCache *TokenCache) *DeploymentCache {
+	return newDeploymentCacheWithTTL(client, tokenCache, defaultDeploymentCacheTTL)
 }
 
-// NewDeploymentCacheWithTTL creates a new deployment cache with a custom TTL.
+// newDeploymentCacheWithTTL creates a new deployment cache with a custom TTL.
 // TTL values less than MinDeploymentCacheTTL will be clamped to the minimum.
-func NewDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, ttl time.Duration) *DeploymentCache {
+func newDeploymentCacheWithTTL(client *fasthttp.Client, tokenCache *TokenCache, ttl time.Duration) *DeploymentCache {
 	if ttl <= 0 {
 		ttl = defaultDeploymentCacheTTL
 	} else if ttl < minDeploymentCacheTTL {
@@ -290,13 +290,10 @@ func (dc *DeploymentCache) ListModels(
 			continue
 		}
 		if _, exists := modelSet[modelName]; !exists {
-			config := GetSAPAICoreModelConfig(modelName)
 			modelSet[modelName] = SAPAICoreModel{
-				ID:              modelName,
-				Name:            modelName,
-				DeploymentID:    res.ID,
-				ContextLength:   config.ContextWindow,
-				MaxOutputTokens: config.MaxTokens,
+				ID:           modelName,
+				Name:         modelName,
+				DeploymentID: res.ID,
 			}
 		}
 	}

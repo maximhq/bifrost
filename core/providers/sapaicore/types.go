@@ -85,62 +85,12 @@ type SAPAICoreTokenResponse struct {
 	Scope       string `json:"scope,omitempty"`
 }
 
-// SAPAICoreModelConfig contains configuration for a specific model
-type SAPAICoreModelConfig struct {
-	MaxTokens     int
-	ContextWindow int
-}
-
-// SAPAICoreModelConfigs contains configuration for known SAP AI Core models
-var SAPAICoreModelConfigs = map[string]SAPAICoreModelConfig{
-	// Anthropic models via Bedrock
-	"anthropic--claude-4.5-sonnet": {MaxTokens: 64000, ContextWindow: 200000},
-	"anthropic--claude-4-sonnet":   {MaxTokens: 64000, ContextWindow: 200000},
-	"anthropic--claude-4-opus":     {MaxTokens: 64000, ContextWindow: 200000},
-	"anthropic--claude-3.7-sonnet": {MaxTokens: 64000, ContextWindow: 200000},
-	"anthropic--claude-3.5-sonnet": {MaxTokens: 8192, ContextWindow: 200000},
-	"anthropic--claude-3-sonnet":   {MaxTokens: 4096, ContextWindow: 200000},
-	"anthropic--claude-3-haiku":    {MaxTokens: 4096, ContextWindow: 200000},
-	"anthropic--claude-3-opus":     {MaxTokens: 4096, ContextWindow: 200000},
-
-	// Amazon models via Bedrock
-	"amazon--nova-pro":   {MaxTokens: 5120, ContextWindow: 300000},
-	"amazon--nova-lite":  {MaxTokens: 5120, ContextWindow: 300000},
-	"amazon--nova-micro": {MaxTokens: 5120, ContextWindow: 128000},
-
-	// Gemini models via Vertex
-	"gemini-2.5-pro":   {MaxTokens: 65536, ContextWindow: 1048576},
-	"gemini-2.5-flash": {MaxTokens: 65536, ContextWindow: 1048576},
-	"gemini-2.0-flash": {MaxTokens: 8192, ContextWindow: 1048576},
-	"gemini-1.5-pro":   {MaxTokens: 8192, ContextWindow: 2097152},
-	"gemini-1.5-flash": {MaxTokens: 8192, ContextWindow: 1048576},
-
-	// OpenAI models
-	"gpt-4":        {MaxTokens: 4096, ContextWindow: 200000},
-	"gpt-4o":       {MaxTokens: 16384, ContextWindow: 128000},
-	"gpt-4o-mini":  {MaxTokens: 16384, ContextWindow: 128000},
-	"gpt-4.1":      {MaxTokens: 32768, ContextWindow: 1048576},
-	"gpt-4.1-mini": {MaxTokens: 32768, ContextWindow: 1048576},
-	"gpt-4.1-nano": {MaxTokens: 32768, ContextWindow: 1048576},
-	"gpt-5":        {MaxTokens: 128000, ContextWindow: 272000},
-	"gpt-5-nano":   {MaxTokens: 128000, ContextWindow: 272000},
-	"gpt-5-mini":   {MaxTokens: 128000, ContextWindow: 272000},
-
-	// Reasoning models
-	"o1":      {MaxTokens: 100000, ContextWindow: 200000},
-	"o3":      {MaxTokens: 100000, ContextWindow: 200000},
-	"o3-mini": {MaxTokens: 100000, ContextWindow: 200000},
-	"o4-mini": {MaxTokens: 100000, ContextWindow: 200000},
-}
-
-// GetSAPAICoreModelConfig returns the configuration for a model, with fallback defaults
-func GetSAPAICoreModelConfig(modelName string) SAPAICoreModelConfig {
-	if config, ok := SAPAICoreModelConfigs[modelName]; ok {
-		return config
-	}
-	// Default fallback
-	return SAPAICoreModelConfig{MaxTokens: 8192, ContextWindow: 200000}
-}
+// DefaultMaxTokens is the default max_tokens value used when the user does not provide one.
+// This is necessary because the Anthropic Messages API (used by Bedrock InvokeModel) requires
+// max_tokens on every request. The user can override via MaxCompletionTokens in request params.
+// This follows the same pattern as anthropic.AnthropicDefaultMaxTokens and
+// bedrock.DefaultCompletionMaxTokens.
+const DefaultMaxTokens = 4096
 
 // SAPAICoreCachedDeployment represents a cached deployment with its resolved ID
 type SAPAICoreCachedDeployment struct {
@@ -151,20 +101,18 @@ type SAPAICoreCachedDeployment struct {
 
 // SAPAICoreModel represents a model available in SAP AI Core
 type SAPAICoreModel struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	DeploymentID    string `json:"deployment_id"`
-	ContextLength   int    `json:"context_length,omitempty"`
-	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	DeploymentID string `json:"deployment_id"`
 }
 
-// SAPAICoreErrorResponse captures error responses from SAP AI Core across all backend formats.
+// sapaicoreErrorResponse captures error responses from SAP AI Core across all backend formats.
 // OpenAI format:   {"error": {"message": "...", "type": "...", "code": "...", "param": "..."}}
 // Platform format: {"message": "...", "code": "...", "status": "..."}
 // Bedrock format:  {"message": "...", "__type": "ValidationException"}
-type SAPAICoreErrorResponse struct {
+type sapaicoreErrorResponse struct {
 	// OpenAI-envelope nested error
-	Error *SAPAICoreErrorField `json:"error,omitempty"`
+	Error *sapaicoreErrorField `json:"error,omitempty"`
 	// Top-level fields from SAP AI Core platform and Bedrock errors
 	Message string  `json:"message,omitempty"`
 	Type    *string `json:"type,omitempty"`
@@ -176,8 +124,8 @@ type SAPAICoreErrorResponse struct {
 	EventID *string `json:"event_id,omitempty"`
 }
 
-// SAPAICoreErrorField represents the nested error object in OpenAI-format responses.
-type SAPAICoreErrorField struct {
+// sapaicoreErrorField represents the nested error object in OpenAI-format responses.
+type sapaicoreErrorField struct {
 	Message string      `json:"message,omitempty"`
 	Type    *string     `json:"type,omitempty"`
 	Code    *string     `json:"code,omitempty"`

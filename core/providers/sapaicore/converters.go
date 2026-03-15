@@ -9,49 +9,30 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 )
 
-// Response pools for Bedrock and Vertex response objects
-var (
-	bedrockResponsePool = sync.Pool{
-		New: func() interface{} {
-			return &BedrockResponse{}
-		},
-	}
+// Response pool for Vertex (Gemini) response objects.
+// We reuse the canonical response type from the gemini package.
+var vertexResponsePool = sync.Pool{
+	New: func() interface{} {
+		return &gemini.GenerateContentResponse{}
+	},
+}
 
-	vertexResponsePool = sync.Pool{
-		New: func() interface{} {
-			return &VertexGenerateContentResponse{}
-		},
-	}
-)
-
-// acquireBedrockResponse gets a BedrockResponse from the pool and resets it.
-func acquireBedrockResponse() *BedrockResponse {
-	resp := bedrockResponsePool.Get().(*BedrockResponse)
-	*resp = BedrockResponse{} // Reset the struct
+// acquireVertexResponse gets a GenerateContentResponse from the pool and resets it.
+func acquireVertexResponse() *gemini.GenerateContentResponse {
+	resp := vertexResponsePool.Get().(*gemini.GenerateContentResponse)
+	*resp = gemini.GenerateContentResponse{} // Reset the struct
 	return resp
 }
 
-// releaseBedrockResponse returns a BedrockResponse to the pool.
-func releaseBedrockResponse(resp *BedrockResponse) {
-	if resp != nil {
-		bedrockResponsePool.Put(resp)
-	}
-}
-
-// acquireVertexResponse gets a VertexGenerateContentResponse from the pool and resets it.
-func acquireVertexResponse() *VertexGenerateContentResponse {
-	resp := vertexResponsePool.Get().(*VertexGenerateContentResponse)
-	*resp = VertexGenerateContentResponse{} // Reset the struct
-	return resp
-}
-
-// releaseVertexResponse returns a VertexGenerateContentResponse to the pool.
-func releaseVertexResponse(resp *VertexGenerateContentResponse) {
+// releaseVertexResponse returns a GenerateContentResponse to the pool.
+func releaseVertexResponse(resp *gemini.GenerateContentResponse) {
 	if resp != nil {
 		vertexResponsePool.Put(resp)
 	}
@@ -73,208 +54,11 @@ func extractMediaType(url string) string {
 	return "image/jpeg"
 }
 
-// AnthropicStreamEvent represents a streaming event from SAP AI Core Bedrock (Anthropic Messages API format)
-// Event types: message_start, content_block_start, content_block_delta, content_block_stop, message_delta, message_stop
-type AnthropicStreamEvent struct {
-	Type         string                      `json:"type"`
-	Index        *int                        `json:"index,omitempty"`
-	Message      *AnthropicStreamMessage     `json:"message,omitempty"`                          // For message_start
-	ContentBlock *AnthropicContentBlock      `json:"content_block,omitempty"`                    // For content_block_start
-	Delta        *AnthropicStreamDelta       `json:"delta,omitempty"`                            // For content_block_delta and message_delta
-	Usage        *AnthropicStreamUsage       `json:"usage,omitempty"`                            // For message_delta
-	Metrics      *AnthropicInvocationMetrics `json:"amazon-bedrock-invocationMetrics,omitempty"` // For message_stop
-}
-
-// AnthropicContentBlock represents a content block in content_block_start events
-type AnthropicContentBlock struct {
-	Type  string  `json:"type"`            // "text", "tool_use"
-	ID    *string `json:"id,omitempty"`    // For tool_use blocks
-	Name  *string `json:"name,omitempty"`  // For tool_use blocks
-	Input any     `json:"input,omitempty"` // For tool_use blocks (usually empty object initially)
-}
-
-// AnthropicStreamMessage represents the message in message_start event
-type AnthropicStreamMessage struct {
-	ID           string                `json:"id"`
-	Type         string                `json:"type"`
-	Role         string                `json:"role"`
-	Model        string                `json:"model"`
-	StopReason   *string               `json:"stop_reason"`
-	StopSequence *string               `json:"stop_sequence"`
-	Usage        *AnthropicStreamUsage `json:"usage,omitempty"`
-}
-
-// AnthropicStreamDelta represents delta content in streaming
-type AnthropicStreamDelta struct {
-	Type         string  `json:"type,omitempty"`          // "text_delta", "input_json_delta" for content_block_delta
-	Text         *string `json:"text,omitempty"`          // Text content for text_delta
-	PartialJSON  *string `json:"partial_json,omitempty"`  // Partial JSON for input_json_delta (tool arguments)
-	StopReason   *string `json:"stop_reason,omitempty"`   // For message_delta
-	StopSequence *string `json:"stop_sequence,omitempty"` // For message_delta
-}
-
-// AnthropicStreamUsage represents usage information
-type AnthropicStreamUsage struct {
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
-}
-
-// AnthropicInvocationMetrics represents invocation metrics from message_stop
-type AnthropicInvocationMetrics struct {
-	InputTokenCount   int `json:"inputTokenCount"`
-	OutputTokenCount  int `json:"outputTokenCount"`
-	InvocationLatency int `json:"invocationLatency"`
-	FirstByteLatency  int `json:"firstByteLatency"`
-}
-
-// convertAnthropicStopReason converts Anthropic stop reasons to Bifrost format
-func convertAnthropicStopReason(reason string) *string {
-	var bifrostReason string
-	switch reason {
-	case "end_turn":
-		bifrostReason = "stop"
-	case "max_tokens":
-		bifrostReason = "length"
-	case "stop_sequence":
-		bifrostReason = "stop"
-	case "tool_use":
-		bifrostReason = "tool_calls"
-	default:
-		bifrostReason = reason
-	}
-	return &bifrostReason
-}
-
-// BedrockRequest represents a request to Bedrock-compatible API
-type BedrockRequest struct {
-	AnthropicVersion string             `json:"anthropic_version,omitempty"`
-	MaxTokens        int                `json:"max_tokens"`
-	Messages         []BedrockMessage   `json:"messages"`
-	System           string             `json:"system,omitempty"`
-	Temperature      *float64           `json:"temperature,omitempty"`
-	TopP             *float64           `json:"top_p,omitempty"`
-	TopK             *int               `json:"top_k,omitempty"`
-	StopSequences    []string           `json:"stop_sequences,omitempty"`
-	Tools            []BedrockTool      `json:"tools,omitempty"`
-	ToolChoice       *BedrockToolChoice `json:"tool_choice,omitempty"`
-}
-
-// BedrockTool represents a tool definition for Bedrock/Anthropic
-type BedrockTool struct {
-	Name        string                          `json:"name"`
-	Description *string                         `json:"description,omitempty"`
-	InputSchema *schemas.ToolFunctionParameters `json:"input_schema,omitempty"`
-}
-
-// BedrockToolChoice represents tool choice configuration
-type BedrockToolChoice struct {
-	Type string  `json:"type"`           // "auto", "any", "tool"
-	Name *string `json:"name,omitempty"` // Required when type is "tool"
-}
-
-// BedrockMessage represents a message in Bedrock format
-type BedrockMessage struct {
-	Role    string                `json:"role"`
-	Content []BedrockContentBlock `json:"content"`
-}
-
-// BedrockContentBlock represents a content block in Bedrock format
-type BedrockContentBlock struct {
-	Type      string              `json:"type"`
-	Text      string              `json:"text,omitempty"`
-	Source    *BedrockImageSource `json:"source,omitempty"`
-	ID        *string             `json:"id,omitempty"`          // For tool_use blocks
-	Name      *string             `json:"name,omitempty"`        // For tool_use blocks
-	Input     any                 `json:"input,omitempty"`       // For tool_use blocks
-	ToolUseID *string             `json:"tool_use_id,omitempty"` // For tool_result blocks
-	Content   any                 `json:"content,omitempty"`     // For tool_result blocks (can be string or array)
-}
-
-// BedrockImageSource represents an image source in Bedrock format
-type BedrockImageSource struct {
-	Type      string `json:"type"`
-	MediaType string `json:"media_type"`
-	Data      string `json:"data"`
-}
-
-// BedrockResponse represents a response from Bedrock-compatible API (uses Anthropic Messages API format)
-type BedrockResponse struct {
-	ID           string                `json:"id"`
-	Type         string                `json:"type"`
-	Role         string                `json:"role"`
-	Content      []BedrockContentBlock `json:"content"`
-	Model        string                `json:"model"`
-	StopReason   string                `json:"stop_reason"`
-	StopSequence *string               `json:"stop_sequence,omitempty"`
-	Usage        *AnthropicStreamUsage `json:"usage,omitempty"`
-}
-
-// VertexGenerateContentRequest represents a request to Vertex AI
-type VertexGenerateContentRequest struct {
-	Contents          []VertexContent         `json:"contents"`
-	SystemInstruction *VertexContent          `json:"systemInstruction,omitempty"`
-	GenerationConfig  *VertexGenerationConfig `json:"generationConfig,omitempty"`
-	Tools             []VertexTool            `json:"tools,omitempty"`
-	ToolConfig        *VertexToolConfig       `json:"toolConfig,omitempty"`
-}
-
-// VertexContent represents content in Vertex format
-type VertexContent struct {
-	Role  string       `json:"role,omitempty"`
-	Parts []VertexPart `json:"parts"`
-}
-
-// VertexPart represents a part in Vertex content
-type VertexPart struct {
-	Text             string                  `json:"text,omitempty"`
-	InlineData       *VertexInlineData       `json:"inlineData,omitempty"`
-	FunctionCall     *VertexFunctionCall     `json:"functionCall,omitempty"`
-	FunctionResponse *VertexFunctionResponse `json:"functionResponse,omitempty"`
-}
-
-// VertexInlineData represents inline data (images) in Vertex format
-type VertexInlineData struct {
-	MimeType string `json:"mimeType"`
-	Data     string `json:"data"`
-}
-
-// VertexFunctionCall represents a function call in Vertex format
-type VertexFunctionCall struct {
-	Name string         `json:"name"`
-	Args map[string]any `json:"args,omitempty"`
-}
-
-// VertexFunctionResponse represents a function response in Vertex format
-type VertexFunctionResponse struct {
-	Name     string         `json:"name"`
-	Response map[string]any `json:"response"`
-}
-
-// VertexTool represents a tool in Vertex format
-type VertexTool struct {
-	FunctionDeclarations []VertexFunctionDeclaration `json:"functionDeclarations,omitempty"`
-}
-
-// VertexFunctionDeclaration represents a function declaration in Vertex format
-type VertexFunctionDeclaration struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Parameters  any    `json:"parameters,omitempty"`
-}
-
-// VertexToolConfig represents tool configuration in Vertex format
-type VertexToolConfig struct {
-	FunctionCallingConfig *VertexFunctionCallingConfig `json:"functionCallingConfig,omitempty"`
-}
-
-// VertexFunctionCallingConfig represents function calling configuration
-type VertexFunctionCallingConfig struct {
-	Mode                 string   `json:"mode,omitempty"` // AUTO, ANY, NONE
-	AllowedFunctionNames []string `json:"allowedFunctionNames,omitempty"`
-}
-
-// VertexGenerationConfig represents generation config for Vertex
-type VertexGenerationConfig struct {
+// vertexGenerationConfig is a simplified GenerationConfig for SAP AI Core's Vertex path.
+// We keep this local because the upstream gemini.GenerationConfig has many more fields
+// (30+ fields) that are not needed for the SAP AI Core case, and its MaxOutputTokens is
+// int32 while SAP AI Core uses *int.
+type vertexGenerationConfig struct {
 	Temperature     *float64 `json:"temperature,omitempty"`
 	TopP            *float64 `json:"topP,omitempty"`
 	TopK            *int     `json:"topK,omitempty"`
@@ -282,24 +66,15 @@ type VertexGenerationConfig struct {
 	StopSequences   []string `json:"stopSequences,omitempty"`
 }
 
-// VertexGenerateContentResponse represents a response from Vertex AI
-type VertexGenerateContentResponse struct {
-	Candidates    []VertexCandidate    `json:"candidates"`
-	UsageMetadata *VertexUsageMetadata `json:"usageMetadata,omitempty"`
-}
-
-// VertexCandidate represents a candidate in Vertex response
-type VertexCandidate struct {
-	Content      VertexContent `json:"content"`
-	FinishReason string        `json:"finishReason,omitempty"`
-	Index        int           `json:"index"`
-}
-
-// VertexUsageMetadata represents usage metadata from Vertex
-type VertexUsageMetadata struct {
-	PromptTokenCount     int `json:"promptTokenCount"`
-	CandidatesTokenCount int `json:"candidatesTokenCount"`
-	TotalTokenCount      int `json:"totalTokenCount"`
+// vertexRequest is a simplified request type for SAP AI Core's Vertex path.
+// We keep this local because gemini.GeminiGenerationRequest has many extra fields
+// (embedding, transcription, speech, image flags) that produce different serialization.
+type vertexRequest struct {
+	Contents          []gemini.Content        `json:"contents"`
+	SystemInstruction *gemini.Content         `json:"systemInstruction,omitempty"`
+	GenerationConfig  *vertexGenerationConfig `json:"generationConfig,omitempty"`
+	Tools             []gemini.Tool           `json:"tools,omitempty"`
+	ToolConfig        *gemini.ToolConfig      `json:"toolConfig,omitempty"`
 }
 
 // mapRoleForAnthropic maps message roles to Anthropic-compatible roles.
@@ -328,363 +103,120 @@ func mapResponsesRoleForAnthropic(role schemas.ResponsesMessageRoleType) string 
 	}
 }
 
-// convertToBedrock converts a Bifrost chat request to Bedrock format
-func convertToBedrock(request *schemas.BifrostChatRequest) *BedrockRequest {
-	bedrockReq := &BedrockRequest{
-		AnthropicVersion: "bedrock-2023-05-31",
-		MaxTokens:        4096, // Default
-	}
-
-	// Get model config for max tokens
-	config := GetSAPAICoreModelConfig(request.Model)
-	bedrockReq.MaxTokens = config.MaxTokens
-
-	// Convert messages from Input field
-	var systemMessage string
-	for _, msg := range request.Input {
-		if msg.Role == schemas.ChatMessageRoleSystem {
-			// Extract system message
-			if msg.Content != nil && msg.Content.ContentStr != nil {
-				systemMessage = *msg.Content.ContentStr
-			}
-			continue
-		}
-
-		// Handle tool messages - convert to tool_result blocks
-		if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
-			toolResultContent := ""
-			if msg.Content != nil && msg.Content.ContentStr != nil {
-				toolResultContent = *msg.Content.ContentStr
-			}
-			bedrockMsg := BedrockMessage{
-				Role: "user", // Anthropic uses user role for tool results
-				Content: []BedrockContentBlock{
-					{
-						Type:      "tool_result",
-						ToolUseID: msg.ChatToolMessage.ToolCallID,
-						Content:   toolResultContent,
-					},
-				},
-			}
-			bedrockReq.Messages = append(bedrockReq.Messages, bedrockMsg)
-			continue
-		}
-
-		bedrockMsg := BedrockMessage{
-			Role: mapRoleForAnthropic(msg.Role),
-		}
-
-		// Convert content
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
-				bedrockMsg.Content = []BedrockContentBlock{
-					{Type: "text", Text: *msg.Content.ContentStr},
-				}
-			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range msg.Content.ContentBlocks {
-					if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-						bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
-							Type: "text",
-							Text: *block.Text,
-						})
-					} else if block.Type == schemas.ChatContentBlockTypeImage && block.ImageURLStruct != nil {
-						// Handle image URL - extract base64 data
-						bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
-							Type: "image",
-							Source: &BedrockImageSource{
-								Type:      "base64",
-								MediaType: extractMediaType(block.ImageURLStruct.URL),
-								Data:      block.ImageURLStruct.URL,
-							},
-						})
-					}
-				}
-			}
-		}
-
-		// Handle assistant messages with tool calls
-		if msg.Role == schemas.ChatMessageRoleAssistant && msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0 {
-			for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
-				// Convert arguments string to any (parse JSON)
-				var inputArgs any
-				if toolCall.Function.Arguments != "" {
-					if err := sonic.UnmarshalString(toolCall.Function.Arguments, &inputArgs); err != nil {
-						// If JSON parsing fails, use empty object
-						inputArgs = map[string]any{}
-					}
-				} else {
-					inputArgs = map[string]any{}
-				}
-
-				bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
-					Type:  "tool_use",
-					ID:    toolCall.ID,
-					Name:  toolCall.Function.Name,
-					Input: inputArgs,
-				})
-			}
-		}
-
-		bedrockReq.Messages = append(bedrockReq.Messages, bedrockMsg)
-	}
-
-	bedrockReq.System = systemMessage
-
-	// Copy generation parameters from Params
-	if request.Params != nil {
-		if request.Params.Temperature != nil {
-			bedrockReq.Temperature = request.Params.Temperature
-		}
-		if request.Params.TopP != nil {
-			bedrockReq.TopP = request.Params.TopP
-		}
-		if request.Params.MaxCompletionTokens != nil {
-			bedrockReq.MaxTokens = *request.Params.MaxCompletionTokens
-		}
-		if request.Params.Stop != nil {
-			bedrockReq.StopSequences = request.Params.Stop
-		}
-
-		// Convert tools
-		if request.Params.Tools != nil {
-			tools := make([]BedrockTool, 0, len(request.Params.Tools))
-			for _, tool := range request.Params.Tools {
-				if tool.Function == nil {
-					continue
-				}
-				bedrockTool := BedrockTool{
-					Name:        tool.Function.Name,
-					Description: tool.Function.Description,
-				}
-				if tool.Function.Parameters != nil {
-					bedrockTool.InputSchema = tool.Function.Parameters
-				}
-				tools = append(tools, bedrockTool)
-			}
-			bedrockReq.Tools = tools
-		}
-
-		// Convert tool choice
-		if request.Params.ToolChoice != nil {
-			if request.Params.ToolChoice.ChatToolChoiceStr != nil {
-				// "auto", "none", "required" -> Anthropic uses "auto", "none" is not supported, "required" -> "any"
-				choice := *request.Params.ToolChoice.ChatToolChoiceStr
-				switch choice {
-				case "auto":
-					bedrockReq.ToolChoice = &BedrockToolChoice{Type: "auto"}
-				case "required":
-					bedrockReq.ToolChoice = &BedrockToolChoice{Type: "any"}
-					// "none" is not directly supported by Anthropic, omit it
-				}
-			} else if request.Params.ToolChoice.ChatToolChoiceStruct != nil {
-				// Specific tool choice - use the Function field
-				if request.Params.ToolChoice.ChatToolChoiceStruct.Function.Name != "" {
-					bedrockReq.ToolChoice = &BedrockToolChoice{
-						Type: "tool",
-						Name: &request.Params.ToolChoice.ChatToolChoiceStruct.Function.Name,
-					}
-				}
-			}
-		}
-	}
-
-	return bedrockReq
-}
-
-// parseBedrockResponse parses a Bedrock response into Bifrost format.
-// Uses object pooling for efficient memory reuse.
-func parseBedrockResponse(body []byte, model string) (*schemas.BifrostChatResponse, error) {
-	bedrockResp := acquireBedrockResponse()
-	defer releaseBedrockResponse(bedrockResp)
-
-	if err := sonic.Unmarshal(body, bedrockResp); err != nil {
-		return nil, err
-	}
-
-	// Extract text content and tool calls
-	var content string
-	var toolCalls []schemas.ChatAssistantMessageToolCall
-	toolCallIndex := uint16(0)
-
-	for _, block := range bedrockResp.Content {
-		switch block.Type {
-		case "text":
-			content += block.Text
-		case "tool_use":
-			// Convert tool_use block to OpenAI tool call format
-			var argsJSON string
-			if block.Input != nil {
-				if argsBytes, err := sonic.Marshal(block.Input); err == nil {
-					argsJSON = string(argsBytes)
-				}
-			}
-			if argsJSON == "" {
-				argsJSON = "{}"
-			}
-
-			toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-				Index: toolCallIndex,
-				Type:  schemas.Ptr("function"),
-				ID:    block.ID,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      block.Name,
-					Arguments: argsJSON,
-				},
-			})
-			toolCallIndex++
-		}
-	}
-
-	// Map stop reason
-	finishReason := mapBedrockStopReason(bedrockResp.StopReason)
-
-	// Create ChatMessage for the response
-	assistantRole := schemas.ChatMessageRoleAssistant
-	responseMessage := &schemas.ChatMessage{
-		Role: assistantRole,
-		Content: &schemas.ChatMessageContent{
-			ContentStr: &content,
-		},
-	}
-
-	// Add tool calls to assistant message if present
-	if len(toolCalls) > 0 {
-		responseMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{
-			ToolCalls: toolCalls,
-		}
-	}
-
-	response := &schemas.BifrostChatResponse{
-		ID:      bedrockResp.ID,
-		Object:  "chat.completion",
-		Created: int(time.Now().Unix()),
-		Model:   model,
-		Choices: []schemas.BifrostResponseChoice{
-			{
-				Index: 0,
-				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-					Message: responseMessage,
-				},
-				FinishReason: &finishReason,
-			},
-		},
-	}
-
-	if bedrockResp.Usage != nil {
-		response.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     bedrockResp.Usage.InputTokens,
-			CompletionTokens: bedrockResp.Usage.OutputTokens,
-			TotalTokens:      bedrockResp.Usage.InputTokens + bedrockResp.Usage.OutputTokens,
-		}
-	}
-
-	return response, nil
-}
-
-// mapBedrockStopReason maps Bedrock stop reasons to OpenAI format
-func mapBedrockStopReason(reason string) string {
-	switch reason {
-	case "end_turn":
-		return "stop"
-	case "max_tokens":
-		return "length"
-	case "stop_sequence":
-		return "stop"
-	case "tool_use":
-		return "tool_calls"
-	default:
-		return reason
-	}
-}
-
 // resolveSchemaRefs resolves $ref references in a JSON schema by inlining the referenced definitions.
 // This is needed because Vertex/Gemini doesn't support $ref alongside other fields.
 // It also removes "ref" fields (without $) that may be left over from pre-processing.
+// The function preserves key ordering by using OrderedMap throughout, which is critical
+// for provider-side prompt caching (different key ordering = different cache keys).
 func resolveSchemaRefs(params *schemas.ToolFunctionParameters) any {
 	if params == nil {
 		return nil
 	}
 
-	// Convert to map for easier manipulation
+	// Convert to OrderedMap to preserve key ordering from the original JSON.
+	// ToolFunctionParameters.MarshalJSON preserves order, and OrderedMap.UnmarshalJSON
+	// captures it, so the round-trip maintains the original field order.
 	paramsBytes, err := sonic.Marshal(params)
 	if err != nil {
 		return params
 	}
 
-	var schemaMap map[string]any
-	if err := sonic.Unmarshal(paramsBytes, &schemaMap); err != nil {
+	schemaMap := schemas.NewOrderedMap()
+	if err := schemaMap.UnmarshalJSON(paramsBytes); err != nil {
 		return params
 	}
 
-	// Extract definitions ($defs or definitions)
+	// Extract definitions ($defs or definitions).
+	// The defs lookup map uses plain map[string]any for key-based lookups;
+	// the values inside are *OrderedMap (created by OrderedMap.UnmarshalJSON).
 	defs := make(map[string]any)
-	if d, ok := schemaMap["$defs"].(map[string]any); ok {
-		defs = d
+	if d, ok := extractOrderedMapField(schemaMap, "$defs"); ok {
+		d.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
 	}
-	if d, ok := schemaMap["definitions"].(map[string]any); ok {
-		for k, v := range d {
-			defs[k] = v
-		}
+	if d, ok := extractOrderedMapField(schemaMap, "definitions"); ok {
+		d.Range(func(key string, value interface{}) bool {
+			defs[key] = value
+			return true
+		})
 	}
 
-	// Recursively resolve all $ref references and remove "ref" fields
-	// Even if no $defs/definitions exist, there might be "ref" fields to remove
+	// Recursively resolve all $ref references and remove "ref" fields.
+	// Even if no $defs/definitions exist, there might be "ref" fields to remove.
 	resolved := resolveRefsInValue(schemaMap, defs)
 
 	// Remove $defs and definitions from the result (they're now inlined)
-	if resolvedMap, ok := resolved.(map[string]any); ok {
-		delete(resolvedMap, "$defs")
-		delete(resolvedMap, "definitions")
+	if resolvedMap, ok := resolved.(*schemas.OrderedMap); ok {
+		resolvedMap.Delete("$defs")
+		resolvedMap.Delete("definitions")
 		return resolvedMap
 	}
 
 	return resolved
 }
 
-// resolveRefsInValue recursively resolves $ref references and removes "ref" fields in a value
+// extractOrderedMapField gets a field from an OrderedMap and asserts it's an *OrderedMap.
+func extractOrderedMapField(om *schemas.OrderedMap, key string) (*schemas.OrderedMap, bool) {
+	val, exists := om.Get(key)
+	if !exists {
+		return nil, false
+	}
+	nested, ok := val.(*schemas.OrderedMap)
+	return nested, ok
+}
+
+// resolveRefsInValue recursively resolves $ref references and removes "ref" fields in a value.
+// It handles *OrderedMap (from OrderedMap.UnmarshalJSON) to preserve key ordering.
 func resolveRefsInValue(value any, defs map[string]any) any {
 	switch v := value.(type) {
-	case map[string]any:
+	case *schemas.OrderedMap:
+		if v == nil {
+			return nil
+		}
 		// Check if this object has a $ref (standard JSON Schema reference)
-		if ref, ok := v["$ref"].(string); ok {
-			// Extract the definition name from the ref (e.g., "#/$defs/QuestionOption" -> "QuestionOption")
-			refName := extractRefName(ref)
-			if refName != "" {
-				if def, ok := defs[refName]; ok {
-					// Clone the definition and resolve any nested refs in it
-					defCopy := deepCopyValue(def)
-					resolved := resolveRefsInValue(defCopy, defs)
+		if refVal, ok := v.Get("$ref"); ok {
+			if ref, ok := refVal.(string); ok {
+				refName := extractRefName(ref)
+				if refName != "" {
+					if def, ok := defs[refName]; ok {
+						// Clone the definition and resolve any nested refs in it
+						defCopy := deepCopyValue(def)
+						resolved := resolveRefsInValue(defCopy, defs)
 
-					// If the original object had other fields besides $ref, merge them
-					// But according to JSON Schema, if $ref is present, other fields should be ignored
-					// However, we'll merge non-$ref fields for compatibility
-					if resolvedMap, ok := resolved.(map[string]any); ok {
-						for k, val := range v {
-							if k != "$ref" {
-								// Only add if not already in resolved (definition takes precedence)
-								if _, exists := resolvedMap[k]; !exists {
-									resolvedMap[k] = resolveRefsInValue(val, defs)
+						// If the original object had other fields besides $ref, merge them.
+						// According to JSON Schema, if $ref is present, other fields should be ignored,
+						// but we merge non-$ref fields for compatibility.
+						if resolvedMap, ok := resolved.(*schemas.OrderedMap); ok {
+							v.Range(func(k string, val interface{}) bool {
+								if k != "$ref" {
+									if _, exists := resolvedMap.Get(k); !exists {
+										resolvedMap.Set(k, resolveRefsInValue(val, defs))
+									}
 								}
-							}
+								return true
+							})
+							return resolvedMap
 						}
-						return resolvedMap
+						return resolved
 					}
-					return resolved
 				}
 			}
 		}
 
-		// No $ref or couldn't resolve, process all fields
-		// Also remove "ref" fields (non-standard, without $) as Vertex doesn't support them
-		result := make(map[string]any)
-		for k, val := range v {
+		// No $ref or couldn't resolve, process all fields.
+		// Also remove "ref" fields (non-standard, without $) as Vertex doesn't support them.
+		result := schemas.NewOrderedMapWithCapacity(v.Len())
+		v.Range(func(k string, val interface{}) bool {
 			// Skip "ref" field - this is a non-standard field that Vertex rejects
 			// when it appears alongside other schema fields like "type", "properties", etc.
 			if k == "ref" {
-				continue
+				return true
 			}
-			result[k] = resolveRefsInValue(val, defs)
-		}
+			result.Set(k, resolveRefsInValue(val, defs))
+			return true
+		})
 		return result
 
 	case []any:
@@ -714,11 +246,21 @@ func extractRefName(ref string) string {
 	return ""
 }
 
-// deepCopyValue creates a deep copy of a value
+// deepCopyValue creates a deep copy of a value, preserving OrderedMap key ordering.
 func deepCopyValue(value any) any {
 	switch v := value.(type) {
+	case *schemas.OrderedMap:
+		if v == nil {
+			return nil
+		}
+		result := schemas.NewOrderedMapWithCapacity(v.Len())
+		v.Range(func(k string, val interface{}) bool {
+			result.Set(k, deepCopyValue(val))
+			return true
+		})
+		return result
 	case map[string]any:
-		result := make(map[string]any)
+		result := make(map[string]any, len(v))
 		for k, val := range v {
 			result[k] = deepCopyValue(val)
 		}
@@ -735,8 +277,8 @@ func deepCopyValue(value any) any {
 }
 
 // convertToVertex converts a Bifrost chat request to Vertex AI format
-func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContentRequest {
-	vertexReq := &VertexGenerateContentRequest{}
+func convertToVertex(request *schemas.BifrostChatRequest) *vertexRequest {
+	vertexReq := &vertexRequest{}
 
 	// Build a map from tool call ID to function name for correlating tool responses
 	callIDToFunctionName := make(map[string]string)
@@ -751,15 +293,15 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 	}
 
 	// Track pending tool response parts for grouping consecutive tool messages
-	var pendingToolResponseParts []VertexPart
+	var pendingToolResponseParts []*gemini.Part
 
 	// Convert messages from Input field
 	for i, msg := range request.Input {
 		if msg.Role == schemas.ChatMessageRoleSystem {
 			// Handle system message
 			if msg.Content != nil && msg.Content.ContentStr != nil {
-				vertexReq.SystemInstruction = &VertexContent{
-					Parts: []VertexPart{{Text: *msg.Content.ContentStr}},
+				vertexReq.SystemInstruction = &gemini.Content{
+					Parts: []*gemini.Part{{Text: *msg.Content.ContentStr}},
 				}
 			}
 			continue
@@ -771,7 +313,7 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 		// If we have pending tool responses and current message is NOT a tool response,
 		// flush the pending tool responses as a single Content
 		if len(pendingToolResponseParts) > 0 && !isToolResponse {
-			vertexReq.Contents = append(vertexReq.Contents, VertexContent{
+			vertexReq.Contents = append(vertexReq.Contents, gemini.Content{
 				Role:  "user", // Tool responses use "user" role in Vertex
 				Parts: pendingToolResponseParts,
 			})
@@ -812,8 +354,8 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 				responseData = map[string]any{"output": ""}
 			}
 
-			pendingToolResponseParts = append(pendingToolResponseParts, VertexPart{
-				FunctionResponse: &VertexFunctionResponse{
+			pendingToolResponseParts = append(pendingToolResponseParts, &gemini.Part{
+				FunctionResponse: &gemini.FunctionResponse{
 					Name:     functionName,
 					Response: responseData,
 				},
@@ -829,7 +371,7 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 
 			// Flush if this is the last message or next is not a tool response
 			if isLastMessage || !nextIsToolResponse {
-				vertexReq.Contents = append(vertexReq.Contents, VertexContent{
+				vertexReq.Contents = append(vertexReq.Contents, gemini.Content{
 					Role:  "user", // Tool responses use "user" role in Vertex
 					Parts: pendingToolResponseParts,
 				})
@@ -838,7 +380,7 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 			continue
 		}
 
-		vertexContent := VertexContent{
+		vertexContent := gemini.Content{
 			Role: mapToVertexRole(string(msg.Role)),
 		}
 
@@ -847,13 +389,13 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 			// Add text content if present
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-					vertexContent.Parts = append(vertexContent.Parts, VertexPart{
+					vertexContent.Parts = append(vertexContent.Parts, &gemini.Part{
 						Text: *msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
 					for _, block := range msg.Content.ContentBlocks {
 						if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil && *block.Text != "" {
-							vertexContent.Parts = append(vertexContent.Parts, VertexPart{
+							vertexContent.Parts = append(vertexContent.Parts, &gemini.Part{
 								Text: *block.Text,
 							})
 						}
@@ -868,14 +410,14 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 					_ = sonic.Unmarshal([]byte(tc.Function.Arguments), &args)
 				}
 
-				functionCall := &VertexFunctionCall{
+				functionCall := &gemini.FunctionCall{
 					Args: args,
 				}
 				if tc.Function.Name != nil {
 					functionCall.Name = *tc.Function.Name
 				}
 
-				vertexContent.Parts = append(vertexContent.Parts, VertexPart{
+				vertexContent.Parts = append(vertexContent.Parts, &gemini.Part{
 					FunctionCall: functionCall,
 				})
 			}
@@ -887,17 +429,17 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 		// Convert regular content
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil {
-				vertexContent.Parts = []VertexPart{{Text: *msg.Content.ContentStr}}
+				vertexContent.Parts = []*gemini.Part{{Text: *msg.Content.ContentStr}}
 			} else if msg.Content.ContentBlocks != nil {
 				for _, block := range msg.Content.ContentBlocks {
 					if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil {
-						vertexContent.Parts = append(vertexContent.Parts, VertexPart{
+						vertexContent.Parts = append(vertexContent.Parts, &gemini.Part{
 							Text: *block.Text,
 						})
 					} else if block.Type == schemas.ChatContentBlockTypeImage && block.ImageURLStruct != nil {
-						vertexContent.Parts = append(vertexContent.Parts, VertexPart{
-							InlineData: &VertexInlineData{
-								MimeType: extractMediaType(block.ImageURLStruct.URL),
+						vertexContent.Parts = append(vertexContent.Parts, &gemini.Part{
+							InlineData: &gemini.Blob{
+								MIMEType: extractMediaType(block.ImageURLStruct.URL),
 								Data:     block.ImageURLStruct.URL,
 							},
 						})
@@ -910,9 +452,9 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 	}
 
 	// Set generation config
-	config := GetSAPAICoreModelConfig(request.Model)
-	vertexReq.GenerationConfig = &VertexGenerationConfig{
-		MaxOutputTokens: &config.MaxTokens,
+	defaultMaxTokens := DefaultMaxTokens
+	vertexReq.GenerationConfig = &vertexGenerationConfig{
+		MaxOutputTokens: &defaultMaxTokens,
 	}
 
 	// Copy generation parameters from Params
@@ -932,10 +474,10 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 
 		// Convert tools to Vertex format
 		if len(request.Params.Tools) > 0 {
-			var functionDeclarations []VertexFunctionDeclaration
+			var functionDeclarations []*gemini.FunctionDeclaration
 			for _, tool := range request.Params.Tools {
 				if tool.Type == schemas.ChatToolTypeFunction && tool.Function != nil {
-					fd := VertexFunctionDeclaration{
+					fd := &gemini.FunctionDeclaration{
 						Name: tool.Function.Name,
 					}
 					if tool.Function.Description != nil {
@@ -943,13 +485,14 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 					}
 					if tool.Function.Parameters != nil {
 						// Resolve $ref references in schema - Vertex doesn't support $ref alongside other fields
-						fd.Parameters = resolveSchemaRefs(tool.Function.Parameters)
+						// Use ParametersJSONSchema since we pass a raw any value (not *Schema)
+						fd.ParametersJSONSchema = resolveSchemaRefs(tool.Function.Parameters)
 					}
 					functionDeclarations = append(functionDeclarations, fd)
 				}
 			}
 			if len(functionDeclarations) > 0 {
-				vertexReq.Tools = []VertexTool{{
+				vertexReq.Tools = []gemini.Tool{{
 					FunctionDeclarations: functionDeclarations,
 				}}
 			}
@@ -965,9 +508,9 @@ func convertToVertex(request *schemas.BifrostChatRequest) *VertexGenerateContent
 }
 
 // convertToolChoiceToVertexConfig converts OpenAI tool choice to Vertex tool config
-func convertToolChoiceToVertexConfig(toolChoice *schemas.ChatToolChoice) *VertexToolConfig {
-	config := &VertexToolConfig{
-		FunctionCallingConfig: &VertexFunctionCallingConfig{},
+func convertToolChoiceToVertexConfig(toolChoice *schemas.ChatToolChoice) *gemini.ToolConfig {
+	config := &gemini.ToolConfig{
+		FunctionCallingConfig: &gemini.FunctionCallingConfig{},
 	}
 
 	if toolChoice.ChatToolChoiceStr != nil {
@@ -1031,38 +574,43 @@ func parseVertexResponse(body []byte, model string) (*schemas.BifrostChatRespons
 
 	if len(vertexResp.Candidates) > 0 {
 		candidate := vertexResp.Candidates[0]
-		for i, part := range candidate.Content.Parts {
-			// Handle text content
-			if part.Text != "" {
-				content += part.Text
-			}
-			// Handle function calls
-			if part.FunctionCall != nil {
-				// Serialize args to JSON string
-				argsJSON := "{}"
-				if part.FunctionCall.Args != nil {
-					if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
-						argsJSON = string(argsBytes)
-					}
+		if candidate.Content != nil {
+			for i, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
 				}
+				// Handle text content
+				if part.Text != "" {
+					content += part.Text
+				}
+				// Handle function calls
+				if part.FunctionCall != nil {
+					// Serialize args to JSON string
+					argsJSON := "{}"
+					if part.FunctionCall.Args != nil {
+						if argsBytes, err := sonic.Marshal(part.FunctionCall.Args); err == nil {
+							argsJSON = string(argsBytes)
+						}
+					}
 
-				// Generate a tool call ID
-				toolCallID := fmt.Sprintf("call_%s_%d", model, i)
-				toolCallType := "function"
-				funcName := part.FunctionCall.Name
+					// Generate a tool call ID
+					toolCallID := fmt.Sprintf("call_%s_%d", model, i)
+					toolCallType := "function"
+					funcName := part.FunctionCall.Name
 
-				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
-					Index: uint16(len(toolCalls)),
-					Type:  &toolCallType,
-					ID:    &toolCallID,
-					Function: schemas.ChatAssistantMessageToolCallFunction{
-						Name:      &funcName,
-						Arguments: argsJSON,
-					},
-				})
+					toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
+						Index: uint16(len(toolCalls)),
+						Type:  &toolCallType,
+						ID:    &toolCallID,
+						Function: schemas.ChatAssistantMessageToolCallFunction{
+							Name:      &funcName,
+							Arguments: argsJSON,
+						},
+					})
+				}
 			}
 		}
-		finishReason = mapVertexFinishReason(candidate.FinishReason)
+		finishReason = mapVertexFinishReason(string(candidate.FinishReason))
 
 		// If there are tool calls, set finish reason to tool_calls
 		if len(toolCalls) > 0 {
@@ -1104,9 +652,9 @@ func parseVertexResponse(body []byte, model string) (*schemas.BifrostChatRespons
 
 	if vertexResp.UsageMetadata != nil {
 		response.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:     vertexResp.UsageMetadata.PromptTokenCount,
-			CompletionTokens: vertexResp.UsageMetadata.CandidatesTokenCount,
-			TotalTokens:      vertexResp.UsageMetadata.TotalTokenCount,
+			PromptTokens:     int(vertexResp.UsageMetadata.PromptTokenCount),
+			CompletionTokens: int(vertexResp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:      int(vertexResp.UsageMetadata.TotalTokenCount),
 		}
 	}
 
@@ -1129,111 +677,15 @@ func mapVertexFinishReason(reason string) string {
 	}
 }
 
-// convertResponsesToBedrock converts a Bifrost Responses request to Bedrock format
-func convertResponsesToBedrock(request *schemas.BifrostResponsesRequest) *BedrockRequest {
-	bedrockReq := &BedrockRequest{
-		AnthropicVersion: "bedrock-2023-05-31",
-		MaxTokens:        4096, // Default
-	}
-
-	// Get model config for max tokens
-	config := GetSAPAICoreModelConfig(request.Model)
-	bedrockReq.MaxTokens = config.MaxTokens
-
-	// Convert messages from Input field
-	var systemMessage string
-	for _, msg := range request.Input {
-		// Handle system messages
-		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
-			if msg.Content != nil {
-				if msg.Content.ContentStr != nil {
-					systemMessage = *msg.Content.ContentStr
-				} else if msg.Content.ContentBlocks != nil {
-					// Extract text from content blocks
-					for _, block := range msg.Content.ContentBlocks {
-						if block.Text != nil {
-							systemMessage += *block.Text
-						}
-					}
-				}
-			}
-			continue
-		}
-
-		// Skip messages without role
-		if msg.Role == nil {
-			continue
-		}
-
-		bedrockMsg := BedrockMessage{
-			Role: mapResponsesRoleForAnthropic(*msg.Role),
-		}
-
-		// Convert content
-		if msg.Content != nil {
-			if msg.Content.ContentStr != nil {
-				bedrockMsg.Content = []BedrockContentBlock{
-					{Type: "text", Text: *msg.Content.ContentStr},
-				}
-			} else if msg.Content.ContentBlocks != nil {
-				for _, block := range msg.Content.ContentBlocks {
-					switch block.Type {
-					case schemas.ResponsesInputMessageContentBlockTypeText,
-						schemas.ResponsesOutputMessageContentTypeText:
-						if block.Text != nil {
-							bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
-								Type: "text",
-								Text: *block.Text,
-							})
-						}
-					case schemas.ResponsesInputMessageContentBlockTypeImage:
-						if block.ResponsesInputMessageContentBlockImage != nil && block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
-							bedrockMsg.Content = append(bedrockMsg.Content, BedrockContentBlock{
-								Type: "image",
-								Source: &BedrockImageSource{
-									Type:      "base64",
-									MediaType: extractMediaType(*block.ResponsesInputMessageContentBlockImage.ImageURL),
-									Data:      extractBase64Data(*block.ResponsesInputMessageContentBlockImage.ImageURL),
-								},
-							})
-						}
-					}
-				}
-			}
-		}
-
-		bedrockReq.Messages = append(bedrockReq.Messages, bedrockMsg)
-	}
-
-	bedrockReq.System = systemMessage
-
-	// Copy generation parameters from Params
-	if request.Params != nil {
-		if request.Params.Temperature != nil {
-			bedrockReq.Temperature = request.Params.Temperature
-		}
-		if request.Params.TopP != nil {
-			bedrockReq.TopP = request.Params.TopP
-		}
-		if request.Params.MaxOutputTokens != nil {
-			bedrockReq.MaxTokens = *request.Params.MaxOutputTokens
-		}
-	}
-
-	return bedrockReq
-}
-
 // convertResponsesToBedrockConverse converts a Bifrost Responses request to Bedrock Converse API format
 // This is required for SAP AI Core to support native tool calling in the Responses API
-func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest) *BedrockConverseRequest {
-	converseReq := &BedrockConverseRequest{}
+func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest) *bedrock.BedrockConverseRequest {
+	converseReq := &bedrock.BedrockConverseRequest{}
 
-	// Get model config for max tokens
-	config := GetSAPAICoreModelConfig(request.Model)
-	maxTokens := config.MaxTokens
+	maxTokens := DefaultMaxTokens
 
 	// Convert messages from Input field
-	var systemMessages []ConverseSystemMessage
+	var systemMessages []bedrock.BedrockSystemMessage
 	i := 0
 	for i < len(request.Input) {
 		msg := request.Input[i]
@@ -1242,7 +694,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 		if msg.Role != nil && *msg.Role == schemas.ResponsesInputMessageRoleSystem {
 			if msg.Content != nil {
 				if msg.Content.ContentStr != nil {
-					systemMessages = append(systemMessages, ConverseSystemMessage{
+					systemMessages = append(systemMessages, bedrock.BedrockSystemMessage{
 						Text: msg.Content.ContentStr,
 					})
 				} else if msg.Content.ContentBlocks != nil {
@@ -1254,7 +706,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 						}
 					}
 					if systemText != "" {
-						systemMessages = append(systemMessages, ConverseSystemMessage{
+						systemMessages = append(systemMessages, bedrock.BedrockSystemMessage{
 							Text: &systemText,
 						})
 					}
@@ -1266,7 +718,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 
 		// Handle function_call_output messages - these are tool results
 		if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
-			var toolResultBlocks []ConverseContentBlock
+			var toolResultBlocks []bedrock.BedrockContentBlock
 
 			// Collect all consecutive function_call_output messages
 			for i < len(request.Input) {
@@ -1295,10 +747,10 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 					toolUseId = *currMsg.ResponsesToolMessage.CallID
 				}
 
-				toolResultBlocks = append(toolResultBlocks, ConverseContentBlock{
-					ToolResult: &ConverseToolResult{
-						ToolUseId: toolUseId,
-						Content: []ConverseContentBlock{
+				toolResultBlocks = append(toolResultBlocks, bedrock.BedrockContentBlock{
+					ToolResult: &bedrock.BedrockToolResult{
+						ToolUseID: toolUseId,
+						Content: []bedrock.BedrockContentBlock{
 							{Text: &toolResultContent},
 						},
 					},
@@ -1308,7 +760,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 
 			// Create a single user message with all tool results
 			if len(toolResultBlocks) > 0 {
-				converseMsg := ConverseMessage{
+				converseMsg := bedrock.BedrockMessage{
 					Role:    "user", // Bedrock Converse uses user role for tool results
 					Content: toolResultBlocks,
 				}
@@ -1339,12 +791,12 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 					toolName = *msg.ResponsesToolMessage.Name
 				}
 
-				converseMsg := ConverseMessage{
+				converseMsg := bedrock.BedrockMessage{
 					Role: "assistant",
-					Content: []ConverseContentBlock{
+					Content: []bedrock.BedrockContentBlock{
 						{
-							ToolUse: &ConverseToolUse{
-								ToolUseId: toolUseId,
+							ToolUse: &bedrock.BedrockToolUse{
+								ToolUseID: toolUseId,
 								Name:      toolName,
 								Input:     inputArgs,
 							},
@@ -1363,14 +815,14 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 			continue
 		}
 
-		converseMsg := ConverseMessage{
-			Role: mapResponsesRoleForAnthropic(*msg.Role),
+		converseMsg := bedrock.BedrockMessage{
+			Role: bedrock.BedrockMessageRole(mapResponsesRoleForAnthropic(*msg.Role)),
 		}
 
 		// Convert content
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
-				converseMsg.Content = []ConverseContentBlock{
+				converseMsg.Content = []bedrock.BedrockContentBlock{
 					{Text: msg.Content.ContentStr},
 				}
 			} else if msg.Content.ContentBlocks != nil {
@@ -1379,7 +831,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 					case schemas.ResponsesInputMessageContentBlockTypeText,
 						schemas.ResponsesOutputMessageContentTypeText:
 						if block.Text != nil && *block.Text != "" {
-							converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
+							converseMsg.Content = append(converseMsg.Content, bedrock.BedrockContentBlock{
 								Text: block.Text,
 							})
 						}
@@ -1394,11 +846,11 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 							} else if strings.Contains(mediaType, "webp") {
 								format = "webp"
 							}
-							converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
-								Image: &ConverseImageSource{
+							converseMsg.Content = append(converseMsg.Content, bedrock.BedrockContentBlock{
+								Image: &bedrock.BedrockImageSource{
 									Format: format,
-									Source: &ConverseImageSourceData{
-										Bytes: extractBase64Data(*block.ResponsesInputMessageContentBlockImage.ImageURL),
+									Source: bedrock.BedrockImageSourceData{
+										Bytes: schemas.Ptr(extractBase64Data(*block.ResponsesInputMessageContentBlockImage.ImageURL)),
 									},
 								},
 							})
@@ -1417,7 +869,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 	converseReq.System = systemMessages
 
 	// Set inference config
-	converseReq.InferenceConfig = &ConverseInferenceConfig{
+	converseReq.InferenceConfig = &bedrock.BedrockInferenceConfig{
 		MaxTokens: &maxTokens,
 	}
 
@@ -1435,22 +887,22 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 
 		// Convert tools
 		if request.Params.Tools != nil {
-			tools := make([]ConverseTool, 0, len(request.Params.Tools))
+			tools := make([]bedrock.BedrockTool, 0, len(request.Params.Tools))
 			for _, tool := range request.Params.Tools {
 				// Only handle function tools for now
 				if tool.Type != schemas.ResponsesToolTypeFunction {
 					continue
 				}
 
-				var inputSchema ConverseToolInputSchema
+				var inputSchema bedrock.BedrockToolInputSchema
 				if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-					inputSchema = ConverseToolInputSchema{
+					inputSchema = bedrock.BedrockToolInputSchema{
 						JSON: resolveSchemaRefs(tool.ResponsesToolFunction.Parameters),
 					}
 				}
 
-				converseTool := ConverseTool{
-					ToolSpec: &ConverseToolSpec{
+				converseTool := bedrock.BedrockTool{
+					ToolSpec: &bedrock.BedrockToolSpec{
 						Name:        "",
 						Description: tool.Description,
 						InputSchema: inputSchema,
@@ -1462,7 +914,7 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 				tools = append(tools, converseTool)
 			}
 			if len(tools) > 0 {
-				converseReq.ToolConfig = &ConverseToolConfig{
+				converseReq.ToolConfig = &bedrock.BedrockToolConfig{
 					Tools: tools,
 				}
 			}
@@ -1474,18 +926,16 @@ func convertResponsesToBedrockConverse(request *schemas.BifrostResponsesRequest)
 				choice := *request.Params.ToolChoice.ResponsesToolChoiceStr
 				switch choice {
 				case "auto":
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Auto: &struct{}{}}
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{Auto: &bedrock.BedrockToolChoiceAuto{}}
 				case "required":
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Any: &struct{}{}}
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{Any: &bedrock.BedrockToolChoiceAny{}}
 					// "none" is not directly supported by Converse API, omit it
 				}
 			} else if request.Params.ToolChoice.ResponsesToolChoiceStruct != nil {
 				// Specific tool choice
 				if request.Params.ToolChoice.ResponsesToolChoiceStruct.Name != nil {
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{
-						Tool: &struct {
-							Name string `json:"name"`
-						}{
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{
+						Tool: &bedrock.BedrockToolChoiceTool{
 							Name: *request.Params.ToolChoice.ResponsesToolChoiceStruct.Name,
 						},
 					}
@@ -1512,376 +962,8 @@ func extractBase64Data(url string) string {
 	return url
 }
 
-// parseBedrockToResponsesResponse parses a Bedrock response into Bifrost Responses format.
-// Uses object pooling for efficient memory reuse.
-func parseBedrockToResponsesResponse(body []byte, model string) (*schemas.BifrostResponsesResponse, error) {
-	bedrockResp := acquireBedrockResponse()
-	defer releaseBedrockResponse(bedrockResp)
-
-	if err := sonic.Unmarshal(body, bedrockResp); err != nil {
-		return nil, err
-	}
-
-	// Build output messages from Bedrock response
-	var outputMessages []schemas.ResponsesMessage
-
-	// Extract text content and build output message
-	var textContent string
-	for _, block := range bedrockResp.Content {
-		if block.Type == "text" {
-			textContent += block.Text
-		}
-	}
-
-	if textContent != "" {
-		outputType := schemas.ResponsesMessageTypeMessage
-		role := schemas.ResponsesInputMessageRoleAssistant
-		contentBlockType := schemas.ResponsesOutputMessageContentTypeText
-
-		outputMessages = append(outputMessages, schemas.ResponsesMessage{
-			Type:   &outputType,
-			Role:   &role,
-			Status: schemas.Ptr("completed"),
-			Content: &schemas.ResponsesMessageContent{
-				ContentBlocks: []schemas.ResponsesMessageContentBlock{
-					{
-						Type: contentBlockType,
-						Text: &textContent,
-						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						},
-					},
-				},
-			},
-		})
-	}
-
-	// Map stop reason
-	stopReason := mapBedrockStopReasonToResponses(bedrockResp.StopReason)
-
-	response := &schemas.BifrostResponsesResponse{
-		ID:         &bedrockResp.ID,
-		Object:     "response",
-		CreatedAt:  int(time.Now().Unix()),
-		Model:      model,
-		Output:     outputMessages,
-		Status:     schemas.Ptr("completed"),
-		StopReason: &stopReason,
-	}
-
-	if bedrockResp.Usage != nil {
-		response.Usage = &schemas.ResponsesResponseUsage{
-			InputTokens:  bedrockResp.Usage.InputTokens,
-			OutputTokens: bedrockResp.Usage.OutputTokens,
-			TotalTokens:  bedrockResp.Usage.InputTokens + bedrockResp.Usage.OutputTokens,
-		}
-	}
-
-	return response, nil
-}
-
-// mapBedrockStopReasonToResponses maps Bedrock stop reasons to Responses API format
-func mapBedrockStopReasonToResponses(reason string) string {
-	switch reason {
-	case "end_turn":
-		return "end_turn"
-	case "max_tokens":
-		return "max_output_tokens"
-	case "stop_sequence":
-		return "stop_sequence"
-	case "tool_use":
-		return "tool_calls"
-	default:
-		return reason
-	}
-}
-
-// BedrockResponsesStreamState tracks state during streaming conversion for responses API
-type BedrockResponsesStreamState struct {
-	MessageID            *string
-	Model                *string
-	CreatedAt            int
-	SequenceNumber       int
-	HasEmittedCreated    bool
-	HasEmittedInProgress bool
-	TextItemAdded        bool
-	ContentPartAdded     bool
-	AccumulatedText      string
-	ItemID               string
-}
-
-// newBedrockResponsesStreamState creates a new stream state for Bedrock responses streaming
-func newBedrockResponsesStreamState() *BedrockResponsesStreamState {
-	return &BedrockResponsesStreamState{
-		CreatedAt:      int(time.Now().Unix()),
-		SequenceNumber: 0,
-	}
-}
-
-// processBedrockResponsesEventStream processes Bedrock event stream (AWS binary eventstream format) and sends chunks to the channel
-// for Responses API format
-func processBedrockResponsesEventStream(
-	ctx *schemas.BifrostContext,
-	bodyStream io.Reader,
-	responseChan chan *schemas.BifrostStreamChunk,
-	postHookRunner schemas.PostHookRunner,
-	providerName schemas.ModelProvider,
-	model string,
-	logger schemas.Logger,
-) {
-	state := newBedrockResponsesStreamState()
-	state.Model = &model
-	state.MessageID = schemas.Ptr(fmt.Sprintf("resp_%d", time.Now().UnixNano()))
-	state.ItemID = fmt.Sprintf("msg_%s_item_0", *state.MessageID)
-
-	usage := &schemas.ResponsesResponseUsage{}
-	var stopReason *string
-	startTime := time.Now()
-	chunkIndex := 0
-
-	// Process AWS Event Stream format using proper decoder
-	decoder := eventstream.NewDecoder()
-	payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
-
-	for {
-		// If context was cancelled/timed out, let defer handle it
-		if ctx.Err() != nil {
-			return
-		}
-
-		// Decode a single EventStream message
-		message, err := decoder.Decode(bodyStream, payloadBuf)
-		if err != nil {
-			// If context was cancelled/timed out, let defer handle it
-			if ctx.Err() != nil {
-				return
-			}
-			// End of stream - this is normal
-			if err == io.EOF {
-				break
-			}
-			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			logger.Warn("Error decoding %s EventStream message: %v", providerName, err)
-			providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
-			return
-		}
-
-		// Process the decoded message payload (contains JSON for normal events)
-		if len(message.Payload) > 0 {
-			// Check message type header for errors
-			if msgTypeHeader := message.Headers.Get(":message-type"); msgTypeHeader != nil {
-				if msgType := msgTypeHeader.String(); msgType != "event" {
-					excType := msgType
-					if excHeader := message.Headers.Get(":exception-type"); excHeader != nil {
-						if v := excHeader.String(); v != "" {
-							excType = v
-						}
-					}
-					errMsg := string(message.Payload)
-					err := fmt.Errorf("%s stream %s: %s", providerName, excType, errMsg)
-					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, schemas.ResponsesStreamRequest, providerName, model, logger)
-					return
-				}
-			}
-
-			// Parse the chunk payload - Bedrock wraps the actual JSON in a "bytes" field (base64 encoded)
-			var chunkPayload struct {
-				Bytes []byte `json:"bytes"`
-			}
-			if err := sonic.Unmarshal(message.Payload, &chunkPayload); err != nil {
-				logger.Debug("Failed to parse chunk payload: %v, data: %s", err, string(message.Payload))
-				continue
-			}
-
-			// Parse the Anthropic Messages API event from the bytes
-			var event AnthropicStreamEvent
-			if err := sonic.Unmarshal(chunkPayload.Bytes, &event); err != nil {
-				logger.Debug("Failed to parse Anthropic stream event: %v, data: %s", err, string(chunkPayload.Bytes))
-				continue
-			}
-
-			// Convert to Bifrost Responses stream responses
-			responses := convertAnthropicEventToResponses(event, state, providerName, model)
-
-			// Update usage from message_start
-			if event.Type == "message_start" && event.Message != nil && event.Message.Usage != nil {
-				usage.InputTokens = event.Message.Usage.InputTokens
-			}
-
-			// Update usage and stop reason from message_delta
-			if event.Type == "message_delta" {
-				if event.Delta != nil && event.Delta.StopReason != nil {
-					stopReason = convertAnthropicStopReason(*event.Delta.StopReason)
-				}
-				if event.Usage != nil {
-					usage.OutputTokens = event.Usage.OutputTokens
-				}
-			}
-
-			// Update usage from message_stop metrics
-			if event.Type == "message_stop" && event.Metrics != nil {
-				if usage.InputTokens == 0 {
-					usage.InputTokens = event.Metrics.InputTokenCount
-				}
-				if usage.OutputTokens == 0 {
-					usage.OutputTokens = event.Metrics.OutputTokenCount
-				}
-			}
-
-			// Send each response
-			for _, response := range responses {
-				if response != nil {
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
-						RequestType:    schemas.ResponsesStreamRequest,
-						Provider:       providerName,
-						ModelRequested: model,
-						ChunkIndex:     chunkIndex,
-					}
-					chunkIndex++
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
-				}
-			}
-		}
-	}
-
-	// Calculate total tokens
-	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-
-	// Emit final events: content_part.done, output_item.done, response.completed
-	finalResponses := emitFinalResponseEvents(state, stopReason, usage, providerName, model, startTime)
-	for _, response := range finalResponses {
-		if response != nil {
-			response.ExtraFields = schemas.BifrostResponseExtraFields{
-				RequestType:    schemas.ResponsesStreamRequest,
-				Provider:       providerName,
-				ModelRequested: model,
-				ChunkIndex:     chunkIndex,
-				Latency:        time.Since(startTime).Milliseconds(),
-			}
-			chunkIndex++
-			if response.Type == schemas.ResponsesStreamResponseTypeCompleted {
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-			}
-			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan)
-		}
-	}
-}
-
-// convertBedrockEventToResponses converts a Bedrock stream event to Bifrost Responses stream responses
-func convertAnthropicEventToResponses(
-	event AnthropicStreamEvent,
-	state *BedrockResponsesStreamState,
-	providerName schemas.ModelProvider,
-	model string,
-) []*schemas.BifrostResponsesStreamResponse {
-	var responses []*schemas.BifrostResponsesStreamResponse
-
-	// Emit lifecycle events if not already done (on message_start)
-	if event.Type == "message_start" && !state.HasEmittedCreated {
-		// Update message ID from the actual message
-		if event.Message != nil && event.Message.ID != "" {
-			state.MessageID = &event.Message.ID
-			state.ItemID = fmt.Sprintf("msg_%s_item_0", event.Message.ID)
-		}
-
-		// Emit response.created
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeCreated,
-			SequenceNumber: state.SequenceNumber,
-			Response: &schemas.BifrostResponsesResponse{
-				ID:        state.MessageID,
-				Object:    "response",
-				CreatedAt: state.CreatedAt,
-				Model:     model,
-				Status:    schemas.Ptr("in_progress"),
-			},
-		})
-		state.SequenceNumber++
-		state.HasEmittedCreated = true
-
-		// Emit response.in_progress
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeInProgress,
-			SequenceNumber: state.SequenceNumber,
-			Response: &schemas.BifrostResponsesResponse{
-				ID:        state.MessageID,
-				Object:    "response",
-				CreatedAt: state.CreatedAt,
-				Model:     model,
-				Status:    schemas.Ptr("in_progress"),
-			},
-		})
-		state.SequenceNumber++
-		state.HasEmittedInProgress = true
-	}
-
-	// Handle text delta from content_block_delta events
-	if event.Type == "content_block_delta" && event.Delta != nil && event.Delta.Text != nil {
-		text := *event.Delta.Text
-		state.AccumulatedText += text
-
-		// Add output item if not already added
-		if !state.TextItemAdded {
-			messageType := schemas.ResponsesMessageTypeMessage
-			role := schemas.ResponsesInputMessageRoleAssistant
-
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemAdded,
-				SequenceNumber: state.SequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				Item: &schemas.ResponsesMessage{
-					ID:   &state.ItemID,
-					Type: &messageType,
-					Role: &role,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: []schemas.ResponsesMessageContentBlock{},
-					},
-				},
-			})
-			state.SequenceNumber++
-			state.TextItemAdded = true
-		}
-
-		// Add content part if not already added
-		if !state.ContentPartAdded {
-			emptyText := ""
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartAdded,
-				SequenceNumber: state.SequenceNumber,
-				OutputIndex:    schemas.Ptr(0),
-				ContentIndex:   schemas.Ptr(0),
-				ItemID:         &state.ItemID,
-				Part: &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &emptyText,
-					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-					},
-				},
-			})
-			state.SequenceNumber++
-			state.ContentPartAdded = true
-		}
-
-		// Emit text delta
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &state.ItemID,
-			Delta:          &text,
-		})
-		state.SequenceNumber++
-	}
-
-	return responses
-}
-
-// ConverseResponsesStreamState tracks the state for streaming Responses API via Converse API
-type ConverseResponsesStreamState struct {
+// converseResponsesStreamState tracks the state for streaming Responses API via Converse API
+type converseResponsesStreamState struct {
 	MessageID      string
 	CreatedAt      int
 	SequenceNumber int
@@ -1907,9 +989,9 @@ type converseToolCallState struct {
 	ContentPartAdded bool
 }
 
-// newConverseResponsesStreamState creates a new stream state for Responses API via Converse
-func newConverseResponsesStreamState() *ConverseResponsesStreamState {
-	return &ConverseResponsesStreamState{
+// newconverseResponsesStreamState creates a new stream state for Responses API via Converse
+func newconverseResponsesStreamState() *converseResponsesStreamState {
+	return &converseResponsesStreamState{
 		MessageID:            fmt.Sprintf("resp_%d", time.Now().UnixNano()),
 		CreatedAt:            int(time.Now().Unix()),
 		CurrentToolCallIndex: -1,
@@ -1927,7 +1009,7 @@ func processBedrockConverseResponsesEventStream(
 	model string,
 	logger schemas.Logger,
 ) {
-	state := newConverseResponsesStreamState()
+	state := newconverseResponsesStreamState()
 	state.TextItemID = fmt.Sprintf("msg_%s_text_0", state.MessageID)
 
 	usage := &schemas.ResponsesResponseUsage{}
@@ -1997,7 +1079,7 @@ func processBedrockConverseResponsesEventStream(
 			}
 
 			// Parse the Converse stream event from the payload
-			var event ConverseStreamEvent
+			var event bedrock.BedrockStreamEvent
 			if err := sonic.Unmarshal(message.Payload, &event); err != nil {
 				logger.Debug("Failed to parse Converse stream event for Responses API: %v, data: %s", err, string(message.Payload))
 				continue
@@ -2041,7 +1123,7 @@ func processBedrockConverseResponsesEventStream(
 					state.CurrentToolCallIndex++
 					toolState := converseToolCallState{
 						ItemID:    fmt.Sprintf("fc_%s_%d", state.MessageID, state.CurrentToolCallIndex),
-						ToolUseID: event.Start.ToolUse.ToolUseId,
+						ToolUseID: event.Start.ToolUse.ToolUseID,
 						ToolName:  event.Start.ToolUse.Name,
 					}
 					state.ToolCalls = append(state.ToolCalls, toolState)
@@ -2336,7 +1418,7 @@ func processBedrockConverseResponsesEventStream(
 
 // parseBedrockConverseToResponsesResponse parses a Bedrock Converse API response into Bifrost Responses format
 func parseBedrockConverseToResponsesResponse(body []byte, model string) (*schemas.BifrostResponsesResponse, error) {
-	var converseResp BedrockConverseResponse
+	var converseResp bedrock.BedrockConverseResponse
 	if err := sonic.Unmarshal(body, &converseResp); err != nil {
 		return nil, err
 	}
@@ -2393,7 +1475,7 @@ func parseBedrockConverseToResponsesResponse(body []byte, model string) (*schema
 				}
 
 				msgType := schemas.ResponsesMessageTypeFunctionCall
-				toolUseID := block.ToolUse.ToolUseId
+				toolUseID := block.ToolUse.ToolUseID
 				toolName := block.ToolUse.Name
 				outputMessages = append(outputMessages, schemas.ResponsesMessage{
 					ID:     schemas.Ptr(fmt.Sprintf("fc_%s_%d", messageID, toolCallIndex)),
@@ -2434,206 +1516,15 @@ func parseBedrockConverseToResponsesResponse(body []byte, model string) (*schema
 	return response, nil
 }
 
-// These types are used for the SAP AI Core Converse API which supports native tool calling
-
-// BedrockConverseRequest represents a request to the Bedrock Converse API
-// This format is required for native tool calling support on SAP AI Core
-type BedrockConverseRequest struct {
-	Messages        []ConverseMessage        `json:"messages,omitempty"`
-	System          []ConverseSystemMessage  `json:"system,omitempty"`
-	InferenceConfig *ConverseInferenceConfig `json:"inferenceConfig,omitempty"`
-	ToolConfig      *ConverseToolConfig      `json:"toolConfig,omitempty"`
-}
-
-// ConverseMessage represents a message in Converse API format
-type ConverseMessage struct {
-	Role    string                 `json:"role"`
-	Content []ConverseContentBlock `json:"content"`
-}
-
-// ConverseSystemMessage represents a system message in Converse API format
-type ConverseSystemMessage struct {
-	Text       *string             `json:"text,omitempty"`
-	CachePoint *ConverseCachePoint `json:"cachePoint,omitempty"`
-}
-
-// ConverseCachePoint represents a cache point for prompt caching
-type ConverseCachePoint struct {
-	Type string `json:"type"` // "default"
-}
-
-// ConverseContentBlock represents a content block in Converse API format
-type ConverseContentBlock struct {
-	Text       *string              `json:"text,omitempty"`
-	Image      *ConverseImageSource `json:"image,omitempty"`
-	ToolUse    *ConverseToolUse     `json:"toolUse,omitempty"`
-	ToolResult *ConverseToolResult  `json:"toolResult,omitempty"`
-	CachePoint *ConverseCachePoint  `json:"cachePoint,omitempty"`
-}
-
-// ConverseImageSource represents an image in Converse API format
-type ConverseImageSource struct {
-	Format string                   `json:"format"` // "png", "jpeg", "gif", "webp"
-	Source *ConverseImageSourceData `json:"source"`
-}
-
-// ConverseImageSourceData represents image source data
-type ConverseImageSourceData struct {
-	Bytes string `json:"bytes"` // Base64-encoded image bytes
-}
-
-// ConverseToolUse represents a tool use block in Converse API format
-type ConverseToolUse struct {
-	ToolUseId string      `json:"toolUseId"`
-	Name      string      `json:"name"`
-	Input     interface{} `json:"input"`
-}
-
-// ConverseToolResult represents a tool result in Converse API format
-type ConverseToolResult struct {
-	ToolUseId string                 `json:"toolUseId"`
-	Content   []ConverseContentBlock `json:"content"`
-	Status    *string                `json:"status,omitempty"` // "success" or "error"
-}
-
-// ConverseInferenceConfig represents inference configuration for Converse API
-type ConverseInferenceConfig struct {
-	MaxTokens     *int     `json:"maxTokens,omitempty"`
-	StopSequences []string `json:"stopSequences,omitempty"`
-	Temperature   *float64 `json:"temperature,omitempty"`
-	TopP          *float64 `json:"topP,omitempty"`
-}
-
-// ConverseToolConfig represents tool configuration for Converse API
-type ConverseToolConfig struct {
-	Tools      []ConverseTool      `json:"tools,omitempty"`
-	ToolChoice *ConverseToolChoice `json:"toolChoice,omitempty"`
-}
-
-// ConverseTool represents a tool definition for Converse API
-type ConverseTool struct {
-	ToolSpec   *ConverseToolSpec   `json:"toolSpec,omitempty"`
-	CachePoint *ConverseCachePoint `json:"cachePoint,omitempty"`
-}
-
-// ConverseToolSpec represents a tool specification
-type ConverseToolSpec struct {
-	Name        string                  `json:"name"`
-	Description *string                 `json:"description,omitempty"`
-	InputSchema ConverseToolInputSchema `json:"inputSchema"`
-}
-
-// ConverseToolInputSchema represents the input schema for a tool
-type ConverseToolInputSchema struct {
-	JSON interface{} `json:"json,omitempty"`
-}
-
-// ConverseToolChoice represents tool choice configuration
-type ConverseToolChoice struct {
-	Auto *struct{} `json:"auto,omitempty"`
-	Any  *struct{} `json:"any,omitempty"`
-	Tool *struct {
-		Name string `json:"name"`
-	} `json:"tool,omitempty"`
-}
-
-// BedrockConverseResponse represents a non-streaming response from Converse API
-type BedrockConverseResponse struct {
-	Output     *ConverseOutput  `json:"output"`
-	StopReason string           `json:"stopReason"`
-	Usage      *ConverseUsage   `json:"usage"`
-	Metrics    *ConverseMetrics `json:"metrics,omitempty"`
-}
-
-// ConverseOutput represents the output from a Converse response
-type ConverseOutput struct {
-	Message *ConverseMessage `json:"message,omitempty"`
-}
-
-// ConverseUsage represents token usage from Converse API
-type ConverseUsage struct {
-	InputTokens           int `json:"inputTokens"`
-	OutputTokens          int `json:"outputTokens"`
-	TotalTokens           int `json:"totalTokens"`
-	CacheReadInputTokens  int `json:"cacheReadInputTokens,omitempty"`
-	CacheWriteInputTokens int `json:"cacheWriteInputTokens,omitempty"`
-}
-
-// ConverseMetrics represents response metrics from Converse API
-type ConverseMetrics struct {
-	LatencyMs int64 `json:"latencyMs"`
-}
-
-// ConverseStreamEvent represents a streaming event from Converse API
-type ConverseStreamEvent struct {
-	// For messageStart events
-	Role *string `json:"role,omitempty"`
-
-	// For contentBlockStart events
-	ContentBlockIndex *int                       `json:"contentBlockIndex,omitempty"`
-	Start             *ConverseContentBlockStart `json:"start,omitempty"`
-
-	// For contentBlockDelta events
-	Delta *ConverseContentBlockDelta `json:"delta,omitempty"`
-
-	// For messageStop events
-	StopReason *string `json:"stopReason,omitempty"`
-
-	// For metadata events
-	Usage   *ConverseUsage   `json:"usage,omitempty"`
-	Metrics *ConverseMetrics `json:"metrics,omitempty"`
-}
-
-// ConverseContentBlockStart represents the start of a content block
-type ConverseContentBlockStart struct {
-	ToolUse *ConverseToolUseStart `json:"toolUse,omitempty"`
-}
-
-// ConverseToolUseStart represents the start of a tool use block
-type ConverseToolUseStart struct {
-	ToolUseId string `json:"toolUseId"`
-	Name      string `json:"name"`
-}
-
-// ConverseContentBlockDelta represents incremental content
-type ConverseContentBlockDelta struct {
-	Text    *string               `json:"text,omitempty"`
-	ToolUse *ConverseToolUseDelta `json:"toolUse,omitempty"`
-}
-
-// ConverseToolUseDelta represents incremental tool use content
-type ConverseToolUseDelta struct {
-	Input string `json:"input"` // Incremental JSON string
-}
-
-// extractToolNamesFromConverseMessages scans Converse messages for toolUse blocks
-// and returns a list of unique tool names found. This is used to create stub tool
-// definitions when conversation history contains tool use/result blocks but the
-// current request doesn't include tool definitions (e.g., during compaction).
-// Bedrock Converse API requires toolConfig when toolUse/toolResult blocks are present.
-func extractToolNamesFromConverseMessages(messages []ConverseMessage) []string {
-	seen := make(map[string]bool)
-	var names []string
-
-	for _, msg := range messages {
-		for _, block := range msg.Content {
-			if block.ToolUse != nil && block.ToolUse.Name != "" {
-				if !seen[block.ToolUse.Name] {
-					seen[block.ToolUse.Name] = true
-					names = append(names, block.ToolUse.Name)
-				}
-			}
-		}
-	}
-
-	return names
-}
+// Type aliases for Bedrock Converse API types, reused from the bedrock package.
+// These are used for SAP AI Core's Converse API which supports native tool calling.
+// See core/providers/bedrock/types.go for full type definitions.
 
 // ensureToolConfigForHistory checks if the Converse request messages contain
 // toolUse or toolResult blocks but no toolConfig is defined. If so, it creates
 // stub tool definitions from the tool names found in history. This is required
 // because Bedrock Converse API mandates toolConfig when tool blocks are present.
-func ensureToolConfigForHistory(converseReq *BedrockConverseRequest) {
+func ensureToolConfigForHistory(converseReq *bedrock.BedrockConverseRequest) {
 	if converseReq.ToolConfig != nil {
 		return
 	}
@@ -2663,12 +1554,12 @@ func ensureToolConfigForHistory(converseReq *BedrockConverseRequest) {
 
 	// If we have names, build stub tool specs for those names; otherwise provide an empty tools list
 	if len(toolNames) > 0 {
-		tools := make([]ConverseTool, 0, len(toolNames))
+		tools := make([]bedrock.BedrockTool, 0, len(toolNames))
 		for _, name := range toolNames {
-			tools = append(tools, ConverseTool{
-				ToolSpec: &ConverseToolSpec{
+			tools = append(tools, bedrock.BedrockTool{
+				ToolSpec: &bedrock.BedrockToolSpec{
 					Name: name,
-					InputSchema: ConverseToolInputSchema{
+					InputSchema: bedrock.BedrockToolInputSchema{
 						JSON: map[string]interface{}{
 							"type":       "object",
 							"properties": map[string]interface{}{},
@@ -2677,26 +1568,24 @@ func ensureToolConfigForHistory(converseReq *BedrockConverseRequest) {
 				},
 			})
 		}
-		converseReq.ToolConfig = &ConverseToolConfig{Tools: tools}
+		converseReq.ToolConfig = &bedrock.BedrockToolConfig{Tools: tools}
 		return
 	}
 
 	// No tool names found (e.g., only toolResult blocks) — still attach an empty toolConfig to satisfy Bedrock
-	converseReq.ToolConfig = &ConverseToolConfig{Tools: []ConverseTool{}}
+	converseReq.ToolConfig = &bedrock.BedrockToolConfig{Tools: []bedrock.BedrockTool{}}
 }
 
 // convertToBedrockConverse converts a Bifrost chat request to Bedrock Converse API format
 // This is required for SAP AI Core to support native tool calling
-func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConverseRequest {
-	converseReq := &BedrockConverseRequest{}
+func convertToBedrockConverse(request *schemas.BifrostChatRequest) *bedrock.BedrockConverseRequest {
+	converseReq := &bedrock.BedrockConverseRequest{}
 
-	// Get model config for max tokens
-	config := GetSAPAICoreModelConfig(request.Model)
-	maxTokens := config.MaxTokens
+	maxTokens := DefaultMaxTokens
 
 	// Convert messages from Input field
 	// We need to handle consecutive tool messages specially - they must be merged into a single user message
-	var systemMessages []ConverseSystemMessage
+	var systemMessages []bedrock.BedrockSystemMessage
 	i := 0
 	for i < len(request.Input) {
 		msg := request.Input[i]
@@ -2704,7 +1593,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 		if msg.Role == schemas.ChatMessageRoleSystem {
 			// Extract system message
 			if msg.Content != nil && msg.Content.ContentStr != nil {
-				systemMessages = append(systemMessages, ConverseSystemMessage{
+				systemMessages = append(systemMessages, bedrock.BedrockSystemMessage{
 					Text: msg.Content.ContentStr,
 				})
 			}
@@ -2714,7 +1603,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 
 		// Handle tool messages - collect ALL consecutive tool messages and merge into a single user message
 		if msg.Role == schemas.ChatMessageRoleTool && msg.ChatToolMessage != nil {
-			var toolResultBlocks []ConverseContentBlock
+			var toolResultBlocks []bedrock.BedrockContentBlock
 
 			// Collect all consecutive tool messages
 			for i < len(request.Input) && request.Input[i].Role == schemas.ChatMessageRoleTool && request.Input[i].ChatToolMessage != nil {
@@ -2729,10 +1618,10 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 					toolUseId = *toolMsg.ChatToolMessage.ToolCallID
 				}
 
-				toolResultBlocks = append(toolResultBlocks, ConverseContentBlock{
-					ToolResult: &ConverseToolResult{
-						ToolUseId: toolUseId,
-						Content: []ConverseContentBlock{
+				toolResultBlocks = append(toolResultBlocks, bedrock.BedrockContentBlock{
+					ToolResult: &bedrock.BedrockToolResult{
+						ToolUseID: toolUseId,
+						Content: []bedrock.BedrockContentBlock{
 							{Text: &toolResultContent},
 						},
 					},
@@ -2741,7 +1630,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 			}
 
 			// Create a single user message with all tool results
-			converseMsg := ConverseMessage{
+			converseMsg := bedrock.BedrockMessage{
 				Role:    "user", // Bedrock Converse uses user role for tool results
 				Content: toolResultBlocks,
 			}
@@ -2749,22 +1638,22 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 			continue
 		}
 
-		converseMsg := ConverseMessage{
-			Role: mapRoleForAnthropic(msg.Role),
+		converseMsg := bedrock.BedrockMessage{
+			Role: bedrock.BedrockMessageRole(mapRoleForAnthropic(msg.Role)),
 		}
 
 		// Convert content
 		if msg.Content != nil {
 			if msg.Content.ContentStr != nil && *msg.Content.ContentStr != "" {
 				// Only add text block if content is non-empty (Bedrock rejects blank text)
-				converseMsg.Content = []ConverseContentBlock{
+				converseMsg.Content = []bedrock.BedrockContentBlock{
 					{Text: msg.Content.ContentStr},
 				}
 			} else if msg.Content.ContentBlocks != nil {
 				for _, block := range msg.Content.ContentBlocks {
 					if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil && *block.Text != "" {
 						// Only add text block if content is non-empty (Bedrock rejects blank text)
-						converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
+						converseMsg.Content = append(converseMsg.Content, bedrock.BedrockContentBlock{
 							Text: block.Text,
 						})
 					} else if block.Type == schemas.ChatContentBlockTypeImage && block.ImageURLStruct != nil {
@@ -2778,11 +1667,11 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 						} else if strings.Contains(mediaType, "webp") {
 							format = "webp"
 						}
-						converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
-							Image: &ConverseImageSource{
+						converseMsg.Content = append(converseMsg.Content, bedrock.BedrockContentBlock{
+							Image: &bedrock.BedrockImageSource{
 								Format: format,
-								Source: &ConverseImageSourceData{
-									Bytes: extractBase64Data(block.ImageURLStruct.URL),
+								Source: bedrock.BedrockImageSourceData{
+									Bytes: schemas.Ptr(extractBase64Data(block.ImageURLStruct.URL)),
 								},
 							},
 						})
@@ -2814,9 +1703,9 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 					toolName = *toolCall.Function.Name
 				}
 
-				converseMsg.Content = append(converseMsg.Content, ConverseContentBlock{
-					ToolUse: &ConverseToolUse{
-						ToolUseId: toolUseId,
+				converseMsg.Content = append(converseMsg.Content, bedrock.BedrockContentBlock{
+					ToolUse: &bedrock.BedrockToolUse{
+						ToolUseID: toolUseId,
 						Name:      toolName,
 						Input:     inputArgs,
 					},
@@ -2831,7 +1720,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 	converseReq.System = systemMessages
 
 	// Set inference config
-	converseReq.InferenceConfig = &ConverseInferenceConfig{
+	converseReq.InferenceConfig = &bedrock.BedrockInferenceConfig{
 		MaxTokens: &maxTokens,
 	}
 
@@ -2852,27 +1741,27 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 
 		// Convert tools
 		if request.Params.Tools != nil {
-			tools := make([]ConverseTool, 0, len(request.Params.Tools))
+			tools := make([]bedrock.BedrockTool, 0, len(request.Params.Tools))
 			for _, tool := range request.Params.Tools {
 				if tool.Function == nil {
 					continue
 				}
-				converseTool := ConverseTool{
-					ToolSpec: &ConverseToolSpec{
+				converseTool := bedrock.BedrockTool{
+					ToolSpec: &bedrock.BedrockToolSpec{
 						Name:        tool.Function.Name,
 						Description: tool.Function.Description,
 					},
 				}
 				if tool.Function.Parameters != nil {
 					// Resolve $ref references in schema - Bedrock Converse doesn't support $ref alongside other fields
-					converseTool.ToolSpec.InputSchema = ConverseToolInputSchema{
+					converseTool.ToolSpec.InputSchema = bedrock.BedrockToolInputSchema{
 						JSON: resolveSchemaRefs(tool.Function.Parameters),
 					}
 				}
 				tools = append(tools, converseTool)
 			}
 			if len(tools) > 0 {
-				converseReq.ToolConfig = &ConverseToolConfig{
+				converseReq.ToolConfig = &bedrock.BedrockToolConfig{
 					Tools: tools,
 				}
 			}
@@ -2884,18 +1773,16 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 				choice := *request.Params.ToolChoice.ChatToolChoiceStr
 				switch choice {
 				case "auto":
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Auto: &struct{}{}}
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{Auto: &bedrock.BedrockToolChoiceAuto{}}
 				case "required":
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{Any: &struct{}{}}
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{Any: &bedrock.BedrockToolChoiceAny{}}
 					// "none" is not directly supported by Converse API, omit it
 				}
 			} else if request.Params.ToolChoice.ChatToolChoiceStruct != nil {
 				// Specific tool choice
 				if request.Params.ToolChoice.ChatToolChoiceStruct.Function.Name != "" {
-					converseReq.ToolConfig.ToolChoice = &ConverseToolChoice{
-						Tool: &struct {
-							Name string `json:"name"`
-						}{
+					converseReq.ToolConfig.ToolChoice = &bedrock.BedrockToolChoice{
+						Tool: &bedrock.BedrockToolChoiceTool{
 							Name: request.Params.ToolChoice.ChatToolChoiceStruct.Function.Name,
 						},
 					}
@@ -2912,7 +1799,7 @@ func convertToBedrockConverse(request *schemas.BifrostChatRequest) *BedrockConve
 
 // parseBedrockConverseResponse parses a Bedrock Converse API response into Bifrost format
 func parseBedrockConverseResponse(body []byte, model string) (*schemas.BifrostChatResponse, error) {
-	var converseResp BedrockConverseResponse
+	var converseResp bedrock.BedrockConverseResponse
 	if err := sonic.Unmarshal(body, &converseResp); err != nil {
 		return nil, err
 	}
@@ -2939,7 +1826,7 @@ func parseBedrockConverseResponse(body []byte, model string) (*schemas.BifrostCh
 					argsJSON = "{}"
 				}
 
-				toolUseId := block.ToolUse.ToolUseId
+				toolUseId := block.ToolUse.ToolUseID
 				toolName := block.ToolUse.Name
 
 				toolCalls = append(toolCalls, schemas.ChatAssistantMessageToolCall{
@@ -3024,140 +1911,6 @@ func mapConverseStopReason(reason string) string {
 	}
 }
 
-// emitFinalResponseEvents emits the final events to complete the stream
-func emitFinalResponseEvents(
-	state *BedrockResponsesStreamState,
-	stopReason *string,
-	usage *schemas.ResponsesResponseUsage,
-	providerName schemas.ModelProvider,
-	model string,
-	startTime time.Time,
-) []*schemas.BifrostResponsesStreamResponse {
-	var responses []*schemas.BifrostResponsesStreamResponse
-
-	// Map stop reason
-	var mappedStopReason string
-	if stopReason != nil {
-		mappedStopReason = mapBedrockStopReasonToResponses(*stopReason)
-	} else {
-		mappedStopReason = "end_turn"
-	}
-
-	// Emit output_text.done with full accumulated text
-	if state.TextItemAdded {
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &state.ItemID,
-			Text:           &state.AccumulatedText,
-		})
-		state.SequenceNumber++
-	}
-
-	// Emit content_part.done
-	if state.ContentPartAdded {
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			ContentIndex:   schemas.Ptr(0),
-			ItemID:         &state.ItemID,
-			Part: &schemas.ResponsesMessageContentBlock{
-				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &state.AccumulatedText,
-				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-				},
-			},
-		})
-		state.SequenceNumber++
-	}
-
-	// Emit output_item.done
-	if state.TextItemAdded {
-		messageType := schemas.ResponsesMessageTypeMessage
-		role := schemas.ResponsesInputMessageRoleAssistant
-		contentBlockType := schemas.ResponsesOutputMessageContentTypeText
-
-		responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-			Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-			SequenceNumber: state.SequenceNumber,
-			OutputIndex:    schemas.Ptr(0),
-			Item: &schemas.ResponsesMessage{
-				ID:     &state.ItemID,
-				Type:   &messageType,
-				Role:   &role,
-				Status: schemas.Ptr("completed"),
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: contentBlockType,
-							Text: &state.AccumulatedText,
-							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-							},
-						},
-					},
-				},
-			},
-		})
-		state.SequenceNumber++
-	}
-
-	// Emit response.completed
-	completedAt := int(time.Now().Unix())
-	messageType := schemas.ResponsesMessageTypeMessage
-	role := schemas.ResponsesInputMessageRoleAssistant
-	contentBlockType := schemas.ResponsesOutputMessageContentTypeText
-
-	var outputMessages []schemas.ResponsesMessage
-	if state.TextItemAdded {
-		outputMessages = []schemas.ResponsesMessage{
-			{
-				ID:     &state.ItemID,
-				Type:   &messageType,
-				Role:   &role,
-				Status: schemas.Ptr("completed"),
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: []schemas.ResponsesMessageContentBlock{
-						{
-							Type: contentBlockType,
-							Text: &state.AccumulatedText,
-							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-							},
-						},
-					},
-				},
-			},
-		}
-	}
-
-	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-		Type:           schemas.ResponsesStreamResponseTypeCompleted,
-		SequenceNumber: state.SequenceNumber,
-		Response: &schemas.BifrostResponsesResponse{
-			ID:          state.MessageID,
-			Object:      "response",
-			CreatedAt:   state.CreatedAt,
-			CompletedAt: &completedAt,
-			Model:       model,
-			Status:      schemas.Ptr("completed"),
-			StopReason:  &mappedStopReason,
-			Output:      outputMessages,
-			Usage:       usage,
-		},
-	})
-	state.SequenceNumber++
-
-	return responses
-}
-
 // processBedrockConverseEventStream processes Bedrock Converse API event stream and sends chunks to the channel
 // This handles the Converse stream format which has native tool calling support
 func processBedrockConverseEventStream(
@@ -3230,7 +1983,7 @@ func processBedrockConverseEventStream(
 			}
 
 			// Parse the Converse stream event from the payload
-			var event ConverseStreamEvent
+			var event bedrock.BedrockStreamEvent
 			if err := sonic.Unmarshal(message.Payload, &event); err != nil {
 				logger.Debug("Failed to parse Converse stream event: %v, data: %s", err, string(message.Payload))
 				continue
@@ -3272,7 +2025,7 @@ func processBedrockConverseEventStream(
 					chunkIndex++
 
 					// Create streaming response with tool call metadata (ID and name)
-					toolUseId := event.Start.ToolUse.ToolUseId
+					toolUseId := event.Start.ToolUse.ToolUseID
 					toolName := event.Start.ToolUse.Name
 					response := &schemas.BifrostChatResponse{
 						ID:      messageID,

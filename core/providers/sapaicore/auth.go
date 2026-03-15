@@ -36,8 +36,8 @@ type tokenResult struct {
 	bifError *schemas.BifrostError
 }
 
-// NewTokenCache creates a new token cache with the given HTTP request timeout.
-func NewTokenCache(client *fasthttp.Client, timeout time.Duration) *TokenCache {
+// newTokenCache creates a new token cache with the given HTTP request timeout.
+func newTokenCache(client *fasthttp.Client, timeout time.Duration) *TokenCache {
 	return &TokenCache{
 		tokens:  make(map[string]*cachedToken),
 		client:  client,

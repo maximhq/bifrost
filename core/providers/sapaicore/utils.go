@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -137,17 +138,20 @@ func processVertexSSEStream(
 			break
 		}
 
-		var vertexResp VertexGenerateContentResponse
+		var vertexResp gemini.GenerateContentResponse
 		if err := sonic.Unmarshal(jsonData, &vertexResp); err != nil {
 			logger.Warn("failed to parse Vertex stream event: %v", err)
 			continue
 		}
 
 		// Convert to Bifrost response
-		if len(vertexResp.Candidates) > 0 && len(vertexResp.Candidates[0].Content.Parts) > 0 {
+		if len(vertexResp.Candidates) > 0 && vertexResp.Candidates[0].Content != nil && len(vertexResp.Candidates[0].Content.Parts) > 0 {
 			chunkIndex++
 
 			for _, part := range vertexResp.Candidates[0].Content.Parts {
+				if part == nil {
+					continue
+				}
 				// Handle text content
 				if part.Text != "" {
 					text := part.Text
@@ -234,7 +238,7 @@ func processVertexSSEStream(
 		// Handle finish reason — outside the Content.Parts check so that
 		// metadata-only final events (no parts) still capture the terminal reason.
 		if len(vertexResp.Candidates) > 0 && vertexResp.Candidates[0].FinishReason != "" {
-			fr := vertexResp.Candidates[0].FinishReason
+			fr := string(vertexResp.Candidates[0].FinishReason)
 			// If there were tool calls, override finish reason
 			if toolCallIndex > 0 {
 				fr = "tool_calls"
@@ -246,9 +250,9 @@ func processVertexSSEStream(
 
 		// Handle usage metadata
 		if vertexResp.UsageMetadata != nil {
-			usage.PromptTokens = vertexResp.UsageMetadata.PromptTokenCount
-			usage.CompletionTokens = vertexResp.UsageMetadata.CandidatesTokenCount
-			usage.TotalTokens = vertexResp.UsageMetadata.TotalTokenCount
+			usage.PromptTokens = int(vertexResp.UsageMetadata.PromptTokenCount)
+			usage.CompletionTokens = int(vertexResp.UsageMetadata.CandidatesTokenCount)
+			usage.TotalTokens = int(vertexResp.UsageMetadata.TotalTokenCount)
 		}
 	}
 

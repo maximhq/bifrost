@@ -12,7 +12,7 @@ import (
 //   - Platform format: {"message": "...", "code": "...", "status": "..."}
 //   - Bedrock format:  {"message": "...", "__type": "ValidationException"}
 func ParseSAPAICoreError(resp *fasthttp.Response, requestType schemas.RequestType, providerName schemas.ModelProvider, model string) *schemas.BifrostError {
-	var errorResp SAPAICoreErrorResponse
+	var errorResp sapaicoreErrorResponse
 
 	bifrostErr := providerUtils.HandleProviderAPIError(resp, &errorResp)
 

@@ -63,15 +63,15 @@ func TestDeploymentCacheKey(t *testing.T) {
 	}
 }
 
-func TestNewDeploymentCache(t *testing.T) {
+func Test_newDeploymentCache(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	if cache == nil {
-		t.Fatal("NewDeploymentCache returned nil")
+		t.Fatal("newDeploymentCache returned nil")
 	}
 	if cache.deployments == nil {
 		t.Error("deployments map is nil")
@@ -87,11 +87,11 @@ func TestNewDeploymentCache(t *testing.T) {
 	}
 }
 
-func TestNewDeploymentCacheWithTTL(t *testing.T) {
+func Test_newDeploymentCacheWithTTL(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
+	tokenCache := newTokenCache(client, 30*time.Second)
 
 	tests := []struct {
 		name        string
@@ -132,7 +132,7 @@ func TestNewDeploymentCacheWithTTL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cache := NewDeploymentCacheWithTTL(client, tokenCache, tt.ttl)
+			cache := newDeploymentCacheWithTTL(client, tokenCache, tt.ttl)
 			if cache.ttl != tt.expectedTTL {
 				t.Errorf("expected TTL %v, got %v", tt.expectedTTL, cache.ttl)
 			}
@@ -144,8 +144,8 @@ func TestDeploymentCache_ClearCache(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	// Manually add a deployment to the cache
 	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
@@ -174,8 +174,8 @@ func TestDeploymentCache_ClearCache_NonExistent(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	// Should not panic when clearing non-existent cache entry
 	cache.ClearCache("nonexistent", "https://nonexistent.auth.com", "https://nonexistent.api.com", "nonexistent")
@@ -185,8 +185,8 @@ func TestDeploymentCache_ClearCache_All(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	// Manually add multiple deployments to the cache
 	key1 := deploymentCacheKey("client1", "https://auth1.example.com", "https://api1.ai.sap.com", "group1")
@@ -223,8 +223,8 @@ func TestDeploymentCache_GetDeploymentID_StaticDeployments(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	staticDeployments := map[string]string{
 		"gpt-4":               "deployment-gpt4",
@@ -276,8 +276,8 @@ func TestDeploymentCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	// Pre-populate cache
 	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
@@ -418,8 +418,8 @@ func TestDeploymentCache_TTLExpiration(t *testing.T) {
 	t.Parallel()
 
 	client := &fasthttp.Client{}
-	tokenCache := NewTokenCache(client, 30*time.Second)
-	cache := NewDeploymentCache(client, tokenCache)
+	tokenCache := newTokenCache(client, 30*time.Second)
+	cache := newDeploymentCache(client, tokenCache)
 
 	key := deploymentCacheKey("client1", "https://auth.example.com", "https://api.ai.sap.com", "default")
 

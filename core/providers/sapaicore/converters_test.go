@@ -6,158 +6,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func TestConvertToBedrock_BasicMessage(t *testing.T) {
-	t.Parallel()
-
-	content := "Hello, world!"
-	request := &schemas.BifrostChatRequest{
-		Model: "anthropic--claude-3-sonnet",
-		Input: []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &content,
-				},
-			},
-		},
-	}
-
-	result := convertToBedrock(request)
-
-	if result == nil {
-		t.Fatal("convertToBedrock returned nil")
-	}
-	if result.AnthropicVersion != "bedrock-2023-05-31" {
-		t.Errorf("expected AnthropicVersion 'bedrock-2023-05-31', got %q", result.AnthropicVersion)
-	}
-	if len(result.Messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(result.Messages))
-	}
-	if result.Messages[0].Role != "user" {
-		t.Errorf("expected role 'user', got %q", result.Messages[0].Role)
-	}
-	if len(result.Messages[0].Content) != 1 {
-		t.Fatalf("expected 1 content block, got %d", len(result.Messages[0].Content))
-	}
-	if result.Messages[0].Content[0].Type != "text" {
-		t.Errorf("expected content type 'text', got %q", result.Messages[0].Content[0].Type)
-	}
-	if result.Messages[0].Content[0].Text != content {
-		t.Errorf("expected content text %q, got %q", content, result.Messages[0].Content[0].Text)
-	}
-}
-
-func TestConvertToBedrock_SystemMessage(t *testing.T) {
-	t.Parallel()
-
-	systemContent := "You are a helpful assistant."
-	userContent := "Hello!"
-	request := &schemas.BifrostChatRequest{
-		Model: "anthropic--claude-3-sonnet",
-		Input: []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleSystem,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &systemContent,
-				},
-			},
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &userContent,
-				},
-			},
-		},
-	}
-
-	result := convertToBedrock(request)
-
-	if result.System != systemContent {
-		t.Errorf("expected system message %q, got %q", systemContent, result.System)
-	}
-	// System message should not be in Messages array
-	if len(result.Messages) != 1 {
-		t.Errorf("expected 1 message (system excluded), got %d", len(result.Messages))
-	}
-}
-
-func TestConvertToBedrock_WithParams(t *testing.T) {
-	t.Parallel()
-
-	content := "Hello!"
-	temp := 0.7
-	topP := 0.9
-	maxTokens := 1000
-	stop := []string{"stop1", "stop2"}
-
-	request := &schemas.BifrostChatRequest{
-		Model: "anthropic--claude-3-sonnet",
-		Input: []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentStr: &content,
-				},
-			},
-		},
-		Params: &schemas.ChatParameters{
-			Temperature:         &temp,
-			TopP:                &topP,
-			MaxCompletionTokens: &maxTokens,
-			Stop:                stop,
-		},
-	}
-
-	result := convertToBedrock(request)
-
-	if result.Temperature == nil || *result.Temperature != temp {
-		t.Errorf("expected temperature %f, got %v", temp, result.Temperature)
-	}
-	if result.TopP == nil || *result.TopP != topP {
-		t.Errorf("expected topP %f, got %v", topP, result.TopP)
-	}
-	if result.MaxTokens != maxTokens {
-		t.Errorf("expected maxTokens %d, got %d", maxTokens, result.MaxTokens)
-	}
-	if len(result.StopSequences) != 2 {
-		t.Errorf("expected 2 stop sequences, got %d", len(result.StopSequences))
-	}
-}
-
-func TestConvertToBedrock_ContentBlocks(t *testing.T) {
-	t.Parallel()
-
-	textContent := "Describe this image"
-	request := &schemas.BifrostChatRequest{
-		Model: "anthropic--claude-3-sonnet",
-		Input: []schemas.ChatMessage{
-			{
-				Role: schemas.ChatMessageRoleUser,
-				Content: &schemas.ChatMessageContent{
-					ContentBlocks: []schemas.ChatContentBlock{
-						{
-							Type: schemas.ChatContentBlockTypeText,
-							Text: &textContent,
-						},
-					},
-				},
-			},
-		},
-	}
-
-	result := convertToBedrock(request)
-
-	if len(result.Messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(result.Messages))
-	}
-	if len(result.Messages[0].Content) != 1 {
-		t.Fatalf("expected 1 content block, got %d", len(result.Messages[0].Content))
-	}
-	if result.Messages[0].Content[0].Type != "text" {
-		t.Errorf("expected content type 'text', got %q", result.Messages[0].Content[0].Type)
-	}
-}
-
 func TestConvertToVertex_BasicMessage(t *testing.T) {
 	t.Parallel()
 
@@ -314,51 +162,6 @@ func TestMapToVertexRole(t *testing.T) {
 	}
 }
 
-func TestMapBedrockStopReason(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "end_turn to stop",
-			input:    "end_turn",
-			expected: "stop",
-		},
-		{
-			name:     "max_tokens to length",
-			input:    "max_tokens",
-			expected: "length",
-		},
-		{
-			name:     "stop_sequence to stop",
-			input:    "stop_sequence",
-			expected: "stop",
-		},
-		{
-			name:     "tool_use to tool_calls",
-			input:    "tool_use",
-			expected: "tool_calls",
-		},
-		{
-			name:     "unknown passes through",
-			input:    "unknown_reason",
-			expected: "unknown_reason",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := mapBedrockStopReason(tt.input)
-			if result != tt.expected {
-				t.Errorf("mapBedrockStopReason(%q) = %q, want %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestMapVertexFinishReason(t *testing.T) {
 	t.Parallel()
 
@@ -401,56 +204,6 @@ func TestMapVertexFinishReason(t *testing.T) {
 				t.Errorf("mapVertexFinishReason(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
-	}
-}
-
-func TestParseBedrockResponse(t *testing.T) {
-	t.Parallel()
-
-	body := []byte(`{
-		"id": "msg_123",
-		"type": "message",
-		"role": "assistant",
-		"content": [{"type": "text", "text": "Hello!"}],
-		"model": "claude-3-sonnet",
-		"stop_reason": "end_turn",
-		"usage": {
-			"input_tokens": 10,
-			"output_tokens": 5
-		}
-	}`)
-
-	result, err := parseBedrockResponse(body, "anthropic--claude-3-sonnet")
-
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("parseBedrockResponse returned nil")
-	}
-	if result.ID != "msg_123" {
-		t.Errorf("expected ID 'msg_123', got %q", result.ID)
-	}
-	if result.Model != "anthropic--claude-3-sonnet" {
-		t.Errorf("expected model 'anthropic--claude-3-sonnet', got %q", result.Model)
-	}
-	if result.Object != "chat.completion" {
-		t.Errorf("expected object 'chat.completion', got %q", result.Object)
-	}
-	if len(result.Choices) != 1 {
-		t.Fatalf("expected 1 choice, got %d", len(result.Choices))
-	}
-	if result.Choices[0].FinishReason == nil || *result.Choices[0].FinishReason != "stop" {
-		t.Errorf("expected finish_reason 'stop', got %v", result.Choices[0].FinishReason)
-	}
-	if result.Usage == nil {
-		t.Fatal("expected usage to be set")
-	}
-	if result.Usage.PromptTokens != 10 {
-		t.Errorf("expected prompt_tokens 10, got %d", result.Usage.PromptTokens)
-	}
-	if result.Usage.CompletionTokens != 5 {
-		t.Errorf("expected completion_tokens 5, got %d", result.Usage.CompletionTokens)
 	}
 }
 
@@ -507,18 +260,6 @@ func TestParseVertexResponse(t *testing.T) {
 	}
 }
 
-func TestParseBedrockResponse_InvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	body := []byte(`{invalid json`)
-
-	_, err := parseBedrockResponse(body, "anthropic--claude-3-sonnet")
-
-	if err == nil {
-		t.Error("expected error for invalid JSON")
-	}
-}
-
 func TestParseVertexResponse_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
@@ -531,92 +272,12 @@ func TestParseVertexResponse_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestGetSAPAICoreModelConfig(t *testing.T) {
+func TestDefaultMaxTokens(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name              string
-		modelName         string
-		expectedMaxTokens int
-		expectedContext   int
-	}{
-		{
-			name:              "known claude model",
-			modelName:         "anthropic--claude-3-sonnet",
-			expectedMaxTokens: 4096,
-			expectedContext:   200000,
-		},
-		{
-			name:              "known gemini model",
-			modelName:         "gemini-1.5-pro",
-			expectedMaxTokens: 8192,
-			expectedContext:   2097152,
-		},
-		{
-			name:              "known gpt model",
-			modelName:         "gpt-4o",
-			expectedMaxTokens: 16384,
-			expectedContext:   128000,
-		},
-		{
-			name:              "unknown model gets defaults",
-			modelName:         "unknown-model",
-			expectedMaxTokens: 8192,
-			expectedContext:   200000,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := GetSAPAICoreModelConfig(tt.modelName)
-			if config.MaxTokens != tt.expectedMaxTokens {
-				t.Errorf("expected MaxTokens %d, got %d", tt.expectedMaxTokens, config.MaxTokens)
-			}
-			if config.ContextWindow != tt.expectedContext {
-				t.Errorf("expected ContextWindow %d, got %d", tt.expectedContext, config.ContextWindow)
-			}
-		})
-	}
-}
-
-func TestAnthropicStreamEvent_Types(t *testing.T) {
-	t.Parallel()
-
-	// Test that AnthropicStreamEvent struct can handle various event types
-	textValue := "Hello"
-	stopReason := "end_turn"
-
-	event := AnthropicStreamEvent{
-		Type: "content_block_delta",
-		Delta: &AnthropicStreamDelta{
-			Type: "text_delta",
-			Text: &textValue,
-		},
-		Usage: &AnthropicStreamUsage{
-			InputTokens:  10,
-			OutputTokens: 5,
-		},
-	}
-
-	// Test message_delta event with stop reason
-	messageDelta := AnthropicStreamEvent{
-		Type: "message_delta",
-		Delta: &AnthropicStreamDelta{
-			StopReason: &stopReason,
-		},
-	}
-
-	if event.Delta == nil {
-		t.Error("expected Delta to be set")
-	}
-	if event.Delta.Type != "text_delta" {
-		t.Errorf("expected Delta.Type 'text_delta', got %q", event.Delta.Type)
-	}
-	if *event.Delta.Text != textValue {
-		t.Errorf("expected Delta.Text %q, got %q", textValue, *event.Delta.Text)
-	}
-	if *messageDelta.Delta.StopReason != stopReason {
-		t.Errorf("expected StopReason %q, got %q", stopReason, *messageDelta.Delta.StopReason)
+	// DefaultMaxTokens should match the anthropic provider's default
+	if DefaultMaxTokens != 4096 {
+		t.Errorf("expected DefaultMaxTokens to be 4096, got %d", DefaultMaxTokens)
 	}
 }
 

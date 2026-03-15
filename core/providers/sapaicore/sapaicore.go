@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,8 +35,13 @@ func NewSAPAICoreProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
 
-	tokenCache := NewTokenCache(client, time.Second*time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds))
-	deploymentCache := NewDeploymentCache(client, tokenCache)
+	// Pre-warm response pools
+	for i := 0; i < config.ConcurrencyAndBufferSize.Concurrency; i++ {
+		vertexResponsePool.Put(&gemini.GenerateContentResponse{})
+	}
+
+	tokenCache := newTokenCache(client, time.Second*time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds))
+	deploymentCache := newDeploymentCache(client, tokenCache)
 	stopCleanup := make(chan struct{})
 
 	provider := &SAPAICoreProvider{
