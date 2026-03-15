@@ -236,3 +236,96 @@ func TestPrepareImageVariationRequest_StringFallbacksRemainSupported(t *testing.
 		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
 	}
 }
+
+func TestPrepareImageEditRequest_RejectsInvalidJSONFallbackObject(t *testing.T) {
+	ctx := buildMultipartImageRequestCtx(t, "/v1/images/edits", map[string]string{
+		"model":     "openai/gpt-image-1",
+		"prompt":    "edit this",
+		"fallbacks": `[{"model":"bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0"}]`,
+	})
+
+	_, _, err := prepareImageEditRequest(ctx)
+	if err == nil {
+		t.Fatal("expected invalid JSON fallback object to fail")
+	}
+	if !strings.Contains(err.Error(), invalidFallbackEntryError) {
+		t.Fatalf("expected invalid fallback error, got %v", err)
+	}
+}
+
+func buildMultipartTranscriptionRequestCtx(t *testing.T, fields map[string]string) *fasthttp.RequestCtx {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatalf("failed to write field %s: %v", key, err)
+		}
+	}
+
+	fileWriter, err := writer.CreateFormFile("file", "audio.wav")
+	if err != nil {
+		t.Fatalf("failed to create file form part: %v", err)
+	}
+	if _, err := fileWriter.Write([]byte("fake-audio")); err != nil {
+		t.Fatalf("failed to write file form part: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI("/v1/audio/transcriptions")
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(body.Bytes())
+	return ctx
+}
+
+func TestPrepareTranscriptionRequest_AcceptsObjectFallbacks(t *testing.T) {
+	ctx := buildMultipartTranscriptionRequestCtx(t, map[string]string{
+		"model":     "openai/gpt-4o-transcribe",
+		"fallbacks": `[{"provider":"bedrock","model":"us.anthropic.claude-3-5-sonnet-20241022-v2:0","params":{"reasoning_effort":"high","thinking_budget":2048}}]`,
+	})
+
+	bifrostReq, _, err := prepareTranscriptionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected multipart object-form transcription fallbacks to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+	if bifrostReq.Fallbacks[0].Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", bifrostReq.Fallbacks[0].Model)
+	}
+	if bifrostReq.Fallbacks[0].Params["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", bifrostReq.Fallbacks[0].Params["reasoning_effort"])
+	}
+	if bifrostReq.Fallbacks[0].Params["thinking_budget"] != float64(2048) {
+		t.Fatalf("expected fallback thinking_budget=2048, got %#v", bifrostReq.Fallbacks[0].Params["thinking_budget"])
+	}
+}
+
+func TestPrepareTranscriptionRequest_StringFallbacksRemainSupported(t *testing.T) {
+	ctx := buildMultipartTranscriptionRequestCtx(t, map[string]string{
+		"model":     "openai/gpt-4o-transcribe",
+		"fallbacks": "bedrock/us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+	})
+
+	bifrostReq, _, err := prepareTranscriptionRequest(ctx)
+	if err != nil {
+		t.Fatalf("expected multipart string-form transcription fallbacks to parse successfully, got error: %v", err)
+	}
+	if len(bifrostReq.Fallbacks) != 1 {
+		t.Fatalf("expected 1 fallback, got %d", len(bifrostReq.Fallbacks))
+	}
+	if bifrostReq.Fallbacks[0].Provider != "bedrock" {
+		t.Fatalf("expected fallback provider bedrock, got %s", bifrostReq.Fallbacks[0].Provider)
+	}
+}
