@@ -3860,6 +3860,44 @@ func (bifrost *Bifrost) shouldTryFallbacks(req *schemas.BifrostRequest, primaryE
 	return true
 }
 
+func mergeFallbackParams(base map[string]interface{}, fallback map[string]any) map[string]interface{} {
+	if len(base) == 0 && len(fallback) == 0 {
+		return nil
+	}
+
+	merged := make(map[string]interface{}, len(base)+len(fallback))
+	for k, v := range base {
+		merged[k] = v
+	}
+	for k, v := range fallback {
+		merged[k] = v
+	}
+
+	return merged
+}
+
+func applyFallbackParams[T any](
+	params *T,
+	fallbackParams map[string]any,
+	newParams func() *T,
+	getExtraParams func(*T) map[string]interface{},
+	setExtraParams func(*T, map[string]interface{}),
+) *T {
+	if len(fallbackParams) == 0 {
+		return params
+	}
+
+	if params == nil {
+		params = newParams()
+	} else {
+		paramsCopy := *params
+		params = &paramsCopy
+	}
+
+	setExtraParams(params, mergeFallbackParams(getExtraParams(params), fallbackParams))
+	return params
+}
+
 // prepareFallbackRequest creates a fallback request and validates the provider config
 // Returns the fallback request or nil if this fallback should be skipped
 func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fallback schemas.Fallback) *schemas.BifrostRequest {
@@ -3877,6 +3915,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.TextCompletionRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.TextCompletionParameters { return &schemas.TextCompletionParameters{} },
+			func(p *schemas.TextCompletionParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.TextCompletionParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.TextCompletionRequest = &tmp
 	}
 
@@ -3884,6 +3929,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.ChatRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.ChatParameters { return &schemas.ChatParameters{} },
+			func(p *schemas.ChatParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.ChatParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.ChatRequest = &tmp
 	}
 
@@ -3891,6 +3943,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.ResponsesRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.ResponsesParameters { return &schemas.ResponsesParameters{} },
+			func(p *schemas.ResponsesParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.ResponsesParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.ResponsesRequest = &tmp
 	}
 
@@ -3898,6 +3957,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.CountTokensRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.ResponsesParameters { return &schemas.ResponsesParameters{} },
+			func(p *schemas.ResponsesParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.ResponsesParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.CountTokensRequest = &tmp
 	}
 
@@ -3905,12 +3971,26 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.EmbeddingRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.EmbeddingParameters { return &schemas.EmbeddingParameters{} },
+			func(p *schemas.EmbeddingParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.EmbeddingParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.EmbeddingRequest = &tmp
 	}
 	if req.RerankRequest != nil {
 		tmp := *req.RerankRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.RerankParameters { return &schemas.RerankParameters{} },
+			func(p *schemas.RerankParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.RerankParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.RerankRequest = &tmp
 	}
 
@@ -3918,6 +3998,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.SpeechRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.SpeechParameters { return &schemas.SpeechParameters{} },
+			func(p *schemas.SpeechParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.SpeechParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.SpeechRequest = &tmp
 	}
 
@@ -3925,18 +4012,39 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.TranscriptionRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.TranscriptionParameters { return &schemas.TranscriptionParameters{} },
+			func(p *schemas.TranscriptionParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.TranscriptionParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.TranscriptionRequest = &tmp
 	}
 	if req.ImageGenerationRequest != nil {
 		tmp := *req.ImageGenerationRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.ImageGenerationParameters { return &schemas.ImageGenerationParameters{} },
+			func(p *schemas.ImageGenerationParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.ImageGenerationParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.ImageGenerationRequest = &tmp
 	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(
+			tmp.Params,
+			fallback.Params,
+			func() *schemas.VideoGenerationParameters { return &schemas.VideoGenerationParameters{} },
+			func(p *schemas.VideoGenerationParameters) map[string]interface{} { return p.ExtraParams },
+			func(p *schemas.VideoGenerationParameters, extra map[string]interface{}) { p.ExtraParams = extra },
+		)
 		fallbackReq.VideoGenerationRequest = &tmp
 	}
 	return &fallbackReq
