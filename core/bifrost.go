@@ -37,6 +37,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
 	"github.com/maximhq/bifrost/core/providers/runway"
+	"github.com/maximhq/bifrost/core/providers/sapaicore"
 	"github.com/maximhq/bifrost/core/providers/sgl"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
@@ -3037,12 +3038,19 @@ func (bifrost *Bifrost) RemoveProvider(providerKey schemas.ModelProvider) error 
 			return fmt.Errorf("provider %s not found in providers slice", providerKey)
 		}
 		newSlice := make([]schemas.Provider, 0, len(oldSlice)-1)
+		var removedProvider schemas.Provider
 		for _, existingProvider := range oldSlice {
 			if existingProvider.GetProviderKey() != providerKey {
 				newSlice = append(newSlice, existingProvider)
+			} else {
+				removedProvider = existingProvider
 			}
 		}
 		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
+			// Shutdown the removed provider's background resources (goroutines, caches)
+			if removedProvider != nil {
+				shutdownProvider(removedProvider, bifrost.logger)
+			}
 			bifrost.logger.Debug("successfully removed provider instance for %s in providers slice", providerKey)
 			break
 		}
@@ -3211,13 +3219,13 @@ transferComplete:
 		// Create new slice without the old provider of this key
 		// Use exact capacity to avoid allocations
 		newSlice := make([]schemas.Provider, 0, len(oldSlice))
-		oldProviderFound := false
+		var replacedProvider schemas.Provider
 
 		for _, existingProvider := range oldSlice {
 			if existingProvider.GetProviderKey() != providerKey {
 				newSlice = append(newSlice, existingProvider)
 			} else {
-				oldProviderFound = true
+				replacedProvider = existingProvider
 			}
 		}
 
@@ -3225,7 +3233,11 @@ transferComplete:
 		newSlice = append(newSlice, provider)
 
 		if bifrost.providers.CompareAndSwap(oldPtr, &newSlice) {
-			if oldProviderFound {
+			// Shutdown the replaced provider's background resources (goroutines, caches)
+			if replacedProvider != nil {
+				shutdownProvider(replacedProvider, bifrost.logger)
+			}
+			if replacedProvider != nil {
 				bifrost.logger.Debug("successfully replaced existing provider instance for %s in providers slice", providerKey)
 			} else {
 				bifrost.logger.Debug("successfully added new provider instance for %s to providers slice", providerKey)
@@ -3565,6 +3577,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
+	case schemas.SAPAICore:
+		return sapaicore.NewSAPAICoreProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -5996,7 +6010,7 @@ func (bifrost *Bifrost) getAllSupportedKeys(ctx *schemas.BifrostContext, provide
 		if k.Enabled != nil && !*k.Enabled {
 			continue
 		}
-		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAzureEntraIDCredentials(baseProviderType, k) || hasSAPAICoreCredentials(baseProviderType, k) {
 			supportedKeys = append(supportedKeys, k)
 		}
 	}
@@ -6055,8 +6069,8 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 			}
 		}
 
-		// Check key value (or if provider allows empty keys or has Azure Entra ID credentials)
-		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+		// Check key value (or if provider allows empty keys or has Azure Entra ID / SAP AI Core credentials)
+		if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAzureEntraIDCredentials(baseProviderType, k) || hasSAPAICoreCredentials(baseProviderType, k) {
 			filteredKeys = append(filteredKeys, k)
 		}
 	}
@@ -6090,8 +6104,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			return key, nil
 		}
 	}
-	// Check if key skipping is allowed
-	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(providerKey) {
+	// Check if key skipping is allowed (use baseProviderType so custom aliases inherit the restriction)
+	if skipKeySelection, ok := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); ok && skipKeySelection && isKeySkippingAllowed(baseProviderType) {
 		return schemas.Key{}, nil
 	}
 	// Get keys for provider
@@ -6131,7 +6145,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if k.Enabled != nil && !*k.Enabled {
 				continue
 			}
-			if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) {
+			if strings.TrimSpace(k.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAzureEntraIDCredentials(baseProviderType, k) || hasSAPAICoreCredentials(baseProviderType, k) {
 				supportedKeys = append(supportedKeys, k)
 			}
 		}
@@ -6142,7 +6156,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 			if key.Enabled != nil && !*key.Enabled {
 				continue
 			}
-			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
+			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType) || hasAzureEntraIDCredentials(baseProviderType, key) || hasSAPAICoreCredentials(baseProviderType, key)
 			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
@@ -6356,6 +6370,23 @@ func WeightedRandomKeySelector(ctx *schemas.BifrostContext, keys []schemas.Key, 
 	return keys[0], nil
 }
 
+// shutdownableProvider is an optional interface for providers that have background
+// resources (goroutines, caches) requiring explicit cleanup.
+type shutdownableProvider interface {
+	Shutdown()
+}
+
+// shutdownProvider calls Shutdown on a provider if it implements the
+// shutdownableProvider interface. This is used during provider replacement,
+// removal, and global shutdown to ensure background goroutines and caches are
+// cleaned up for providers like SAP AI Core.
+func shutdownProvider(p schemas.Provider, logger schemas.Logger) {
+	if sp, ok := p.(shutdownableProvider); ok {
+		logger.Debug("shutting down provider %s", p.GetProviderKey())
+		sp.Shutdown()
+	}
+}
+
 // Shutdown gracefully stops all workers when triggered.
 // It closes all request channels and waits for workers to exit.
 func (bifrost *Bifrost) Shutdown() {
@@ -6382,6 +6413,13 @@ func (bifrost *Bifrost) Shutdown() {
 		waitGroup.Wait()
 		return true
 	})
+
+	// Shutdown providers that have background resources (goroutines, caches)
+	if providers := bifrost.providers.Load(); providers != nil {
+		for _, p := range *providers {
+			shutdownProvider(p, bifrost.logger)
+		}
+	}
 
 	// Cleanup MCP manager
 	if bifrost.MCPManager != nil {

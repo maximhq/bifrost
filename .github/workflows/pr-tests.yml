@@ -125,6 +125,11 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          SAP_AI_CORE_CLIENT_ID: ${{ secrets.SAP_AI_CORE_CLIENT_ID }}
+          SAP_AI_CORE_CLIENT_SECRET: ${{ secrets.SAP_AI_CORE_CLIENT_SECRET }}
+          SAP_AI_CORE_AUTH_URL: ${{ secrets.SAP_AI_CORE_AUTH_URL }}
+          SAP_AI_CORE_BASE_URL: ${{ secrets.SAP_AI_CORE_BASE_URL }}
+          SAP_AI_CORE_RESOURCE_GROUP: ${{ secrets.SAP_AI_CORE_RESOURCE_GROUP }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh
