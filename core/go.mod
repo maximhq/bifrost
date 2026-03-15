@@ -15,8 +15,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.5
 	github.com/aws/smithy-go v1.24.0
 	github.com/bytedance/sonic v1.15.0
+	github.com/fasthttp/websocket v1.5.12
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/klauspost/compress v1.18.2
 	github.com/mark3labs/mcp-go v0.43.2
@@ -61,6 +61,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

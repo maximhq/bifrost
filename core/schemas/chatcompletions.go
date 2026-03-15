@@ -459,6 +459,14 @@ func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
 			AdditionalPropertiesMap:  t.AdditionalProperties.AdditionalPropertiesMap.SortedCopy(),
 		}
 	}
+	switch v := t.Default.(type) {
+	case *OrderedMap:
+		out.Default = v.SortedCopy()
+	case map[string]interface{}:
+		out.Default = OrderedMapFromMap(v).SortedCopy()
+	case []interface{}:
+		out.Default = sortedCopySlice(v)
+	}
 	return &out
 }
 

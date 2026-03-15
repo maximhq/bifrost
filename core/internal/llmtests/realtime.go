@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-
-	"github.com/gorilla/websocket"
 )
 
 // RunRealtimeTest dials the provider's native Realtime WebSocket endpoint,
@@ -57,7 +56,7 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 			httpHeaders.Set(k, v)
 		}
 
-		dialer := websocket.Dialer{
+		dialer := ws.Dialer{
 			HandshakeTimeout: 15 * time.Second,
 		}
 
@@ -85,7 +84,7 @@ func RunRealtimeTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context,
 }
 
 // runOpenAIRealtimeTest drives an OpenAI Realtime session using text modality only.
-func runOpenAIRealtimeTest(t *testing.T, conn *websocket.Conn, testConfig ComprehensiveTestConfig) {
+func runOpenAIRealtimeTest(t *testing.T, conn *ws.Conn, testConfig ComprehensiveTestConfig) {
 	var gotSessionCreated bool
 	eventCount := 0
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -196,7 +195,7 @@ func runOpenAIRealtimeTest(t *testing.T, conn *websocket.Conn, testConfig Compre
 
 // runElevenLabsRealtimeTest drives an ElevenLabs Conversational AI session.
 // ElevenLabs sessions start with conversation_initiation_metadata and require pong heartbeats.
-func runElevenLabsRealtimeTest(t *testing.T, conn *websocket.Conn, testConfig ComprehensiveTestConfig) {
+func runElevenLabsRealtimeTest(t *testing.T, conn *ws.Conn, testConfig ComprehensiveTestConfig) {
 	var gotInitMetadata bool
 	eventCount := 0
 	conn.SetReadDeadline(time.Now().Add(30 * time.Second))
@@ -270,13 +269,13 @@ func extractEventType(msg []byte) string {
 	return "unknown"
 }
 
-func writeJSON(t *testing.T, conn *websocket.Conn, v interface{}) {
+func writeJSON(t *testing.T, conn *ws.Conn, v interface{}) {
 	t.Helper()
 	data, err := json.Marshal(v)
 	if err != nil {
 		t.Fatalf("failed to marshal event: %v", err)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+	if err := conn.WriteMessage(ws.TextMessage, data); err != nil {
 		t.Fatalf("failed to write event: %v", err)
 	}
 }

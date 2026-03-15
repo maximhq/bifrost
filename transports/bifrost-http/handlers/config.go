@@ -504,10 +504,17 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				authChanged = true
 			}
 		} else {
-			// Compare with existing config
+			// Compare with existing config using value comparison (not pointer comparison)
+			// Password is considered changed only if it's NOT redacted and has a value
+			// (IsRedacted() returns true for <redacted>, asterisk patterns, and env var references)
+			passwordChanged := payload.AuthConfig.AdminPassword != nil &&
+				!payload.AuthConfig.AdminPassword.IsRedacted() &&
+				payload.AuthConfig.AdminPassword.GetValue() != ""
+			usernameChanged := payload.AuthConfig.AdminUserName != nil &&
+				!payload.AuthConfig.AdminUserName.Equals(authConfig.AdminUserName)
 			if payload.AuthConfig.IsEnabled != authConfig.IsEnabled ||
-				payload.AuthConfig.AdminUserName != authConfig.AdminUserName ||
-				(payload.AuthConfig.AdminPassword.IsRedacted() && payload.AuthConfig.AdminPassword.GetValue() != "") {
+				usernameChanged ||
+				passwordChanged {
 				authChanged = true
 			}
 		}

@@ -30,6 +30,7 @@ export default function PromptsViewHeader() {
 		hasVersionChanges,
 		hasSessionChanges,
 		isStreaming,
+		canUpdate,
 	} = usePromptContext();
 
 	const [sessionsOpen, setSessionsOpen] = useState(false);
@@ -181,7 +182,6 @@ export default function PromptsViewHeader() {
 					onClick={handleSaveSession}
 					disabled={isCreatingSession || isStreaming}
 					isLoading={isCreatingSession}
-					data-testid="header-save-session"
 					dropdownContent={{
 						className: "w-72 p-0",
 						open: sessionsOpen,
@@ -214,8 +214,9 @@ export default function PromptsViewHeader() {
 						className: cn("bg-transparent"),
 					}}
 					button={{
+						"data-testid": "header-save-session",
 						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
-						disabled: !hasChanges,
+						disabled: !hasChanges || !canUpdate,
 					}}
 				>
 					<Save className="h-4 w-4" />
@@ -224,7 +225,6 @@ export default function PromptsViewHeader() {
 				<SplitButton
 					onClick={handleCommitVersion}
 					disabled={isCreatingSession || isStreaming}
-					data-testid="header-commit-version"
 					dropdownContent={{
 						className: "w-64 max-h-72 overflow-y-auto",
 						children: (
@@ -260,8 +260,9 @@ export default function PromptsViewHeader() {
 						className: cn("bg-transparent"),
 					}}
 					button={{
+						"data-testid": "header-commit-version",
 						className: "bg-transparent disabled:opacity-100 disabled:text-muted-foreground",
-						disabled: !hasVersionChanges,
+						disabled: !hasVersionChanges || !canUpdate,
 					}}
 				>
 					<GitCommit className="h-4 w-4" />
