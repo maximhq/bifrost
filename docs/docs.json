@@ -130,6 +130,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
+                  "providers/supported-providers/copilot",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/groq",

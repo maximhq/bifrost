@@ -1,3 +1,8 @@
+- fix: Copilot handler - clarify defaultGithubClientID as VS Code extension client ID
+- fix: invalidate provider caches on model refresh for updated UI status
+- feat: add Copilot OAuth device-code callback handler and register Copilot routes
+- fix: refreshModels - look up stored provider config and return 404 for unknown providers
+- fix: Copilot handler - pass through slow_down status instead of mapping to pending
 - fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
 - fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
 - fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout

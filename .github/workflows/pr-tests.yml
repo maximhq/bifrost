@@ -125,6 +125,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          GITHUB_COPILOT_TOKEN: ${{ secrets.GITHUB_COPILOT_TOKEN }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

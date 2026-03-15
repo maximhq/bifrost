@@ -2,7 +2,7 @@
 
 import { cn } from "@/components/ui/utils";
 import { useLazyGetBaseModelsQuery, useLazyGetModelsQuery } from "@/lib/store/apis/providersApi";
-import { X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { components, MultiValueProps, OptionProps, SingleValueProps } from "react-select";
 import { AsyncMultiSelect } from "./asyncMultiselect";
@@ -14,6 +14,12 @@ interface ModelMultiselectPropsBase {
 	placeholder?: string;
 	disabled?: boolean;
 	className?: string;
+	/** Callback to trigger a refresh of the model list */
+	onRefresh?: () => void;
+	/** Whether a refresh is currently in progress */
+	isRefreshing?: boolean;
+	/** Disable only the refresh button (e.g. no token available yet) */
+	refreshDisabled?: boolean;
 	/** Load models even when no provider is selected.
 	 * - `true`: loads all models from all providers
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
@@ -102,7 +108,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				unfiltered,
 			});
 		}
-	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels]);
+	}, [provider, keys, getModels, getBaseModels, shouldLoadOnEmpty, shouldUseBaseModels, unfiltered]);
 
 	// Load options function for AsyncMultiSelect
 	const loadOptions = useCallback(
@@ -150,7 +156,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 					});
 			}
 		},
-		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels],
+		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels, unfiltered],
 	);
 
 	// Handle selection change
@@ -188,7 +194,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 				});
 			}
 		},
-		[onChange, provider, keys, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels],
+		[onChange, provider, keys, getModels, getBaseModels, isSingleSelect, shouldLoadOnEmpty, shouldUseBaseModels, unfiltered],
 	);
 
 	// Handle input change - track in both state and ref
@@ -219,7 +225,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
 
-	return (
+	const select = (
 		<AsyncMultiSelect<ModelOption>
 			isSingleSelect={isSingleSelect}
 			hideSelectedOptions
@@ -288,4 +294,25 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			}}
 		/>
 	);
+
+	if (props.onRefresh) {
+		return (
+			<div className="flex items-center gap-1.5">
+				<div className="flex-1">{select}</div>
+				<button
+					type="button"
+					title="Refresh models"
+					aria-label="Refresh models"
+					data-testid="model-multiselect-refresh"
+					className="text-muted-foreground hover:text-foreground inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition-colors disabled:pointer-events-none disabled:opacity-50"
+					onClick={props.onRefresh}
+					disabled={props.isRefreshing || props.refreshDisabled || shouldBeDisabled}
+				>
+					<RefreshCw className={cn("h-4 w-4", props.isRefreshing && "animate-spin")} />
+				</button>
+			</div>
+		);
+	}
+
+	return select;
 }

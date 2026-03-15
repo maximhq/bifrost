@@ -1,3 +1,12 @@
+- fix: Copilot provider - fallback to cached token on malformed JSON in token exchange
+- fix: Copilot provider - set AllowFallbacks=false on ListModels no-keys error
+- test: Copilot provider - fix transport-error test to exercise refresh fallback path
+- feat: add GitHub Copilot provider with two-layer OAuth, device-code flow, and unit tests
+- fix: Copilot provider - also preserve cached token on transport Do() failures
+- fix: preserve JSON Schema description field during Responses-to-Chat mux conversion
+- fix: Copilot provider - use GetPathFromContext in ChatCompletionStream for path consistency
+- fix: Copilot provider - preserve cached token on transient 5xx errors, only clear on 401/403
+- fix: map Responses API text format to ResponseFormat in ToChatRequest for structured outputs
 - fix: MCP health monitor now automatically reconnects clients after consecutive failures using exponential backoff retry logic
 - fix: MCP clients that fail initial connection on startup are retained in disconnected state and automatically recovered by the health monitor
 - fix: MCP tool retrieval during connection no longer hangs indefinitely for failing STDIO/SSE connections — bounded by a 30s timeout
