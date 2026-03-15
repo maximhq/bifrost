@@ -409,6 +409,59 @@ func (t *ToolFunctionParameters) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Normalized returns a shallow copy of the ToolFunctionParameters with all
+// OrderedMap keys sorted using JSON Schema priority ordering (type,
+// description, properties, required first, then alphabetically). The copy
+// shares primitive values with the original but has independent key slices,
+// so sorting does not mutate the caller's data.
+//
+// The captured keyOrder is cleared so the struct field declaration order is
+// used for the top-level keys. This produces deterministic JSON serialization
+// regardless of the client's original key ordering, which is critical for
+// Anthropic's prefix-based prompt caching.
+func (t *ToolFunctionParameters) Normalized() *ToolFunctionParameters {
+	if t == nil {
+		return nil
+	}
+	out := *t
+	out.keyOrder = JSONKeyOrder{}
+	out.Properties = t.Properties.SortedCopy()
+	out.Defs = t.Defs.SortedCopy()
+	out.Definitions = t.Definitions.SortedCopy()
+	out.Items = t.Items.SortedCopy()
+	if len(t.AnyOf) > 0 {
+		out.AnyOf = make([]OrderedMap, len(t.AnyOf))
+		for i := range t.AnyOf {
+			if cp := t.AnyOf[i].SortedCopy(); cp != nil {
+				out.AnyOf[i] = *cp
+			}
+		}
+	}
+	if len(t.OneOf) > 0 {
+		out.OneOf = make([]OrderedMap, len(t.OneOf))
+		for i := range t.OneOf {
+			if cp := t.OneOf[i].SortedCopy(); cp != nil {
+				out.OneOf[i] = *cp
+			}
+		}
+	}
+	if len(t.AllOf) > 0 {
+		out.AllOf = make([]OrderedMap, len(t.AllOf))
+		for i := range t.AllOf {
+			if cp := t.AllOf[i].SortedCopy(); cp != nil {
+				out.AllOf[i] = *cp
+			}
+		}
+	}
+	if t.AdditionalProperties != nil && t.AdditionalProperties.AdditionalPropertiesMap != nil {
+		out.AdditionalProperties = &AdditionalPropertiesStruct{
+			AdditionalPropertiesBool: t.AdditionalProperties.AdditionalPropertiesBool,
+			AdditionalPropertiesMap:  t.AdditionalProperties.AdditionalPropertiesMap.SortedCopy(),
+		}
+	}
+	return &out
+}
+
 type AdditionalPropertiesStruct struct {
 	AdditionalPropertiesBool *bool
 	AdditionalPropertiesMap  *OrderedMap

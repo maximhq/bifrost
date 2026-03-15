@@ -134,6 +134,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					}
 				}
 
+				if anthropicTool.InputSchema != nil {
+					anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+				}
+
 				if tool.CacheControl != nil {
 					anthropicTool.CacheControl = tool.CacheControl
 				}

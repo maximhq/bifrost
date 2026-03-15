@@ -116,7 +116,7 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 				delete(requestBody, field)
 			}
 		}
-		jsonBody, err = sonic.Marshal(requestBody)
+		jsonBody, err = providerUtils.MarshalSorted(requestBody)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 		}
@@ -160,21 +160,13 @@ func getRequestBodyForResponses(ctx *schemas.BifrostContext, request *schemas.Bi
 					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 				}
 			}
-		} else {
-			// Remove excluded fields
-			if len(excludeFields) > 0 {
-				var jsonMap map[string]interface{}
-				if err := sonic.Unmarshal(jsonBody, &jsonMap); err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
-				for _, field := range excludeFields {
-					delete(jsonMap, field)
-				}
-				// Re-marshal the map
-				jsonBody, err = sonic.Marshal(jsonMap)
-				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
-				}
+		} else if len(excludeFields) > 0 {
+			// Remove top-level keys while preserving nested JSON byte ordering
+			// (avoids roundtrip through map[string]interface{} which loses key order
+			// in nested objects like tool input_schema).
+			jsonBody, err = excludeTopLevelJSONKeys(jsonBody, excludeFields)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err, providerName)
 			}
 		}
 	}
@@ -1645,4 +1637,19 @@ func IsClaudeCodeRequest(ctx *schemas.BifrostContext) bool {
 		return strings.Contains(strings.ToLower(userAgent), "claude-cli")
 	}
 	return false
+}
+
+// excludeTopLevelJSONKeys removes the specified top-level keys from a JSON
+// object without parsing nested values. Nested bytes are preserved as-is,
+// which keeps the original key ordering within tool schemas and other
+// deeply nested structures.
+func excludeTopLevelJSONKeys(data []byte, keys []string) ([]byte, error) {
+	var raw map[string]json.RawMessage
+	if err := sonic.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("anthropic: unmarshalling for field exclusion: %w", err)
+	}
+	for _, k := range keys {
+		delete(raw, k)
+	}
+	return sonic.Marshal(raw)
 }
