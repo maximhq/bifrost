@@ -14,9 +14,21 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
+
+// postgresDSN matches the postgres service in tests/docker-compose.yml and
+// framework/docker-compose.yml.
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+
+// namedDB pairs a backend name with its GORM connection for use in subtests.
+type namedDB struct {
+	name string
+	db   *gorm.DB
+}
 
 // setupTestDB creates an in-memory SQLite database for testing
 func setupTestDB(t *testing.T) *gorm.DB {
@@ -535,5 +547,340 @@ func findUniqueNameForTest(baseName string, originalName string, excludeID uint,
 			return candidateName, nil
 		}
 		suffix++
+	}
+}
+
+// setupProviderTestDBWithoutStoreRawColumn creates an in-memory SQLite database
+// with the config_providers table but WITHOUT the store_raw_request_response column,
+// simulating the pre-migration state.
+func setupProviderTestDBWithoutStoreRawColumn(t *testing.T) *gorm.DB {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "Failed to create test database")
+
+	// Create the config_providers table manually without store_raw_request_response column
+	// This simulates the pre-migration state
+	err = db.Exec(`
+		CREATE TABLE config_providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(50) NOT NULL UNIQUE,
+			network_config_json TEXT,
+			concurrency_buffer_json TEXT,
+			proxy_config_json TEXT,
+			custom_provider_config_json TEXT,
+			pricing_overrides_json TEXT,
+			send_back_raw_request BOOLEAN DEFAULT 0,
+			send_back_raw_response BOOLEAN DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			budget_id VARCHAR(255),
+			rate_limit_id VARCHAR(255),
+			config_hash VARCHAR(255),
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create config_providers table")
+
+	// Create the gomigrate table for the migrator
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS gomigrate (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	require.NoError(t, err, "Failed to create gomigrate table")
+
+	return db
+}
+
+// trySetupPostgresDBWithoutStoreRawColumn attempts to connect to Postgres and creates
+// the config_providers table WITHOUT the store_raw_request_response column.
+// Returns nil (without skipping the test) if Postgres is unavailable.
+func trySetupPostgresDBWithoutStoreRawColumn(t *testing.T, testSuffix string) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		return nil
+	}
+
+	// Verify the connection is actually live before proceeding.
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if err := sqlDB.Ping(); err != nil {
+		return nil
+	}
+
+	// Drop the table if it exists to start fresh (for this specific test)
+	db.Exec("DROP TABLE IF EXISTS gomigrate")
+	db.Exec("DROP TABLE IF EXISTS config_providers")
+
+	// Create the config_providers table manually without store_raw_request_response column
+	// This simulates the pre-migration state (PostgreSQL syntax)
+	err = db.Exec(`
+		CREATE TABLE config_providers (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(50) NOT NULL UNIQUE,
+			network_config_json TEXT,
+			concurrency_buffer_json TEXT,
+			proxy_config_json TEXT,
+			custom_provider_config_json TEXT,
+			pricing_overrides_json TEXT,
+			send_back_raw_request BOOLEAN DEFAULT false,
+			send_back_raw_response BOOLEAN DEFAULT false,
+			created_at TIMESTAMP NOT NULL,
+			updated_at TIMESTAMP NOT NULL,
+			budget_id VARCHAR(255),
+			rate_limit_id VARCHAR(255),
+			config_hash VARCHAR(255),
+			status VARCHAR(50) DEFAULT 'unknown',
+			description TEXT,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)
+	`).Error
+	if err != nil {
+		return nil
+	}
+
+	// Create the gomigrate table for the migrator
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS gomigrate (
+			id VARCHAR(255) PRIMARY KEY
+		)
+	`).Error
+	if err != nil {
+		return nil
+	}
+
+	// Clean up tables after the test
+	t.Cleanup(func() {
+		db.Exec("DROP TABLE IF EXISTS gomigrate")
+		db.Exec("DROP TABLE IF EXISTS config_providers")
+	})
+
+	return db
+}
+
+// forEachProviderMigrationDB returns backends for provider migration tests.
+// Always includes SQLite; includes Postgres when available.
+func forEachProviderMigrationDB(t *testing.T, testSuffix string) []namedDB {
+	t.Helper()
+	dbs := []namedDB{{"sqlite", setupProviderTestDBWithoutStoreRawColumn(t)}}
+	if pgDB := trySetupPostgresDBWithoutStoreRawColumn(t, testSuffix); pgDB != nil {
+		dbs = append(dbs, namedDB{"postgres", pgDB})
+	}
+	return dbs
+}
+
+func TestMigrationAddStoreRawRequestResponseColumn(t *testing.T) {
+	tests := []struct {
+		name                            string
+		sendBackRawRequest              bool
+		sendBackRawResponse             bool
+		expectedStoreRawRequestResponse bool
+	}{
+		{
+			name:                            "both false - store should be false",
+			sendBackRawRequest:              false,
+			sendBackRawResponse:             false,
+			expectedStoreRawRequestResponse: false,
+		},
+		{
+			name:                            "request true response false - store should be true",
+			sendBackRawRequest:              true,
+			sendBackRawResponse:             false,
+			expectedStoreRawRequestResponse: true,
+		},
+		{
+			name:                            "request false response true - store should be true",
+			sendBackRawRequest:              false,
+			sendBackRawResponse:             true,
+			expectedStoreRawRequestResponse: true,
+		},
+		{
+			name:                            "both true - store should be true",
+			sendBackRawRequest:              true,
+			sendBackRawResponse:             true,
+			expectedStoreRawRequestResponse: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			for _, ndb := range forEachProviderMigrationDB(t, tt.name) {
+				ndb := ndb
+				t.Run(ndb.name, func(t *testing.T) {
+					db := ndb.db
+					ctx := context.Background()
+
+					providerName := "test_provider"
+					staleHash := "stale_hash_before_migration"
+					now := time.Now()
+
+					// Insert a provider with the old schema (no store_raw_request_response column)
+					err := db.Exec(`
+						INSERT INTO config_providers (
+							name, send_back_raw_request, send_back_raw_response, 
+							config_hash, created_at, updated_at, encryption_status
+						) VALUES (?, ?, ?, ?, ?, ?, ?)
+					`, providerName, tt.sendBackRawRequest, tt.sendBackRawResponse, staleHash, now, now, "plain_text").Error
+					require.NoError(t, err, "Failed to insert test provider")
+
+					// Verify column does not exist before migration
+					hasColumn := db.Migrator().HasColumn(&tables.TableProvider{}, "store_raw_request_response")
+					assert.False(t, hasColumn, "store_raw_request_response column should not exist before migration")
+
+					// Run the migration
+					err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+					require.NoError(t, err, "Migration should succeed")
+
+					// Verify column exists after migration
+					hasColumn = db.Migrator().HasColumn(&tables.TableProvider{}, "store_raw_request_response")
+					assert.True(t, hasColumn, "store_raw_request_response column should exist after migration")
+
+					// Fetch the provider and verify values
+					var result struct {
+						Name                    string
+						SendBackRawRequest      bool
+						SendBackRawResponse     bool
+						StoreRawRequestResponse bool
+						ConfigHash              string
+					}
+					err = db.Table("config_providers").
+						Select("name, send_back_raw_request, send_back_raw_response, store_raw_request_response, config_hash").
+						Where("name = ?", providerName).
+						Scan(&result).Error
+					require.NoError(t, err, "Failed to fetch provider after migration")
+
+					// Verify store_raw_request_response was set correctly
+					assert.Equal(t, tt.expectedStoreRawRequestResponse, result.StoreRawRequestResponse,
+						"store_raw_request_response should be set based on send_back_raw_request OR send_back_raw_response")
+
+					// Verify config_hash was updated (not the stale hash)
+					assert.NotEqual(t, staleHash, result.ConfigHash,
+						"config_hash should be updated after migration")
+
+					// Verify the hash matches what GenerateConfigHash would produce
+					expectedConfig := ProviderConfig{
+						SendBackRawRequest:      tt.sendBackRawRequest,
+						SendBackRawResponse:     tt.sendBackRawResponse,
+						StoreRawRequestResponse: tt.expectedStoreRawRequestResponse,
+					}
+					expectedHash, err := expectedConfig.GenerateConfigHash(providerName)
+					require.NoError(t, err, "Failed to generate expected hash")
+					assert.Equal(t, expectedHash, result.ConfigHash,
+						"config_hash should match the expected hash from GenerateConfigHash")
+				})
+			}
+		})
+	}
+}
+
+func TestMigrationAddStoreRawRequestResponseColumn_MultipleProviders(t *testing.T) {
+	for _, ndb := range forEachProviderMigrationDB(t, "multiple") {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			ctx := context.Background()
+
+			now := time.Now()
+
+			// Insert multiple providers with different configurations
+			providers := []struct {
+				name                string
+				sendBackRawRequest  bool
+				sendBackRawResponse bool
+			}{
+				{"provider_neither", false, false},
+				{"provider_request_only", true, false},
+				{"provider_response_only", false, true},
+				{"provider_both", true, true},
+			}
+
+			for _, p := range providers {
+				err := db.Exec(`
+					INSERT INTO config_providers (
+						name, send_back_raw_request, send_back_raw_response, 
+						config_hash, created_at, updated_at, encryption_status
+					) VALUES (?, ?, ?, ?, ?, ?, ?)
+				`, p.name, p.sendBackRawRequest, p.sendBackRawResponse, "stale_hash", now, now, "plain_text").Error
+				require.NoError(t, err, "Failed to insert provider %s", p.name)
+			}
+
+			// Run the migration
+			err := migrationAddStoreRawRequestResponseColumn(ctx, db)
+			require.NoError(t, err, "Migration should succeed")
+
+			// Verify each provider
+			for _, p := range providers {
+				var result struct {
+					StoreRawRequestResponse bool
+					ConfigHash              string
+				}
+				err := db.Table("config_providers").
+					Select("store_raw_request_response, config_hash").
+					Where("name = ?", p.name).
+					Scan(&result).Error
+				require.NoError(t, err, "Failed to fetch provider %s", p.name)
+
+				expectedStore := p.sendBackRawRequest || p.sendBackRawResponse
+				assert.Equal(t, expectedStore, result.StoreRawRequestResponse,
+					"Provider %s: store_raw_request_response mismatch", p.name)
+				assert.NotEqual(t, "stale_hash", result.ConfigHash,
+					"Provider %s: config_hash should be updated", p.name)
+			}
+		})
+	}
+}
+
+func TestMigrationAddStoreRawRequestResponseColumn_Idempotent(t *testing.T) {
+	for _, ndb := range forEachProviderMigrationDB(t, "idempotent") {
+		ndb := ndb
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			ctx := context.Background()
+
+			now := time.Now()
+			providerName := "idempotent_test_provider"
+
+			// Insert a provider
+			err := db.Exec(`
+				INSERT INTO config_providers (
+					name, send_back_raw_request, send_back_raw_response, 
+					config_hash, created_at, updated_at, encryption_status
+				) VALUES (?, ?, ?, ?, ?, ?, ?)
+			`, providerName, true, false, "stale_hash", now, now, "plain_text").Error
+			require.NoError(t, err, "Failed to insert test provider")
+
+			// Run the migration first time
+			err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+			require.NoError(t, err, "First migration should succeed")
+
+			// Get the hash after first migration
+			var firstHash string
+			err = db.Table("config_providers").
+				Select("config_hash").
+				Where("name = ?", providerName).
+				Scan(&firstHash).Error
+			require.NoError(t, err)
+
+			// Run the migration second time (should be idempotent)
+			err = migrationAddStoreRawRequestResponseColumn(ctx, db)
+			require.NoError(t, err, "Second migration should succeed (idempotent)")
+
+			// Verify hash is unchanged after second run
+			var secondHash string
+			err = db.Table("config_providers").
+				Select("config_hash").
+				Where("name = ?", providerName).
+				Scan(&secondHash).Error
+			require.NoError(t, err)
+
+			assert.Equal(t, firstHash, secondHash, "Hash should remain unchanged after idempotent migration run")
+		})
 	}
 }

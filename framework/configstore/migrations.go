@@ -357,11 +357,18 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					CustomProviderConfig:     provider.CustomProviderConfig,
 					PricingOverrides:         provider.PricingOverrides,
 				}
+				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
+				if provider.SendBackRawRequest || provider.SendBackRawResponse {
+					providerConfig.StoreRawRequestResponse = true
+				}
 				hash, err := providerConfig.GenerateConfigHash(provider.Name)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
 				}
-				if err := tx.Model(&provider).Update("config_hash", hash).Error; err != nil {
+				if err := tx.Model(&provider).Updates(map[string]interface{}{
+					"config_hash":                hash,
+					"store_raw_request_response": providerConfig.StoreRawRequestResponse,
+				}).Error; err != nil {
 					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
 				}
 			}
