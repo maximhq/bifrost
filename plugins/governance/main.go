@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/envutils"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
@@ -879,9 +880,24 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 	return headers, nil
 }
 
-// validateRequiredHeaders checks that all configured required headers are present in the request.
-// Headers are compared case-insensitively (both sides lowercased).
-// Returns a BifrostError with status 400 if any required headers are missing, or nil if all present.
+// validateRequiredHeaders checks that all configured required headers are present in the request,
+// and optionally validates their values.
+//
+// Each entry in the required headers list can be:
+//   - "Header-Name"              — header must be present (any value accepted)
+//   - "Header-Name=value"        — header must be present AND its value must exactly match "value"
+//   - "Header-Name=env.VAR_NAME" — header must be present AND its value must match the resolved
+//     environment variable ENV_VAR_NAME
+//   - "Header-Name="             — header must be present AND its value must be an empty string
+//
+// Header name matching is case-insensitive. Header values are compared exactly as configured
+// (case-sensitive); an empty string after "=" is a valid constraint that requires the header
+// value to also be empty.
+// Environment variable references in values are resolved at request time via envutils.ProcessEnvValue.
+// If the referenced environment variable is not set, the check treats the value as unresolvable
+// and returns a 400 error.
+// Returns a BifrostError with status 400 if any required headers are missing or have an invalid
+// value, or nil if all checks pass.
 func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) *schemas.BifrostError {
 	if p.requiredHeaders == nil || len(*p.requiredHeaders) == 0 {
 		return nil
@@ -891,17 +907,36 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 		headers = map[string]string{}
 	}
 	var missing []string
+	var invalid []string
 	for _, h := range *p.requiredHeaders {
-		if _, ok := headers[strings.ToLower(h)]; !ok {
-			missing = append(missing, h)
+		name, rawRequiredValue, hasValue := strings.Cut(h, "=")
+		actual, ok := headers[strings.ToLower(name)]
+		if !ok {
+			missing = append(missing, name)
+			continue
+		}
+		if hasValue {
+			requiredValue, err := envutils.ProcessEnvValue(rawRequiredValue)
+			if err != nil || actual != requiredValue {
+				// Env var is referenced but not set — treat as invalid value
+				invalid = append(invalid, name)
+				continue
+			}
 		}
 	}
-	if len(missing) > 0 {
+	if len(missing) > 0 || len(invalid) > 0 {
+		var parts []string
+		if len(missing) > 0 {
+			parts = append(parts, fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")))
+		}
+		if len(invalid) > 0 {
+			parts = append(parts, fmt.Sprintf("invalid required header value: %s", strings.Join(invalid, ", ")))
+		}
 		return &schemas.BifrostError{
 			Type:       bifrost.Ptr("missing_required_headers"),
 			StatusCode: bifrost.Ptr(400),
 			Error: &schemas.ErrorField{
-				Message: fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")),
+				Message: strings.Join(parts, "; "),
 			},
 		}
 	}

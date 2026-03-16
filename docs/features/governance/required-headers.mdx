@@ -6,18 +6,19 @@ icon: "shield-check"
 
 ## Overview
 
-Required headers let you enforce that specific HTTP headers are present on every LLM and MCP request passing through Bifrost. If a request is missing any required header, the governance plugin rejects it with a **400 Bad Request** error before it reaches the provider.
+Required headers let you enforce that specific HTTP headers are present on every LLM and MCP request passing through Bifrost. Optionally, you can also require a header to carry a specific value. If a request is missing a required header or carries the wrong value, the governance plugin rejects it with a **400 Bad Request** error before it reaches the provider.
 
 This is useful for:
 - **Tenant isolation** - Require `X-Tenant-ID` to identify the calling tenant
 - **Audit trails** - Require `X-Correlation-ID` for request tracing across services
+- **Proxy token validation** - Require `X-Proxy-Token=secretval` so only callers with the correct token are allowed
 - **Custom routing metadata** - Require headers your infrastructure depends on
 
 <Note>
 Required headers validation requires **governance to be enabled**. The check runs in both `PreLLMHook` and `PreMCPHook`, so it applies to all inference and MCP tool execution requests.
 </Note>
 
-Header matching is **case-insensitive** — configuring `X-Tenant-ID` will match `x-tenant-id`, `X-TENANT-ID`, or any other casing.
+Header name matching is **case-insensitive** — configuring `X-Tenant-ID` will match `x-tenant-id`, `X-TENANT-ID`, or any other casing. Header **values** are compared exactly as configured (case-sensitive).
 
 ---
 
@@ -26,20 +27,33 @@ Header matching is **case-insensitive** — configuring `X-Tenant-ID` will match
 ```mermaid
 graph LR
     A[Request] --> B{All required<br/>headers present?}
-    B -->|Yes| C[Continue to<br/>governance evaluation]
     B -->|No| D[400 Bad Request<br/>missing_required_headers]
+    B -->|Yes| E{Value constraints<br/>satisfied?}
+    E -->|No| F[400 Bad Request<br/>invalid required header value]
+    E -->|Yes| C[Continue to<br/>governance evaluation]
 ```
 
 When a request arrives:
 1. The HTTP transport middleware stores all request headers in the Bifrost context (lowercased keys)
 2. The governance plugin's `PreLLMHook` / `PreMCPHook` checks for each required header
 3. If any are missing, the request is rejected immediately with a `400` status and a JSON error listing the missing headers
+4. If a header is present but its value does not match the configured value, the request is rejected with a `400` status and a JSON error listing the headers with invalid values
 
-**Example error response:**
+**Example error response (missing header):**
 ```json
 {
   "error": {
-    "message": "missing required headers: x-tenant-id, x-correlation-id",
+    "message": "missing required headers: X-Tenant-ID, X-Correlation-ID",
+    "type": "missing_required_headers"
+  }
+}
+```
+
+**Example error response (wrong value):**
+```json
+{
+  "error": {
+    "message": "invalid required header value: X-Proxy-Token",
     "type": "missing_required_headers"
   }
 }
@@ -48,6 +62,14 @@ When a request arrives:
 ---
 
 ## Configuration
+
+Each entry in `required_headers` can be:
+
+| Format | Behaviour |
+|--------|-----------|
+| `Header-Name` | Header must be **present** (any value accepted) |
+| `Header-Name=value` | Header must be present **and** its value must exactly equal `value` |
+| `Header-Name=env.VAR_NAME` | Header must be present **and** its value must equal the resolved value of environment variable `VAR_NAME` |
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -58,8 +80,10 @@ When a request arrives:
 
 ![Required Headers Configuration](../../media/ui-required-headers-setting.png)
 
-4. Enter a comma-separated list of header names (e.g., `X-Tenant-ID, X-Correlation-ID`)
+4. Enter a comma-separated list of header names or `Name=value` pairs (e.g., `X-Tenant-ID, X-Proxy-Token=env.MY_SECRET`)
 5. Click **Save Changes**
+
+Use the `env.VAR_NAME` syntax in the value to reference an environment variable rather than hardcoding a secret.
 
 Changes take effect immediately — no restart required.
 
@@ -73,7 +97,7 @@ curl -X PUT http://localhost:8080/api/config \
   -H "Content-Type: application/json" \
   -d '{
     "client_config": {
-      "required_headers": ["X-Tenant-ID", "X-Correlation-ID"]
+      "required_headers": ["X-Tenant-ID", "X-Proxy-Token=env.MY_SECRET_TOKEN"]
     }
   }'
 ```
@@ -98,14 +122,14 @@ Add `required_headers` to the `client` section:
 ```json
 {
   "client": {    
-    "required_headers": ["X-Tenant-ID", "X-Correlation-ID"]
+    "required_headers": ["X-Tenant-ID", "X-Proxy-Token=env.MY_SECRET_TOKEN"]
   }
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `required_headers` | `string[]` | No | List of header names that must be present on every request. Case-insensitive. |
+| `required_headers` | `string[]` | No | List of header names (or `Name=value` / `Name=env.VAR` entries) that must be present on every request. Name matching is case-insensitive; value matching is case-sensitive. Use the `env.` prefix on the value to avoid hardcoding secrets. |
 
 </Tab>
 </Tabs>
@@ -139,8 +163,57 @@ curl http://localhost:8080/v1/chat/completions \
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
-# → 400: missing required headers: x-tenant-id
+# → 400: missing required headers: X-Tenant-ID
 ```
+
+### Requiring a static proxy token
+
+Validate that the caller provides an exact token value. Use an environment variable reference to avoid hardcoding the secret in your config file:
+
+```json
+{
+  "client": {
+    "required_headers": ["X-Proxy-Token=env.MY_PROXY_SECRET"]
+  }
+}
+```
+
+Start Bifrost with the environment variable set:
+
+```bash
+MY_PROXY_SECRET=secretval ./bifrost-http --config config.json
+```
+
+**Valid request:**
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Proxy-Token: secretval" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+**Rejected request** (wrong value):
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Proxy-Token: wrongval" \
+  -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+# → 400: invalid required header value: X-Proxy-Token
+```
+
+You can also use a literal value instead of an env var reference if the value is not sensitive:
+
+```json
+{
+  "client": {
+    "required_headers": ["X-Proxy-Token=secretval"]
+  }
+}
+```
+
+<Note>
+If the referenced environment variable is not set at runtime, requests will be rejected with `400 invalid required header value` — Bifrost will not fall back to allowing any value.
+</Note>
 
 ### Combining with virtual keys
 
@@ -150,12 +223,12 @@ Required headers work alongside virtual key enforcement. When both are configure
 {
   "client": {
     "enforce_governance_header": true,
-    "required_headers": ["X-Tenant-ID"]
+    "required_headers": ["X-Tenant-ID", "X-Proxy-Token=secretval"]
   }
 }
 ```
 
-A request must include **both** the virtual key header and `X-Tenant-ID` to pass governance.
+A request must include **both** the virtual key header, `X-Tenant-ID`, and `X-Proxy-Token` with the correct value to pass governance.
 
 ---
 
@@ -164,3 +237,4 @@ A request must include **both** the virtual key header and `X-Tenant-ID` to pass
 - **[Virtual Keys](./virtual-keys)** - Set up access control with virtual keys
 - **[Budget and Limits](./budget-and-limits)** - Configure budgets and rate limits
 - **[Routing](./routing)** - Route requests based on headers and other criteria
+
