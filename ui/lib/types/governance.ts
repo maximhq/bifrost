@@ -8,6 +8,7 @@ export interface Budget {
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
 	current_usage: number; // In dollars
 	last_reset: string; // ISO timestamp
+	calendar_aligned?: boolean; // When true, resets at clean calendar boundaries (day/week/month/year start)
 }
 
 export interface RateLimit {
@@ -201,11 +202,13 @@ export interface UpdateCustomerRequest {
 export interface CreateBudgetRequest {
 	max_limit: number; // In dollars
 	reset_duration: string; // e.g., "30s", "5m", "1h", "1d", "1w", "1M"
+	calendar_aligned?: boolean; // Snap resets to calendar boundaries (day/week/month/year)
 }
 
 export interface UpdateBudgetRequest {
 	max_limit?: number;
 	reset_duration?: string;
+	calendar_aligned?: boolean; // When switching to true, current usage is reset to 0
 }
 
 export interface CreateRateLimitRequest {

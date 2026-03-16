@@ -2,12 +2,23 @@
 
 import FormFooter from "@/components/formFooter"
 import { Badge } from "@/components/ui/badge"
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import NumberAndSelect from "@/components/ui/numberAndSelect"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { resetDurationOptions } from "@/lib/constants/governance"
+import { Switch } from "@/components/ui/switch"
+import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance"
 import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store"
 import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance"
 import { formatCurrency } from "@/lib/utils/governance"
@@ -31,6 +42,7 @@ interface TeamFormData {
 	// Budget (stored as string to allow intermediate decimal states like "1.")
 	budgetMaxLimit: string;
 	budgetResetDuration: string;
+	budgetCalendarAligned: boolean;
 	// Rate Limit
 	tokenMaxLimit: string;
 	tokenResetDuration: string;
@@ -47,6 +59,7 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 		// Budget (stored as string)
 		budgetMaxLimit: team?.budget ? String(team.budget.max_limit) : "",
 		budgetResetDuration: team?.budget?.reset_duration || "1M",
+		budgetCalendarAligned: team?.budget?.calendar_aligned ?? false,
 		// Rate Limit (stored as string)
 		tokenMaxLimit: team?.rate_limit?.token_max_limit ? String(team.rate_limit.token_max_limit) : "",
 		tokenResetDuration: team?.rate_limit?.token_reset_duration || "1h",
@@ -72,6 +85,16 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
   const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation()
   const loading = isCreating || isUpdating
 
+	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+
+	const handleCalendarAlignedChange = (checked: boolean) => {
+		if (checked && isEditing && team?.budget && !team.budget.calendar_aligned) {
+			setShowCalendarAlignWarning(true);
+		} else {
+			updateField("budgetCalendarAligned", checked);
+		}
+	};
+
 	// Track isDirty state
 	useEffect(() => {
 		const currentData = {
@@ -79,6 +102,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 			customerId: formData.customerId,
 			budgetMaxLimit: formData.budgetMaxLimit,
 			budgetResetDuration: formData.budgetResetDuration,
+			budgetCalendarAligned: formData.budgetCalendarAligned,
 			tokenMaxLimit: formData.tokenMaxLimit,
 			tokenResetDuration: formData.tokenResetDuration,
 			requestMaxLimit: formData.requestMaxLimit,
@@ -88,7 +112,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.customerId, formData.budgetMaxLimit, formData.budgetResetDuration, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+	}, [formData.name, formData.customerId, formData.budgetMaxLimit, formData.budgetResetDuration, formData.budgetCalendarAligned, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
 
 	// Parse string values to numbers for validation and submission
 	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
@@ -152,17 +176,18 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 					customer_id: formData.customerId,
 				};
 
-				// Detect budget changes using had/has pattern
-				const hadBudget = !!team.budget;
-				const hasBudget = !!budgetMaxLimitNum;
-				if (hasBudget) {
-					updateData.budget = {
-						max_limit: budgetMaxLimitNum,
-						reset_duration: formData.budgetResetDuration,
-					};
-				} else if (hadBudget) {
-					updateData.budget = {} as UpdateTeamRequest["budget"];
-				}
+			// Detect budget changes using had/has pattern
+			const hadBudget = !!team.budget;
+			const hasBudget = !!budgetMaxLimitNum;
+			if (hasBudget) {
+				updateData.budget = {
+					max_limit: budgetMaxLimitNum,
+					reset_duration: formData.budgetResetDuration,
+					calendar_aligned: formData.budgetCalendarAligned,
+				};
+			} else if (hadBudget) {
+				updateData.budget = {} as UpdateTeamRequest["budget"];
+			}
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!team.rate_limit;
@@ -187,13 +212,14 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 					customer_id: formData.customerId || undefined,
 				};
 
-				// Add budget if enabled
-				if (budgetMaxLimitNum) {
-					createData.budget = {
-						max_limit: budgetMaxLimitNum,
-						reset_duration: formData.budgetResetDuration,
-					};
-				}
+			// Add budget if enabled
+			if (budgetMaxLimitNum) {
+				createData.budget = {
+					max_limit: budgetMaxLimitNum,
+					reset_duration: formData.budgetResetDuration,
+					calendar_aligned: formData.budgetCalendarAligned,
+				};
+			}
 
 				// Add rate limit if enabled (token or request limits)
 				if (tokenMaxLimitNum || requestMaxLimitNum) {
@@ -266,19 +292,75 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 							)}
 						</div>
 
-						{/* Budget Configuration */}
-						<NumberAndSelect
-							id="budgetMaxLimit"
-							label="Maximum Spend (USD)"
-							value={formData.budgetMaxLimit}
-							selectValue={formData.budgetResetDuration}
-							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
-							onChangeSelect={(value) => updateField("budgetResetDuration", value)}
-							options={resetDurationOptions}
-							dataTestId="budget-max-limit-input"
-						/>
+					{/* Budget Configuration */}
+					<NumberAndSelect
+						id="budgetMaxLimit"
+						label="Maximum Spend (USD)"
+						value={formData.budgetMaxLimit}
+						selectValue={formData.budgetResetDuration}
+					onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
+					onChangeSelect={(value) => {
+						updateField("budgetResetDuration", value);
+						if (!supportsCalendarAlignment(value)) {
+							updateField("budgetCalendarAligned", false);
+						}
+					}}
+					options={resetDurationOptions}
+					dataTestId="budget-max-limit-input"
+				/>
 
-						{/* Rate Limit Configuration - Token Limits */}
+			{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
+			{formData.budgetMaxLimit && supportsCalendarAlignment(formData.budgetResetDuration) && (
+				<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+					<div className="space-y-0.5">
+						<Label className="text-sm font-normal">Align to calendar cycle</Label>
+						<p className="text-muted-foreground text-xs">
+							Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
+						</p>
+					</div>
+					<Switch
+						checked={formData.budgetCalendarAligned}
+						onCheckedChange={handleCalendarAlignedChange}
+						data-testid="team-budget-calendar-aligned-toggle"
+					/>
+				</div>
+			)}
+
+					{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
+					<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+						<AlertDialogContent>
+							<AlertDialogHeader>
+								<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
+								<AlertDialogDescription>
+									Enabling calendar alignment will immediately reset this budget&apos;s current usage to{" "}
+									<span className="font-semibold">$0.00</span> and snap the reset date to the start of the current{" "}
+									{formData.budgetResetDuration === "1d"
+										? "day"
+										: formData.budgetResetDuration === "1w"
+											? "week"
+											: formData.budgetResetDuration === "1M"
+												? "month"
+												: formData.budgetResetDuration === "1Y"
+													? "year"
+													: "period"}
+									. This cannot be undone.
+								</AlertDialogDescription>
+							</AlertDialogHeader>
+							<AlertDialogFooter>
+								<AlertDialogCancel>Cancel</AlertDialogCancel>
+								<AlertDialogAction
+									onClick={() => {
+										updateField("budgetCalendarAligned", true);
+										setShowCalendarAlignWarning(false);
+									}}
+								>
+									Enable Calendar Alignment
+								</AlertDialogAction>
+							</AlertDialogFooter>
+						</AlertDialogContent>
+					</AlertDialog>
+
+					{/* Rate Limit Configuration - Token Limits */}
 						<NumberAndSelect
 							id="tokenMaxLimit"
 							label="Maximum Tokens"
