@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel verifies that
+// virtual-key provider pinning rewrites the request model to Replicate's nested provider slug.
 func TestHTTPTransportPreHook_VirtualKeyReplicateRefinesNestedModel(t *testing.T) {
 	logger := NewMockLogger()
 	mc := modelcatalog.NewTestCatalog(map[string]string{
