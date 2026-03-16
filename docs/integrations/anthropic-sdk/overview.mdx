@@ -12,6 +12,12 @@ This integration enables you to utilize Bifrost's features like governance, load
 
 **Endpoint:** `/anthropic`
 
+<Note>
+**Enabling the beta header**: Anthropic frequently uses the `anthropic-beta` header to gate access to new features. 
+Clients like Vercels AI SDK use these. Bifrost will block unrecognized headers by default for security purposes.
+To enable the beta header for full compatability, add `anthropic-beta` to the AllowList under Settings -> Client Settings in the UI.
+</Note>
+
 ---
 
 ## Setup
