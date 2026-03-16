@@ -376,28 +376,38 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			//TODO: optimize this double Marshal
-			// Format messages for Vertex API
-			var requestBody map[string]interface{}
+			// Format messages for Vertex API, preserving key order for prompt caching
+			var rawBody []byte
 			var extraParams map[string]interface{}
+			var err error
+
 			if schemas.IsAnthropicModel(deployment) {
 				// Use centralized Anthropic converter
-				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
-				if err != nil {
-					return nil, err
+				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
+				if convErr != nil {
+					return nil, convErr
 				}
 				if reqBody == nil {
 					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
 				reqBody.Model = deployment
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes, preserving struct field order
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+				// Add anthropic_version if not present (using sjson to preserve order)
+				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
+					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+					}
+				}
+				// Remove model field (it's in URL for Vertex)
+				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
+				if err != nil {
+					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
 			} else if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 				reqBody := gemini.ToGeminiChatCompletionRequest(request)
@@ -408,13 +418,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				reqBody.Model = deployment
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
 				}
 			} else {
 				// Use centralized OpenAI converter for non-Claude models
@@ -424,24 +431,19 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				}
 				extraParams = reqBody.GetExtraParams()
 				reqBody.Model = deployment
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-				}
 			}
 
-			if schemas.IsAnthropicModel(deployment) {
-				if _, exists := requestBody["anthropic_version"]; !exists {
-					requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
-				}
-				delete(requestBody, "model")
+			// Remove region field if present
+			rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+			if err != nil {
+				return nil, fmt.Errorf("failed to delete region field: %w", err)
 			}
-			delete(requestBody, "region")
-			return &VertexRequestBody{RequestBody: requestBody, ExtraParams: extraParams}, nil
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
@@ -724,33 +726,41 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			request,
 			func() (providerUtils.RequestBodyWithExtraParams, error) {
 				var extraParams map[string]interface{}
-				reqBody, err := anthropic.ToAnthropicChatRequest(ctx, request)
-				if err != nil {
-					return nil, err
+				reqBody, convErr := anthropic.ToAnthropicChatRequest(ctx, request)
+				if convErr != nil {
+					return nil, convErr
+				}
+				if reqBody == nil {
+					return nil, fmt.Errorf("chat completion input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
-				if reqBody != nil {
-					reqBody.Model = deployment
-					reqBody.Stream = schemas.Ptr(true)
-				}
+				reqBody.Model = deployment
+				reqBody.Stream = schemas.Ptr(true)
 
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes, preserving struct field order for prompt caching
+				rawBody, err := providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-				var requestBody map[string]interface{}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
+
+				// Add anthropic_version if not present (using sjson to preserve order)
+				if !providerUtils.JSONFieldExists(rawBody, "anthropic_version") {
+					rawBody, err = providerUtils.SetJSONField(rawBody, "anthropic_version", DefaultVertexAnthropicVersion)
+					if err != nil {
+						return nil, fmt.Errorf("failed to set anthropic_version: %w", err)
+					}
 				}
 
-				if _, exists := requestBody["anthropic_version"]; !exists {
-					requestBody["anthropic_version"] = DefaultVertexAnthropicVersion
+				// Remove model and region fields (using sjson to preserve order)
+				rawBody, err = providerUtils.DeleteJSONField(rawBody, "model")
+				if err != nil {
+					return nil, fmt.Errorf("failed to delete model field: %w", err)
 				}
-
-				delete(requestBody, "model")
-				delete(requestBody, "region")
-				return &VertexRequestBody{RequestBody: requestBody, ExtraParams: extraParams}, nil
+				rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+				if err != nil {
+					return nil, fmt.Errorf("failed to delete region field: %w", err)
+				}
+				return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
 			},
 			provider.GetProviderKey())
 		if bifrostErr != nil {
@@ -1814,8 +1824,10 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			var requestBody map[string]interface{}
+			var rawBody []byte
 			var extraParams map[string]interface{}
+			var err error
+
 			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 				reqBody := gemini.ToGeminiImageGenerationRequest(request)
 				if reqBody == nil {
@@ -1825,13 +1837,10 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 				reqBody.Model = deployment
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes, preserving key order
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
 				}
 			} else if schemas.IsImagenModel(deployment) {
 				reqBody := gemini.ToImagenImageGenerationRequest(request)
@@ -1839,18 +1848,19 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 					return nil, fmt.Errorf("image generation input is not provided")
 				}
 				extraParams = reqBody.GetExtraParams()
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes, preserving key order
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-				}
 			}
 
-			delete(requestBody, "region")
-			return &VertexRequestBody{RequestBody: requestBody, ExtraParams: extraParams}, nil
+			// Remove region field if present
+			rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+			if err != nil {
+				return nil, fmt.Errorf("failed to delete region field: %w", err)
+			}
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
@@ -2076,43 +2086,43 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			var requestBody map[string]interface{}
+			var rawBody []byte
 			var extraParams map[string]interface{}
+			var err error
+
 			if schemas.IsGeminiModel(deployment) || schemas.IsAllDigitsASCII(deployment) {
 				reqBody := gemini.ToGeminiImageEditRequest(request)
-				extraParams = reqBody.GetExtraParams()
 				if reqBody == nil {
 					return nil, fmt.Errorf("image edit input is not provided")
 				}
+				extraParams = reqBody.GetExtraParams()
 				reqBody.Model = deployment
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				// Marshal to JSON bytes, preserving key order
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
 				}
 			} else if schemas.IsImagenModel(deployment) {
 				reqBody := gemini.ToImagenImageEditRequest(request)
-				extraParams = reqBody.GetExtraParams()
 				if reqBody == nil {
 					return nil, fmt.Errorf("image edit input is not provided")
 				}
-				// Convert struct to map for Vertex API
-				reqBytes, err := sonic.Marshal(reqBody)
+				extraParams = reqBody.GetExtraParams()
+				// Marshal to JSON bytes, preserving key order
+				rawBody, err = providerUtils.MarshalSorted(reqBody)
 				if err != nil {
 					return nil, fmt.Errorf("failed to marshal request body: %w", err)
 				}
-				if err := sonic.Unmarshal(reqBytes, &requestBody); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal request body: %w", err)
-				}
 			}
 
-			delete(requestBody, "region")
-			return &VertexRequestBody{RequestBody: requestBody, ExtraParams: extraParams}, nil
+			// Remove region field if present
+			rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+			if err != nil {
+				return nil, fmt.Errorf("failed to delete region field: %w", err)
+			}
+			return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
 		},
 		provider.GetProviderKey())
 	if bifrostErr != nil {
