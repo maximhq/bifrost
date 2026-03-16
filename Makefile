@@ -33,7 +33,7 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 	[ -s "$$NVM_SH" ] || NVM_SH="$$(brew --prefix nvm 2>/dev/null)/nvm.sh"; \
 	if [ -s "$$NVM_SH" ]; then . "$$NVM_SH" >/dev/null && nvm install >/dev/null 2>&1 && nvm use >/dev/null 2>&1; fi
 
-.PHONY: all help dev build-ui build build-cli run run-cli install-air clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
+.PHONY: all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed
 
 all: help
 
@@ -86,6 +86,10 @@ install-ui: cleanup-enterprise
 install-air: ## Install air for hot reloading (if not already installed)
 	@which air > /dev/null || ($(ECHO) "$(YELLOW)Installing air for hot reloading...$(NC)" && go install github.com/air-verse/air@latest)
 	@$(ECHO) "$(GREEN)Air is ready$(NC)"
+
+install-pulse: ## Install pulse for hot reloading (if not already installed)
+	@which pulse > /dev/null || ($(ECHO) "$(YELLOW)Installing pulse for hot reloading...$(NC)" && go install github.com/Pratham-Mishra04/pulse@latest)
+	@$(ECHO) "$(GREEN)Pulse is ready$(NC)"
 
 install-delve: ## Install delve for debugging (if not already installed)
 	@which dlv > /dev/null || ($(ECHO) "$(YELLOW)Installing delve for debugging...$(NC)" && go install github.com/go-delve/delve/cmd/dlv@latest)
@@ -155,6 +159,55 @@ dev: install-ui install-air setup-workspace $(if $(DEBUG),install-delve) ## Star
 			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
 	else \
 		cd transports/bifrost-http && BIFROST_UI_DEV=true air -c .air.toml -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	fi
+
+dev-pulse: install-ui install-pulse setup-workspace $(if $(DEBUG),install-delve) ## Start complete development environment using pulse for hot reloading
+	@$(ECHO) "$(GREEN)Starting Bifrost complete development environment (pulse)...$(NC)"
+	@$(ECHO) "$(YELLOW)This will start:$(NC)"
+	@$(ECHO) "  1. UI development server (localhost:3000)"
+	@$(ECHO) "  2. API server with UI proxy (localhost:$(PORT))"
+	@$(ECHO) "$(CYAN)Access everything at: http://localhost:$(PORT)$(NC)"
+	@if [ -n "$(DEBUG)" ]; then \
+		$(ECHO) "$(CYAN)  3. Debugger (delve) listening on port 2345$(NC)"; \
+	fi
+	@if [ ! -d "transports/bifrost-http/ui" ]; then \
+		$(ECHO) "$(YELLOW)Creating transports/bifrost-http/ui directory...$(NC)"; \
+		mkdir -p transports/bifrost-http/ui; \
+		touch transports/bifrost-http/ui/.tmp; \
+	fi
+	@$(ECHO) ""
+	@$(ECHO) "$(YELLOW)Starting UI development server...$(NC)"
+	@$(USE_NODE); if [ -n "$(DISABLE_PROFILER)" ]; then \
+		$(ECHO) "$(CYAN)DevProfiler disabled for testing$(NC)"; \
+		cd ui && BIFROST_DISABLE_PROFILER=1 npm run dev & \
+	else \
+		cd ui && npm run dev & \
+	fi
+	@sleep 3
+	@$(ECHO) "$(YELLOW)Starting API server with UI proxy...$(NC)"
+	@$(MAKE) setup-workspace >/dev/null
+	@if [ -f .env ]; then \
+		$(ECHO) "$(YELLOW)Loading environment variables from .env...$(NC)"; \
+		set -a; . ./.env; set +a; \
+	fi; \
+	if [ -n "$(DEBUG)" ]; then \
+		$(ECHO) "$(CYAN)Starting with pulse + delve debugger on port 2345...$(NC)"; \
+		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
+		BIFROST_UI_DEV=true pulse -- \
+			-host "$(HOST)" \
+			-port "$(PORT)" \
+			-log-style "$(LOG_STYLE)" \
+			-log-level "$(LOG_LEVEL)" \
+			$(if $(PROMETHEUS_LABELS),-prometheus-labels "$(PROMETHEUS_LABELS)") \
+			$(if $(APP_DIR),-app-dir "$(APP_DIR)"); \
+	else \
+		BIFROST_UI_DEV=true pulse -- \
 			-host "$(HOST)" \
 			-port "$(PORT)" \
 			-log-style "$(LOG_STYLE)" \
