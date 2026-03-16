@@ -261,9 +261,18 @@ export interface GetTeamsResponse {
 	offset: number;
 }
 
+export interface GetCustomersParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 export interface GetCustomersResponse {
 	customers: Customer[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetBudgetsResponse {

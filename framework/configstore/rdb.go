@@ -2231,6 +2231,38 @@ func (s *RDBConfigStore) GetCustomers(ctx context.Context) ([]tables.TableCustom
 	return customers, nil
 }
 
+// GetCustomersPaginated retrieves customers with pagination and optional search filtering.
+func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableCustomer{})
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var customers []tables.TableCustomer
+	if err := baseQuery.
+		Preload("Teams").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&customers).Error; err != nil {
+		return nil, 0, err
+	}
+	return customers, totalCount, nil
+}
+
 // GetCustomer retrieves a specific customer from the database.
 func (s *RDBConfigStore) GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error) {
 	var customer tables.TableCustomer

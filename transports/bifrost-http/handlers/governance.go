@@ -1608,11 +1608,42 @@ func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		SendJSON(ctx, map[string]interface{}{
-			"customers": data.Customers,
-			"count":     len(data.Customers),
+			"customers":   data.Customers,
+			"count":       len(data.Customers),
+			"total_count": len(data.Customers),
+			"limit":       len(data.Customers),
+			"offset":      0,
 		})
 		return
 	}
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		limit, _ := strconv.Atoi(limitStr)
+		offset, _ := strconv.Atoi(offsetStr)
+		limit, offset = ClampPaginationParams(limit, offset)
+		customers, totalCount, err := h.configStore.GetCustomersPaginated(ctx, configstore.CustomersQueryParams{
+			Limit:  limit,
+			Offset: offset,
+			Search: search,
+		})
+		if err != nil {
+			logger.Error("failed to retrieve customers: %v", err)
+			SendError(ctx, 500, "failed to retrieve customers")
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"customers":   customers,
+			"count":       len(customers),
+			"total_count": totalCount,
+			"limit":       limit,
+			"offset":      offset,
+		})
+		return
+	}
+
 	customers, err := h.configStore.GetCustomers(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve customers: %v", err)
@@ -1620,8 +1651,11 @@ func (h *GovernanceHandler) getCustomers(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]interface{}{
-		"customers": customers,
-		"count":     len(customers),
+		"customers":   customers,
+		"count":       len(customers),
+		"total_count": len(customers),
+		"limit":       len(customers),
+		"offset":      0,
 	})
 }
 

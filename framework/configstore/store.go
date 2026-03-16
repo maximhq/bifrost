@@ -52,6 +52,13 @@ type TeamsQueryParams struct {
 	CustomerID string
 }
 
+// CustomersQueryParams holds pagination, filtering, and search parameters for customer queries.
+type CustomersQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -140,6 +147,7 @@ type ConfigStore interface {
 
 	// Customer CRUD
 	GetCustomers(ctx context.Context) ([]tables.TableCustomer, error)
+	GetCustomersPaginated(ctx context.Context, params CustomersQueryParams) ([]tables.TableCustomer, int64, error)
 	GetCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
 	CreateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error
 	UpdateCustomer(ctx context.Context, customer *tables.TableCustomer, tx ...*gorm.DB) error

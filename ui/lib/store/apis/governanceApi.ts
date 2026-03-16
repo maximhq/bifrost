@@ -7,6 +7,7 @@ import {
 	Customer,
 	DebugStatsResponse,
 	GetBudgetsResponse,
+	GetCustomersParams,
 	GetCustomersResponse,
 	GetModelConfigsParams,
 	GetModelConfigsResponse,
@@ -193,8 +194,15 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		// Customers
-		getCustomers: builder.query<GetCustomersResponse, void>({
-			query: () => "/governance/customers",
+		getCustomers: builder.query<GetCustomersResponse, GetCustomersParams | void>({
+			query: (params) => ({
+				url: "/governance/customers",
+				params: {
+					...(params?.limit && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+				},
+			}),
 			providesTags: ["Customers"],
 		}),
 
@@ -209,16 +217,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
-							if (!draft.customers) draft.customers = [];
-							draft.customers.unshift(data.customer);
-							draft.count = (draft.count || 0) + 1;
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getCustomers" || entry?.status !== "fulfilled") continue;
+						const search = entry.originalArgs?.search as string | undefined;
+						if (search && !data.customer.name.toLowerCase().includes(search.toLowerCase())) continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getCustomers", entry.originalArgs, (draft) => {
+								if (!draft.customers) draft.customers = [];
+								draft.customers.unshift(data.customer);
+								draft.count = (draft.count || 0) + 1;
+								draft.total_count = (draft.total_count || 0) + 1;
+							}),
+						);
+					}
 				} catch {
 					// Mutation failed
 				}
@@ -231,18 +246,22 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			async onQueryStarted({ customerId }, { dispatch, queryFulfilled }) {
+			async onQueryStarted({ customerId }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
-							if (!draft.customers) return;
-							const index = draft.customers.findIndex((c) => c.id === customerId);
-							if (index !== -1) {
-								draft.customers[index] = data.customer;
-							}
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getCustomers" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getCustomers", entry.originalArgs, (draft) => {
+								if (!draft.customers) return;
+								const index = draft.customers.findIndex((c) => c.id === customerId);
+								if (index !== -1) {
+									draft.customers[index] = data.customer;
+								}
+							}),
+						);
+					}
 					dispatch(
 						governanceApi.util.updateQueryData("getCustomer", customerId, (draft) => {
 							draft.customer = data.customer;
@@ -259,16 +278,24 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/customers/${customerId}`,
 				method: "DELETE",
 			}),
-			async onQueryStarted(customerId, { dispatch, queryFulfilled }) {
+			async onQueryStarted(customerId, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getCustomers", undefined, (draft) => {
-							if (!draft.customers) return;
-							draft.customers = draft.customers.filter((c) => c.id !== customerId);
-							draft.count = Math.max(0, (draft.count || 0) - 1);
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getCustomers" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getCustomers", entry.originalArgs, (draft) => {
+								if (!draft.customers) return;
+								const before = draft.customers.length;
+								draft.customers = draft.customers.filter((c) => c.id !== customerId);
+								if (draft.customers.length < before) {
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+								}
+							}),
+						);
+					}
 				} catch {
 					// Mutation failed
 				}
