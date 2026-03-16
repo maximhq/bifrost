@@ -431,19 +431,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-			// Add budget if enabled
-			const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-			const hadBudget = !!virtualKey.budget;
-			const hasBudget = budgetMaxLimit !== undefined;
-			if (hasBudget) {
-				updateData.budget = {
-					max_limit: budgetMaxLimit,
-					reset_duration: data.budgetResetDuration || "1M",
-					calendar_aligned: data.budgetCalendarAligned,
-				};
-			} else if (hadBudget) {
-				updateData.budget = {};
-			}
+				// Add budget if enabled
+				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
+				const hadBudget = !!virtualKey.budget;
+				const hasBudget = budgetMaxLimit !== undefined;
+				if (hasBudget) {
+					updateData.budget = {
+						max_limit: budgetMaxLimit,
+						reset_duration: data.budgetResetDuration || "1M",
+						calendar_aligned: data.budgetCalendarAligned,
+					};
+				} else if (hadBudget) {
+					updateData.budget = {};
+				}
 
 				// Add rate limit if enabled
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
@@ -477,15 +477,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-			// Add budget if enabled
-			const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-			if (budgetMaxLimit !== undefined) {
-				createData.budget = {
-					max_limit: budgetMaxLimit,
-					reset_duration: data.budgetResetDuration || "1M",
-					calendar_aligned: data.budgetCalendarAligned,
-				};
-			}
+				// Add budget if enabled
+				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
+				if (budgetMaxLimit !== undefined) {
+					createData.budget = {
+						max_limit: budgetMaxLimit,
+						reset_duration: data.budgetResetDuration || "1M",
+						calendar_aligned: data.budgetCalendarAligned,
+					};
+				}
 
 				// Add rate limit if enabled
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
@@ -1058,98 +1058,97 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 								<div className="flex items-center justify-between gap-2">
 									<Label className="text-sm font-medium">Budget Configuration</Label>
 									{isEditing && (virtualKey?.budget || watchedBudgetMaxLimit) && (
-										<Button
-											type="button"
-											variant="ghost"
-											size="sm"
-											onClick={clearVirtualKeyBudget}
-											data-testid="vk-budget-reset-button"
-										>
+										<Button type="button" variant="ghost" size="sm" onClick={clearVirtualKeyBudget} data-testid="vk-budget-reset-button">
 											<RotateCcw className="h-4 w-4" />
 											Reset
 										</Button>
 									)}
 								</div>
-							<FormField
-								control={form.control}
-								name="budgetMaxLimit"
-								render={({ field }) => (
-									<FormItem>
-										<NumberAndSelect
-											id="budgetMaxLimit"
-											labelClassName="font-normal"
-											label="Maximum Spend (USD)"
-											value={field.value || ""}
-									selectValue={watchedBudgetResetDuration}
-										onChangeNumber={(value) => {
-											field.onChange(value);
-										}}
-										onChangeSelect={(value) => {
-											form.setValue("budgetResetDuration", value, { shouldDirty: true });
-											if (!supportsCalendarAlignment(value)) {
-												form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
-											}
-										}}
-											options={resetDurationOptions}
+								<FormField
+									control={form.control}
+									name="budgetMaxLimit"
+									render={({ field }) => (
+										<FormItem>
+											<NumberAndSelect
+												id="budgetMaxLimit"
+												labelClassName="font-normal"
+												label="Maximum Spend (USD)"
+												value={field.value || ""}
+												selectValue={watchedBudgetResetDuration}
+												onChangeNumber={(value) => {
+													field.onChange(value);
+												}}
+												onChangeSelect={(value) => {
+													form.setValue("budgetResetDuration", value, { shouldDirty: true });
+													if (!supportsCalendarAlignment(value)) {
+														form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
+													}
+												}}
+												options={resetDurationOptions}
+											/>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+
+								{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
+								{watchedBudgetMaxLimit && supportsCalendarAlignment(watchedBudgetResetDuration) && (
+									<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+										<div className="space-y-0.5">
+											<Label htmlFor="vk-budget-calendar-aligned-toggle" className="text-sm font-normal">
+												Align to calendar cycle
+											</Label>
+											<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+												Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
+											</p>
+										</div>
+										<Switch
+											id="vk-budget-calendar-aligned-toggle"
+											aria-describedby="vk-budget-calendar-aligned-description"
+											checked={form.watch("budgetCalendarAligned")}
+											onCheckedChange={handleCalendarAlignedChange}
+											data-testid="vk-budget-calendar-aligned-toggle"
 										/>
-										<FormMessage />
-									</FormItem>
+									</div>
 								)}
-							/>
 
-					{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
-					{watchedBudgetMaxLimit && supportsCalendarAlignment(watchedBudgetResetDuration) && (
-						<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-							<div className="space-y-0.5">
-								<Label className="text-sm font-normal">Align to calendar cycle</Label>
-								<p className="text-muted-foreground text-xs">
-									Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
-								</p>
+								{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
+								<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+									<AlertDialogContent>
+										<AlertDialogHeader>
+											<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
+											<AlertDialogDescription>
+												Enabling calendar alignment will reset this budget&apos;s current usage to{" "}
+												<span className="font-semibold">$0.00</span> and snap the reset date to the start of the current{" "}
+												{watchedBudgetResetDuration === "1d"
+													? "day"
+													: watchedBudgetResetDuration === "1w"
+														? "week"
+														: watchedBudgetResetDuration === "1M"
+															? "month"
+															: watchedBudgetResetDuration === "1Y"
+																? "year"
+																: "period"}
+												. This will take effect when you save.
+											</AlertDialogDescription>
+										</AlertDialogHeader>
+										<AlertDialogFooter>
+											<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+											<AlertDialogAction
+												data-testid="vk-calendar-align-enable-btn"
+												onClick={() => {
+													form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
+													setShowCalendarAlignWarning(false);
+												}}
+											>
+												Enable Calendar Alignment
+											</AlertDialogAction>
+										</AlertDialogFooter>
+									</AlertDialogContent>
+								</AlertDialog>
 							</div>
-							<Switch
-								checked={form.watch("budgetCalendarAligned")}
-								onCheckedChange={handleCalendarAlignedChange}
-								data-testid="vk-budget-calendar-aligned-toggle"
-							/>
-						</div>
-					)}
 
-							{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
-							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
-								<AlertDialogContent>
-									<AlertDialogHeader>
-										<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
-										<AlertDialogDescription>
-											Enabling calendar alignment will immediately reset this budget&apos;s current usage to{" "}
-											<span className="font-semibold">$0.00</span> and snap the reset date to the start of the current{" "}
-											{form.watch("budgetResetDuration") === "1d"
-												? "day"
-												: form.watch("budgetResetDuration") === "1w"
-													? "week"
-													: form.watch("budgetResetDuration") === "1M"
-														? "month"
-														: form.watch("budgetResetDuration") === "1Y"
-															? "year"
-															: "period"}
-											. This cannot be undone.
-										</AlertDialogDescription>
-									</AlertDialogHeader>
-									<AlertDialogFooter>
-										<AlertDialogCancel>Cancel</AlertDialogCancel>
-										<AlertDialogAction
-											onClick={() => {
-												form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
-												setShowCalendarAlignWarning(false);
-											}}
-										>
-											Enable Calendar Alignment
-										</AlertDialogAction>
-									</AlertDialogFooter>
-								</AlertDialogContent>
-							</AlertDialog>
-						</div>
-
-						{/* Rate Limiting Configuration */}
+							{/* Rate Limiting Configuration */}
 							<div className="space-y-4">
 								<div className="flex items-center justify-between gap-2">
 									<Label className="text-sm font-medium">Rate Limiting Configuration</Label>

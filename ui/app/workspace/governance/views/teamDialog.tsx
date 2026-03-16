@@ -1,7 +1,7 @@
-"use client"
+"use client";
 
-import FormFooter from "@/components/formFooter"
-import { Badge } from "@/components/ui/badge"
+import FormFooter from "@/components/formFooter";
+import { Badge } from "@/components/ui/badge";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -11,23 +11,23 @@ import {
 	AlertDialogFooter,
 	AlertDialogHeader,
 	AlertDialogTitle,
-} from "@/components/ui/alertDialog"
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import NumberAndSelect from "@/components/ui/numberAndSelect"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Switch } from "@/components/ui/switch"
-import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance"
-import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store"
-import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance"
-import { formatCurrency } from "@/lib/utils/governance"
-import { Validator } from "@/lib/utils/validation"
-import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
-import { formatDistanceToNow } from "date-fns"
-import isEqual from "lodash.isequal"
-import { useEffect, useMemo, useState } from "react"
-import { toast } from "sonner"
+} from "@/components/ui/alertDialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import NumberAndSelect from "@/components/ui/numberAndSelect";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { getErrorMessage, useCreateTeamMutation, useUpdateTeamMutation } from "@/lib/store";
+import { CreateTeamRequest, Customer, Team, UpdateTeamRequest } from "@/lib/types/governance";
+import { formatCurrency } from "@/lib/utils/governance";
+import { Validator } from "@/lib/utils/validation";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { formatDistanceToNow } from "date-fns";
+import isEqual from "lodash.isequal";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 
 interface TeamDialogProps {
 	team?: Team | null;
@@ -69,21 +69,21 @@ const createInitialState = (team?: Team | null): Omit<TeamFormData, "isDirty"> =
 };
 
 export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDialogProps) {
-  const isEditing = !!team
-  const [initialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team))
-  const [formData, setFormData] = useState<TeamFormData>({
-    ...initialState,
-    isDirty: false,
-  })
+	const isEditing = !!team;
+	const [initialState] = useState<Omit<TeamFormData, "isDirty">>(createInitialState(team));
+	const [formData, setFormData] = useState<TeamFormData>({
+		...initialState,
+		isDirty: false,
+	});
 
-  const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create)
-  const hasUpdateAccess = useRbac(RbacResource.Teams, RbacOperation.Update)
-  const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess
+	const hasCreateAccess = useRbac(RbacResource.Teams, RbacOperation.Create);
+	const hasUpdateAccess = useRbac(RbacResource.Teams, RbacOperation.Update);
+	const hasPermission = isEditing ? hasUpdateAccess : hasCreateAccess;
 
-  // RTK Query hooks
-  const [createTeam, { isLoading: isCreating }] = useCreateTeamMutation()
-  const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation()
-  const loading = isCreating || isUpdating
+	// RTK Query hooks
+	const [createTeam, { isLoading: isCreating }] = useCreateTeamMutation();
+	const [updateTeam, { isLoading: isUpdating }] = useUpdateTeamMutation();
+	const loading = isCreating || isUpdating;
 
 	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
 
@@ -112,7 +112,18 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 			...prev,
 			isDirty: !isEqual(initialState, currentData),
 		}));
-	}, [formData.name, formData.customerId, formData.budgetMaxLimit, formData.budgetResetDuration, formData.budgetCalendarAligned, formData.tokenMaxLimit, formData.tokenResetDuration, formData.requestMaxLimit, formData.requestResetDuration, initialState]);
+	}, [
+		formData.name,
+		formData.customerId,
+		formData.budgetMaxLimit,
+		formData.budgetResetDuration,
+		formData.budgetCalendarAligned,
+		formData.tokenMaxLimit,
+		formData.tokenResetDuration,
+		formData.requestMaxLimit,
+		formData.requestResetDuration,
+		initialState,
+	]);
 
 	// Parse string values to numbers for validation and submission
 	const budgetMaxLimitNum = formData.budgetMaxLimit ? parseFloat(formData.budgetMaxLimit) : undefined;
@@ -176,18 +187,18 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 					customer_id: formData.customerId,
 				};
 
-			// Detect budget changes using had/has pattern
-			const hadBudget = !!team.budget;
-			const hasBudget = !!budgetMaxLimitNum;
-			if (hasBudget) {
-				updateData.budget = {
-					max_limit: budgetMaxLimitNum,
-					reset_duration: formData.budgetResetDuration,
-					calendar_aligned: formData.budgetCalendarAligned,
-				};
-			} else if (hadBudget) {
-				updateData.budget = {} as UpdateTeamRequest["budget"];
-			}
+				// Detect budget changes using had/has pattern
+				const hadBudget = !!team.budget;
+				const hasBudget = !!budgetMaxLimitNum;
+				if (hasBudget) {
+					updateData.budget = {
+						max_limit: budgetMaxLimitNum,
+						reset_duration: formData.budgetResetDuration,
+						calendar_aligned: formData.budgetCalendarAligned,
+					};
+				} else if (hadBudget) {
+					updateData.budget = {} as UpdateTeamRequest["budget"];
+				}
 
 				// Detect rate limit changes using had/has pattern
 				const hadRateLimit = !!team.rate_limit;
@@ -212,14 +223,14 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 					customer_id: formData.customerId || undefined,
 				};
 
-			// Add budget if enabled
-			if (budgetMaxLimitNum) {
-				createData.budget = {
-					max_limit: budgetMaxLimitNum,
-					reset_duration: formData.budgetResetDuration,
-					calendar_aligned: formData.budgetCalendarAligned,
-				};
-			}
+				// Add budget if enabled
+				if (budgetMaxLimitNum) {
+					createData.budget = {
+						max_limit: budgetMaxLimitNum,
+						reset_duration: formData.budgetResetDuration,
+						calendar_aligned: formData.budgetCalendarAligned,
+					};
+				}
 
 				// Add rate limit if enabled (token or request limits)
 				if (tokenMaxLimitNum || requestMaxLimitNum) {
@@ -279,7 +290,9 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 											<SelectValue placeholder="Select a customer" />
 										</SelectTrigger>
 										<SelectContent>
-											<SelectItem value="__none__" data-testid="team-customer-option-none">None</SelectItem>
+											<SelectItem value="__none__" data-testid="team-customer-option-none">
+												None
+											</SelectItem>
 											{customers.map((customer) => (
 												<SelectItem key={customer.id} value={customer.id} data-testid={`team-customer-option-${customer.id}`}>
 													{customer.name}
@@ -292,75 +305,80 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 							)}
 						</div>
 
-					{/* Budget Configuration */}
-					<NumberAndSelect
-						id="budgetMaxLimit"
-						label="Maximum Spend (USD)"
-						value={formData.budgetMaxLimit}
-						selectValue={formData.budgetResetDuration}
-					onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
-					onChangeSelect={(value) => {
-						updateField("budgetResetDuration", value);
-						if (!supportsCalendarAlignment(value)) {
-							updateField("budgetCalendarAligned", false);
-						}
-					}}
-					options={resetDurationOptions}
-					dataTestId="budget-max-limit-input"
-				/>
+						{/* Budget Configuration */}
+						<NumberAndSelect
+							id="budgetMaxLimit"
+							label="Maximum Spend (USD)"
+							value={formData.budgetMaxLimit}
+							selectValue={formData.budgetResetDuration}
+							onChangeNumber={(value) => updateField("budgetMaxLimit", value)}
+							onChangeSelect={(value) => {
+								updateField("budgetResetDuration", value);
+								if (!supportsCalendarAlignment(value)) {
+									updateField("budgetCalendarAligned", false);
+								}
+							}}
+							options={resetDurationOptions}
+							dataTestId="budget-max-limit-input"
+						/>
 
-			{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
-			{formData.budgetMaxLimit && supportsCalendarAlignment(formData.budgetResetDuration) && (
-				<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
-					<div className="space-y-0.5">
-						<Label className="text-sm font-normal">Align to calendar cycle</Label>
-						<p className="text-muted-foreground text-xs">
-							Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
-						</p>
-					</div>
-					<Switch
-						checked={formData.budgetCalendarAligned}
-						onCheckedChange={handleCalendarAlignedChange}
-						data-testid="team-budget-calendar-aligned-toggle"
-					/>
-				</div>
-			)}
+						{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
+						{formData.budgetMaxLimit && supportsCalendarAlignment(formData.budgetResetDuration) && (
+							<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+								<div className="space-y-0.5">
+									<Label htmlFor="team-budget-calendar-aligned-toggle" className="text-sm font-normal">
+										Align to calendar cycle
+									</Label>
+									<p id="team-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
+										Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
+									</p>
+								</div>
+								<Switch
+									id="team-budget-calendar-aligned-toggle"
+									aria-describedby="team-budget-calendar-aligned-description"
+									checked={formData.budgetCalendarAligned}
+									onCheckedChange={handleCalendarAlignedChange}
+									data-testid="team-budget-calendar-aligned-toggle"
+								/>
+							</div>
+						)}
 
-					{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
-					<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
-						<AlertDialogContent>
-							<AlertDialogHeader>
-								<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
-								<AlertDialogDescription>
-									Enabling calendar alignment will immediately reset this budget&apos;s current usage to{" "}
-									<span className="font-semibold">$0.00</span> and snap the reset date to the start of the current{" "}
-									{formData.budgetResetDuration === "1d"
-										? "day"
-										: formData.budgetResetDuration === "1w"
-											? "week"
-											: formData.budgetResetDuration === "1M"
-												? "month"
-												: formData.budgetResetDuration === "1Y"
-													? "year"
-													: "period"}
-									. This cannot be undone.
-								</AlertDialogDescription>
-							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel>Cancel</AlertDialogCancel>
-								<AlertDialogAction
-									onClick={() => {
-										updateField("budgetCalendarAligned", true);
-										setShowCalendarAlignWarning(false);
-									}}
-								>
-									Enable Calendar Alignment
-								</AlertDialogAction>
-							</AlertDialogFooter>
-						</AlertDialogContent>
-					</AlertDialog>
+						{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
+						<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+							<AlertDialogContent>
+								<AlertDialogHeader>
+									<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
+									<AlertDialogDescription>
+										Enabling calendar alignment will reset this budget&apos;s current usage to <span className="font-semibold">$0.00</span>{" "}
+										and snap the reset date to the start of the current{" "}
+										{formData.budgetResetDuration === "1d"
+											? "day"
+											: formData.budgetResetDuration === "1w"
+												? "week"
+												: formData.budgetResetDuration === "1M"
+													? "month"
+													: formData.budgetResetDuration === "1Y"
+														? "year"
+														: "period"}
+										. This will take effect when you save.
+									</AlertDialogDescription>
+								</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="team-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										data-testid="team-calendar-align-enable-btn"
+										onClick={() => {
+											updateField("budgetCalendarAligned", true);
+											setShowCalendarAlignWarning(false);
+										}}
+									>
+										Enable Calendar Alignment
+									</AlertDialogAction>
+								</AlertDialogFooter>
+							</AlertDialogContent>
+						</AlertDialog>
 
-					{/* Rate Limit Configuration - Token Limits */}
+						{/* Rate Limit Configuration - Token Limits */}
 						<NumberAndSelect
 							id="tokenMaxLimit"
 							label="Maximum Tokens"
@@ -384,9 +402,9 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 
 						{/* Current Usage Section (only shown when editing with existing limits) */}
 						{isEditing && (team?.budget || team?.rate_limit) && (
-							<div className="rounded-lg border bg-muted/50 p-4 space-y-4">
+							<div className="bg-muted/50 space-y-4 rounded-lg border p-4">
 								<p className="text-sm font-medium">Current Usage</p>
-								<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+								<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 									{team?.budget && (
 										<div className="space-y-1">
 											<p className="text-muted-foreground text-xs">Budget</p>
@@ -394,10 +412,7 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 												<span className="font-mono text-sm">
 													{formatCurrency(team.budget.current_usage)} / {formatCurrency(team.budget.max_limit)}
 												</span>
-												<Badge
-													variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"}
-													className="text-xs"
-												>
+												<Badge variant={team.budget.current_usage >= team.budget.max_limit ? "destructive" : "default"} className="text-xs">
 													{Math.round((team.budget.current_usage / team.budget.max_limit) * 100)}%
 												</Badge>
 											</div>
@@ -449,7 +464,14 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 						)}
 					</div>
 
-					<FormFooter validator={validator} label="Team" onCancel={onCancel} isLoading={loading} isEditing={isEditing} hasPermission={hasPermission} />
+					<FormFooter
+						validator={validator}
+						label="Team"
+						onCancel={onCancel}
+						isLoading={loading}
+						isEditing={isEditing}
+						hasPermission={hasPermission}
+					/>
 				</form>
 			</DialogContent>
 		</Dialog>

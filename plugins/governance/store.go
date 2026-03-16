@@ -1458,22 +1458,38 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 			return true // continue
 		}
 
-		duration, err := configstoreTables.ParseDuration(budget.ResetDuration)
-		if err != nil {
-			gs.logger.Error("invalid budget reset duration %s: %v", budget.ResetDuration, err)
-			return true // continue
+		// Determine whether the budget needs resetting
+		var shouldReset bool
+		var newLastReset time.Time
+
+		if budget.CalendarAligned {
+			// Calendar-aligned: reset when we've entered a genuinely new calendar period.
+			// This avoids the double-reset bug with rolling durations in months with
+			// more days than ParseDuration approximates (e.g. 31-day months with "1M" = 30 days).
+			currentPeriodStart := configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
+			if currentPeriodStart.After(budget.LastReset) {
+				shouldReset = true
+				newLastReset = currentPeriodStart
+			}
+		} else {
+			// Rolling duration: reset after the configured duration has elapsed
+			duration, err := configstoreTables.ParseDuration(budget.ResetDuration)
+			if err != nil {
+				gs.logger.Error("invalid budget reset duration %s: %v", budget.ResetDuration, err)
+				return true // continue
+			}
+			if now.Sub(budget.LastReset) >= duration {
+				shouldReset = true
+				newLastReset = now
+			}
 		}
 
-		if now.Sub(budget.LastReset) >= duration {
+		if shouldReset {
 			// Create a copy to avoid data race (sync.Map is concurrent-safe for reads/writes but not mutations)
 			copiedBudget := *budget
 			oldUsage := copiedBudget.CurrentUsage
 			copiedBudget.CurrentUsage = 0
-			if budget.CalendarAligned {
-				copiedBudget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
-			} else {
-				copiedBudget.LastReset = now
-			}
+			copiedBudget.LastReset = newLastReset
 			gs.LastDBUsagesBudgetsMu.Lock()
 			gs.LastDBUsagesBudgets[copiedBudget.ID] = 0
 			gs.LastDBUsagesBudgetsMu.Unlock()
