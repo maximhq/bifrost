@@ -2887,16 +2887,18 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
 	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
 
-	outputConfig, ok := outputConfigRaw.(map[string]any)
-	require.True(t, ok, "expected output_config to be a map")
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
 
-	formatRaw, hasFormat := outputConfig["format"]
+	formatRaw, hasFormat := outputConfig.Get("format")
 	require.True(t, hasFormat, "expected output_config.format")
 
-	format, ok := formatRaw.(map[string]any)
-	require.True(t, ok, "expected output_config.format to be a map")
-	assert.Equal(t, "json_schema", format["type"])
-	_, hasSchema := format["schema"]
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+	formatType, hasType := format.Get("type")
+	require.True(t, hasType, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+	_, hasSchema := format.Get("schema")
 	assert.True(t, hasSchema, "expected output_config.format.schema")
 
 	// reasoning should still be preserved for anthropic
@@ -2966,20 +2968,24 @@ func TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths(t *test
 
 	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
 	require.True(t, hasOutputConfig, "expected output_config to exist after merge")
-	outputConfig, ok := outputConfigRaw.(map[string]any)
-	require.True(t, ok, "expected output_config to be a map")
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
 
 	// Existing structured output format must be preserved.
-	formatRaw, hasFormat := outputConfig["format"]
+	formatRaw, hasFormat := outputConfig.Get("format")
 	require.True(t, hasFormat, "expected output_config.format to be preserved")
-	format, ok := formatRaw.(map[string]any)
-	require.True(t, ok, "expected output_config.format to be a map")
-	assert.Equal(t, "json_schema", format["type"])
-	_, hasSchema := format["schema"]
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+	formatType, hasType := format.Get("type")
+	require.True(t, hasType, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+	_, hasSchema := format.Get("schema")
 	assert.True(t, hasSchema, "expected output_config.format.schema")
 
 	// Incoming additionalModelRequestFieldPaths.output_config key must be merged.
-	assert.Equal(t, "bar", outputConfig["foo"])
+	foo, hasFoo := outputConfig.Get("foo")
+	require.True(t, hasFoo, "expected output_config.foo to be preserved")
+	assert.Equal(t, "bar", foo)
 
 	// Existing top-level field (thinking) must not be lost.
 	_, hasThinking := result.AdditionalModelRequestFields.Get("thinking")

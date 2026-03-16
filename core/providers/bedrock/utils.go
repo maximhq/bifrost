@@ -354,13 +354,13 @@ func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
 	if fields == nil {
 		return
 	}
-	current := map[string]interface{}{}
+	current := schemas.NewOrderedMap()
 	if existing, ok := fields.Get("output_config"); ok {
-		if m, ok := toStringInterfaceMap(existing); ok && m != nil {
-			current = m
+		if om, ok := toOrderedMap(existing); ok && om != nil {
+			current = om
 		}
 	}
-	mergeMapInto(current, map[string]interface{}{key: value})
+	current.Set(key, value)
 	fields.Set("output_config", current)
 }
 
@@ -378,14 +378,14 @@ func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *
 	merged := existing.Clone()
 	incoming.Range(func(key string, value interface{}) bool {
 		if key == "output_config" {
-			current := map[string]interface{}{}
+			current := schemas.NewOrderedMap()
 			if existingValue, ok := merged.Get(key); ok {
-				if m, ok := toStringInterfaceMap(existingValue); ok && m != nil {
-					current = m
+				if om, ok := toOrderedMap(existingValue); ok && om != nil {
+					current = om
 				}
 			}
-			if incomingMap, ok := toStringInterfaceMap(value); ok && incomingMap != nil {
-				mergeMapInto(current, incomingMap)
+			if incomingMap, ok := toOrderedMap(value); ok && incomingMap != nil {
+				mergeOrderedMapInto(current, incomingMap)
 				merged.Set(key, current)
 			} else {
 				merged.Set(key, value)
@@ -398,50 +398,51 @@ func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *
 	return merged
 }
 
-func toStringInterfaceMap(v any) (map[string]interface{}, bool) {
+func toOrderedMap(v any) (*schemas.OrderedMap, bool) {
 	switch m := v.(type) {
-	case map[string]interface{}:
-		out := make(map[string]interface{}, len(m))
-		for k, val := range m {
-			out[k] = val
-		}
-		return out, true
 	case *schemas.OrderedMap:
 		if m == nil {
 			return nil, false
 		}
-		out := make(map[string]interface{}, m.Len())
-		m.Range(func(key string, value interface{}) bool {
-			out[key] = value
-			return true
-		})
-		return out, true
+		return m.Clone(), true
 	case schemas.OrderedMap:
-		out := make(map[string]interface{}, m.Len())
-		m.Range(func(key string, value interface{}) bool {
-			out[key] = value
-			return true
-		})
-		return out, true
+		return m.Clone(), true
+	case map[string]interface{}:
+		// Fallback for callers that still provide a plain map. Order cannot be
+		// reconstructed here, but keeping this path preserves compatibility.
+		return schemas.OrderedMapFromMap(m), true
 	default:
 		return nil, false
 	}
 }
 
-// mergeMapInto deep-merges src into dst. Nested map[string]interface{} values are
-// merged recursively; non-map values from src overwrite dst.
-func mergeMapInto(dst, src map[string]interface{}) {
-	for key, srcVal := range src {
-		if srcMap, ok := srcVal.(map[string]interface{}); ok {
-			if dstVal, exists := dst[key]; exists {
-				if dstMap, ok := dstVal.(map[string]interface{}); ok {
-					mergeMapInto(dstMap, srcMap)
-					continue
+// mergeOrderedMapInto deep-merges src into dst. Nested OrderedMap values are
+// merged recursively; non-map values from src overwrite dst. Existing key order
+// is preserved and newly introduced keys are appended in source order.
+func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
+	if dst == nil || src == nil {
+		return
+	}
+	src.Range(func(key string, srcVal interface{}) bool {
+		if srcMap, ok := toOrderedMap(srcVal); ok && srcMap != nil {
+			if dstVal, exists := dst.Get(key); exists {
+				if dstMap, ok := toOrderedMap(dstVal); ok && dstMap != nil {
+					mergeOrderedMapInto(dstMap, srcMap)
+					dst.Set(key, dstMap)
+					return true
 				}
 			}
 		}
-		dst[key] = srcVal
-	}
+		dst.Set(key, srcVal)
+		return true
+	})
+}
+
+func newAnthropicOutputFormatOrderedMap(schemaObj map[string]interface{}) *schemas.OrderedMap {
+	return schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("schema", schemaObj),
+	)
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -956,10 +957,7 @@ func convertResponseFormatToTool(
 	// Anthropic Bedrock supports native output_config.format. Keep this provider-specific
 	// conversion encapsulated here, and let caller just apply returned values.
 	if schemas.IsAnthropicModel(model) {
-		return nil, map[string]any{
-			"type":   "json_schema",
-			"schema": schemaObj,
-		}
+		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
 
 	// Extract name and schema
