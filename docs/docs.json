@@ -270,6 +270,13 @@
               "features/telemetry",
               "features/semantic-caching",
               {
+                "group": "Prompt Repository",
+                "icon": "folder",
+                "pages": [
+                  "features/prompt-repository/playground"
+                ]
+              },
+              {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
                 "pages": [
