@@ -23,6 +23,13 @@ type VirtualKeyQueryParams struct {
 	TeamID     string
 }
 
+// ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
+type ModelConfigsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -143,6 +150,7 @@ type ConfigStore interface {
 
 	// Model config CRUD
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
+	GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error)
 	GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error)
 	GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error)
 	CreateModelConfig(ctx context.Context, modelConfig *tables.TableModelConfig, tx ...*gorm.DB) error

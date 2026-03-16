@@ -67,6 +67,14 @@ export default function GovernanceVirtualKeysPage() {
 		pollingInterval: POLLING_INTERVAL,
 	})
 
+	const vkTotal = virtualKeysData?.total_count ?? 0
+
+	// Snap offset back when total shrinks past current page (e.g. delete last item on last page)
+	useEffect(() => {
+		if (!virtualKeysData || offset < vkTotal) return
+		setOffset(vkTotal === 0 ? 0 : Math.floor((vkTotal - 1) / PAGE_SIZE) * PAGE_SIZE)
+	}, [vkTotal, offset])
+
 	const isLoading = vkLoading || teamsLoading || customersLoading
 
 	useEffect(() => {
@@ -98,6 +106,7 @@ export default function GovernanceVirtualKeysPage() {
 				teams={teamsData?.teams || []}
 				customers={customersData?.customers || []}
 				search={search}
+				debouncedSearch={debouncedSearch}
 				onSearchChange={setSearch}
 				customerFilter={customerFilter}
 				onCustomerFilterChange={setCustomerFilter}

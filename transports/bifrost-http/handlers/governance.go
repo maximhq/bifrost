@@ -321,41 +321,70 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, map[string]interface{}{
 			"virtual_keys": virtualKeys,
 			"count":        len(virtualKeys),
+			"total_count":  len(virtualKeys),
+			"limit":        len(virtualKeys),
+			"offset":       0,
 		})
 		return
 	}
-	// Parse pagination and filter query params
-	params := configstore.VirtualKeyQueryParams{
-		Search:     string(ctx.QueryArgs().Peek("search")),
-		CustomerID: string(ctx.QueryArgs().Peek("customer_id")),
-		TeamID:     string(ctx.QueryArgs().Peek("team_id")),
-	}
-	if limitStr := string(ctx.QueryArgs().Peek("limit")); limitStr != "" {
-		n, err := strconv.Atoi(limitStr)
+	// Check for pagination/filter parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+	customerID := string(ctx.QueryArgs().Peek("customer_id"))
+	teamID := string(ctx.QueryArgs().Peek("team_id"))
+
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" {
+		// Paginated/filtered path
+		params := configstore.VirtualKeyQueryParams{
+			Search:     search,
+			CustomerID: customerID,
+			TeamID:     teamID,
+		}
+		if limitStr != "" {
+			n, err := strconv.Atoi(limitStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid limit parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+				return
+			}
+			params.Limit = n
+		}
+		if offsetStr != "" {
+			n, err := strconv.Atoi(offsetStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid offset parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+				return
+			}
+			params.Offset = n
+		}
+
+		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
 		if err != nil {
-			SendError(ctx, 400, "Invalid limit parameter: must be a number")
+			logger.Error("failed to retrieve virtual keys: %v", err)
+			SendError(ctx, 500, "Failed to retrieve virtual keys")
 			return
 		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
-			return
-		}
-		params.Limit = n
-	}
-	if offsetStr := string(ctx.QueryArgs().Peek("offset")); offsetStr != "" {
-		n, err := strconv.Atoi(offsetStr)
-		if err != nil {
-			SendError(ctx, 400, "Invalid offset parameter: must be a number")
-			return
-		}
-		if n < 0 {
-			SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
-			return
-		}
-		params.Offset = n
+		SendJSON(ctx, map[string]interface{}{
+			"virtual_keys": virtualKeys,
+			"count":        len(virtualKeys),
+			"total_count":  totalCount,
+			"limit":        params.Limit,
+			"offset":       params.Offset,
+		})
+		return
 	}
 
-	virtualKeys, totalCount, err := h.configStore.GetVirtualKeysPaginated(ctx, params)
+	// Non-paginated path: return all virtual keys
+	virtualKeys, err := h.configStore.GetVirtualKeys(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve virtual keys: %v", err)
 		SendError(ctx, 500, "Failed to retrieve virtual keys")
@@ -364,9 +393,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, map[string]interface{}{
 		"virtual_keys": virtualKeys,
 		"count":        len(virtualKeys),
-		"total_count":  totalCount,
-		"limit":        params.Limit,
-		"offset":       params.Offset,
+		"total_count":  len(virtualKeys),
+		"limit":        len(virtualKeys),
+		"offset":       0,
 	})
 }
 
@@ -1992,21 +2021,81 @@ func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, 500, "Governance data is not available")
 			return
 		}
-		SendJSON(ctx, map[string]interface{}{
+		SendJSON(ctx, map[string]any{
 			"model_configs": data.ModelConfigs,
 			"count":         len(data.ModelConfigs),
+			"total_count":   len(data.ModelConfigs),
+			"limit":         len(data.ModelConfigs),
+			"offset":        0,
 		})
 		return
 	}
+
+	// Check for pagination parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		// Paginated path
+		params := configstore.ModelConfigsQueryParams{
+			Search: search,
+		}
+		if limitStr != "" {
+			n, err := strconv.Atoi(limitStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid limit parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid limit parameter: must be non-negative")
+				return
+			}
+			params.Limit = n
+		}
+		if offsetStr != "" {
+			n, err := strconv.Atoi(offsetStr)
+			if err != nil {
+				SendError(ctx, 400, "Invalid offset parameter: must be a number")
+				return
+			}
+			if n < 0 {
+				SendError(ctx, 400, "Invalid offset parameter: must be non-negative")
+				return
+			}
+			params.Offset = n
+		}
+
+		params.Limit, params.Offset = ClampPaginationParams(params.Limit, params.Offset)
+		modelConfigs, totalCount, err := h.configStore.GetModelConfigsPaginated(ctx, params)
+		if err != nil {
+			logger.Error("failed to retrieve model configs: %v", err)
+			SendError(ctx, 500, "Failed to retrieve model configs")
+			return
+		}
+		SendJSON(ctx, map[string]any{
+			"model_configs": modelConfigs,
+			"count":         len(modelConfigs),
+			"total_count":   totalCount,
+			"limit":         params.Limit,
+			"offset":        params.Offset,
+		})
+		return
+	}
+
+	// Non-paginated path: return all model configs
 	modelConfigs, err := h.configStore.GetModelConfigs(ctx)
 	if err != nil {
 		logger.Error("failed to retrieve model configs: %v", err)
 		SendError(ctx, 500, "Failed to retrieve model configs")
 		return
 	}
-	SendJSON(ctx, map[string]interface{}{
+	SendJSON(ctx, map[string]any{
 		"model_configs": modelConfigs,
 		"count":         len(modelConfigs),
+		"total_count":   len(modelConfigs),
+		"limit":         len(modelConfigs),
+		"offset":        0,
 	})
 }
 

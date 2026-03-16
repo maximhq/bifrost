@@ -327,10 +327,19 @@ export interface UpdateModelConfigRequest {
 	rate_limit?: UpdateRateLimitRequest;
 }
 
+export interface GetModelConfigsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 // Response types for model configs
 export interface GetModelConfigsResponse {
 	model_configs: ModelConfig[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 // Provider governance - for extending provider with budget/rate limit

@@ -2659,6 +2659,45 @@ func (s *RDBConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMod
 	return modelConfigs, nil
 }
 
+func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableModelConfig{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(model_name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var modelConfigs []tables.TableModelConfig
+	if err := baseQuery.
+		Preload("Budget").
+		Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&modelConfigs).Error; err != nil {
+		return nil, 0, err
+	}
+	return modelConfigs, totalCount, nil
+}
+
 // GetModelConfig retrieves a specific model config from the database by model name and optional provider.
 func (s *RDBConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig

@@ -8,6 +8,7 @@ import {
 	DebugStatsResponse,
 	GetBudgetsResponse,
 	GetCustomersResponse,
+	GetModelConfigsParams,
 	GetModelConfigsResponse,
 	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
@@ -401,10 +402,14 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		// Model Configs
-		getModelConfigs: builder.query<GetModelConfigsResponse, { fromMemory?: boolean } | void>({
+		getModelConfigs: builder.query<GetModelConfigsResponse, GetModelConfigsParams | void>({
 			query: (params) => ({
 				url: "/governance/model-configs",
-				params: { from_memory: params?.fromMemory ?? false },
+				params: {
+					...(params?.limit && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+				},
 			}),
 			providesTags: ["ModelConfigs"],
 		}),
@@ -420,16 +425,20 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
+						const search = entry.originalArgs?.search as string | undefined;
+						if (search && !data.model_config.model_name.toLowerCase().includes(search.toLowerCase())) continue;
 						dispatch(
-							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) draft.model_configs = [];
 								draft.model_configs.unshift(data.model_config);
 								draft.count = (draft.count || 0) + 1;
+								draft.total_count = (draft.total_count || 0) + 1;
 							}),
 						);
 					}
@@ -445,13 +454,14 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			async onQueryStarted({ id }, { dispatch, queryFulfilled }) {
+			async onQueryStarted({ id }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
 						dispatch(
-							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) return;
 								const index = draft.model_configs.findIndex((mc) => mc.id === id);
 								if (index !== -1) {
@@ -476,16 +486,21 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/model-configs/${id}`,
 				method: "DELETE",
 			}),
-			async onQueryStarted(id, { dispatch, queryFulfilled }) {
+			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
-					const variants = [undefined, { fromMemory: true }] as const;
-					for (const variant of variants) {
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getModelConfigs" || entry?.status !== "fulfilled") continue;
 						dispatch(
-							governanceApi.util.updateQueryData("getModelConfigs", variant, (draft) => {
+							governanceApi.util.updateQueryData("getModelConfigs", entry.originalArgs, (draft) => {
 								if (!draft.model_configs) return;
+								const before = draft.model_configs.length;
 								draft.model_configs = draft.model_configs.filter((mc) => mc.id !== id);
-								draft.count = Math.max(0, (draft.count || 0) - 1);
+								if (draft.model_configs.length < before) {
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+								}
 							}),
 						);
 					}
