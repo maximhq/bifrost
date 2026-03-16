@@ -518,6 +518,10 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
+func (m *MockConfigStore) GetMCPClientsPaginated(ctx context.Context, params configstore.MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
 	return nil
 }

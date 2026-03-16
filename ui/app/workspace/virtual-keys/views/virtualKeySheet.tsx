@@ -148,7 +148,8 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	const { data: keysData, error: keysError, isLoading: keysLoading } = useGetAllKeysQuery();
 	const [createVirtualKey, { isLoading: isCreating }] = useCreateVirtualKeyMutation();
 	const [updateVirtualKey, { isLoading: isUpdating }] = useUpdateVirtualKeyMutation();
-	const { data: mcpClientsData, error: mcpClientsError, isLoading: mcpClientsLoading } = useGetMCPClientsQuery();
+	const { data: mcpClientsResponse, error: mcpClientsError, isLoading: mcpClientsLoading } = useGetMCPClientsQuery();
+	const mcpClientsData = mcpClientsResponse?.clients || [];
 	const isLoading = isCreating || isUpdating;
 
 	const availableKeys = keysData || [];

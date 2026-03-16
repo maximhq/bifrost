@@ -935,6 +935,44 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 	}, nil
 }
 
+// GetMCPClientsPaginated retrieves MCP clients with pagination and optional search.
+func (s *RDBConfigStore) GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableMCPClient{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var clients []tables.TableMCPClient
+	if err := baseQuery.
+		Order("created_at ASC, client_id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&clients).Error; err != nil {
+		return nil, 0, err
+	}
+	return clients, totalCount, nil
+}
+
 // GetMCPClientByID retrieves an MCP client by ID from the database.
 func (s *RDBConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
 	var mcpClient tables.TableMCPClient

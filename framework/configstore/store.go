@@ -37,6 +37,13 @@ type RoutingRulesQueryParams struct {
 	Search string
 }
 
+// MCPClientsQueryParams holds pagination, filtering, and search parameters for MCP client queries.
+type MCPClientsQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -68,6 +75,7 @@ type ConfigStore interface {
 	GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error)
 	GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error)
 	GetMCPClientByName(ctx context.Context, name string) (*tables.TableMCPClient, error)
+	GetMCPClientsPaginated(ctx context.Context, params MCPClientsQueryParams) ([]tables.TableMCPClient, int64, error)
 	CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error
 	UpdateMCPClientConfig(ctx context.Context, id string, clientConfig *tables.TableMCPClient) error
 	DeleteMCPClientConfig(ctx context.Context, id string) error
