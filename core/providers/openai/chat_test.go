@@ -75,6 +75,33 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	}
 }
 
+func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
+	n := 2
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			N: &n,
+		},
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+	if out == nil {
+		t.Fatal("expected request")
+	}
+	if out.N == nil || *out.N != 2 {
+		t.Fatalf("expected n=2, got %#v", out.N)
+	}
+}
+
 func TestToOpenAIChatRequest_PreservesPropertyOrder(t *testing.T) {
 	params := &schemas.ToolFunctionParameters{
 		Type: "object",

@@ -169,6 +169,7 @@ type ChatParameters struct {
 	MaxCompletionTokens  *int                  `json:"max_completion_tokens,omitempty"` // Maximum number of tokens to generate
 	Metadata             *map[string]any       `json:"metadata,omitempty"`              // Metadata to be returned with the response
 	Modalities           []string              `json:"modalities,omitempty"`            // Modalities to be returned with the response
+	N                    *int                  `json:"n,omitempty"`                     // Number of chat completions to generate when supported
 	ParallelToolCalls    *bool                 `json:"parallel_tool_calls,omitempty"`
 	Prediction           *ChatPrediction       `json:"prediction,omitempty"`             // Predicted output content (OpenAI only)
 	PresencePenalty      *float64              `json:"presence_penalty,omitempty"`       // Penalizes repeated tokens
