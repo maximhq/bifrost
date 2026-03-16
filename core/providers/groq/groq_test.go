@@ -32,8 +32,10 @@ func TestGroq(t *testing.T) {
 		TextCompletionFallbacks: []schemas.Fallback{
 			{Provider: schemas.Groq, Model: "openai/gpt-oss-20b"},
 		},
-		EmbeddingModel: "", // Groq doesn't support embedding
-		ReasoningModel: "openai/gpt-oss-120b",
+		EmbeddingModel:       "", // Groq doesn't support embedding
+		ReasoningModel:       "openai/gpt-oss-120b",
+		TranscriptionModel:   "whisper-large-v3",
+		SpeechSynthesisModel: "canopylabs/orpheus-v1-english",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:        false,
 			TextCompletionStream:  false,
@@ -54,6 +56,8 @@ func TestGroq(t *testing.T) {
 			Embedding:             false,
 			ListModels:            true,
 			Reasoning:             true,
+			Transcription:         true,
+			SpeechSynthesis:       true,
 		},
 	}
 	t.Run("GroqTests", func(t *testing.T) {
