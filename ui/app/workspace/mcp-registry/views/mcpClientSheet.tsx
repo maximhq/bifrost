@@ -202,9 +202,11 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 				// Add tool to selection
 				newAutoExecute = currentAutoExecute.includes(toolName) ? currentAutoExecute : [...currentAutoExecute, toolName];
 
-				// If we now have all allowed tools selected, switch to wildcard mode
-				const allowedTools = isAllToolsMode ? allToolNames : currentTools;
-				if (newAutoExecute.length === allowedTools.length && allowedTools.every((tool) => newAutoExecute.includes(tool))) {
+				// Only switch to wildcard if ALL tools are enabled (tools_to_execute is "*")
+				// and all of those tools are now auto-executed. When specific tools are
+				// explicitly listed, keep the explicit list to avoid sending "*" when only
+				// a subset of tools is enabled.
+				if (isAllToolsMode && newAutoExecute.length === allToolNames.length && allToolNames.every((tool) => newAutoExecute.includes(tool))) {
 					newAutoExecute = ["*"];
 				}
 			} else {

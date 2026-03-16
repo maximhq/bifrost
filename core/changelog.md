@@ -1,0 +1,3 @@
+- fix: mcp tools now correctly pass headers to the MCP server
+- fix: ensure tool calls are always detected in mcp agent mode
+- fix: gemini models now correctly return finish_reason "tool_calls" when tool calls are present

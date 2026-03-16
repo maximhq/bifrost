@@ -1443,6 +1443,10 @@
                       "clientSecret": {
                         "type": "string"
                       },
+                      "cloud": {
+                        "type": "string",
+                        "enum": ["commercial", "gcc-high", "dod"]
+                      },
                       "audience": {
                         "type": "string"
                       },
