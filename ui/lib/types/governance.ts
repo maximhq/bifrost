@@ -246,9 +246,19 @@ export interface GetVirtualKeysResponse {
 	offset: number;
 }
 
+export interface GetTeamsParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+	customer_id?: string;
+}
+
 export interface GetTeamsResponse {
 	teams: Team[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetCustomersResponse {

@@ -1197,18 +1197,55 @@ func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 				}
 			}
 			SendJSON(ctx, map[string]interface{}{
-				"teams": teams,
-				"count": len(teams),
+				"teams":       teams,
+				"count":       len(teams),
+				"total_count": len(teams),
+				"limit":       len(teams),
+				"offset":      0,
 			})
 		} else {
 			SendJSON(ctx, map[string]interface{}{
-				"teams": data.Teams,
-				"count": len(data.Teams),
+				"teams":       data.Teams,
+				"count":       len(data.Teams),
+				"total_count": len(data.Teams),
+				"limit":       len(data.Teams),
+				"offset":      0,
 			})
 		}
 		return
 	}
-	// Preload relationships for complete information
+
+	// Check for pagination parameters
+	limitStr := string(ctx.QueryArgs().Peek("limit"))
+	offsetStr := string(ctx.QueryArgs().Peek("offset"))
+	search := string(ctx.QueryArgs().Peek("search"))
+
+	if limitStr != "" || offsetStr != "" || search != "" {
+		limit, _ := strconv.Atoi(limitStr)
+		offset, _ := strconv.Atoi(offsetStr)
+		limit, offset = ClampPaginationParams(limit, offset)
+		teams, totalCount, err := h.configStore.GetTeamsPaginated(ctx, configstore.TeamsQueryParams{
+			Limit:      limit,
+			Offset:     offset,
+			Search:     search,
+			CustomerID: customerID,
+		})
+		if err != nil {
+			logger.Error("failed to retrieve teams: %v", err)
+			SendError(ctx, 500, fmt.Sprintf("Failed to retrieve teams: %v", err))
+			return
+		}
+		SendJSON(ctx, map[string]interface{}{
+			"teams":       teams,
+			"count":       len(teams),
+			"total_count": totalCount,
+			"limit":       limit,
+			"offset":      offset,
+		})
+		return
+	}
+
+	// Non-paginated path: return all teams
 	teams, err := h.configStore.GetTeams(ctx, customerID)
 	if err != nil {
 		logger.Error("failed to retrieve teams: %v", err)
@@ -1216,8 +1253,11 @@ func (h *GovernanceHandler) getTeams(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, map[string]interface{}{
-		"teams": teams,
-		"count": len(teams),
+		"teams":       teams,
+		"count":       len(teams),
+		"total_count": len(teams),
+		"limit":       len(teams),
+		"offset":      0,
 	})
 }
 

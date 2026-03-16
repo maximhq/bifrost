@@ -53,7 +53,7 @@ export default function GovernanceVirtualKeysPage() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
-	} = useGetTeamsQuery({}, {
+	} = useGetTeamsQuery(undefined, {
 		skip: !hasTeamsAccess,
 		pollingInterval: POLLING_INTERVAL,
 	})

@@ -659,6 +659,10 @@ func (m *MockConfigStore) GetTeams(ctx context.Context, customerID string) ([]ta
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetTeamsPaginated(ctx context.Context, params configstore.TeamsQueryParams) ([]tables.TableTeam, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) CreateVirtualKey(ctx context.Context, virtualKey *tables.TableVirtualKey, tx ...*gorm.DB) error {
 	if m.governanceConfig == nil {
 		m.governanceConfig = &configstore.GovernanceConfig{}

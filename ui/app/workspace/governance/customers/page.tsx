@@ -13,7 +13,7 @@ export default function GovernanceCustomersPage() {
     pollingInterval: POLLING_INTERVAL,
   })
   const { data: teamsData, error: teamsError, isLoading: teamsLoading } = useGetTeamsQuery(
-    {},
+    undefined,
     { pollingInterval: POLLING_INTERVAL },
   )
   const { data: customersData, error: customersError, isLoading: customersLoading } = useGetCustomersQuery(undefined, {
