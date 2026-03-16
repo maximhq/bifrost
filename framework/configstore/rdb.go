@@ -2451,7 +2451,7 @@ func (s *RDBConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, to
 }
 
 // loadRoutingRulesOrdered loads routing rules with Targets preloaded, using consistent ordering:
-// rules by priority ASC, created_at DESC; targets by weight DESC for deterministic ordering.
+// rules by priority ASC, created_at DESC, id ASC; targets by weight DESC for deterministic ordering.
 func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]tables.TableRoutingRule, scopes ...func(*gorm.DB) *gorm.DB) error {
 	q := s.db.WithContext(ctx).
 		Preload("Targets", func(db *gorm.DB) *gorm.DB {
@@ -2460,7 +2460,7 @@ func (s *RDBConfigStore) loadRoutingRulesOrdered(ctx context.Context, dest *[]ta
 				Order("COALESCE(model, '') ASC").
 				Order("COALESCE(key_id, '') ASC")
 		}).
-		Order("priority ASC, created_at DESC")
+		Order("priority ASC, created_at DESC, id ASC")
 	for _, scope := range scopes {
 		q = scope(q)
 	}
@@ -2474,6 +2474,50 @@ func (s *RDBConfigStore) GetRoutingRules(ctx context.Context) ([]tables.TableRou
 		return nil, err
 	}
 	return rules, nil
+}
+
+// GetRoutingRulesPaginated retrieves routing rules with pagination and optional search filtering.
+func (s *RDBConfigStore) GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableRoutingRule{})
+
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	var rules []tables.TableRoutingRule
+	if err := baseQuery.
+		Preload("Targets", func(db *gorm.DB) *gorm.DB {
+			return db.Order("weight DESC").
+				Order("COALESCE(provider, '') ASC").
+				Order("COALESCE(model, '') ASC").
+				Order("COALESCE(key_id, '') ASC")
+		}).
+		Order("priority ASC, created_at DESC, id ASC").
+		Offset(offset).
+		Limit(limit).
+		Find(&rules).Error; err != nil {
+		return nil, 0, err
+	}
+	return rules, totalCount, nil
 }
 
 // GetRoutingRulesByScope retrieves routing rules by scope and scope ID, ordered by priority ASC.

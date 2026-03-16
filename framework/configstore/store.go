@@ -30,6 +30,13 @@ type ModelConfigsQueryParams struct {
 	Search string
 }
 
+// RoutingRulesQueryParams holds pagination, filtering, and search parameters for routing rules queries.
+type RoutingRulesQueryParams struct {
+	Limit  int
+	Offset int
+	Search string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -144,6 +151,7 @@ type ConfigStore interface {
 	GetRoutingRulesByScope(ctx context.Context, scope string, scopeID string) ([]tables.TableRoutingRule, error)
 	GetRoutingRule(ctx context.Context, id string) (*tables.TableRoutingRule, error)
 	GetRedactedRoutingRules(ctx context.Context, ids []string) ([]tables.TableRoutingRule, error) // leave ids empty to get all
+	GetRoutingRulesPaginated(ctx context.Context, params RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error)
 	CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	UpdateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error

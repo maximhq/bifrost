@@ -44,9 +44,18 @@ export interface CreateRoutingRuleRequest {
 /** Partial update: only sent fields are applied; allows clearing fields by sending "" or []. */
 export type UpdateRoutingRuleRequest = Partial<CreateRoutingRuleRequest>;
 
+export interface GetRoutingRulesParams {
+	limit?: number;
+	offset?: number;
+	search?: string;
+}
+
 export interface GetRoutingRulesResponse {
 	rules: RoutingRule[];
 	count: number;
+	total_count: number;
+	limit: number;
+	offset: number;
 }
 
 export interface GetRoutingRuleResponse {
