@@ -2950,6 +2950,70 @@ func TestAnthropicStructuredOutputUsesOutputConfigWithoutForcedToolChoice(t *tes
 	}
 }
 
+func TestAnthropicStructuredOutputAcceptsOrderedMaps(t *testing.T) {
+	responseFormat := any(schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("json_schema", schemas.NewOrderedMapFromPairs(
+			schemas.KV("name", "classification"),
+			schemas.KV("schema", schemas.NewOrderedMapFromPairs(
+				schemas.KV("type", "object"),
+				schemas.KV("description", "Return structured classification"),
+				schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+					schemas.KV("topic", schemas.NewOrderedMapFromPairs(
+						schemas.KV("type", "string"),
+					)),
+				)),
+				schemas.KV("required", []any{"topic"}),
+			)),
+		)),
+	))
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model: "anthropic.claude-3-7-sonnet-v1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("Classify this"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			ResponseFormat: &responseFormat,
+			Reasoning: &schemas.ChatReasoning{
+				MaxTokens: schemas.Ptr(2048),
+			},
+		},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result, err := bedrock.ToBedrockChatCompletionRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.NotNil(t, result.AdditionalModelRequestFields)
+
+	outputConfigRaw, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
+	require.True(t, hasOutputConfig, "expected output_config for anthropic structured output")
+
+	outputConfig, ok := outputConfigRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config to be an ordered map")
+
+	formatRaw, hasFormat := outputConfig.Get("format")
+	require.True(t, hasFormat, "expected output_config.format")
+
+	format, ok := formatRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format to be an ordered map")
+
+	formatType, ok := format.Get("type")
+	require.True(t, ok, "expected output_config.format.type")
+	assert.Equal(t, "json_schema", formatType)
+
+	schemaRaw, ok := format.Get("schema")
+	require.True(t, ok, "expected output_config.format.schema")
+	_, ok = schemaRaw.(*schemas.OrderedMap)
+	require.True(t, ok, "expected output_config.format.schema to remain ordered")
+}
+
 // TestAnthropicStructuredOutputMergesAdditionalModelRequestFieldPaths ensures
 // additionalModelRequestFieldPaths are merged into existing AdditionalModelRequestFields
 // and output_config is deep-merged instead of overwritten.
