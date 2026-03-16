@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { DragDropProvider } from "@dnd-kit/react";
 import { useSortable } from "@dnd-kit/react/sortable";
 import { GripVertical, Lock } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const BUILTIN_ID = "__builtin__";
@@ -81,11 +81,13 @@ function SortableBlock({ item, index }: { item: SequenceItem; index: number }) {
 export default function PluginSequenceSheet({ open, onClose, plugins }: PluginSequenceSheetProps) {
 	const [items, setItems] = useState<SequenceItem[]>([]);
 	const [updatePlugin, { isLoading }] = useUpdatePluginMutation();
+	const wasOpenRef = useRef(false);
 
 	useEffect(() => {
-		if (open) {
+		if (open && !wasOpenRef.current) {
 			setItems(buildSequenceItems(plugins));
 		}
+		wasOpenRef.current = open;
 	}, [open, plugins]);
 
 	const handleSave = useCallback(async () => {

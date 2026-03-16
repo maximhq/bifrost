@@ -2237,6 +2237,7 @@ func loadDefaultPlugins(ctx context.Context, config *Config) error {
 				Path:      plugin.Path,
 				Placement: plugin.Placement,
 				Order:     plugin.Order,
+				Version:   new(plugin.Version),
 			}
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {

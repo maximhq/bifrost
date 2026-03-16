@@ -125,7 +125,9 @@ func TestHasToolCallsForChatResponse(t *testing.T) {
 		t.Error("Should return true for response with tool calls in message")
 	}
 
-	// Test response with stop finish reason (should return false even with tool calls)
+	// Test response with stop finish reason AND tool calls — should return true.
+	// Some providers (e.g. Gemini) use "stop" even when returning tool calls, so
+	// finish_reason alone is not sufficient to determine whether tool calls are present.
 	responseWithStopReason := &schemas.BifrostChatResponse{
 		Choices: []schemas.BifrostResponseChoice{
 			{
@@ -146,8 +148,56 @@ func TestHasToolCallsForChatResponse(t *testing.T) {
 			},
 		},
 	}
-	if hasToolCallsForChatResponse(responseWithStopReason) {
-		t.Error("Should return false for response with stop finish reason even with tool calls")
+	if !hasToolCallsForChatResponse(responseWithStopReason) {
+		t.Error("Should return true for response with tool calls even when finish_reason is stop")
+	}
+
+	// Test response with stop finish reason and NO tool calls — should return false.
+	responseWithStopNoTools := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				FinishReason: schemas.Ptr("stop"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{},
+				},
+			},
+		},
+	}
+	if hasToolCallsForChatResponse(responseWithStopNoTools) {
+		t.Error("Should return false for response with stop finish reason and no tool calls")
+	}
+
+	// Test response where tool calls are in a non-first choice (Responses API conversion scenario).
+	// ToBifrostChatResponse() splits text and tool calls across separate choices when a model
+	// returns both text content and tool calls (e.g. Claude via the /v1/responses endpoint).
+	responseWithToolCallsInSecondChoice := &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{
+			{
+				// First choice: text message only
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{},
+				},
+			},
+			{
+				// Second choice: tool calls
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						ChatAssistantMessage: &schemas.ChatAssistantMessage{
+							ToolCalls: []schemas.ChatAssistantMessageToolCall{
+								{
+									Function: schemas.ChatAssistantMessageToolCallFunction{
+										Name: schemas.Ptr("youtube_search"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if !hasToolCallsForChatResponse(responseWithToolCallsInSecondChoice) {
+		t.Error("Should return true when tool calls appear in a non-first choice (Responses API conversion)")
 	}
 }
 
