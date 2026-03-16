@@ -495,6 +495,7 @@ export interface LogFilters {
 	max_tokens?: number;
 	missing_cost_only?: boolean;
 	content_search?: string;
+	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 export interface Pagination {

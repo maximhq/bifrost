@@ -45,8 +45,9 @@ type SearchFilters struct {
 	MaxTokens         *int       `json:"max_tokens,omitempty"`
 	MinCost           *float64   `json:"min_cost,omitempty"`
 	MaxCost           *float64   `json:"max_cost,omitempty"`
-	MissingCostOnly   bool       `json:"missing_cost_only,omitempty"`
-	ContentSearch     string     `json:"content_search,omitempty"`
+	MissingCostOnly   bool              `json:"missing_cost_only,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 }
 
 // PaginationOptions represents pagination parameters

@@ -4,8 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
-import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, VisibilityState, useReactTable } from "@tanstack/react-table";
+import { ChevronLeft, ChevronRight, Columns3, Pause, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
 
@@ -24,6 +26,7 @@ interface DataTableProps {
 	onLiveToggle: (enabled: boolean) => void;
 	fetchLogs: () => Promise<void>;
 	fetchStats: () => Promise<void>;
+	metadataKeys?: string[];
 }
 
 export function LogsDataTable({
@@ -41,8 +44,10 @@ export function LogsDataTable({
 	onLiveToggle,
 	fetchLogs,
 	fetchStats,
+	metadataKeys = [],
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
+	const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
 
@@ -86,8 +91,10 @@ export function LogsDataTable({
 		pageCount: Math.ceil(totalItems / pagination.limit),
 		state: {
 			sorting,
+			columnVisibility,
 		},
 		onSortingChange: handleSortingChange,
+		onColumnVisibilityChange: setColumnVisibility,
 	});
 
 	const currentPage = Math.floor(pagination.offset / pagination.limit) + 1;
@@ -105,15 +112,52 @@ export function LogsDataTable({
 
 	return (
 		<div className="flex h-full flex-col gap-2">
-			<div className="shrink-0">
-				<LogFiltersComponent
-					filters={filters}
-					onFiltersChange={onFiltersChange}
-					liveEnabled={liveEnabled}
-					onLiveToggle={onLiveToggle}
-					fetchLogs={fetchLogs}
-					fetchStats={fetchStats}
-				/>
+			<div className="flex shrink-0 items-center gap-2">
+				<div className="flex-1">
+					<LogFiltersComponent
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						liveEnabled={liveEnabled}
+						onLiveToggle={onLiveToggle}
+						fetchLogs={fetchLogs}
+						fetchStats={fetchStats}
+					/>
+				</div>
+				{metadataKeys.length > 0 && (
+					<Popover>
+						<PopoverTrigger asChild>
+							<Button variant="outline" size="sm" className="h-7.5" data-testid="logs-columns-trigger">
+								<Columns3 className="h-4 w-4" />
+								Columns
+							</Button>
+						</PopoverTrigger>
+						<PopoverContent className="w-[200px] p-2" align="end">
+							<div className="space-y-1">
+								<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">Metadata Columns</div>
+								{metadataKeys.map((key) => {
+									const columnId = `metadata_${key}`;
+									const columnToken = key.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+									const isVisible = columnVisibility[columnId] !== false;
+									return (
+										<label key={key} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/50">
+											<Checkbox
+												data-testid={`logs-checkbox-${columnToken}`}
+												checked={isVisible}
+												onCheckedChange={(checked) => {
+													setColumnVisibility((prev) => ({
+														...prev,
+														[columnId]: !!checked,
+													}));
+												}}
+											/>
+											<span className="truncate text-sm">{key}</span>
+										</label>
+									);
+								})}
+							</div>
+						</PopoverContent>
+					</Popover>
+				)}
 			</div>
 			
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">

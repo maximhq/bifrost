@@ -130,6 +130,22 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 		[filters, onFiltersChange],
 	);
 
+	const handleMetadataFilterChange = useCallback(
+		(metadataKey: string, value: string | undefined) => {
+			const current = { ...(filters.metadata_filters || {}) };
+			if (value === undefined) {
+				delete current[metadataKey];
+			} else {
+				current[metadataKey] = value;
+			}
+			onFiltersChange({
+				...filters,
+				metadata_filters: Object.keys(current).length > 0 ? current : undefined,
+			});
+		},
+		[filters, onFiltersChange],
+	);
+
 	return (
 		<div className="flex items-center justify-between space-x-2">
 			<Button variant={"outline"} size="sm" className="h-7.5" onClick={() => onLiveToggle(!liveEnabled)}>
@@ -184,7 +200,7 @@ export function LogFilters({ filters, onFiltersChange, liveEnabled, onLiveToggle
 					});
 				}}
 			/>
-			<FilterPopover filters={filters} onFilterChange={handleFilterChange} showMissingCost />
+			<FilterPopover filters={filters} onFilterChange={handleFilterChange} onMetadataFilterChange={handleMetadataFilterChange} showMissingCost />
 			<Popover open={openMoreActionsPopover} onOpenChange={setOpenMoreActionsPopover}>
 				<PopoverTrigger asChild>
 					<Button variant="outline" size="sm" className="h-7.5">

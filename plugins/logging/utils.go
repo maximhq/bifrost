@@ -72,6 +72,9 @@ type LogManager interface {
 	// GetAvailableRoutingEngines returns all unique routing engine types from logs
 	GetAvailableRoutingEngines(ctx context.Context) []string
 
+	// GetAvailableMetadataKeys returns distinct metadata keys and their values from recent logs
+	GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error)
+
 	// DeleteLog deletes a log entry by its ID
 	DeleteLog(ctx context.Context, id string) error
 
@@ -207,6 +210,13 @@ func (p *PluginLogManager) GetAvailableRoutingRules(ctx context.Context) []KeyPa
 // GetAvailableRoutingEngines returns all unique routing engine types from logs
 func (p *PluginLogManager) GetAvailableRoutingEngines(ctx context.Context) []string {
 	return p.plugin.GetAvailableRoutingEngines(ctx)
+}
+
+func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context) (map[string][]string, error) {
+	if p.plugin == nil || p.plugin.store == nil {
+		return map[string][]string{}, nil
+	}
+	return p.plugin.store.GetDistinctMetadataKeys(ctx)
 }
 
 // DeleteLog deletes a log from the log store

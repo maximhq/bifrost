@@ -166,6 +166,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPassthroughResponseBodyColumn(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMetadataGINIndex(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1677,6 +1680,41 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB)
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding passthrough response body column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMetadataGINIndex adds a GIN index on the metadata column for Postgres
+// to speed up jsonb ->> queries used for metadata filtering.
+// For SQLite, this is a no-op since json_extract works without special indices.
+func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_metadata_gin_index",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Only create GIN index for Postgres
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb))").Error; err != nil {
+					return fmt.Errorf("failed to create metadata GIN index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() == "postgres" {
+				if err := tx.Exec("DROP INDEX IF EXISTS idx_logs_metadata_gin").Error; err != nil {
+					return fmt.Errorf("failed to drop metadata GIN index: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding metadata GIN index: %s", err.Error())
 	}
 	return nil
 }

@@ -6,16 +6,26 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+// validMetadataKeyRegex allows alphanumeric, hyphens, underscores, and dots in metadata keys.
+var validMetadataKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// isValidMetadataKey validates a metadata key to prevent SQL injection.
+func isValidMetadataKey(key string) bool {
+	return key != "" && len(key) <= 256 && validMetadataKeyRegex.MatchString(key)
+}
 
 const bulkUpdateCostChunkSize = 500
 
@@ -132,6 +142,43 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	}
 	if filters.ContentSearch != "" {
 		baseQuery = baseQuery.Where("content_summary LIKE ?", "%"+filters.ContentSearch+"%")
+	}
+	if len(filters.MetadataFilters) > 0 {
+		// Single NULL guard for all metadata filters
+		baseQuery = baseQuery.Where("metadata IS NOT NULL AND metadata != ''")
+		dialect := s.db.Dialector.Name()
+		for key, value := range filters.MetadataFilters {
+			if !isValidMetadataKey(key) {
+				continue
+			}
+			switch dialect {
+			case "postgres":
+				// Use @> containment operator to leverage GIN index on metadata::jsonb
+				// Preserve value type (number/boolean) for JSON containment
+				var jsonFragment string
+				if value == "true" || value == "false" {
+					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, value)
+				} else if f, err := strconv.ParseFloat(value, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+					// Reject NaN/Inf which would produce invalid JSON; normalize the number
+					jsonFragment = fmt.Sprintf(`{%q: %s}`, key, strconv.FormatFloat(f, 'f', -1, 64))
+				} else {
+					jsonFragment = fmt.Sprintf(`{%q: %q}`, key, value)
+				}
+				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+			default:
+				// SQLite: quote the member name so dots/hyphens stay part of the key
+				path := `$."` + key + `"`
+				if value == "true" {
+					// json_extract returns 1 for true, but json_type returns 'true'
+					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'true'", path)
+				} else if value == "false" {
+					baseQuery = baseQuery.Where("json_type(metadata, ?) = 'false'", path)
+				} else {
+					// Numeric and string values: compare both as-is and as text
+					baseQuery = baseQuery.Where("json_extract(metadata, ?) = ? OR CAST(json_extract(metadata, ?) AS TEXT) = ?", path, value, path, value)
+				}
+			}
+		}
 	}
 	return baseQuery
 }
@@ -1516,6 +1563,80 @@ func (s *RDBLogStore) GetDistinctRoutingEngines(ctx context.Context) ([]string, 
 		engines = append(engines, engine)
 	}
 	return engines, nil
+}
+
+// metadataSystemKeys are metadata keys added by the system that should be excluded from filter data.
+var metadataSystemKeys = map[string]struct{}{
+	"isAsyncRequest": {},
+}
+
+const (
+	// maxMetadataRows is the maximum number of recent rows to scan for metadata keys.
+	maxMetadataRows = 1000
+	// maxMetadataValuesPerKey caps the number of distinct values collected per metadata key.
+	maxMetadataValuesPerKey = 100
+)
+
+// GetDistinctMetadataKeys returns unique metadata keys and their distinct values from recent logs.
+// It scans a bounded number of recent rows to avoid memory bloat on large tables.
+func (s *RDBLogStore) GetDistinctMetadataKeys(ctx context.Context) (map[string][]string, error) {
+	var metadataStrings []string
+	err := s.db.WithContext(ctx).Model(&Log{}).
+		Where("metadata IS NOT NULL AND metadata != '' AND metadata != '{}'").
+		Distinct("metadata").
+		Limit(maxMetadataRows).
+		Pluck("metadata", &metadataStrings).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to get metadata: %w", err)
+	}
+
+	// Collect unique key-value pairs with bounded sizes
+	keyValues := make(map[string]map[string]struct{})
+	for _, raw := range metadataStrings {
+		var parsed map[string]interface{}
+		if err := sonic.UnmarshalString(raw, &parsed); err != nil {
+			continue
+		}
+		for key, val := range parsed {
+			if _, isSystem := metadataSystemKeys[key]; isSystem {
+				continue
+			}
+			if !isValidMetadataKey(key) {
+				continue
+			}
+			if _, ok := keyValues[key]; !ok {
+				keyValues[key] = make(map[string]struct{})
+			}
+			if len(keyValues[key]) >= maxMetadataValuesPerKey {
+				continue
+			}
+			var strVal string
+			switch v := val.(type) {
+			case string:
+				strVal = v
+			case float64:
+				strVal = fmt.Sprint(v)
+			case bool:
+				strVal = fmt.Sprint(v)
+			default:
+				continue
+			}
+			if strVal != "" {
+				keyValues[key][strVal] = struct{}{}
+			}
+		}
+	}
+
+	result := make(map[string][]string, len(keyValues))
+	for key, vals := range keyValues {
+		values := make([]string, 0, len(vals))
+		for v := range vals {
+			values = append(values, v)
+		}
+		sort.Strings(values)
+		result[key] = values
+	}
+	return result, nil
 }
 
 // FindAll finds all log entries from the database.
