@@ -75,7 +75,6 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 }
 
 func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
-	n := 2
 	req := &schemas.BifrostChatRequest{
 		Provider: schemas.OpenAI,
 		Model:    "gpt-4.1",
@@ -88,7 +87,7 @@ func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
 			},
 		},
 		Params: &schemas.ChatParameters{
-			N: &n,
+			N: schemas.Ptr(2),
 		},
 	}
 

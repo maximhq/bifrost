@@ -438,7 +438,7 @@ func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
 	})
 }
 
-func newAnthropicOutputFormatOrderedMap(schemaObj map[string]interface{}) *schemas.OrderedMap {
+func newAnthropicOutputFormatOrderedMap(schemaObj any) *schemas.OrderedMap {
 	return schemas.NewOrderedMapFromPairs(
 		schemas.KV("type", "json_schema"),
 		schemas.KV("schema", schemaObj),
@@ -931,25 +931,32 @@ func convertResponseFormatToTool(
 		return nil, nil
 	}
 
-	// ResponseFormat is stored as interface{}, need to parse it
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-	if !ok {
+	responseFormatMap, ok := schemas.SafeExtractOrderedMap(*params.ResponseFormat)
+	if !ok || responseFormatMap == nil {
 		return nil, nil
 	}
 
 	// Check if type is "json_schema"
-	formatType, ok := responseFormatMap["type"].(string)
+	formatTypeRaw, ok := responseFormatMap.Get("type")
+	if !ok {
+		return nil, nil
+	}
+	formatType, ok := schemas.SafeExtractString(formatTypeRaw)
 	if !ok || formatType != "json_schema" {
 		return nil, nil
 	}
 
 	// Extract json_schema object
-	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
+	jsonSchemaRaw, ok := responseFormatMap.Get("json_schema")
 	if !ok {
 		return nil, nil
 	}
+	jsonSchemaObj, ok := schemas.SafeExtractOrderedMap(jsonSchemaRaw)
+	if !ok || jsonSchemaObj == nil {
+		return nil, nil
+	}
 
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
+	schemaObj, ok := jsonSchemaObj.Get("schema")
 	if !ok {
 		return nil, nil
 	}
@@ -961,15 +968,24 @@ func convertResponseFormatToTool(
 	}
 
 	// Extract name and schema
-	toolName, ok := jsonSchemaObj["name"].(string)
-	if !ok || toolName == "" {
+	toolNameRaw, hasName := jsonSchemaObj.Get("name")
+	toolName, ok := schemas.SafeExtractString(toolNameRaw)
+	if !hasName || !ok || toolName == "" {
 		toolName = "json_response"
 	}
 
 	// Extract description from schema if available
 	description := "Returns structured JSON output"
-	if desc, ok := schemaObj["description"].(string); ok && desc != "" {
-		description = desc
+	if schemaMap, ok := schemas.SafeExtractOrderedMap(schemaObj); ok && schemaMap != nil {
+		if descRaw, hasDesc := schemaMap.Get("description"); hasDesc {
+			if desc, ok := schemas.SafeExtractString(descRaw); ok && desc != "" {
+				description = desc
+			}
+		}
+	} else if schemaMap, ok := schemaObj.(map[string]interface{}); ok {
+		if desc, ok := schemaMap["description"].(string); ok && desc != "" {
+			description = desc
+		}
 	}
 
 	// set bifrost context key structured output tool name
