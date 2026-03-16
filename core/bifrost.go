@@ -3875,6 +3875,7 @@ type fallbackParamsTypeConstraint interface {
 		*schemas.SpeechParameters |
 		*schemas.TranscriptionParameters |
 		*schemas.ImageGenerationParameters |
+		*schemas.ImageVariationParameters |
 		*schemas.VideoGenerationParameters
 }
 
@@ -3972,6 +3973,10 @@ func applyFallbackParams[T fallbackParamsTypeConstraint](params T, fallbackParam
 		next := cloneOrZero(p)
 		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
 		return any(next).(T)
+	case *schemas.ImageVariationParameters:
+		next := cloneOrZero(p)
+		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
+		return any(next).(T)
 	case *schemas.VideoGenerationParameters:
 		next := cloneOrZero(p)
 		next.ExtraParams = mergeFallbackParams(next.ExtraParams, fallbackParams)
@@ -4062,6 +4067,13 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Model = fallback.Model
 		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
 		fallbackReq.ImageGenerationRequest = &tmp
+	}
+	if req.ImageVariationRequest != nil {
+		tmp := *req.ImageVariationRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		tmp.Params = applyFallbackParams(tmp.Params, fallback.Params)
+		fallbackReq.ImageVariationRequest = &tmp
 	}
 	if req.VideoGenerationRequest != nil {
 		tmp := *req.VideoGenerationRequest

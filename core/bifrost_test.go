@@ -935,6 +935,99 @@ func TestPrepareFallbackRequest_FallbackParamsReachProviderPayloadGeneration(t *
 	t.Logf("fallback provider payload reasoning_effort=%v thinking_budget=%v base_param=%v", payload["reasoning_effort"], payload["thinking_budget"], payload["base_param"])
 }
 
+func TestPrepareFallbackRequest_ImageVariationParamsPropagation(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.AddProvider(schemas.Bedrock, 1, 1)
+
+	b := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
+
+	primaryReq := &schemas.BifrostRequest{
+		RequestType: schemas.ImageVariationRequest,
+		ImageVariationRequest: &schemas.BifrostImageVariationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1",
+			Input: &schemas.ImageVariationInput{
+				Image: schemas.ImageInput{Image: []byte{0x89, 0x50, 0x4E, 0x47}},
+			},
+			Params: &schemas.ImageVariationParameters{
+				ExtraParams: map[string]interface{}{
+					"variation_strength": 0.2,
+					"base_param":         "keep-me",
+				},
+			},
+		},
+	}
+
+	fallbackReq := b.prepareFallbackRequest(primaryReq, schemas.Fallback{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Params: map[string]any{
+			"variation_strength": 0.9,
+			"reasoning_effort":   "high",
+		},
+	})
+
+	if fallbackReq == nil || fallbackReq.ImageVariationRequest == nil || fallbackReq.ImageVariationRequest.Params == nil {
+		t.Fatal("expected fallback image variation request with params")
+	}
+
+	if fallbackReq.ImageVariationRequest.Provider != schemas.Bedrock {
+		t.Fatalf("expected fallback provider %s, got %s", schemas.Bedrock, fallbackReq.ImageVariationRequest.Provider)
+	}
+	if fallbackReq.ImageVariationRequest.Model != "us.anthropic.claude-3-5-sonnet-20241022-v2:0" {
+		t.Fatalf("unexpected fallback model: %s", fallbackReq.ImageVariationRequest.Model)
+	}
+
+	extra := fallbackReq.ImageVariationRequest.Params.ExtraParams
+	if extra["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength override to 0.9, got %#v", extra["variation_strength"])
+	}
+	if extra["reasoning_effort"] != "high" {
+		t.Fatalf("expected fallback reasoning_effort=high, got %#v", extra["reasoning_effort"])
+	}
+	if extra["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param to be preserved, got %#v", extra["base_param"])
+	}
+
+	if primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"] != 0.2 {
+		t.Fatalf("expected primary request params to remain unchanged, got %#v", primaryReq.ImageVariationRequest.Params.ExtraParams["variation_strength"])
+	}
+	if _, exists := primaryReq.ImageVariationRequest.Params.ExtraParams["reasoning_effort"]; exists {
+		t.Fatal("expected primary request params to not receive fallback-only reasoning_effort")
+	}
+
+	openAIReq := openai.ToOpenAIImageVariationRequest(fallbackReq.ImageVariationRequest)
+	if openAIReq == nil {
+		t.Fatal("expected openai image variation request conversion output")
+	}
+
+	jsonBody, err := sonic.MarshalIndent(openAIReq, "", "  ")
+	if err != nil {
+		t.Fatalf("failed to marshal openai image variation request body: %v", err)
+	}
+
+	mergedBody, err := providerUtils.MergeExtraParamsIntoJSON(jsonBody, openAIReq.GetExtraParams())
+	if err != nil {
+		t.Fatalf("failed to merge extra params into request body: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := sonic.Unmarshal(mergedBody, &payload); err != nil {
+		t.Fatalf("failed to unmarshal merged payload: %v", err)
+	}
+
+	if payload["variation_strength"] != 0.9 {
+		t.Fatalf("expected variation_strength in provider payload, got %#v", payload["variation_strength"])
+	}
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort in provider payload, got %#v", payload["reasoning_effort"])
+	}
+	if payload["base_param"] != "keep-me" {
+		t.Fatalf("expected base_param in provider payload, got %#v", payload["base_param"])
+	}
+}
+
 // Test selectKeyFromProviderForModel with session stickiness
 func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	kvStore := newMockKVStore()
