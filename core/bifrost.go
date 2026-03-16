@@ -6099,10 +6099,13 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		// Model filtering logic:
 		// - If model is nil or empty → include all keys (no model filter)
 		// - If model is specified:
-		//   - If key.Models is empty → include key (supports all models)
+		//   - If key.Models is ["*"] → include key (supports all models)
+		//   - If key.Models is empty → exclude key (deny-by-default)
 		//   - If key.Models is non-empty → only include if model is in list
-		if model != nil && *model != "" && len(k.Models) > 0 {
-			if !slices.Contains(k.Models, *model) {
+		if model != nil && *model != "" {
+			if slices.Contains(k.Models, "*") {
+				// wildcard: allow all models
+			} else if len(k.Models) == 0 || !slices.Contains(k.Models, *model) {
 				continue
 			}
 		}
@@ -6195,7 +6198,8 @@ func (bifrost *Bifrost) selectKeyFromProviderForModel(ctx *schemas.BifrostContex
 				continue
 			}
 			hasValue := strings.TrimSpace(key.Value.GetValue()) != "" || CanProviderKeyValueBeEmpty(baseProviderType)
-			modelSupported := (len(key.Models) == 0 && hasValue) || (slices.Contains(key.Models, model) && hasValue)
+			// ["*"] = allow all models; [] = deny all; specific list = allow only listed
+		modelSupported := hasValue && (slices.Contains(key.Models, "*") || slices.Contains(key.Models, model))
 			// Additional deployment checks for Azure, Bedrock and Vertex
 			deploymentSupported := true
 			if baseProviderType == schemas.Azure && key.AzureKeyConfig != nil {

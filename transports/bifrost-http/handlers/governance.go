@@ -69,7 +69,7 @@ type CreateVirtualKeyRequest struct {
 	ProviderConfigs []struct {
 		Provider      string                  `json:"provider" validate:"required"`
 		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels []string                `json:"allowed_models,omitempty"` // Empty means all models allowed
+		AllowedModels []string                `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
 		Budget        *CreateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
 		KeyIDs        []string                `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
@@ -93,7 +93,7 @@ type UpdateVirtualKeyRequest struct {
 		ID            *uint                   `json:"id,omitempty"` // null for new entries
 		Provider      string                  `json:"provider" validate:"required"`
 		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels []string                `json:"allowed_models,omitempty"` // Empty means all models allowed
+		AllowedModels []string                `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
 		Budget        *UpdateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
 		KeyIDs        []string                `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config

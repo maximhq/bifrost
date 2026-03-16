@@ -204,6 +204,8 @@ interface AsyncMultiSelectProps<T> {
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** test selector for the container element */
+	"data-testid"?: string;
 	views?: {
 		clearIndicator?: (props: ClearIndicatorProps<T>) => React.ReactNode;
 		control?: (props: ControlProps<T>) => React.ReactNode;
@@ -349,7 +351,7 @@ export function AsyncMultiSelect<T>(props: AsyncMultiSelectProps<T>) {
 	};
 
 	return (
-		<div ref={containerRef}>
+		<div ref={containerRef} data-testid={props["data-testid"]}>
 			<AsyncCreatableSelect
 				isDisabled={props.disabled}
 				autoFocus={props.autoFocus}

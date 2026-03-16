@@ -28,7 +28,7 @@ type TableVirtualKeyProviderConfig struct {
 	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
 	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
 	Weight        *float64 `json:"weight"`
-	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // Empty means all models allowed
+	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
 	AllowAllKeys  bool     `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
 	BudgetID      *string  `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
 	RateLimitID   *string  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
@@ -44,13 +44,12 @@ func (TableVirtualKeyProviderConfig) TableName() string {
 	return "governance_virtual_key_provider_configs"
 }
 
-// UnmarshalJSON custom unmarshaller to handle both "keys" ([]TableKey) and "allowed_keys" ([]string) formats
+// UnmarshalJSON custom unmarshaller to handle "key_ids" ([]string) config-file format
 func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
-	// Temporary struct to capture all fields including allowed_keys
 	type Alias TableVirtualKeyProviderConfig
 	type TempProviderConfig struct {
 		Alias
-		AllowedKeys []string `json:"allowed_keys"` // Config file format: array of key names
+		KeyIDs []string `json:"key_ids"` // Config file format: key identifiers (TableKey.KeyID); use ["*"] to allow all keys, empty denies all
 	}
 
 	var temp TempProviderConfig
@@ -61,16 +60,17 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 	// Copy all standard fields
 	*pc = TableVirtualKeyProviderConfig(temp.Alias)
 
-	// If allowed_keys is provided (config file format), convert to Keys or set AllowAllKeys
-	// This takes precedence if Keys is empty but allowed_keys has values
-	if len(temp.AllowedKeys) > 0 && len(pc.Keys) == 0 {
-		// Check for wildcard — ["*"] means allow all keys
-		if len(temp.AllowedKeys) == 1 && temp.AllowedKeys[0] == "*" {
+	// If key_ids is provided, convert to Keys or set AllowAllKeys
+	if len(temp.KeyIDs) > 0 && len(pc.Keys) == 0 {
+		// ["*"] means allow all keys
+		if len(temp.KeyIDs) == 1 && temp.KeyIDs[0] == "*" {
 			pc.AllowAllKeys = true
+			pc.Keys = nil
 		} else {
-			pc.Keys = make([]TableKey, len(temp.AllowedKeys))
-			for i, keyName := range temp.AllowedKeys {
-				pc.Keys[i] = TableKey{Name: keyName}
+			pc.AllowAllKeys = false
+			pc.Keys = make([]TableKey, len(temp.KeyIDs))
+			for i, keyID := range temp.KeyIDs {
+				pc.Keys[i] = TableKey{KeyID: keyID}
 			}
 		}
 	}

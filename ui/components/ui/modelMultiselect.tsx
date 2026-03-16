@@ -19,10 +19,14 @@ interface ModelMultiselectPropsBase {
 	 * - `"base_models"`: loads distinct base model names (useful for governance where cross-provider matching is needed)
 	 */
 	loadModelsOnEmptyProvider?: boolean | "base_models";
+	/** Prepends an "Allow All Models" option (value: "*") to the dropdown */
+	allowAllOption?: boolean;
 	/** id for the search input (accessibility) */
 	inputId?: string;
 	/** id of element that labels this control (accessibility) */
 	ariaLabelledBy?: string;
+	/** test selector for the container element */
+	"data-testid"?: string;
 }
 
 interface ModelMultiselectPropsSingle extends ModelMultiselectPropsBase {
@@ -49,6 +53,8 @@ interface ModelOption {
 	provider?: string;
 }
 
+const ALL_MODELS_OPTION: ModelOption = { label: "Allow All Models", value: "*" };
+
 export function ModelMultiselect(props: ModelMultiselectProps) {
 	const {
 		provider,
@@ -60,6 +66,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		disabled = false,
 		className,
 		loadModelsOnEmptyProvider = false,
+		allowAllOption = false,
 	} = props;
 	const isSingleSelect = props.isSingleSelect === true;
 
@@ -79,10 +86,9 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 		? stringValue
 			? [{ label: stringValue, value: stringValue }]
 			: []
-		: arrayValue.map((model) => ({
-			label: model,
-			value: model,
-		}));
+		: arrayValue.map((model) => (
+			model === "*" ? ALL_MODELS_OPTION : { label: model, value: model }
+		));
 
 	// Fetch initial models on mount or when provider/keys change
 	useEffect(() => {
@@ -107,8 +113,13 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 	// Load options function for AsyncMultiSelect
 	const loadOptions = useCallback(
 		(query: string, callback: (options: ModelOption[]) => void) => {
+			// Prepend "Allow All Models" when allowAllOption is enabled and query matches (or is empty)
+			const prefix: ModelOption[] = allowAllOption && (!query || "allow all models".includes(query.toLowerCase()))
+				? [ALL_MODELS_OPTION]
+				: [];
+
 			if (!provider && !shouldLoadOnEmpty) {
-				callback([]);
+				callback(prefix);
 				return;
 			}
 
@@ -123,10 +134,10 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							label: model,
 							value: model,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			} else {
 				getModels({
@@ -143,14 +154,14 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 							value: model.name,
 							provider: model.provider,
 						}));
-						callback(options);
+						callback([...prefix, ...options]);
 					})
 					.catch(() => {
-						callback([]);
+						callback(prefix);
 					});
 			}
 		},
-		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels],
+		[getModels, getBaseModels, provider, keys, shouldLoadOnEmpty, shouldUseBaseModels, allowAllOption],
 	);
 
 	// Handle selection change
@@ -204,18 +215,19 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 
 	// Convert API data to options for default display
 	const defaultOptions: ModelOption[] = useMemo(() => {
+		const prefix = allowAllOption ? [ALL_MODELS_OPTION] : [];
 		if (shouldUseBaseModels) {
-			return baseModelsData?.models?.map((model) => ({
+			return [...prefix, ...(baseModelsData?.models?.map((model) => ({
 				label: model,
 				value: model,
-			})) || [];
+			})) || [])];
 		}
-		return modelsData?.models?.map((model) => ({
+		return [...prefix, ...(modelsData?.models?.map((model) => ({
 			label: model.name,
 			value: model.name,
 			provider: model.provider,
-		})) || [];
-	}, [modelsData, baseModelsData, shouldUseBaseModels]);
+		})) || [])];
+	}, [modelsData, baseModelsData, shouldUseBaseModels, allowAllOption]);
 
 	const shouldBeDisabled = disabled || (!provider && !shouldLoadOnEmpty);
 
@@ -225,6 +237,7 @@ export function ModelMultiselect(props: ModelMultiselectProps) {
 			hideSelectedOptions
 			inputId={props.inputId}
 			ariaLabelledBy={props.ariaLabelledBy}
+			data-testid={props["data-testid"]}
 			value={selectedOptions}
 			onChange={handleChange}
 			reload={loadOptions}

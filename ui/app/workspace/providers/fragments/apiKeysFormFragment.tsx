@@ -200,13 +200,37 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 											</span>
 										</TooltipTrigger>
 										<TooltipContent>
-											<p>Comma-separated list of models this key applies to. Leave blank for all models.</p>
+											<p>Select specific models this key applies to, or choose "Allow All Models" to allow all. Leave empty to deny all.</p>
 										</TooltipContent>
 									</Tooltip>
 								</TooltipProvider>
 							</div>
 							<FormControl>
-								<ModelMultiselect provider={providerName} value={field.value || []} onChange={field.onChange} unfiltered={true} />
+								<ModelMultiselect
+									data-testid="api-keys-models-multiselect"
+									provider={providerName}
+									allowAllOption={true}
+									value={field.value || []}
+									onChange={(models: string[]) => {
+										const hadStar = (field.value || []).includes("*");
+										const hasStar = models.includes("*");
+										if (!hadStar && hasStar) {
+											field.onChange(["*"]);
+										} else if (hadStar && hasStar && models.length > 1) {
+											field.onChange(models.filter((m: string) => m !== "*"));
+										} else {
+											field.onChange(models);
+										}
+									}}
+									placeholder={
+										(field.value || []).includes("*")
+											? "All models allowed"
+											: (field.value || []).length === 0
+												? "No models (deny all)"
+												: "Search models..."
+									}
+									unfiltered={true}
+								/>
 							</FormControl>
 							<FormMessage />
 						</FormItem>

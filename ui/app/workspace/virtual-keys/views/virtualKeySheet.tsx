@@ -274,7 +274,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		const newConfig = {
 			provider: provider,
 			weight: "" as string | number, // Default empty string = excluded from weighted routing until user sets a weight
-			allowed_models: [],
+			allowed_models: ["*"],
 			key_ids: [],
 		};
 
@@ -348,7 +348,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 	): any[] => {
 		return configs.map((config) => ({
 			...config,
-			weight: config.weight === "" || config.weight === undefined || config.weight === null
+			weight: config.weight === undefined || config.weight === null
 				? null
 				: typeof config.weight === "string" ? (Number.isNaN(parseFloat(config.weight)) ? null : parseFloat(config.weight)) : config.weight, budget: (() => {
 					const budgetMaxLimit = normalizeNumericField(config.budget?.max_limit);
@@ -697,24 +697,46 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	<Label className="text-sm font-medium">
 																		Allowed Models <span className="text-muted-foreground ml-auto text-xs italic">type to search</span>
 																	</Label>
-																	<ModelMultiselect
-																		data-testid={`vk-models-multiselect-${index}`}
-																		provider={config.provider}
-																		keys={(() => {
-																			const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
-																			const configKeyIds = config.key_ids || [];
-																			return providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
-																		})()}
-																		value={config.allowed_models || []}
-																		onChange={(models: string[]) => handleUpdateProviderConfig(index, "allowed_models", models)}
-																		placeholder={
-																			config.provider
-																				? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
-																				: ModelPlaceholders.default
-																		}
-																		className="min-h-10 max-w-[500px] min-w-[200px]"
-																	/>
-																	<p className="text-muted-foreground text-xs">Keep empty to use all available models for the provider</p>
+																	{(() => {
+																		const hasWildcardModels = (config.allowed_models || []).includes("*");
+																		return (
+																			<ModelMultiselect
+																				data-testid={`vk-models-multiselect-${index}`}
+																				provider={config.provider}
+																				keys={(() => {
+																					const providerKeys = availableKeys.filter((key) => key.provider === config.provider);
+																					const configKeyIds = config.key_ids || [];
+																					return configKeyIds.includes("*")
+																						? providerKeys.map((key) => key.key_id)
+																						: providerKeys.filter((key) => configKeyIds.includes(key.key_id)).map((key) => key.key_id);
+																				})()}
+																				allowAllOption={true}
+																				value={hasWildcardModels ? ["*"] : (config.allowed_models || [])}
+																				onChange={(models: string[]) => {
+																					const hadStar = (config.allowed_models || []).includes("*");
+																					const hasStar = models.includes("*");
+																					if (!hadStar && hasStar) {
+																						handleUpdateProviderConfig(index, "allowed_models", ["*"]);
+																					} else if (hadStar && hasStar && models.length > 1) {
+																						handleUpdateProviderConfig(index, "allowed_models", models.filter((m) => m !== "*"));
+																					} else {
+																						handleUpdateProviderConfig(index, "allowed_models", models);
+																					}
+																				}}
+																				placeholder={
+																					hasWildcardModels
+																						? "All models allowed"
+																						: (config.allowed_models || []).length === 0
+																							? "No models (deny all)"
+																							: config.provider
+																								? ModelPlaceholders[config.provider as keyof typeof ModelPlaceholders] || ModelPlaceholders.default
+																								: ModelPlaceholders.default
+																				}
+																				className="min-h-10 max-w-[500px] min-w-[200px]"
+																			/>
+																		);
+																	})()}
+																	<p className="text-muted-foreground text-xs">Select specific models or choose “Allow All Models” to allow all. Leave empty to deny all.</p>
 																</div>
 															</div>
 
@@ -733,7 +755,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																	...providerKeys.map((key) => ({
 																		label: key.name,
 																		value: key.key_id,
-																		description: key.models?.join(", ") || "",
+																		description:
+																			key.models == null || key.models.includes("*")
+																				? "All models"
+																				: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
 																		provider: key.provider,
 																	})),
 																];
@@ -744,7 +769,10 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																		.map((key) => ({
 																			label: key.name,
 																			value: key.key_id,
-																			description: key.models?.join(", ") || "",
+																			description:
+																				key.models == null || key.models.includes("*")
+																					? "All models"
+																					: key.models.filter((m) => m !== "*").join(", ") || "No models (deny all)",
 																			provider: key.provider,
 																		}));
 
@@ -1031,7 +1059,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 																			{
 																				label: "Allow All Tools",
 																				value: "*",
-																				description: "Allow all current and future tools (including dynamically fetched ones)",
+																				description: "Allow all current and future tools",
 																			},
 																			...[...availableTools, ...enabledToolsByConfig]
 																				.filter((tool, index, arr) => arr.findIndex((t) => t.name === tool.name) === index)

@@ -6,7 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
-func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels []string) *schemas.BifrostListModelsResponse {
+func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -17,7 +17,7 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 
 	includedModels := make(map[string]bool)
 	for _, model := range response.Data {
-		if len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
+		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.ID) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -32,7 +32,7 @@ func (response *MistralListModelsResponse) ToBifrostListModelsResponse(allowedMo
 	}
 
 	// Backfill allowed models that were not in the response
-	if len(allowedModels) > 0 {
+	if !unfiltered && len(allowedModels) > 0 {
 		for _, allowedModel := range allowedModels {
 			if !includedModels[allowedModel] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
