@@ -276,7 +276,8 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 				return r.modelCatalog.IsModelAllowedForProvider(provider, model, pc.AllowedModels)
 			}
 			// Fallback when model catalog is not available: simple string matching
-			if len(pc.AllowedModels) == 0 {
+			// ["*"] = allow all models; [] = deny all models
+			if slices.Contains(pc.AllowedModels, "*") {
 				return true
 			}
 			return slices.Contains(pc.AllowedModels, model)

@@ -496,8 +496,9 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //   - allowedModels: List of allowed model names (can be empty, can include provider prefixes)
 //
 // Behavior:
-//   - If allowedModels is empty: Uses model catalog to check if provider supports the model
+//   - If allowedModels is ["*"]: Uses model catalog to check if provider supports the model
 //     (delegates to GetProvidersForModel which handles all cross-provider logic)
+//   - If allowedModels is empty ([]): Deny-by-default — returns false for any provider/model pair
 //   - If allowedModels is not empty: Checks if model matches any entry in the list
 //     Provider-specific validation:
 //   - Direct matches: "gpt-4o" in allowedModels for any provider
@@ -510,9 +511,13 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //
 // Examples:
 //
-//	// Empty allowedModels - uses catalog
-//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{})
+//	// Wildcard allowedModels - uses catalog to check provider support
+//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{"*"})
 //	// Returns: true (catalog knows openrouter has "anthropic/claude-3-5-sonnet")
+//
+//	// Empty allowedModels - deny all (deny-by-default)
+//	mc.IsModelAllowedForProvider("openrouter", "claude-3-5-sonnet", []string{})
+//	// Returns: false (no models are permitted)
 //
 //	// Explicit allowedModels with prefix - validates against catalog
 //	mc.IsModelAllowedForProvider("openrouter", "gpt-4o", []string{"openai/gpt-4o"})
@@ -526,11 +531,14 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
 func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels []string) bool {
-	// Case 1: Empty allowedModels = use catalog to determine support
-	// This leverages GetProvidersForModel which already handles all cross-provider logic
-	if len(allowedModels) == 0 {
+	// Case 1: ["*"] = allow all models; use catalog to determine support
+	// Empty allowedModels = deny all (fail-safe deny-by-default)
+	if slices.Contains(allowedModels, "*") {
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
+	}
+	if len(allowedModels) == 0 {
+		return false
 	}
 
 	// Case 2: Explicit allowedModels = check if model matches any entry

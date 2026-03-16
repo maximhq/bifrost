@@ -457,7 +457,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil {
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.Password) {
-			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password			
+			payload.ProxyConfig.Password = oldConfigRaw.ProxyConfig.Password
 		}
 		if payload.ProxyConfig.IsRedactedValue(payload.ProxyConfig.CACertPEM) {
 			payload.ProxyConfig.CACertPEM = oldConfigRaw.ProxyConfig.CACertPEM
@@ -666,7 +666,8 @@ func (h *ProviderHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 	// Apply query filter if provided (fuzzy search)
 	// We are currently doing it in memory to later make use of in memory model pools
-	if queryParam != "" {
+	// "*" is treated as a wildcard meaning "no filter" — return all models
+	if queryParam != "" && queryParam != "*" {
 		filtered := []ModelResponse{}
 		queryLower := strings.ToLower(queryParam)
 		// Remove common separators for more flexible matching
@@ -747,18 +748,22 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 	allowedModels := make(map[string]bool)
 	hasRestrictedKey := false
 	hasUnrestrictedKey := false
+	hasDenyAllKey := false
 	for _, keyID := range keyIDs {
 		for _, key := range config.Keys {
 			if key.ID == keyID {
-				if len(key.Models) > 0 {
-					// Key has model restrictions - add them to allowedModels
+				if slices.Contains(key.Models, "*") {
+					// Key allows all models (wildcard)
+					hasUnrestrictedKey = true
+				} else if len(key.Models) > 0 {
+					// Key has specific model restrictions - add them to allowedModels
 					hasRestrictedKey = true
 					for _, model := range key.Models {
 						allowedModels[model] = true
 					}
 				} else {
-					// Key has no model restrictions - grants access to all models
-					hasUnrestrictedKey = true
+					// Empty Models = explicit deny-all for this key
+					hasDenyAllKey = true
 				}
 				break
 			}
@@ -767,6 +772,10 @@ func (h *ProviderHandler) filterModelsByKeys(provider schemas.ModelProvider, mod
 	// If any key is unrestricted, return all models (union of "all" and restricted subsets is "all")
 	if hasUnrestrictedKey {
 		return models
+	}
+	// If no keys were matched or restricted, but at least one key explicitly denies all, return nothing
+	if !hasRestrictedKey && hasDenyAllKey {
+		return []string{}
 	}
 	// If no keys have model restrictions (e.g., unknown key IDs), return all models
 	if !hasRestrictedKey {

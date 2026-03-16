@@ -1516,7 +1516,7 @@
         },
         "allowed_models": {
           "type": "array",
-          "description": "Allowed models for this provider config (empty means all models allowed)",
+          "description": "Allowed models for this provider config. Use [\"*\"] to allow all models; empty array denies all (deny-by-default).",
           "items": {
             "type": "string"
           }
@@ -1529,209 +1529,11 @@
           "type": "string",
           "description": "Associated rate limit ID"
         },
-        "keys": {
+        "key_ids": {
           "type": "array",
-          "description": "Provider keys for this config (empty means all keys allowed for this provider)",
+          "description": "Keys allowed for this provider config. Use [\"*\"] to allow all keys; empty array denies all (deny-by-default). In config.json, values are key names. Via the API, values are key UUIDs.",
           "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "integer",
-                "description": "Key database ID (auto-generated)"
-              },
-              "key_id": {
-                "type": "string",
-                "description": "Key UUID identifier"
-              },
-              "name": {
-                "type": "string",
-                "description": "Key name (must be unique)"
-              },
-              "value": {
-                "type": "string",
-                "description": "API key value (can use env. prefix)"
-              },
-              "models": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Supported models for this key"
-              },
-              "weight": {
-                "type": "number",
-                "minimum": 0,
-                "default": 1.0,
-                "description": "Weight for load balancing"
-              },
-              "azure_key_config": {
-                "type": "object",
-                "properties": {
-                  "endpoint": {
-                    "type": "string",
-                    "description": "Azure endpoint (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  },
-                  "api_version": {
-                    "type": "string",
-                    "description": "Azure API version"
-                  }
-                },
-                "required": [
-                  "endpoint"
-                ],
-                "additionalProperties": false
-              },
-              "vertex_key_config": {
-                "type": "object",
-                "properties": {
-                  "project_id": {
-                    "type": "string",
-                    "description": "Google Cloud project ID (can use env. prefix)"
-                  },
-                  "project_number": {
-                    "type": "string",
-                    "description": "Google Cloud project number"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "Google Cloud region"
-                  },
-                  "auth_credentials": {
-                    "type": "string",
-                    "description": "Authentication credentials (can use env. prefix)"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  }
-                },
-                "required": [
-                  "project_id",
-                  "region"
-                ],
-                "additionalProperties": false
-              },
-              "bedrock_key_config": {
-                "type": "object",
-                "properties": {
-                  "access_key": {
-                    "type": "string",
-                    "description": "AWS access key (can use env. prefix)"
-                  },
-                  "secret_key": {
-                    "type": "string",
-                    "description": "AWS secret key (can use env. prefix)"
-                  },
-                  "session_token": {
-                    "type": "string",
-                    "description": "AWS session token (can use env. prefix)"
-                  },
-                  "region": {
-                    "type": "string",
-                    "description": "AWS region"
-                  },
-                  "arn": {
-                    "type": "string",
-                    "description": "AWS ARN"
-                  },
-                  "deployments": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "description": "Model to deployment mappings"
-                  }
-                },
-                "additionalProperties": false
-              },
-              "vllm_key_config": {
-                "type": "object",
-                "properties": {
-                  "url": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "VLLM server base URL (can use env. prefix)"
-                  },
-                  "model_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Exact model name served on this VLLM instance"
-                  }
-                },
-                "required": [
-                  "url",
-                  "model_name"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "oneOf": [
-              {
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["azure_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vertex_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["bedrock_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["bedrock_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["vllm_key_config"] }
-                  ]
-                }
-              },
-              {
-                "required": ["vllm_key_config"],
-                "not": {
-                  "anyOf": [
-                    { "required": ["azure_key_config"] },
-                    { "required": ["vertex_key_config"] },
-                    { "required": ["bedrock_key_config"] }
-                  ]
-                }
-              }
-            ],
-            "required": [
-              "key_id",
-              "name",
-              "value"
-            ]
+            "type": "string"
           }
         }
       },
@@ -2046,8 +1848,7 @@
           "items": {
             "type": "string"
           },
-          "default": [],
-          "description": "Supported models for this key"
+          "description": "Models this key can access. Use [\"*\"] to allow all models; empty array denies all (deny-by-default)."
         },
         "weight": {
           "type": "number",

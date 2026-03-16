@@ -170,7 +170,7 @@ export const modelProviderKeySchema = z
 		id: z.string().min(1, "Id is required"),
 		name: z.string().min(1, "Name is required"),
 		value: envVarSchema.optional(),
-		models: z.array(z.string()).default([]).optional(),
+		models: z.array(z.string()).optional().default(["*"]),
 		weight: z.union([
 			z.number().min(0, "Weight must be equal to or greater than 0").max(1, "Weight must be equal to or less than 1"),
 			z
