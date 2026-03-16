@@ -1469,7 +1469,11 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgetsInMemory(ctx context.Context)
 			copiedBudget := *budget
 			oldUsage := copiedBudget.CurrentUsage
 			copiedBudget.CurrentUsage = 0
-			copiedBudget.LastReset = now
+			if budget.CalendarAligned {
+				copiedBudget.LastReset = configstoreTables.GetCalendarPeriodStart(budget.ResetDuration, now)
+			} else {
+				copiedBudget.LastReset = now
+			}
 			gs.LastDBUsagesBudgetsMu.Lock()
 			gs.LastDBUsagesBudgets[copiedBudget.ID] = 0
 			gs.LastDBUsagesBudgetsMu.Unlock()
