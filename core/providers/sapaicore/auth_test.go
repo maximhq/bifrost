@@ -128,9 +128,9 @@ func TestTokenCache_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cache.mu.RLock()
+			cache.mu.Lock()
 			_ = cache.tokens[key]
-			cache.mu.RUnlock()
+			cache.mu.Unlock()
 		}()
 	}
 

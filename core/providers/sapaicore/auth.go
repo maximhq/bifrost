@@ -11,29 +11,20 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
-	"golang.org/x/sync/singleflight"
 )
 
 // TokenCache manages OAuth2 token caching for SAP AI Core
 type TokenCache struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	tokens  map[string]*cachedToken
 	client  *fasthttp.Client
 	timeout time.Duration
-	group   singleflight.Group
 }
 
 // cachedToken represents a cached OAuth2 token with expiration
 type cachedToken struct {
 	accessToken string
 	expiresAt   time.Time
-}
-
-// tokenResult carries both token string and error for singleflight return.
-// Since BifrostError doesn't implement the error interface, we pass it through the result.
-type tokenResult struct {
-	token    string
-	bifError *schemas.BifrostError
 }
 
 // newTokenCache creates a new token cache with the given HTTP request timeout.
@@ -64,62 +55,37 @@ func normalizeAuthURL(authURL string) string {
 }
 
 // GetToken retrieves a valid token from cache or fetches a new one.
-// Uses singleflight to coalesce concurrent refresh requests for the same key.
+// Concurrent callers are serialized by the mutex; the first one to find
+// a cache miss fetches the token and subsequent callers see the cached result.
 func (tc *TokenCache) GetToken(clientID, clientSecret, authURL string) (string, *schemas.BifrostError) {
 	key := cacheKey(clientID, authURL)
 
-	// Try to get from cache first (read lock)
-	tc.mu.RLock()
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+
+	// Check cache (with 30-second buffer before expiration)
 	if cached, ok := tc.tokens[key]; ok {
-		// Add 30-second buffer before expiration
 		if time.Now().Add(30 * time.Second).Before(cached.expiresAt) {
-			token := cached.accessToken
-			tc.mu.RUnlock()
-			return token, nil
+			return cached.accessToken, nil
 		}
 	}
-	tc.mu.RUnlock()
 
 	// Opportunistic cleanup: prune expired tokens during cache misses
-	tc.pruneExpired()
+	tc.pruneExpiredLocked()
 
-	// Use singleflight to coalesce concurrent fetches for the same key.
-	// BifrostError is passed through tokenResult (not the error return) since
-	// BifrostError doesn't implement the error interface.
-	result, _, _ := tc.group.Do(key, func() (interface{}, error) {
-		// Double-check cache (another goroutine may have just refreshed)
-		tc.mu.RLock()
-		if cached, ok := tc.tokens[key]; ok {
-			if time.Now().Add(30 * time.Second).Before(cached.expiresAt) {
-				token := cached.accessToken
-				tc.mu.RUnlock()
-				return &tokenResult{token: token}, nil
-			}
-		}
-		tc.mu.RUnlock()
-
-		// Fetch new token
-		token, expiresIn, fetchErr := tc.fetchToken(clientID, clientSecret, authURL)
-		if fetchErr != nil {
-			return &tokenResult{bifError: fetchErr}, nil
-		}
-
-		// Cache the result
-		tc.mu.Lock()
-		tc.tokens[key] = &cachedToken{
-			accessToken: token,
-			expiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
-		}
-		tc.mu.Unlock()
-
-		return &tokenResult{token: token}, nil
-	})
-
-	tr := result.(*tokenResult)
-	if tr.bifError != nil {
-		return "", tr.bifError
+	// Fetch new token
+	token, expiresIn, fetchErr := tc.fetchToken(clientID, clientSecret, authURL)
+	if fetchErr != nil {
+		return "", fetchErr
 	}
-	return tr.token, nil
+
+	// Cache the result
+	tc.tokens[key] = &cachedToken{
+		accessToken: token,
+		expiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
+	}
+
+	return token, nil
 }
 
 // fetchToken performs the OAuth2 client credentials flow
@@ -209,14 +175,9 @@ func (tc *TokenCache) Cleanup() {
 	}
 }
 
-// pruneExpired is a non-blocking opportunistic cleanup that removes expired tokens
-// if the write lock can be acquired without contention.
-func (tc *TokenCache) pruneExpired() {
-	if !tc.mu.TryLock() {
-		return
-	}
-	defer tc.mu.Unlock()
-
+// pruneExpiredLocked removes expired tokens from the cache.
+// Must be called while tc.mu is held.
+func (tc *TokenCache) pruneExpiredLocked() {
 	now := time.Now()
 	for key, token := range tc.tokens {
 		if now.After(token.expiresAt) {

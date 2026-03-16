@@ -10,31 +10,22 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
-	"golang.org/x/sync/singleflight"
 )
 
 // DeploymentCache manages deployment ID resolution and caching
 type DeploymentCache struct {
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	deployments map[string]*cachedDeployments // keyed by resource group + base URL
 	client      *fasthttp.Client
 	tokenCache  *TokenCache
 	ttl         time.Duration
 	timeout     time.Duration
-	group       singleflight.Group
 }
 
 // cachedDeployments holds cached deployment data for a resource group
 type cachedDeployments struct {
 	modelToDeployment map[string]SAPAICoreCachedDeployment // model name -> deployment info
 	fetchedAt         time.Time
-}
-
-// deploymentFetchResult carries the fetch result for singleflight return.
-// Since BifrostError doesn't implement the error interface, we pass it through the result.
-type deploymentFetchResult struct {
-	deployments map[string]SAPAICoreCachedDeployment
-	bifError    *schemas.BifrostError
 }
 
 // newDeploymentCache creates a new deployment cache with default TTL
@@ -79,72 +70,45 @@ func (dc *DeploymentCache) GetDeploymentID(
 }
 
 // resolveDeployment fetches and caches deployments, then returns the deployment ID for the model.
-// Uses singleflight to coalesce concurrent refresh requests for the same cache key.
+// Concurrent callers are serialized by the mutex; the first one to find
+// a cache miss fetches deployments and subsequent callers see the cached result.
 func (dc *DeploymentCache) resolveDeployment(
 	modelName, clientID, clientSecret, authURL, baseURL, resourceGroup string,
 ) (string, SAPAICoreBackendType, *schemas.BifrostError) {
 	cacheKey := deploymentCacheKey(clientID, authURL, baseURL, resourceGroup)
 
-	// Try cache first (read lock)
-	dc.mu.RLock()
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+
+	// Check cache
 	if cached, ok := dc.deployments[cacheKey]; ok {
 		if time.Since(cached.fetchedAt) < dc.ttl {
 			if deployment, ok := cached.modelToDeployment[modelName]; ok {
-				dc.mu.RUnlock()
 				return deployment.DeploymentID, deployment.Backend, nil
 			}
 			// Model not found in fresh cache — invalidate to force a refetch
 			// so newly created deployments are discoverable before TTL expires.
-			dc.mu.RUnlock()
-			dc.mu.Lock()
 			delete(dc.deployments, cacheKey)
-			dc.mu.Unlock()
-		} else {
-			dc.mu.RUnlock()
 		}
-	} else {
-		dc.mu.RUnlock()
 	}
 
 	// Opportunistic cleanup: prune expired entries during cache misses
-	dc.pruneExpired()
+	dc.pruneExpiredLocked()
 
-	// Use singleflight to coalesce concurrent fetches for the same cache key.
-	result, _, _ := dc.group.Do(cacheKey, func() (interface{}, error) {
-		// Double-check cache (another goroutine may have just refreshed)
-		dc.mu.RLock()
-		if cached, ok := dc.deployments[cacheKey]; ok {
-			if time.Since(cached.fetchedAt) < dc.ttl {
-				dc.mu.RUnlock()
-				return &deploymentFetchResult{deployments: cached.modelToDeployment}, nil
-			}
-		}
-		dc.mu.RUnlock()
+	// Fetch deployments from API
+	deployments, fetchErr := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
+	if fetchErr != nil {
+		return "", "", fetchErr
+	}
 
-		// Fetch deployments from API
-		deployments, fetchErr := dc.fetchDeployments(clientID, clientSecret, authURL, baseURL, resourceGroup)
-		if fetchErr != nil {
-			return &deploymentFetchResult{bifError: fetchErr}, nil
-		}
-
-		// Cache the results
-		dc.mu.Lock()
-		dc.deployments[cacheKey] = &cachedDeployments{
-			modelToDeployment: deployments,
-			fetchedAt:         time.Now(),
-		}
-		dc.mu.Unlock()
-
-		return &deploymentFetchResult{deployments: deployments}, nil
-	})
-
-	fr := result.(*deploymentFetchResult)
-	if fr.bifError != nil {
-		return "", "", fr.bifError
+	// Cache the results
+	dc.deployments[cacheKey] = &cachedDeployments{
+		modelToDeployment: deployments,
+		fetchedAt:         time.Now(),
 	}
 
 	// Look up the requested model
-	if deployment, ok := fr.deployments[modelName]; ok {
+	if deployment, ok := deployments[modelName]; ok {
 		return deployment.DeploymentID, deployment.Backend, nil
 	}
 
@@ -336,14 +300,9 @@ func (dc *DeploymentCache) Cleanup() {
 	}
 }
 
-// pruneExpired is a non-blocking opportunistic cleanup that removes expired entries
-// if the write lock can be acquired without contention.
-func (dc *DeploymentCache) pruneExpired() {
-	if !dc.mu.TryLock() {
-		return
-	}
-	defer dc.mu.Unlock()
-
+// pruneExpiredLocked removes expired entries from the deployment cache.
+// Must be called while dc.mu is held.
+func (dc *DeploymentCache) pruneExpiredLocked() {
 	now := time.Now()
 	for key, cached := range dc.deployments {
 		if now.Sub(cached.fetchedAt) >= dc.ttl {
