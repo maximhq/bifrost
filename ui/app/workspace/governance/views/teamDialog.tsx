@@ -346,17 +346,18 @@ export default function TeamDialog({ team, customers, onSave, onCancel }: TeamDi
 									. This cannot be undone.
 								</AlertDialogDescription>
 							</AlertDialogHeader>
-							<AlertDialogFooter>
-								<AlertDialogCancel>Cancel</AlertDialogCancel>
-								<AlertDialogAction
-									onClick={() => {
-										updateField("budgetCalendarAligned", true);
-										setShowCalendarAlignWarning(false);
-									}}
-								>
-									Enable Calendar Alignment
-								</AlertDialogAction>
-							</AlertDialogFooter>
+						<AlertDialogFooter>
+							<AlertDialogCancel data-testid="team-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+							<AlertDialogAction
+								data-testid="team-calendar-align-enable-btn"
+								onClick={() => {
+									updateField("budgetCalendarAligned", true);
+									setShowCalendarAlignWarning(false);
+								}}
+							>
+								Enable Calendar Alignment
+							</AlertDialogAction>
+						</AlertDialogFooter>
 						</AlertDialogContent>
 					</AlertDialog>
 

@@ -21,8 +21,6 @@ import { Customer, Team, VirtualKey } from "@/lib/types/governance"
 import { resetDurationLabels } from "@/lib/constants/governance"
 import { cn } from "@/lib/utils"
 import { formatCurrency } from "@/lib/utils/governance"
-
-const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration;
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { ChevronLeft, ChevronRight, Copy, Edit, Eye, EyeOff, Plus, Search, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
@@ -30,6 +28,8 @@ import { toast } from "sonner"
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet"
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState"
 import VirtualKeySheet from "./virtualKeySheet"
+
+const formatResetDuration = (duration: string) => resetDurationLabels[duration] || duration
 
 interface VirtualKeysTableProps {
 	virtualKeys: VirtualKey[];

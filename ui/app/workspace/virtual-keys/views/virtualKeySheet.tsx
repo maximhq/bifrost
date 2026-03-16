@@ -1133,17 +1133,18 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 											. This cannot be undone.
 										</AlertDialogDescription>
 									</AlertDialogHeader>
-									<AlertDialogFooter>
-										<AlertDialogCancel>Cancel</AlertDialogCancel>
-										<AlertDialogAction
-											onClick={() => {
-												form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
-												setShowCalendarAlignWarning(false);
-											}}
-										>
-											Enable Calendar Alignment
-										</AlertDialogAction>
-									</AlertDialogFooter>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										data-testid="vk-calendar-align-enable-btn"
+										onClick={() => {
+											form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
+											setShowCalendarAlignWarning(false);
+										}}
+									>
+										Enable Calendar Alignment
+									</AlertDialogAction>
+								</AlertDialogFooter>
 								</AlertDialogContent>
 							</AlertDialog>
 						</div>

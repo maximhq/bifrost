@@ -1272,20 +1272,23 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 			Name:       req.Name,
 			CustomerID: req.CustomerID,
 		}
-		if req.Budget != nil {
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        req.Budget.MaxLimit,
-				ResetDuration:   req.Budget.ResetDuration,
-				CalendarAligned: req.Budget.CalendarAligned,
-				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			team.BudgetID = &budget.ID
+	if req.Budget != nil {
+		budget := configstoreTables.TableBudget{
+			ID:              uuid.NewString(),
+			MaxLimit:        req.Budget.MaxLimit,
+			ResetDuration:   req.Budget.ResetDuration,
+			CalendarAligned: req.Budget.CalendarAligned,
+			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+			CurrentUsage:    0,
 		}
+		if err := validateBudget(&budget); err != nil {
+			return err
+		}
+		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+			return err
+		}
+		team.BudgetID = &budget.ID
+	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1394,8 +1397,8 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
-			budgetIsEmpty := req.Budget.MaxLimit == nil
+			// Check if budget removal is requested (all fields nil)
+			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
 			if budgetIsEmpty {
 				// Mark budget for deletion after FK is removed
 				if team.BudgetID != nil {
@@ -1404,16 +1407,17 @@ func (h *GovernanceHandler) updateTeam(ctx *fasthttp.RequestCtx) {
 					team.Budget = nil
 				}
 			} else if team.BudgetID != nil {
-			// Update existing budget
-			if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-				return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
-			}
+			// Update existing budget — all fields are optional (partial update)
 			budget := configstoreTables.TableBudget{}
 			if err := tx.First(&budget, "id = ?", *team.BudgetID).Error; err != nil {
 				return err
 			}
-			budget.MaxLimit = *req.Budget.MaxLimit
-			budget.ResetDuration = *req.Budget.ResetDuration
+			if req.Budget.MaxLimit != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+			}
+			if req.Budget.ResetDuration != nil {
+				budget.ResetDuration = *req.Budget.ResetDuration
+			}
 			if req.Budget.CalendarAligned != nil {
 				wasCalendarAligned := budget.CalendarAligned
 				budget.CalendarAligned = *req.Budget.CalendarAligned
@@ -1646,20 +1650,23 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 			Name: req.Name,
 		}
 
-		if req.Budget != nil {
-			budget := configstoreTables.TableBudget{
-				ID:              uuid.NewString(),
-				MaxLimit:        req.Budget.MaxLimit,
-				ResetDuration:   req.Budget.ResetDuration,
-				CalendarAligned: req.Budget.CalendarAligned,
-				LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
-				CurrentUsage:    0,
-			}
-			if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
-				return err
-			}
-			customer.BudgetID = &budget.ID
+	if req.Budget != nil {
+		budget := configstoreTables.TableBudget{
+			ID:              uuid.NewString(),
+			MaxLimit:        req.Budget.MaxLimit,
+			ResetDuration:   req.Budget.ResetDuration,
+			CalendarAligned: req.Budget.CalendarAligned,
+			LastReset:       budgetLastReset(req.Budget.CalendarAligned, req.Budget.ResetDuration),
+			CurrentUsage:    0,
 		}
+		if err := validateBudget(&budget); err != nil {
+			return err
+		}
+		if err := h.configStore.CreateBudget(ctx, &budget, tx); err != nil {
+			return err
+		}
+		customer.BudgetID = &budget.ID
+	}
 		if req.RateLimit != nil {
 			rateLimit := configstoreTables.TableRateLimit{
 				ID:                   uuid.NewString(),
@@ -1758,8 +1765,8 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
-			budgetIsEmpty := req.Budget.MaxLimit == nil
+			// Check if budget removal is requested (all fields nil)
+			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
 			if budgetIsEmpty {
 				// Mark budget for deletion after FK is removed
 				if customer.BudgetID != nil {
@@ -1768,16 +1775,17 @@ func (h *GovernanceHandler) updateCustomer(ctx *fasthttp.RequestCtx) {
 					customer.Budget = nil
 				}
 			} else if customer.BudgetID != nil {
-			// Update existing budget
-			if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-				return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
-			}
+			// Update existing budget — all fields are optional (partial update)
 			budget := configstoreTables.TableBudget{}
 			if err := tx.First(&budget, "id = ?", *customer.BudgetID).Error; err != nil {
 				return err
 			}
-			budget.MaxLimit = *req.Budget.MaxLimit
-			budget.ResetDuration = *req.Budget.ResetDuration
+			if req.Budget.MaxLimit != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+			}
+			if req.Budget.ResetDuration != nil {
+				budget.ResetDuration = *req.Budget.ResetDuration
+			}
 			if req.Budget.CalendarAligned != nil {
 				wasCalendarAligned := budget.CalendarAligned
 				budget.CalendarAligned = *req.Budget.CalendarAligned
@@ -2225,8 +2233,8 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 		// Handle budget updates
 		if req.Budget != nil {
-			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
-			budgetIsEmpty := req.Budget.MaxLimit == nil
+			// Check if budget removal is requested (all fields nil)
+			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
 			if budgetIsEmpty {
 				// Mark budget for deletion after FK is removed
 				if mc.BudgetID != nil {
@@ -2235,18 +2243,17 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 					mc.Budget = nil
 				}
 			} else if mc.BudgetID != nil {
-			// Update existing budget
-			// Validate that both fields are present before dereferencing
-			if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-				return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
-			}
+			// Update existing budget — all fields are optional (partial update)
 			budget := configstoreTables.TableBudget{}
 			if err := tx.First(&budget, "id = ?", *mc.BudgetID).Error; err != nil {
 				return err
 			}
-			// Set all fields from request
-			budget.MaxLimit = *req.Budget.MaxLimit
-			budget.ResetDuration = *req.Budget.ResetDuration
+			if req.Budget.MaxLimit != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+			}
+			if req.Budget.ResetDuration != nil {
+				budget.ResetDuration = *req.Budget.ResetDuration
+			}
 			if req.Budget.CalendarAligned != nil {
 				wasCalendarAligned := budget.CalendarAligned
 				budget.CalendarAligned = *req.Budget.CalendarAligned
@@ -2498,8 +2505,8 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 
 		// Handle budget updates
 		if req.Budget != nil {
-			// Check if budget limit is empty - means remove budget (reset duration doesn't matter)
-			budgetIsEmpty := req.Budget.MaxLimit == nil
+			// Check if budget removal is requested (all fields nil)
+			budgetIsEmpty := isBudgetRemovalRequest(req.Budget)
 			if budgetIsEmpty {
 				// Mark budget for deletion after FK is removed
 				if provider.BudgetID != nil {
@@ -2508,18 +2515,17 @@ func (h *GovernanceHandler) updateProviderGovernance(ctx *fasthttp.RequestCtx) {
 					provider.Budget = nil
 				}
 			} else if provider.BudgetID != nil {
-			// Update existing budget
-			// Validate that both fields are present before dereferencing
-			if req.Budget.MaxLimit == nil || req.Budget.ResetDuration == nil {
-				return fmt.Errorf("both max_limit and reset_duration are required when updating a budget")
-			}
+			// Update existing budget — all fields are optional (partial update)
 			budget := configstoreTables.TableBudget{}
 			if err := tx.First(&budget, "id = ?", *provider.BudgetID).Error; err != nil {
 				return err
 			}
-			// Set all fields from request
-			budget.MaxLimit = *req.Budget.MaxLimit
-			budget.ResetDuration = *req.Budget.ResetDuration
+			if req.Budget.MaxLimit != nil {
+				budget.MaxLimit = *req.Budget.MaxLimit
+			}
+			if req.Budget.ResetDuration != nil {
+				budget.ResetDuration = *req.Budget.ResetDuration
+			}
 			if req.Budget.CalendarAligned != nil {
 				wasCalendarAligned := budget.CalendarAligned
 				budget.CalendarAligned = *req.Budget.CalendarAligned
