@@ -2096,6 +2096,46 @@ func (s *RDBConfigStore) GetTeams(ctx context.Context, customerID string) ([]tab
 	return teams, nil
 }
 
+// GetTeamsPaginated retrieves teams with pagination, filtering, and search support.
+func (s *RDBConfigStore) GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error) {
+	baseQuery := s.db.WithContext(ctx).Model(&tables.TableTeam{})
+
+	if params.CustomerID != "" {
+		baseQuery = baseQuery.Where("customer_id = ?", params.CustomerID)
+	}
+	if params.Search != "" {
+		search := "%" + strings.ToLower(params.Search) + "%"
+		baseQuery = baseQuery.Where("LOWER(name) LIKE ?", search)
+	}
+
+	var totalCount int64
+	if err := baseQuery.Count(&totalCount).Error; err != nil {
+		return nil, 0, err
+	}
+
+	limit := params.Limit
+	offset := params.Offset
+	if limit <= 0 {
+		limit = 25
+	} else if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var teams []tables.TableTeam
+	if err := baseQuery.
+		Preload("Customer").Preload("Budget").Preload("RateLimit").
+		Order("created_at ASC, id ASC").
+		Offset(offset).Limit(limit).
+		Find(&teams).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return teams, totalCount, nil
+}
+
 // GetTeam retrieves a specific team from the database.
 func (s *RDBConfigStore) GetTeam(ctx context.Context, id string) (*tables.TableTeam, error) {
 	var team tables.TableTeam

@@ -12,6 +12,7 @@ import {
 	GetModelConfigsResponse,
 	GetProviderGovernanceResponse,
 	GetRateLimitsResponse,
+	GetTeamsParams,
 	GetTeamsResponse,
 	GetUsageStatsResponse,
 	GetVirtualKeysParams,
@@ -82,10 +83,15 @@ export const governanceApi = baseApi.injectEndpoints({
 		}),
 
 		// Teams
-		getTeams: builder.query<GetTeamsResponse, { customerId?: string }>({
-			query: ({ customerId } = {}) => ({
+		getTeams: builder.query<GetTeamsResponse, GetTeamsParams | void>({
+			query: (params) => ({
 				url: "/governance/teams",
-				params: customerId ? { customer_id: customerId } : {},
+				params: {
+					...(params?.limit && { limit: params.limit }),
+					...(params?.offset !== undefined && { offset: params.offset }),
+					...(params?.search && { search: params.search }),
+					...(params?.customer_id && { customer_id: params.customer_id }),
+				},
 			}),
 			providesTags: ["Teams"],
 		}),
@@ -101,16 +107,23 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
-			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
-							if (!draft.teams) draft.teams = [];
-							draft.teams.unshift(data.team);
-							draft.count = (draft.count || 0) + 1;
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getTeams" || entry?.status !== "fulfilled") continue;
+						const search = entry.originalArgs?.search as string | undefined;
+						if (search && !data.team.name.toLowerCase().includes(search.toLowerCase())) continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getTeams", entry.originalArgs, (draft) => {
+								if (!draft.teams) draft.teams = [];
+								draft.teams.unshift(data.team);
+								draft.count = (draft.count || 0) + 1;
+								draft.total_count = (draft.total_count || 0) + 1;
+							}),
+						);
+					}
 				} catch {
 					// Mutation failed
 				}
@@ -123,18 +136,22 @@ export const governanceApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: data,
 			}),
-			async onQueryStarted({ teamId }, { dispatch, queryFulfilled }) {
+			async onQueryStarted({ teamId }, { dispatch, getState, queryFulfilled }) {
 				try {
 					const { data } = await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
-							if (!draft.teams) return;
-							const index = draft.teams.findIndex((t) => t.id === teamId);
-							if (index !== -1) {
-								draft.teams[index] = data.team;
-							}
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getTeams" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getTeams", entry.originalArgs, (draft) => {
+								if (!draft.teams) return;
+								const index = draft.teams.findIndex((t) => t.id === teamId);
+								if (index !== -1) {
+									draft.teams[index] = data.team;
+								}
+							}),
+						);
+					}
 					dispatch(
 						governanceApi.util.updateQueryData("getTeam", teamId, (draft) => {
 							draft.team = data.team;
@@ -151,16 +168,24 @@ export const governanceApi = baseApi.injectEndpoints({
 				url: `/governance/teams/${teamId}`,
 				method: "DELETE",
 			}),
-			async onQueryStarted(teamId, { dispatch, queryFulfilled }) {
+			async onQueryStarted(teamId, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
-					dispatch(
-						governanceApi.util.updateQueryData("getTeams", {}, (draft) => {
-							if (!draft.teams) return;
-							draft.teams = draft.teams.filter((t) => t.id !== teamId);
-							draft.count = Math.max(0, (draft.count || 0) - 1);
-						}),
-					);
+					const queries = (getState() as any).api.queries;
+					for (const entry of Object.values(queries) as any[]) {
+						if (entry?.endpointName !== "getTeams" || entry?.status !== "fulfilled") continue;
+						dispatch(
+							governanceApi.util.updateQueryData("getTeams", entry.originalArgs, (draft) => {
+								if (!draft.teams) return;
+								const before = draft.teams.length;
+								draft.teams = draft.teams.filter((t) => t.id !== teamId);
+								if (draft.teams.length < before) {
+									draft.count = Math.max(0, (draft.count || 0) - 1);
+									draft.total_count = Math.max(0, (draft.total_count || 0) - 1);
+								}
+							}),
+						);
+					}
 				} catch {
 					// Mutation failed
 				}

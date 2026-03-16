@@ -86,7 +86,7 @@ export function RoutingRuleSheet({
 	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
 	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
-	const { data: teamsData = { teams: [] } } = useGetTeamsQuery({});
+	const { data: teamsData = { teams: [], count: 0, total_count: 0, limit: 0, offset: 0 } } = useGetTeamsQuery();
 	const { data: customersData = { customers: [] } } = useGetCustomersQuery();
 	const [createRoutingRule, { isLoading: isCreating }] = useCreateRoutingRuleMutation();
 	const [updateRoutingRule, { isLoading: isUpdating }] = useUpdateRoutingRuleMutation();

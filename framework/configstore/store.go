@@ -44,6 +44,14 @@ type MCPClientsQueryParams struct {
 	Search string
 }
 
+// TeamsQueryParams holds pagination, filtering, and search parameters for team queries.
+type TeamsQueryParams struct {
+	Limit      int
+	Offset     int
+	Search     string
+	CustomerID string
+}
+
 // ConfigStore is the interface for the config store.
 type ConfigStore interface {
 	// Health check
@@ -124,6 +132,7 @@ type ConfigStore interface {
 
 	// Team CRUD
 	GetTeams(ctx context.Context, customerID string) ([]tables.TableTeam, error)
+	GetTeamsPaginated(ctx context.Context, params TeamsQueryParams) ([]tables.TableTeam, int64, error)
 	GetTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	CreateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
 	UpdateTeam(ctx context.Context, team *tables.TableTeam, tx ...*gorm.DB) error
