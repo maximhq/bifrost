@@ -799,8 +799,10 @@ func (s *BifrostHTTPServer) ReloadHeaderFilterConfig(ctx context.Context, config
 	if s.Config == nil {
 		return fmt.Errorf("config not found")
 	}
-	// Store the header filter config in ClientConfig
+	// Store the raw header filter config in ClientConfig
 	s.Config.ClientConfig.HeaderFilterConfig = config
+	// Compile into optimized matcher for O(1) per-request lookups
+	s.Config.SetHeaderMatcher(lib.NewHeaderMatcher(config))
 	allowlistLen := 0
 	denylistLen := 0
 	if config != nil {

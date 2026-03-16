@@ -791,25 +791,48 @@ func headerFilterConfigEqual(a, b *configstoreTables.GlobalHeaderFilterConfig) b
 }
 
 // validateHeaderFilterConfig validates that no security headers are in the allowlist or denylist
-// Returns an error if any security headers are found
+// and that wildcard patterns use valid syntax (only trailing * is supported).
+// Returns an error if any security headers are found or patterns are invalid.
 func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConfig) error {
 	if config == nil {
 		return nil
 	}
 
+	// Validate pattern syntax for all entries
+	for i, header := range config.Allowlist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		config.Allowlist[i] = h
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+	}
+	for i, header := range config.Denylist {
+		h := strings.ToLower(strings.TrimSpace(header))
+		config.Denylist[i] = h
+		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
+			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
+		}
+	}
+
 	var foundSecurityHeaders []string
 
-	// Check allowlist for security headers
+	// Check allowlist for security headers (skip wildcard patterns)
 	for _, header := range config.Allowlist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}
 	}
 
-	// Check denylist for security headers
+	// Check denylist for security headers (skip wildcard patterns)
 	for _, header := range config.Denylist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
+		if strings.Contains(headerLower, "*") {
+			continue
+		}
 		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {
 			foundSecurityHeaders = append(foundSecurityHeaders, headerLower)
 		}
