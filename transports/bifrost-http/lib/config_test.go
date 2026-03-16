@@ -890,6 +890,10 @@ func (m *MockConfigStore) GetModelConfigs(ctx context.Context) ([]tables.TableMo
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetModelConfigsPaginated(ctx context.Context, params configstore.ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
+	return nil, 0, nil
+}
+
 func (m *MockConfigStore) GetModelConfig(ctx context.Context, modelName string, provider *string) (*tables.TableModelConfig, error) {
 	return nil, nil
 }
@@ -1021,6 +1025,10 @@ func (m *MockConfigStore) GetRoutingRule(ctx context.Context, id string) (*table
 
 func (m *MockConfigStore) GetRedactedRoutingRules(ctx context.Context, ids []string) ([]tables.TableRoutingRule, error) {
 	return nil, nil
+}
+
+func (m *MockConfigStore) GetRoutingRulesPaginated(ctx context.Context, params configstore.RoutingRulesQueryParams) ([]tables.TableRoutingRule, int64, error) {
+	return nil, 0, nil
 }
 
 func (m *MockConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.TableRoutingRule, tx ...*gorm.DB) error {

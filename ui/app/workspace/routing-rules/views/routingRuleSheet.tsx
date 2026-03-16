@@ -82,7 +82,8 @@ export function RoutingRuleSheet({
 	editingRule,
 	onSuccess,
 }: RoutingRuleDialogProps) {
-	const { data: rules = [] } = useGetRoutingRulesQuery();
+	const { data: rulesData } = useGetRoutingRulesQuery();
+	const rules = rulesData?.rules || [];
 	const { data: providersData = [] } = useGetProvidersQuery();
 	const { data: vksData = { virtual_keys: [] } } = useGetVirtualKeysQuery();
 	const { data: teamsData = { teams: [] } } = useGetTeamsQuery({});
