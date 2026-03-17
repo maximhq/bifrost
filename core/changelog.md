@@ -9,3 +9,4 @@
 - fix: record ttft in nanoseconds instead of milliseconds to avoid truncation to 0
 - fix: streaming tool call indices for multiple parallel tool calls in chat completions stream
 - fix: handle request body passthrough for count tokens endpoint for Anthropic and Vertex providers
+- feat: adds speech-to-text and text-to-speech support for groq
