@@ -24,6 +24,7 @@ func TestGemini(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Gemini,
@@ -93,7 +94,6 @@ func TestGemini(t *testing.T) {
 	t.Run("GeminiTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestEmptyCandidatesRegression is a regression test for PR #1018

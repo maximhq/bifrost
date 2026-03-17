@@ -21,6 +21,7 @@ func TestGroq(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:  schemas.Groq,
@@ -63,5 +64,4 @@ func TestGroq(t *testing.T) {
 	t.Run("GroqTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

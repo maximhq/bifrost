@@ -145,7 +145,8 @@ async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<voi
   }
   let clients: MCPClientItem[]
   try {
-    clients = JSON.parse(clientsRes.body) as MCPClientItem[]
+    const parsed = JSON.parse(clientsRes.body)
+    clients = Array.isArray(parsed) ? parsed : (parsed.clients ?? [])
   } catch {
     throw new Error('Invalid JSON from GET /api/mcp/clients')
   }

@@ -659,6 +659,7 @@ export type ResponsesMessageType =
 	| "computer_call"
 	| "computer_call_output"
 	| "web_search_call"
+	| "web_fetch_call"
 	| "function_call"
 	| "function_call_output"
 	| "code_interpreter_call"

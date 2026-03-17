@@ -586,6 +586,7 @@ const (
 	AnthropicContentBlockTypeWebSearchToolResult      AnthropicContentBlockType = "web_search_tool_result"
 	AnthropicContentBlockTypeWebSearchToolResultError AnthropicContentBlockType = "web_search_tool_result_error"
 	AnthropicContentBlockTypeWebSearchResult          AnthropicContentBlockType = "web_search_result"
+	AnthropicContentBlockTypeWebFetchToolResult       AnthropicContentBlockType = "web_fetch_tool_result"
 	AnthropicContentBlockTypeMCPToolUse               AnthropicContentBlockType = "mcp_tool_use"
 	AnthropicContentBlockTypeMCPToolResult            AnthropicContentBlockType = "mcp_tool_result"
 	AnthropicContentBlockTypeThinking                 AnthropicContentBlockType = "thinking"
@@ -733,21 +734,47 @@ const (
 	AnthropicToolTypeCustom             AnthropicToolType = "custom"
 	AnthropicToolTypeBash20250124       AnthropicToolType = "bash_20250124"
 	AnthropicToolTypeComputer20250124   AnthropicToolType = "computer_20250124"
-	AnthropicToolTypeComputer20251124   AnthropicToolType = "computer_20251124" // for claude-opus-4.5
-	AnthropicToolTypeCodeExecution      AnthropicToolType = "code_execution_20250825"
+	AnthropicToolTypeComputer20251124   AnthropicToolType = "computer_20251124" // for claude-opus-4.5, claude-opus-4.6, claude-sonnet-4.6
 	AnthropicToolTypeTextEditor20250124 AnthropicToolType = "text_editor_20250124"
 	AnthropicToolTypeTextEditor20250429 AnthropicToolType = "text_editor_20250429"
 	AnthropicToolTypeTextEditor20250728 AnthropicToolType = "text_editor_20250728"
-	AnthropicToolTypeWebSearch20250305  AnthropicToolType = "web_search_20250305"
+
+	// Code execution
+	AnthropicToolTypeCodeExecution20250522 AnthropicToolType = "code_execution_20250522" // Legacy Python-only
+	AnthropicToolTypeCodeExecution         AnthropicToolType = "code_execution_20250825"
+	AnthropicToolTypeCodeExecution20260120 AnthropicToolType = "code_execution_20260120" // Programmatic tool calling
+
+	// Web search
+	AnthropicToolTypeWebSearch20250305 AnthropicToolType = "web_search_20250305"
+	AnthropicToolTypeWebSearch20260209 AnthropicToolType = "web_search_20260209" // Dynamic filtering (Opus 4.6 / Sonnet 4.6)
+
+	// Web fetch
+	AnthropicToolTypeWebFetch20250910 AnthropicToolType = "web_fetch_20250910"
+	AnthropicToolTypeWebFetch20260209 AnthropicToolType = "web_fetch_20260209" // Dynamic filtering
+	AnthropicToolTypeWebFetch20260309 AnthropicToolType = "web_fetch_20260309"
+
+	// Memory (client-side)
+	AnthropicToolTypeMemory20250818 AnthropicToolType = "memory_20250818"
+
+	// Tool search (client-side, for defer_loading)
+	AnthropicToolTypeToolSearchBM25            AnthropicToolType = "tool_search_tool_bm25"
+	AnthropicToolTypeToolSearchBM2520251119    AnthropicToolType = "tool_search_tool_bm25_20251119"
+	AnthropicToolTypeToolSearchRegex           AnthropicToolType = "tool_search_tool_regex"
+	AnthropicToolTypeToolSearchRegex20251119   AnthropicToolType = "tool_search_tool_regex_20251119"
 )
 
 type AnthropicToolName string
 
 const (
-	AnthropicToolNameComputer   AnthropicToolName = "computer"
-	AnthropicToolNameWebSearch  AnthropicToolName = "web_search"
-	AnthropicToolNameBash       AnthropicToolName = "bash"
-	AnthropicToolNameTextEditor AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameComputer            AnthropicToolName = "computer"
+	AnthropicToolNameWebSearch           AnthropicToolName = "web_search"
+	AnthropicToolNameWebFetch            AnthropicToolName = "web_fetch"
+	AnthropicToolNameBash                AnthropicToolName = "bash"
+	AnthropicToolNameTextEditor          AnthropicToolName = "str_replace_based_edit_tool"
+	AnthropicToolNameCodeExecution       AnthropicToolName = "code_execution"
+	AnthropicToolNameMemory              AnthropicToolName = "memory"
+	AnthropicToolNameToolSearchBM25      AnthropicToolName = "tool_search_tool_bm25"
+	AnthropicToolNameToolSearchRegex     AnthropicToolName = "tool_search_tool_regex"
 )
 
 type AnthropicToolComputerUse struct {
@@ -772,6 +799,13 @@ type AnthropicToolWebSearch struct {
 	UserLocation   *AnthropicToolWebSearchUserLocation `json:"user_location,omitempty"`
 }
 
+type AnthropicToolWebFetch struct {
+	MaxUses          *int     `json:"max_uses,omitempty"`
+	AllowedDomains   []string `json:"allowed_domains,omitempty"`
+	BlockedDomains   []string `json:"blocked_domains,omitempty"`
+	MaxContentTokens *int     `json:"max_content_tokens,omitempty"`
+}
+
 // AnthropicToolInputExample represents an input example for a tool (beta feature)
 type AnthropicToolInputExample struct {
 	Input       any     `json:"input"`
@@ -792,6 +826,7 @@ type AnthropicTool struct {
 
 	*AnthropicToolComputerUse
 	*AnthropicToolWebSearch
+	*AnthropicToolWebFetch
 }
 
 // AnthropicToolChoice represents tool choice in Anthropic format

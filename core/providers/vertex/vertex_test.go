@@ -21,6 +21,7 @@ func TestVertex(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	rerankModel := strings.TrimSpace(os.Getenv("VERTEX_RERANK_MODEL"))
 
@@ -73,5 +74,4 @@ func TestVertex(t *testing.T) {
 	t.Run("VertexTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }

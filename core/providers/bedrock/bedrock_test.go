@@ -97,6 +97,7 @@ func TestBedrock(t *testing.T) {
 		t.Fatalf("Error initializing test setup: %v", err)
 	}
 	defer cancel()
+	defer client.Shutdown()
 
 	// Get Bedrock-specific configuration from environment
 	s3Bucket := os.Getenv("AWS_S3_BUCKET")
@@ -178,7 +179,6 @@ func TestBedrock(t *testing.T) {
 	t.Run("BedrockTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-	client.Shutdown()
 }
 
 // TestBifrostToBedrockRequestConversion tests the conversion from Bifrost request to Bedrock request

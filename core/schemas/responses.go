@@ -515,6 +515,7 @@ const (
 	ResponsesMessageTypeComputerCall         ResponsesMessageType = "computer_call"
 	ResponsesMessageTypeComputerCallOutput   ResponsesMessageType = "computer_call_output"
 	ResponsesMessageTypeWebSearchCall        ResponsesMessageType = "web_search_call"
+	ResponsesMessageTypeWebFetchCall         ResponsesMessageType = "web_fetch_call"
 	ResponsesMessageTypeFunctionCall         ResponsesMessageType = "function_call"
 	ResponsesMessageTypeFunctionCallOutput   ResponsesMessageType = "function_call_output"
 	ResponsesMessageTypeCodeInterpreterCall  ResponsesMessageType = "code_interpreter_call"
@@ -741,6 +742,7 @@ type ResponsesToolMessage struct {
 type ResponsesToolMessageActionStruct struct {
 	ResponsesComputerToolCallAction   *ResponsesComputerToolCallAction
 	ResponsesWebSearchToolCallAction  *ResponsesWebSearchToolCallAction
+	ResponsesWebFetchToolCallAction   *ResponsesWebFetchToolCallAction
 	ResponsesLocalShellToolCallAction *ResponsesLocalShellToolCallAction
 	ResponsesMCPApprovalRequestAction *ResponsesMCPApprovalRequestAction
 }
@@ -751,6 +753,9 @@ func (action ResponsesToolMessageActionStruct) MarshalJSON() ([]byte, error) {
 	}
 	if action.ResponsesWebSearchToolCallAction != nil {
 		return Marshal(action.ResponsesWebSearchToolCallAction)
+	}
+	if action.ResponsesWebFetchToolCallAction != nil {
+		return Marshal(action.ResponsesWebFetchToolCallAction)
 	}
 	if action.ResponsesLocalShellToolCallAction != nil {
 		return Marshal(action.ResponsesLocalShellToolCallAction)
@@ -794,6 +799,14 @@ func (action *ResponsesToolMessageActionStruct) UnmarshalJSON(data []byte) error
 			return fmt.Errorf("failed to unmarshal web search tool call action: %w", err)
 		}
 		action.ResponsesWebSearchToolCallAction = &webSearchToolCallAction
+		return nil
+
+	case "fetch":
+		var webFetchToolCallAction ResponsesWebFetchToolCallAction
+		if err := Unmarshal(data, &webFetchToolCallAction); err != nil {
+			return fmt.Errorf("failed to unmarshal web fetch tool call action: %w", err)
+		}
+		action.ResponsesWebFetchToolCallAction = &webFetchToolCallAction
 		return nil
 
 	case "click", "double_click", "drag", "keypress", "move", "screenshot", "scroll", "type", "wait", "zoom":
@@ -946,6 +959,16 @@ type ResponsesWebSearchToolCallActionSearchSource struct {
 	Title            *string `json:"title,omitempty"`
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
 	PageAge          *string `json:"page_age,omitempty"`
+}
+
+// -----------------------------------------------------------------------------
+// Web Fetch Tool
+// -----------------------------------------------------------------------------
+
+// ResponsesWebFetchToolCallAction represents a web fetch action
+type ResponsesWebFetchToolCallAction struct {
+	Type string `json:"type,omitempty"` // "fetch"
+	URL  string `json:"url"`
 }
 
 // -----------------------------------------------------------------------------
@@ -1312,12 +1335,15 @@ const (
 	ResponsesToolTypeFileSearch         ResponsesToolType = "file_search"
 	ResponsesToolTypeComputerUsePreview ResponsesToolType = "computer_use_preview"
 	ResponsesToolTypeWebSearch          ResponsesToolType = "web_search"
+	ResponsesToolTypeWebFetch           ResponsesToolType = "web_fetch"
 	ResponsesToolTypeMCP                ResponsesToolType = "mcp"
 	ResponsesToolTypeCodeInterpreter    ResponsesToolType = "code_interpreter"
 	ResponsesToolTypeImageGeneration    ResponsesToolType = "image_generation"
 	ResponsesToolTypeLocalShell         ResponsesToolType = "local_shell"
 	ResponsesToolTypeCustom             ResponsesToolType = "custom"
 	ResponsesToolTypeWebSearchPreview   ResponsesToolType = "web_search_preview"
+	ResponsesToolTypeMemory             ResponsesToolType = "memory"
+	ResponsesToolTypeToolSearch         ResponsesToolType = "tool_search"
 )
 
 // ResponsesTool represents a tool
@@ -1333,6 +1359,7 @@ type ResponsesTool struct {
 	*ResponsesToolFileSearch
 	*ResponsesToolComputerUsePreview
 	*ResponsesToolWebSearch
+	*ResponsesToolWebFetch
 	*ResponsesToolMCP
 	*ResponsesToolCodeInterpreter
 	*ResponsesToolImageGeneration
@@ -1417,6 +1444,21 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 				return nil, err
 			}
 			for k, v := range webSearchFields {
+				result[k] = v
+			}
+		}
+
+	case ResponsesToolTypeWebFetch:
+		if t.ResponsesToolWebFetch != nil {
+			bytes, err := Marshal(t.ResponsesToolWebFetch)
+			if err != nil {
+				return nil, err
+			}
+			var webFetchFields map[string]interface{}
+			if err := Unmarshal(bytes, &webFetchFields); err != nil {
+				return nil, err
+			}
+			for k, v := range webFetchFields {
 				result[k] = v
 			}
 		}
@@ -1584,6 +1626,13 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 			return err
 		}
 		t.ResponsesToolWebSearch = &webSearchTool
+
+	case ResponsesToolTypeWebFetch:
+		var webFetchTool ResponsesToolWebFetch
+		if err := Unmarshal(data, &webFetchTool); err != nil {
+			return err
+		}
+		t.ResponsesToolWebFetch = &webFetchTool
 
 	case ResponsesToolTypeMCP:
 		var mcpTool ResponsesToolMCP
@@ -2008,6 +2057,13 @@ type ResponsesToolWebSearchPreview struct {
 	UserLocation      *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`       // The user's location
 }
 
+// ResponsesToolWebFetch represents a web fetch tool
+type ResponsesToolWebFetch struct {
+	MaxUses          *int                           `json:"max_uses,omitempty"`
+	Filters          *ResponsesToolWebSearchFilters `json:"filters,omitempty"`
+	MaxContentTokens *int                           `json:"max_content_tokens,omitempty"`
+}
+
 // ======================================================= Streaming Structs =======================================================
 
 type ResponsesStreamResponseType string
@@ -2045,6 +2101,10 @@ const (
 	ResponsesStreamResponseTypeWebSearchCallCompleted         ResponsesStreamResponseType = "response.web_search_call.completed"
 	ResponsesStreamResponseTypeWebSearchCallResultsAdded      ResponsesStreamResponseType = "response.web_search_call.results.added"
 	ResponsesStreamResponseTypeWebSearchCallResultsCompleted  ResponsesStreamResponseType = "response.web_search_call.results.completed"
+
+	ResponsesStreamResponseTypeWebFetchCallInProgress  ResponsesStreamResponseType = "response.web_fetch_call.in_progress"
+	ResponsesStreamResponseTypeWebFetchCallFetching    ResponsesStreamResponseType = "response.web_fetch_call.fetching"
+	ResponsesStreamResponseTypeWebFetchCallCompleted   ResponsesStreamResponseType = "response.web_fetch_call.completed"
 
 	ResponsesStreamResponseTypeReasoningSummaryPartAdded ResponsesStreamResponseType = "response.reasoning_summary_part.added"
 	ResponsesStreamResponseTypeReasoningSummaryPartDone  ResponsesStreamResponseType = "response.reasoning_summary_part.done"
