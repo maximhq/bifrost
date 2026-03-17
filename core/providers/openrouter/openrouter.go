@@ -64,11 +64,6 @@ func (provider *OpenRouterProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.OpenRouter
 }
 
-// validationModel is a free model used to validate API keys.
-// OpenRouter's /v1/models endpoint doesn't require authentication,
-// so we make a minimal chat completion call to verify the key is valid.
-const validationModel = "meta-llama/llama-3.2-1b-instruct:free"
-
 // validateKey makes a minimal chat completion request to verify the API key is valid.
 // OpenRouter's /v1/models endpoint doesn't require authentication, so list models
 // will succeed even with an invalid key. This method catches invalid keys.
@@ -89,8 +84,8 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	req.Header.SetContentType("application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
 
-	// Minimal request body: single "hi" message with max_tokens=1
-	requestBody := []byte(`{"model":"` + validationModel + `","messages":[{"role":"user","content":"hi"}],"max_tokens":1}`)
+	// Minimal request body: single "hi" message with max_tokens=1 and empty model ID
+	requestBody := []byte(`{"model":"","messages":[{"role":"user","content":"hi"}],"max_tokens":1}`)
 	req.SetBody(requestBody)
 
 	// Set any extra headers from network config
@@ -105,12 +100,12 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	// Check for auth errors (401, 403)
 	statusCode := resp.StatusCode()
 	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
-		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), "")
 	}
 
 	// Any 4xx/5xx error indicates the key might be invalid
-	if statusCode >= 400 {
-		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), validationModel)
+	if statusCode > 400 {
+		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), "")
 	}
 
 	return nil
