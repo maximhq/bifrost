@@ -117,6 +117,12 @@ type Log struct {
 	VideoDeleteOutput      string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostVideoDeleteResponse
 	CacheDebug             string    `gorm:"type:text" json:"-"` // JSON serialized *schemas.BifrostCacheDebug
 	Latency                *float64  `gorm:"index:idx_logs_latency" json:"latency,omitempty"`
+	// TimeToFirstToken is the delay in milliseconds from request start to first streamed token.
+	// This is only populated for streaming responses; non-streaming requests keep this nil.
+	TimeToFirstToken       *float64  `json:"time_to_first_token,omitempty"`
+	// TokensPerSecond is the derived generation speed computed as
+	// completion_tokens / (latency_ms / 1000.0) when both inputs are > 0.
+	TokensPerSecond        *float64  `json:"tokens_per_second,omitempty"`
 	TokenUsage             string    `gorm:"type:text" json:"-"`                            // JSON serialized *schemas.LLMUsage
 	Cost                   *float64  `gorm:"index" json:"cost,omitempty"`                   // Cost in dollars (total cost of the request - includes cache lookup cost)
 	Status                 string    `gorm:"type:varchar(50);index;index:idx_logs_ts_provider_status,priority:3;not null" json:"status"` // "processing", "success", or "error"
@@ -1091,6 +1097,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
+	AvgTokensPerSecond  float64 `json:"avg_tokens_per_second"`
+	P90TokensPerSecond  float64 `json:"p90_tokens_per_second"`
+	AvgTimeToFirstToken float64 `json:"avg_time_to_first_token"`
+	P90TimeToFirstToken float64 `json:"p90_time_to_first_token"`
 	TotalRequests int64     `json:"total_requests"`
 }
 
@@ -1142,6 +1152,10 @@ type ProviderLatencyStats struct {
 	P90Latency    float64 `json:"p90_latency"`
 	P95Latency    float64 `json:"p95_latency"`
 	P99Latency    float64 `json:"p99_latency"`
+	AvgTokensPerSecond  float64 `json:"avg_tokens_per_second"`
+	P90TokensPerSecond  float64 `json:"p90_tokens_per_second"`
+	AvgTimeToFirstToken float64 `json:"avg_time_to_first_token"`
+	P90TimeToFirstToken float64 `json:"p90_time_to_first_token"`
 	TotalRequests int64   `json:"total_requests"`
 }
 

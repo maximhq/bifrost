@@ -729,6 +729,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// Apply streaming output fields to the entry
 			entry.Stream = true
 			p.applyStreamingOutputToEntry(entry, streamResponse)
+			applyPerformanceMetricsToEntry(entry)
 		}
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
@@ -764,6 +765,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	} else if result != nil {
 		entry.Status = "success"
 		p.applyNonStreamingOutputToEntry(entry, result)
+		applyPerformanceMetricsToEntry(entry)
 		// Flip status for passthrough error responses (4xx/5xx from provider)
 		if isPassthroughErrorResponse(result) {
 			entry.Status = "error"

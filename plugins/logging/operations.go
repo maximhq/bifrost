@@ -400,6 +400,11 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 
 	tempEntry := &logstore.Log{}
 	updates["latency"] = float64(streamResponse.Data.Latency)
+	if streamResponse.Data.TimeToFirstToken >= 0 {
+		// TTFT is only available for streaming responses.
+		// For non-streaming requests, this field is intentionally left nil.
+		updates["time_to_first_token"] = float64(streamResponse.Data.TimeToFirstToken)
+	}
 
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
@@ -410,6 +415,9 @@ func (p *LoggerPlugin) updateStreamingLogEntry(
 
 	// Update token usage if provided
 	if streamResponse.Data.TokenUsage != nil {
+		// tokens_per_second is intentionally computed only at finalization
+		// in PostLLMHook and is not populated during intermediate streaming updates.
+		// This avoids inconsistent partial metrics during streaming.
 		tempEntry.TokenUsageParsed = streamResponse.Data.TokenUsage
 		needsSerialization = true
 	}
@@ -540,6 +548,12 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	entry.Status = "success"
 	latF := float64(streamResponse.Data.Latency)
 	entry.Latency = &latF
+	if streamResponse.Data.TimeToFirstToken >= 0 {
+		// TTFT is only available for streaming responses.
+		// For non-streaming requests, this field is intentionally left nil.
+		ttft := float64(streamResponse.Data.TimeToFirstToken)
+		entry.TimeToFirstToken = &ttft
+	}
 
 	// Update model if provided
 	if streamResponse.Data.Model != "" {
@@ -595,6 +609,34 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 		if streamResponse.Data.RawResponse != nil {
 			entry.RawResponse = *streamResponse.Data.RawResponse
 		}
+	}
+}
+
+// applyPerformanceMetricsToEntry computes derived performance metrics for a finalized log entry.
+//
+// Design note:
+// tokens_per_second is computed at write-time rather than query-time to:
+// - avoid repeated computation during aggregation queries
+// - ensure consistency across analytics and UI surfaces
+// - enable future indexing or pre-aggregation optimizations
+//
+// Lifecycle:
+//   - Called once from PostLLMHook after output fields are finalized.
+//   - Not called from intermediate streaming update paths.
+//
+// Formula:
+//   - tokens_per_second = completion_tokens / (latency_ms / 1000.0)
+//
+// Constraints:
+//   - completion_tokens > 0
+//   - latency_ms > 0
+func applyPerformanceMetricsToEntry(entry *logstore.Log) {
+	if entry == nil || entry.Latency == nil {
+		return
+	}
+	if entry.CompletionTokens > 0 && *entry.Latency > 0 {
+		tokensPerSecond := float64(entry.CompletionTokens) / (*entry.Latency / 1000.0)
+		entry.TokensPerSecond = &tokensPerSecond
 	}
 }
 

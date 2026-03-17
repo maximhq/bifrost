@@ -1140,12 +1140,14 @@ func (s *RDBLogStore) getLatencyHistogramPercentileCont(ctx context.Context, bas
 // which lacks percentile_cont.
 func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp  int64           `gorm:"column:bucket_timestamp"`
+		Latency          float64         `gorm:"column:latency"`
+		TokensPerSecond  sql.NullFloat64 `gorm:"column:tokens_per_second"`
+		TimeToFirstToken sql.NullFloat64 `gorm:"column:time_to_first_token"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency`,
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, latency, tokens_per_second, time_to_first_token`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -1156,8 +1158,11 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
+	// Group latency values by bucket (already sorted by latency due to ORDER BY)
 	type bucketData struct {
-		latencies []float64
+		latencies         []float64
+		tokensPerSecond   []float64
+		timeToFirstTokens []float64
 	}
 	bucketMap := make(map[int64]*bucketData)
 	var orderedKeys []int64
@@ -1170,6 +1175,12 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
+		if r.TokensPerSecond.Valid && r.TokensPerSecond.Float64 > 0 {
+			bd.tokensPerSecond = append(bd.tokensPerSecond, r.TokensPerSecond.Float64)
+		}
+		if r.TimeToFirstToken.Valid && r.TimeToFirstToken.Float64 >= 0 {
+			bd.timeToFirstTokens = append(bd.timeToFirstTokens, r.TimeToFirstToken.Float64)
+		}
 	}
 
 	computedBuckets := make(map[int64]LatencyHistogramBucket, len(bucketMap))
@@ -1178,13 +1189,61 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		for _, v := range bd.latencies {
 			sum += v
 		}
+		if len(bd.tokensPerSecond) > 1 {
+			sort.Float64s(bd.tokensPerSecond)
+		}
+		if len(bd.timeToFirstTokens) > 1 {
+			sort.Float64s(bd.timeToFirstTokens)
+		}
+
+		var avgTokensPerSecond float64
+		for _, v := range bd.tokensPerSecond {
+			avgTokensPerSecond += v
+		}
+		if len(bd.tokensPerSecond) > 0 {
+			avgTokensPerSecond = avgTokensPerSecond / float64(len(bd.tokensPerSecond))
+		}
+
+		var avgTimeToFirstToken float64
+		for _, v := range bd.timeToFirstTokens {
+			avgTimeToFirstToken += v
+		}
+		if len(bd.timeToFirstTokens) > 0 {
+			avgTimeToFirstToken = avgTimeToFirstToken / float64(len(bd.timeToFirstTokens))
+		}
+
+		p90Latency := 0.0
+		if len(bd.latencies) > 0 {
+			p90Latency = computePercentile(bd.latencies, 0.90)
+		}
+		p95Latency := 0.0
+		if len(bd.latencies) > 0 {
+			p95Latency = computePercentile(bd.latencies, 0.95)
+		}
+		p99Latency := 0.0
+		if len(bd.latencies) > 0 {
+			p99Latency = computePercentile(bd.latencies, 0.99)
+		}
+		p90TokensPerSecond := 0.0
+		if len(bd.tokensPerSecond) > 0 {
+			p90TokensPerSecond = computePercentile(bd.tokensPerSecond, 0.90)
+		}
+		p90TimeToFirstToken := 0.0
+		if len(bd.timeToFirstTokens) > 0 {
+			p90TimeToFirstToken = computePercentile(bd.timeToFirstTokens, 0.90)
+		}
+
 		computedBuckets[ts] = LatencyHistogramBucket{
-			Timestamp:     time.Unix(ts, 0).UTC(),
-			AvgLatency:    sum / float64(len(bd.latencies)),
-			P90Latency:    computePercentile(bd.latencies, 0.90),
-			P95Latency:    computePercentile(bd.latencies, 0.95),
-			P99Latency:    computePercentile(bd.latencies, 0.99),
-			TotalRequests: int64(len(bd.latencies)),
+			Timestamp:           time.Unix(ts, 0).UTC(),
+			AvgLatency:          sum / float64(len(bd.latencies)),
+			P90Latency:          p90Latency,
+			P95Latency:          p95Latency,
+			P99Latency:          p99Latency,
+			AvgTokensPerSecond:  avgTokensPerSecond,
+			P90TokensPerSecond:  p90TokensPerSecond,
+			AvgTimeToFirstToken: avgTimeToFirstToken,
+			P90TimeToFirstToken: p90TimeToFirstToken,
+			TotalRequests:       int64(len(bd.latencies)),
 		}
 	}
 
@@ -1761,13 +1820,15 @@ func (s *RDBLogStore) getProviderLatencyHistogramPercentileCont(ctx context.Cont
 // which lacks percentile_cont.
 func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, baseQuery *gorm.DB, filters SearchFilters, bucketSizeSeconds int64) (*ProviderLatencyHistogramResult, error) {
 	var results []struct {
-		BucketTimestamp int64   `gorm:"column:bucket_timestamp"`
-		Provider        string  `gorm:"column:provider"`
-		Latency         float64 `gorm:"column:latency"`
+		BucketTimestamp  int64           `gorm:"column:bucket_timestamp"`
+		Provider         string          `gorm:"column:provider"`
+		Latency          float64         `gorm:"column:latency"`
+		TokensPerSecond  sql.NullFloat64 `gorm:"column:tokens_per_second"`
+		TimeToFirstToken sql.NullFloat64 `gorm:"column:time_to_first_token"`
 	}
 
 	selectClause := fmt.Sprintf(
-		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, provider, latency`,
+		`(CAST(strftime('%%s', timestamp) AS INTEGER) / %d) * %d as bucket_timestamp, provider, latency, tokens_per_second, time_to_first_token`,
 		bucketSizeSeconds, bucketSizeSeconds,
 	)
 
@@ -1778,11 +1839,17 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
 	}
 
+	// Group latency values by (bucket, provider)
 	type providerBucketKey struct {
 		BucketTimestamp int64
 		Provider        string
 	}
-	latencyMap := make(map[providerBucketKey][]float64)
+	type providerMetricData struct {
+		latencies         []float64
+		tokensPerSecond   []float64
+		timeToFirstTokens []float64
+	}
+	metricMap := make(map[providerBucketKey]*providerMetricData)
 	providersSet := make(map[string]bool)
 	var orderedBuckets []int64
 	seenBuckets := make(map[int64]bool)
@@ -1790,7 +1857,18 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 	for _, r := range results {
 		providersSet[r.Provider] = true
 		key := providerBucketKey{BucketTimestamp: r.BucketTimestamp, Provider: r.Provider}
-		latencyMap[key] = append(latencyMap[key], r.Latency)
+		md, ok := metricMap[key]
+		if !ok {
+			md = &providerMetricData{}
+			metricMap[key] = md
+		}
+		md.latencies = append(md.latencies, r.Latency)
+		if r.TokensPerSecond.Valid && r.TokensPerSecond.Float64 > 0 {
+			md.tokensPerSecond = append(md.tokensPerSecond, r.TokensPerSecond.Float64)
+		}
+		if r.TimeToFirstToken.Valid && r.TimeToFirstToken.Float64 >= 0 {
+			md.timeToFirstTokens = append(md.timeToFirstTokens, r.TimeToFirstToken.Float64)
+		}
 		if !seenBuckets[r.BucketTimestamp] {
 			seenBuckets[r.BucketTimestamp] = true
 			orderedBuckets = append(orderedBuckets, r.BucketTimestamp)
@@ -1803,17 +1881,65 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 	}
 
 	computedBuckets := make(map[int64]*ProviderLatencyHistogramBucket)
-	for key, latencies := range latencyMap {
+	for key, md := range metricMap {
 		var sum float64
-		for _, v := range latencies {
+		for _, v := range md.latencies {
 			sum += v
 		}
+		if len(md.tokensPerSecond) > 1 {
+			sort.Float64s(md.tokensPerSecond)
+		}
+		if len(md.timeToFirstTokens) > 1 {
+			sort.Float64s(md.timeToFirstTokens)
+		}
+
+		var avgTokensPerSecond float64
+		for _, v := range md.tokensPerSecond {
+			avgTokensPerSecond += v
+		}
+		if len(md.tokensPerSecond) > 0 {
+			avgTokensPerSecond = avgTokensPerSecond / float64(len(md.tokensPerSecond))
+		}
+
+		var avgTimeToFirstToken float64
+		for _, v := range md.timeToFirstTokens {
+			avgTimeToFirstToken += v
+		}
+		if len(md.timeToFirstTokens) > 0 {
+			avgTimeToFirstToken = avgTimeToFirstToken / float64(len(md.timeToFirstTokens))
+		}
+
+		p90Latency := 0.0
+		if len(md.latencies) > 0 {
+			p90Latency = computePercentile(md.latencies, 0.90)
+		}
+		p95Latency := 0.0
+		if len(md.latencies) > 0 {
+			p95Latency = computePercentile(md.latencies, 0.95)
+		}
+		p99Latency := 0.0
+		if len(md.latencies) > 0 {
+			p99Latency = computePercentile(md.latencies, 0.99)
+		}
+		p90TokensPerSecond := 0.0
+		if len(md.tokensPerSecond) > 0 {
+			p90TokensPerSecond = computePercentile(md.tokensPerSecond, 0.90)
+		}
+		p90TimeToFirstToken := 0.0
+		if len(md.timeToFirstTokens) > 0 {
+			p90TimeToFirstToken = computePercentile(md.timeToFirstTokens, 0.90)
+		}
+
 		stats := ProviderLatencyStats{
-			AvgLatency:    sum / float64(len(latencies)),
-			P90Latency:    computePercentile(latencies, 0.90),
-			P95Latency:    computePercentile(latencies, 0.95),
-			P99Latency:    computePercentile(latencies, 0.99),
-			TotalRequests: int64(len(latencies)),
+			AvgLatency:          sum / float64(len(md.latencies)),
+			P90Latency:          p90Latency,
+			P95Latency:          p95Latency,
+			P99Latency:          p99Latency,
+			AvgTokensPerSecond:  avgTokensPerSecond,
+			P90TokensPerSecond:  p90TokensPerSecond,
+			AvgTimeToFirstToken: avgTimeToFirstToken,
+			P90TimeToFirstToken: p90TimeToFirstToken,
+			TotalRequests:       int64(len(md.latencies)),
 		}
 		if bucket, exists := computedBuckets[key.BucketTimestamp]; exists {
 			bucket.ByProvider[key.Provider] = stats

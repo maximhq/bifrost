@@ -213,6 +213,14 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPassthroughResponseBodyColumn(ctx, db); err != nil {
 		return err
 	}
+	// These migrations are independent and do not affect existing indexed query paths.
+	// Safe to execute before metadata index migration.
+	if err := migrationAddPerformanceMetricColumns(ctx, db); err != nil {
+		return err
+	}
+	if err := migrationDropPerformanceMetricIndexes(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationAddMetadataGINIndex(ctx, db); err != nil {
 		return err
 	}
@@ -1755,6 +1763,91 @@ func migrationAddPassthroughResponseBodyColumn(ctx context.Context, db *gorm.DB)
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding passthrough response body column: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationAddPerformanceMetricColumns(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_add_performance_metric_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			// tokens_per_second and time_to_first_token are not indexed because:
+			// - they are not used in WHERE filters
+			// - indexing them increases write overhead without query benefit
+
+			if !dbMigrator.HasColumn(&Log{}, "time_to_first_token") {
+				if err := dbMigrator.AddColumn(&Log{}, "time_to_first_token"); err != nil {
+					return err
+				}
+			}
+			if !dbMigrator.HasColumn(&Log{}, "tokens_per_second") {
+				if err := dbMigrator.AddColumn(&Log{}, "tokens_per_second"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+			if dbMigrator.HasColumn(&Log{}, "tokens_per_second") {
+				if err := dbMigrator.DropColumn(&Log{}, "tokens_per_second"); err != nil {
+					return err
+				}
+			}
+			if dbMigrator.HasColumn(&Log{}, "time_to_first_token") {
+				if err := dbMigrator.DropColumn(&Log{}, "time_to_first_token"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+	}})
+
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while adding performance metric columns: %s", err.Error())
+	}
+	return nil
+}
+
+func migrationDropPerformanceMetricIndexes(ctx context.Context, db *gorm.DB) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "logs_drop_performance_metric_indexes",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			dbMigrator := tx.Migrator()
+
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_tokens_per_second") {
+				if err := dbMigrator.DropIndex(&Log{}, "idx_logs_tokens_per_second"); err != nil {
+					return err
+				}
+			}
+			if dbMigrator.HasIndex(&Log{}, "idx_logs_time_to_first_token") {
+				if err := dbMigrator.DropIndex(&Log{}, "idx_logs_time_to_first_token"); err != nil {
+					return err
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}})
+
+	err := m.Migrate()
+	if err != nil {
+		return fmt.Errorf("error while dropping performance metric indexes: %s", err.Error())
 	}
 	return nil
 }
