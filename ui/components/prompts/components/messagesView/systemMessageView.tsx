@@ -9,6 +9,15 @@ import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 
+/**
+ * Renders an editable system message block that supports role switching, rich-text editing, JSON editing with buffered changes, Jinja variable highlighting, and optional removal.
+ *
+ * @param message - The message model to display and edit.
+ * @param disabled - When true, disables interactions and makes the view read-only.
+ * @param onChange - Called with the message's serialized representation when the message is modified (role or content).
+ * @param onRemove - Optional callback invoked when the message should be removed.
+ * @returns The rendered system message JSX element.
+ */
 export function SystemMessageView({
 	message,
 	disabled,
@@ -99,12 +108,12 @@ export function SystemMessageView({
 				<div className="ml-auto flex items-center gap-0.5 h-5">
 					{!disabled && (
 						<button type="button" aria-label="Edit message" data-testid="system-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="system-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>

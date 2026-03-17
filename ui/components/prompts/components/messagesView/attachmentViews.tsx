@@ -1,6 +1,18 @@
 import { MessageContent } from "@/lib/message";
 import { Mic, FileIcon, XIcon } from "lucide-react";
 
+/**
+ * Renders a compact badge for a single attachment with an inline remove control.
+ *
+ * Displays different visuals based on the attachment type:
+ * - image_url with a valid URL: a thumbnail and the label "Image"
+ * - input_audio: a microphone icon and the audio format in uppercase or "Audio"
+ * - other: a file icon and the filename or "File"
+ *
+ * @param attachment - The attachment to display; its `type` determines the badge content.
+ * @param onRemove - Callback invoked when the badge's remove button is clicked.
+ * @returns The rendered attachment badge element.
+ */
 export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageContent; onRemove: () => void }) {
 	const isImage = attachment.type === "image_url";
 	const isAudio = attachment.type === "input_audio";
@@ -14,26 +26,41 @@ export function AttachmentBadge({ attachment, onRemove }: { attachment: MessageC
 				</>
 			) : isAudio ? (
 				<>
-					<Mic className="text-muted-foreground h-3.5 w-3.5" />
+					<Mic className="text-muted-foreground size-3" />
 					<span className="text-muted-foreground max-w-[100px] truncate">{attachment.input_audio?.format?.toUpperCase() || "Audio"}</span>
 				</>
 			) : (
 				<>
-					<FileIcon className="text-muted-foreground h-3.5 w-3.5" />
+					<FileIcon className="text-muted-foreground size-3" />
 					<span className="text-muted-foreground max-w-[120px] truncate">{attachment.file?.filename || "File"}</span>
 				</>
 			)}
 			<button
 				onClick={onRemove}
-				className="text-muted-foreground hover:bg-destructive/20 hover:text-destructive ml-0.5 rounded-full p-0.5"
+				className="text-muted-foreground hover:bg-card hover:text-destructive ml-0.5 rounded-full p-0.5 cursor-pointer"
 				type="button"
 			>
-				<XIcon className="h-3 w-3" />
+				<XIcon className="size-3" />
 			</button>
 		</div>
 	);
 }
 
+/**
+ * Renders a compact list of attachment previews (images, audio controls, or file rows).
+ *
+ * Renders each attachment according to its type:
+ * - image_url with a URL: an image thumbnail
+ * - input_audio: an HTML audio control built from base64 data
+ * - file: a row with a file icon, filename, and optional file type
+ *
+ * When `editable` is true and `onRemoveAttachment` is provided, a remove button is shown for each attachment and invokes the callback with the attachment's index when clicked.
+ *
+ * @param attachments - The attachments to render.
+ * @param editable - If true, show per-attachment remove controls.
+ * @param onRemoveAttachment - Callback invoked with the attachment index when a remove control is clicked.
+ * @returns A JSX element containing the rendered attachments, or `null` when `attachments` is empty.
+ */
 export function AttachmentDisplay({
 	attachments,
 	editable,
@@ -56,9 +83,9 @@ export function AttachmentDisplay({
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
+									className="bg-background/80 text-muted-foreground hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100 cursor-pointer"
 								>
-									<XIcon className="h-3 w-3" />
+									<XIcon className="size-3" />
 								</button>
 							)}
 						</div>
@@ -76,9 +103,9 @@ export function AttachmentDisplay({
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground cursor-pointer hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
+									className="bg-background/80 text-muted-foreground cursor-pointer hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
 								>
-									<XIcon className="h-3 w-3" />
+									<XIcon className="size-3" />
 								</button>
 							)}
 						</div>
@@ -91,15 +118,15 @@ export function AttachmentDisplay({
 							key={i}
 							className="group/att bg-muted/30 text-muted-foreground relative flex max-w-full items-center gap-2 rounded-sm border px-3 py-1.5 text-sm"
 						>
-							<FileIcon className="h-4 w-4 shrink-0" />
+							<FileIcon className="size-3 shrink-0" />
 							<span className="min-w-0 truncate">{att.file?.filename || "File"}</span>
 							{att.file?.file_type && <span className="shrink-0 text-xs opacity-60">{att.file.file_type}</span>}
 							{editable && onRemoveAttachment && (
 								<button
 									onClick={() => onRemoveAttachment(i)}
-									className="bg-background/80 text-muted-foreground hover:bg-destructive/20 hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
+									className="bg-background/80 text-muted-foreground hover:bg-card hover:text-destructive absolute -top-1.5 -right-1.5 rounded-full border p-0.5 opacity-0 transition-opacity group-hover/att:opacity-100"
 								>
-									<XIcon className="h-3 w-3" />
+									<XIcon className="size-3" />
 								</button>
 							)}
 						</div>

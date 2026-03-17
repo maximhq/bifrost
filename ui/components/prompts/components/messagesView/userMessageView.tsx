@@ -11,6 +11,16 @@ import { AttachmentDisplay } from "./attachmentViews";
 import { isJson } from "@/lib/utils/validation";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
+/**
+ * Render an interactive user message block that supports viewing and editing content, role switching, file attachments (via picker or drag-and-drop), and special handling for JSON and Jinja-variable content.
+ *
+ * @param message - The message model to render and edit; its updates are emitted via `onChange`.
+ * @param disabled - When true, disables editing and attachment interactions.
+ * @param supportsVision - When true, enables attaching files (images, audio, documents) and drag-and-drop attachments.
+ * @param onChange - Called with the message's serialized form whenever the message is modified (content, role, or attachments).
+ * @param onRemove - Optional callback invoked when the message's delete action is triggered.
+ * @returns The JSX element that renders the user message view and its interactive controls.
+ */
 export function UserMessageView({
 	message,
 	disabled,
@@ -210,18 +220,18 @@ export function UserMessageView({
 								onChange={handleFileSelect}
 							/>
 							<button type="button" aria-label="Attach file" data-testid="user-msg-attach" onClick={() => fileInputRef.current?.click()} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-								<Paperclip className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
+								<Paperclip className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 							</button>
 						</>
 					)}
 					{!disabled && (
 						<button type="button" aria-label="Edit message" data-testid="user-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="user-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>

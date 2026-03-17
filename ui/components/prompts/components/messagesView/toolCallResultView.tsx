@@ -6,6 +6,20 @@ import { PencilIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
+/**
+ * Renders an editable view for a tool result message that supports role switching, inline text editing, JSON-aware editing, and removal.
+ *
+ * The component presents the message role selector, optional tool call id, edit/delete actions, and a content area that:
+ * - shows a textarea for freeform editing when in edit mode,
+ * - shows a JSON-aware code editor (with edits buffered and flushed on blur) when the content is valid JSON,
+ * - shows a read-only monospaced display when content is plain text,
+ * - shows a placeholder when content is empty.
+ *
+ * @param message - The Message instance to display and edit; updates emitted via `onChange` are serialized from clones of this message.
+ * @param disabled - When true, disables interactive controls and makes editors read-only.
+ * @param onChange - Called with the message's serialized form whenever the message is modified (role, content edits, or flushed JSON buffer).
+ * @param onRemove - Optional callback invoked when the user requests deletion of the message.
+ */
 export default function ToolResultMessageView({
 	message,
 	disabled,
@@ -78,12 +92,12 @@ export default function ToolResultMessageView({
 					)}
 					{!disabled && (
 						<button type="button" aria-label="Edit message" data-testid="tool-result-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="tool-result-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground size-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
