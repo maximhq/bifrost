@@ -36,8 +36,8 @@ graph LR
 When a request arrives:
 1. The HTTP transport middleware stores all request headers in the Bifrost context (lowercased keys)
 2. The governance plugin's `PreLLMHook` / `PreMCPHook` checks for each required header
-3. If any are missing, the request is rejected immediately with a `400` status and a JSON error listing the missing headers
-4. If a header is present but its value does not match the configured value, the request is rejected with a `400` status and a JSON error listing the headers with invalid values
+3. The governance plugin evaluates each required header and tracks both missing headers and invalid-value headers
+4. If either list is non-empty, the request is rejected with a single `400` response that reports the validation failures
 
 **Example error response (missing header):**
 ```json
