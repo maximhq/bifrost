@@ -11,8 +11,9 @@ const (
 	DefaultMaxRetries              = 0
 	DefaultRetryBackoffInitial     = 500 * time.Millisecond
 	DefaultRetryBackoffMax         = 5 * time.Second
-	DefaultRequestTimeoutInSeconds = 30
-	DefaultBufferSize              = 5000
+	DefaultRequestTimeoutInSeconds    = 30
+	DefaultMaxConnDurationInSeconds  = 300 // 5 minutes — forces connection recycling to prevent stale connections from NAT/LB silent drops
+	DefaultBufferSize                = 5000
 	DefaultConcurrency             = 1000
 	DefaultStreamBufferSize        = 256
 )
@@ -473,7 +474,7 @@ func (config *ProviderConfig) CheckAndSetDefaults() {
 		config.ConcurrencyAndBufferSize.BufferSize = DefaultBufferSize
 	}
 
-	if config.NetworkConfig.DefaultRequestTimeoutInSeconds == 0 {
+	if config.NetworkConfig.DefaultRequestTimeoutInSeconds <= 0 {
 		config.NetworkConfig.DefaultRequestTimeoutInSeconds = DefaultRequestTimeoutInSeconds
 	}
 

@@ -1,8 +1,10 @@
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Message, SerializedMessage } from "@/lib/message";
+import { isJson } from "@/lib/utils/validation";
+import { CodeEditor } from "@/components/ui/codeEditor";
 import { Wrench, XIcon } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 
 export default function ToolCallMessageView({
@@ -22,9 +24,39 @@ export default function ToolCallMessageView({
 }) {
 	const toolCalls = message.toolCalls ?? [];
 	const [responses, setResponses] = useState<Record<string, string>>({});
+	const messageRef = useRef(message);
+	messageRef.current = message;
+	const jsonBufferRef = useRef<Record<string, string>>({});
+
+	const applyPendingJsonBuffers = (msg: Message): Message => {
+		const keys = Object.keys(jsonBufferRef.current);
+		if (keys.length === 0) return msg;
+		const clone = msg.clone();
+		for (const toolCallId of keys) {
+			const tc = clone.toolCalls?.find((t) => t.id === toolCallId);
+			if (tc) {
+				tc.function.arguments = jsonBufferRef.current[toolCallId];
+			}
+		}
+		jsonBufferRef.current = {};
+		return clone;
+	};
+
+	const flushJsonBuffer = (toolCallId: string) => {
+		if (jsonBufferRef.current[toolCallId] !== undefined) {
+			const clone = messageRef.current.clone();
+			const tc = clone.toolCalls?.find((t) => t.id === toolCallId);
+			if (tc) {
+				tc.function.arguments = jsonBufferRef.current[toolCallId];
+				onChange(clone.serialized);
+			}
+			delete jsonBufferRef.current[toolCallId];
+		}
+	};
 
 	const handleRoleChange = (role: string) => {
-		const clone = message.clone();
+		const latest = applyPendingJsonBuffers(messageRef.current);
+		const clone = latest.clone();
 		clone.role = role as any;
 		onChange(clone.serialized);
 	};
@@ -51,28 +83,51 @@ export default function ToolCallMessageView({
 				<div className="ml-auto h-5">
 					{!disabled && onRemove && (
 							<button type="button" aria-label="Delete message" data-testid="tool-call-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
 			</div>
 			<div className="space-y-2">
 				{toolCalls.map((tc) => {
+					const argsIsJson = isJson(tc.function.arguments);
 					let formattedArgs = tc.function.arguments;
-					try {
-						formattedArgs = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
-					} catch {
-						// keep raw string if not valid JSON
+					if (argsIsJson) {
+						try {
+							formattedArgs = JSON.stringify(JSON.parse(tc.function.arguments), null, 2);
+						} catch {
+							// keep raw string
+						}
 					}
 					return (
-						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2">
+						<div key={tc.id} className="bg-muted/50 rounded-sm border px-3 py-2 mt-2">
 							<div className="flex items-center gap-2">
 								<Wrench className="text-muted-foreground h-3 w-3 shrink-0" />
 								<span className="font-mono text-xs font-medium shrink-0 mr-4">{tc.function.name}</span>
 								<span className="text-muted-foreground ml-auto font-mono text-[10px] truncate">{tc.id}</span>
 							</div>
 							{formattedArgs && (
-								<pre className="text-muted-foreground mt-2 overflow-x-auto rounded bg-black/5 p-2 text-xs leading-relaxed dark:bg-white/5">{formattedArgs}</pre>
+								argsIsJson ? (
+									<div className="mt-2">
+										<CodeEditor
+											wrap
+											code={formattedArgs}
+											lang="json"
+											readonly={disabled}
+											autoResize
+											onChange={(value) => {
+												jsonBufferRef.current[tc.id] = value ?? "";
+											}}
+											options={{
+												showIndentLines: false,
+												disableHover: true,
+											}}
+											onBlur={() => flushJsonBuffer(tc.id)}
+										/>
+									</div>
+								) : (
+									<pre className="text-muted-foreground mt-2 overflow-x-auto rounded bg-card p-2 text-xs leading-relaxed">{formattedArgs}</pre>
+								)
 							)}
 							{!disabled && onSubmitToolResult && !respondedToolCallIds?.has(tc.id) && (
 								<div className="mt-2 border-t pt-2">

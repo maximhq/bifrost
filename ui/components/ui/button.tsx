@@ -39,14 +39,16 @@ function Button({
 	asChild = false,
 	children,
 	isLoading = false,
+	dataTestId,
 	...props
 }: React.ComponentProps<"button"> &
 	VariantProps<typeof buttonVariants> & {
 		asChild?: boolean;
 		isLoading?: boolean;
+		dataTestId?: string;
 	}) {
 	return (
-		<BaseButton className={className} variant={variant} size={size} asChild={asChild} {...props}>
+		<BaseButton className={className} variant={variant} size={size} asChild={asChild} dataTestId={dataTestId} {...props}>
 			{isLoading ? <Loader2 className="size-4 animate-spin" /> : children}
 		</BaseButton>
 	);
@@ -57,14 +59,23 @@ function BaseButton({
 	variant,
 	size,
 	asChild = false,
+	dataTestId,
 	...props
 }: React.ComponentProps<"button"> &
 	VariantProps<typeof buttonVariants> & {
 		asChild?: boolean;
+		dataTestId?: string;
 	}) {
 	const Comp = asChild ? Slot : "button";
 
-	return <Comp data-slot="button" className={cn(buttonVariants({ variant, size, className }), "cursor-pointer")} {...props} />;
+	return (
+		<Comp
+			data-slot="button"
+			data-testid={dataTestId}
+			className={cn(buttonVariants({ variant, size, className }), "cursor-pointer")}
+			{...props}
+		/>
+	);
 }
 
 export { Button, buttonVariants };

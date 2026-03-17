@@ -314,6 +314,86 @@ func TestOrderedMap_UnmarshalThenMarshalPreservesOrder(t *testing.T) {
 	assert.Equal(t, input, string(output))
 }
 
+func TestOrderedMap_SortKeys_PlainMapValues(t *testing.T) {
+	om := NewOrderedMapFromPairs(
+		KV("properties", map[string]interface{}{
+			"z_field": map[string]interface{}{
+				"type":        "string",
+				"description": "last field",
+			},
+			"a_field": map[string]interface{}{
+				"type":        "number",
+				"description": "first field",
+			},
+		}),
+		KV("type", "object"),
+	)
+
+	om.SortKeys()
+
+	assert.Equal(t, []string{"type", "properties"}, om.Keys(), "top-level keys should be schema-sorted")
+
+	props, ok := om.Get("properties")
+	require.True(t, ok)
+	propsOM, ok := props.(*OrderedMap)
+	require.True(t, ok, "plain map should be converted to *OrderedMap, got %T", props)
+
+	assert.Equal(t, []string{"a_field", "z_field"}, propsOM.Keys(), "nested plain map keys should be sorted")
+
+	zField, ok := propsOM.Get("z_field")
+	require.True(t, ok)
+	zFieldOM, ok := zField.(*OrderedMap)
+	require.True(t, ok, "deeply nested plain map should be converted to *OrderedMap, got %T", zField)
+	assert.Equal(t, []string{"type", "description"}, zFieldOM.Keys(), "deeply nested keys should be schema-sorted")
+}
+
+func TestOrderedMap_SortKeys_PlainMapInSlice(t *testing.T) {
+	om := NewOrderedMapFromPairs(
+		KV("anyOf", []interface{}{
+			map[string]interface{}{
+				"description": "first option",
+				"type":        "string",
+			},
+		}),
+	)
+
+	om.SortKeys()
+
+	anyOf, ok := om.Get("anyOf")
+	require.True(t, ok)
+	slice, ok := anyOf.([]interface{})
+	require.True(t, ok)
+	require.Len(t, slice, 1)
+
+	elemOM, ok := slice[0].(*OrderedMap)
+	require.True(t, ok, "plain map in slice should be converted to *OrderedMap, got %T", slice[0])
+	assert.Equal(t, []string{"type", "description"}, elemOM.Keys())
+}
+
+func TestOrderedMap_SortedCopy_PlainMapValues(t *testing.T) {
+	om := NewOrderedMapFromPairs(
+		KV("properties", map[string]interface{}{
+			"z_field": "string",
+			"a_field": "number",
+		}),
+		KV("type", "object"),
+	)
+
+	sorted := om.SortedCopy()
+
+	assert.Equal(t, []string{"type", "properties"}, sorted.Keys())
+
+	props, ok := sorted.Get("properties")
+	require.True(t, ok)
+	propsOM, ok := props.(*OrderedMap)
+	require.True(t, ok, "plain map should be converted to *OrderedMap in SortedCopy, got %T", props)
+	assert.Equal(t, []string{"a_field", "z_field"}, propsOM.Keys())
+
+	origProps, _ := om.Get("properties")
+	_, isMap := origProps.(map[string]interface{})
+	assert.True(t, isMap, "original should be unmodified (still a plain map)")
+}
+
 func TestOrderedMap_EmptyArray(t *testing.T) {
 	input := `{"items":[],"name":"test"}`
 

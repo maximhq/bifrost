@@ -4539,6 +4539,16 @@ func convertBifrostToolToAnthropic(model string, tool *schemas.ResponsesTool) *A
 		}
 	}
 
+	// Normalize tool schema key ordering to ensure deterministic serialization.
+	// Clients (e.g. Claude Agent SDK) may send non-deterministic property orderings
+	// across turns, which breaks Anthropic's prefix-based prompt caching since tool
+	// definitions are part of the serialized request prefix.
+	// Normalized() returns a shallow copy with sorted key slices, so the
+	// caller-owned tool.ResponsesToolFunction.Parameters is never mutated.
+	if anthropicTool.InputSchema != nil {
+		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+	}
+
 	if tool.CacheControl != nil {
 		anthropicTool.CacheControl = tool.CacheControl
 	}

@@ -1,6 +1,8 @@
 "use client"
 
+import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
 import FullPageLoader from "@/components/fullPageLoader"
+import { useDebouncedValue } from "@/hooks/useDebounce"
 import {
 	getErrorMessage,
 	useGetCustomersQuery,
@@ -10,8 +12,6 @@ import {
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib"
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
-import VirtualKeysTable from "@/app/workspace/virtual-keys/views/virtualKeysTable"
-import { useDebouncedValue } from "@/hooks/useDebounce"
 
 const POLLING_INTERVAL = 5000
 const PAGE_SIZE = 25

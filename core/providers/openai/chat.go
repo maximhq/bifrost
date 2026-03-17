@@ -39,6 +39,20 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
+
+		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
+		if len(openaiReq.ChatParameters.Tools) > 0 {
+			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
+			for i, tool := range openaiReq.ChatParameters.Tools {
+				normalizedTools[i] = tool
+				if tool.Function != nil && tool.Function.Parameters != nil {
+					funcCopy := *tool.Function
+					funcCopy.Parameters = tool.Function.Parameters.Normalized()
+					normalizedTools[i].Function = &funcCopy
+				}
+			}
+			openaiReq.ChatParameters.Tools = normalizedTools
+		}
 	}
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:

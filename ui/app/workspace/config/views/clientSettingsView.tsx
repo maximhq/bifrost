@@ -8,7 +8,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
+import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/types/largePayload";
 import { Info, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -30,7 +33,10 @@ const SECURITY_HEADERS = [
 
 // Helper to check if a header is a security header
 function isSecurityHeader(header: string): boolean {
-	return SECURITY_HEADERS.includes(header.toLowerCase().trim());
+	const h = header.toLowerCase().trim();
+	// Wildcard patterns are not literal security headers
+	if (h.includes("*")) return false;
+	return SECURITY_HEADERS.includes(h);
 }
 
 // Helper to compare header filter configs
@@ -47,14 +53,34 @@ function headerFilterConfigEqual(a?: GlobalHeaderFilterConfig, b?: GlobalHeaderF
 	return aAllowlist.every((v, i) => v === bAllowlist[i]) && aDenylist.every((v, i) => v === bDenylist[i]);
 }
 
+// Helper to compare large payload configs
+function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): boolean {
+	return (
+		a.enabled === b.enabled &&
+		a.request_threshold_bytes === b.request_threshold_bytes &&
+		a.response_threshold_bytes === b.response_threshold_bytes &&
+		a.prefetch_size_bytes === b.prefetch_size_bytes &&
+		a.max_payload_bytes === b.max_payload_bytes &&
+		a.truncated_log_bytes === b.truncated_log_bytes
+	);
+}
+
 export default function ClientSettingsView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
-	const { data: bifrostConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const { data: bifrostConfig, isLoading: isCoreConfigLoading } = useGetCoreConfigQuery({ fromDB: true });
 	const config = bifrostConfig?.client_config;
-	const [updateCoreConfig, { isLoading }] = useUpdateCoreConfigMutation();
+	const [updateCoreConfig, { isLoading: isSavingCoreConfig }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
+
+	// Large payload config state
+	const { data: serverLargePayloadConfig, isLoading: isLargePayloadConfigLoading } = useGetLargePayloadConfigQuery();
+	const [updateLargePayloadConfig, { isLoading: isSavingLargePayload }] = useUpdateLargePayloadConfigMutation();
+	const [localLargePayloadConfig, setLocalLargePayloadConfig] = useState<LargePayloadConfig>(DefaultLargePayloadConfig);
+
+	const isQueriesLoading = isCoreConfigLoading || isLargePayloadConfigLoading;
+	const isLoading = isSavingCoreConfig || isSavingLargePayload;
 
 	useEffect(() => {
 		if (droppedRequestsData) {
@@ -71,7 +97,13 @@ export default function ClientSettingsView() {
 		}
 	}, [config]);
 
-	const hasChanges = useMemo(() => {
+	useEffect(() => {
+		if (serverLargePayloadConfig) {
+			setLocalLargePayloadConfig(serverLargePayloadConfig);
+		}
+	}, [serverLargePayloadConfig]);
+
+	const hasCoreConfigChanges = useMemo(() => {
 		if (!config) return false;
 		return (
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
@@ -81,6 +113,13 @@ export default function ClientSettingsView() {
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
 	}, [config, localConfig]);
+
+	const hasLargePayloadChanges = useMemo(() => {
+		const baseline = serverLargePayloadConfig ?? DefaultLargePayloadConfig;
+		return !largePayloadConfigEqual(localLargePayloadConfig, baseline);
+	}, [serverLargePayloadConfig, localLargePayloadConfig]);
+
+	const hasChanges = hasCoreConfigChanges || hasLargePayloadChanges;
 
 	// Detect security headers in allowlist/denylist
 	const invalidSecurityHeaders = useMemo(() => {
@@ -97,13 +136,44 @@ export default function ClientSettingsView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
+	const handleLargePayloadConfigChange = useCallback((newConfig: LargePayloadConfig) => {
+		setLocalLargePayloadConfig(newConfig);
+	}, []);
+
 	const handleSave = useCallback(async () => {
 		// Defense in depth - don't save if security headers are present
 		if (hasSecurityHeaderError) {
 			return;
 		}
 
-		try {
+		// Validate large payload config if it has changes
+		if (hasLargePayloadChanges) {
+			const minBytes = 1024;
+			if (
+				localLargePayloadConfig.request_threshold_bytes < minBytes ||
+				localLargePayloadConfig.response_threshold_bytes < minBytes ||
+				localLargePayloadConfig.prefetch_size_bytes < minBytes ||
+				localLargePayloadConfig.max_payload_bytes < minBytes ||
+				localLargePayloadConfig.truncated_log_bytes < minBytes
+			) {
+				toast.error("All byte values must be at least 1024 (1 KB).");
+				return;
+			}
+			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.request_threshold_bytes) {
+				toast.error("Max payload size must be greater than or equal to the request threshold.");
+				return;
+			}
+			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.response_threshold_bytes) {
+				toast.error("Max payload size must be greater than or equal to the response threshold.");
+				return;
+			}
+		}
+
+		let coreConfigSaved = false;
+		let largePayloadSaved = false;
+
+		// Save core config if changed
+		if (hasCoreConfigChanges) {
 			if (!bifrostConfig) {
 				toast.error("Configuration not loaded. Please refresh and try again.");
 				return;
@@ -117,12 +187,41 @@ export default function ClientSettingsView() {
 				},
 			};
 
-			await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
-			toast.success("Client settings updated successfully.");
-		} catch (error) {
-			toast.error(getErrorMessage(error));
+			try {
+				await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
+				coreConfigSaved = true;
+			} catch (error) {
+				toast.error(`Failed to save core config: ${getErrorMessage(error)}`);
+			}
 		}
-	}, [bifrostConfig, hasSecurityHeaderError, localConfig, updateCoreConfig]);
+
+		// Save large payload config if changed
+		if (hasLargePayloadChanges) {
+			try {
+				await updateLargePayloadConfig(localLargePayloadConfig).unwrap();
+				largePayloadSaved = true;
+			} catch (error) {
+				toast.error(`Failed to save large payload config: ${getErrorMessage(error)}`);
+			}
+		}
+
+		if (coreConfigSaved || largePayloadSaved) {
+			if (largePayloadSaved) {
+				toast.success("Settings updated. Large payload changes require a restart to apply.");
+			} else {
+				toast.success("Client settings updated successfully.");
+			}
+		}
+	}, [
+		bifrostConfig,
+		hasSecurityHeaderError,
+		hasCoreConfigChanges,
+		hasLargePayloadChanges,
+		localConfig,
+		localLargePayloadConfig,
+		updateCoreConfig,
+		updateLargePayloadConfig,
+	]);
 
 	// Header filter list handlers
 	const handleAddAllowlistHeader = useCallback(() => {
@@ -337,6 +436,14 @@ export default function ClientSettingsView() {
 									<li>
 										<span className="font-medium">Denylist:</span> Headers in the denylist are always blocked from forwarding
 									</li>
+									<li>
+										<span className="font-medium">Wildcards:</span> Use{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match
+										prefixes (e.g.,{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
+										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
+										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> alone to match all headers.
+									</li>
 								</ul>
 							</div>
 							<div>
@@ -390,7 +497,8 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. custom-id, anthropic-beta"
+									placeholder="e.g. anthropic-*, custom-id"
+									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
@@ -433,7 +541,8 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-id"
+									placeholder="e.g. x-internal-*"
+									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
@@ -462,6 +571,14 @@ export default function ClientSettingsView() {
 					</div>
 				</div>
 			</div>
+
+			{/* Large Payload Optimization - Enterprise only */}
+			<LargePayloadSettingsFragment
+				config={localLargePayloadConfig}
+				onConfigChange={handleLargePayloadConfigChange}
+				controlsDisabled={isLoading || !hasSettingsUpdateAccess}
+			/>
+
 			<div className="flex justify-end pt-2">
 				{hasSecurityHeaderError ? (
 					<Tooltip>
@@ -475,7 +592,7 @@ export default function ClientSettingsView() {
 						</TooltipContent>
 					</Tooltip>
 				) : (
-					<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
+					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
 						{isLoading ? "Saving..." : "Save Changes"}
 					</Button>
 				)}

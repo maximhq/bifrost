@@ -16,7 +16,9 @@ export function MessagesView() {
 
 	useEffect(() => {
 		const lastId = messages[messages.length - 1]?.id;
-		const shouldScroll = messages.length !== prevLengthRef.current || lastId !== prevLastIdRef.current;
+		const grew = messages.length > prevLengthRef.current;
+		const lastChanged = lastId !== prevLastIdRef.current;
+		const shouldScroll = grew || (lastChanged && messages.length >= prevLengthRef.current);
 		prevLengthRef.current = messages.length;
 		prevLastIdRef.current = lastId;
 		if (shouldScroll) {

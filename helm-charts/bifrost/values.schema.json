@@ -1110,6 +1110,35 @@
                   "cel_expression": {
                     "type": "string"
                   },
+                  "targets": {
+                    "type": "array",
+                    "minItems": 1,
+                    "description": "Weighted routing targets. Weights must sum to 1.",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "description": "Target provider name"
+                        },
+                        "model": {
+                          "type": "string",
+                          "description": "Target model name"
+                        },
+                        "key_id": {
+                          "type": "string",
+                          "description": "Optional API key UUID to pin for this target"
+                        },
+                        "weight": {
+                          "type": "number",
+                          "description": "Probability weight for this target (must be > 0, all weights must sum to 1)",
+                          "exclusiveMinimum": 0,
+                          "maximum": 1
+                        }
+                      },
+                      "required": ["weight"]
+                    }
+                  },
                   "provider": {
                     "type": "string"
                   },
@@ -1139,7 +1168,7 @@
                     "additionalProperties": true
                   }
                 },
-                "required": ["id", "name"]
+                "required": ["id", "name", "targets"]
               }
             },
             "authConfig": {
@@ -1413,6 +1442,10 @@
                       },
                       "clientSecret": {
                         "type": "string"
+                      },
+                      "cloud": {
+                        "type": "string",
+                        "enum": ["commercial", "gcc-high", "dod"]
                       },
                       "audience": {
                         "type": "string"

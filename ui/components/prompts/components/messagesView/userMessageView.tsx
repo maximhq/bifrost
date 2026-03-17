@@ -2,12 +2,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Message, SerializedMessage, type MessageContent } from "@/lib/message";
 import { FileIcon, Mic, Paperclip, PencilIcon, XIcon } from "lucide-react";
 import { Markdown } from "@/components/ui/markdown";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MessageRoleSwitcher from "./messageRoleSwitcher";
 import { fileToAttachment } from "../../utils/attachment";
 import { RichTextarea } from "@/components/ui/custom/richTextarea";
 import { JINJA_VAR_HIGHLIGHT_PATTERNS, JINJA_VAR_REGEX } from "@/lib/message/constant";
 import { AttachmentDisplay } from "./attachmentViews";
+import { isJson } from "@/lib/utils/validation";
+import { CodeEditor } from "@/components/ui/codeEditor";
 
 export function UserMessageView({
 	message,
@@ -34,6 +36,33 @@ export function UserMessageView({
 	const canAttach = supportsVision && !disabled;
 	const hasVariables = JINJA_VAR_REGEX.test(content);
 	JINJA_VAR_REGEX.lastIndex = 0;
+	const jsonBufferRef = useRef<string | null>(null);
+	const contentIsJson = useMemo(() => !isEmpty && isJson(content), [content, isEmpty]);
+	const formattedJson = useMemo(() => {
+		if (!contentIsJson) return "";
+		try {
+			return JSON.stringify(JSON.parse(content), null, 2);
+		} catch {
+			return content;
+		}
+	}, [content, contentIsJson]);
+
+	const applyPendingJsonBuffer = (msg: Message): Message => {
+		if (jsonBufferRef.current !== null) {
+			const clone = msg.clone();
+			clone.content = jsonBufferRef.current;
+			jsonBufferRef.current = null;
+			return clone;
+		}
+		return msg;
+	};
+
+	const flushJsonBuffer = () => {
+		const updated = applyPendingJsonBuffer(messageRef.current);
+		if (updated !== messageRef.current) {
+			onChange(updated.serialized);
+		}
+	};
 
 	useEffect(() => {
 		const handleClick = (e: MouseEvent) => {
@@ -46,14 +75,15 @@ export function UserMessageView({
 	}, []);
 
 	const handleRoleChange = (role: string) => {
-		const clone = message.clone();
+		const latest = applyPendingJsonBuffer(messageRef.current);
+		const clone = latest.clone();
 		clone.role = role as any;
 		onChange(clone.serialized);
 	};
 
 	const addAttachments = useCallback(
 		(newAttachments: MessageContent[]) => {
-			const latest = messageRef.current;
+			const latest = applyPendingJsonBuffer(messageRef.current);
 			const clone = latest.clone();
 			clone.attachments = [...latest.attachments, ...newAttachments];
 			onChange(clone.serialized);
@@ -63,8 +93,9 @@ export function UserMessageView({
 
 	const handleRemoveAttachment = useCallback(
 		(index: number) => {
-			const clone = message.clone();
-			clone.attachments = message.attachments.filter((_, i) => i !== index);
+			const latest = applyPendingJsonBuffer(messageRef.current);
+			const clone = latest.clone();
+			clone.attachments = latest.attachments.filter((_, i) => i !== index);
 			onChange(clone.serialized);
 		},
 		[message, onChange],
@@ -185,12 +216,12 @@ export function UserMessageView({
 					)}
 					{!disabled && (
 						<button type="button" aria-label="Edit message" data-testid="user-msg-edit" onClick={() => setEditMode(true)} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<PencilIcon className="text-muted-foreground hover:text-foreground h-3.5 w-3.5 shrink-0 cursor-pointer" />
+							<PencilIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 					{!disabled && onRemove && (
 						<button type="button" aria-label="Delete message" data-testid="user-msg-delete" onClick={onRemove} className="rounded-sm p-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-muted focus:bg-muted focus:opacity-100">
-							<XIcon className="text-muted-foreground hover:text-foreground h-4 w-4 shrink-0 cursor-pointer" />
+							<XIcon className="text-muted-foreground hover:text-foreground h-3 w-3 shrink-0 cursor-pointer" />
 						</button>
 					)}
 				</div>
@@ -217,6 +248,22 @@ export function UserMessageView({
 					/>
 				) : isEmpty && messageAttachments.length === 0 ? (
 					<div className="text-muted-foreground min-h-[20px] text-sm italic">Enter user message...</div>
+				) : contentIsJson ? (
+					<CodeEditor
+						wrap
+						code={formattedJson}
+						lang="json"
+						readonly={disabled}
+						autoResize
+						onChange={(value) => {
+							jsonBufferRef.current = value ?? "";
+						}}
+						options={{
+							showIndentLines: false,
+							disableHover: true,
+						}}
+						onBlur={flushJsonBuffer}
+					/>
 				) : hasVariables ? (
 					<RichTextarea
 						readOnly

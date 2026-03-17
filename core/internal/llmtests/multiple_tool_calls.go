@@ -81,7 +81,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
 				Params: &schemas.ChatParameters{
-					Tools: []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+					Tools:             []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+					ParallelToolCalls: schemas.Ptr(true),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -95,7 +96,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 				Provider: testConfig.Provider,
 				Model:    testConfig.ChatModel,
 				Params: &schemas.ResponsesParameters{
-					Tools: []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+					Tools:             []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+					ParallelToolCalls: schemas.Ptr(true),
 				},
 				Fallbacks: testConfig.Fallbacks,
 			}
@@ -211,6 +213,7 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 			Params: &schemas.ChatParameters{
 				MaxCompletionTokens: bifrost.Ptr(200),
 				Tools:               []schemas.ChatTool{*chatWeatherTool, *chatCalculatorTool},
+				ParallelToolCalls:   schemas.Ptr(true),
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}
@@ -316,7 +319,8 @@ func RunMultipleToolCallsTest(t *testing.T, client *bifrost.Bifrost, ctx context
 			Model:    testConfig.ChatModel,
 			Input:    responsesMessages,
 			Params: &schemas.ResponsesParameters{
-				Tools: []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+				Tools:             []schemas.ResponsesTool{*responsesWeatherTool, *responsesCalculatorTool},
+				ParallelToolCalls: schemas.Ptr(true),
 			},
 			Fallbacks: testConfig.Fallbacks,
 		}

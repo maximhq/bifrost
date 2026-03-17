@@ -19,6 +19,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { toast } from "sonner";
 import { executePrompt } from "./utils/executor";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 
 interface PromptContextValue {
 	// Data
@@ -92,6 +93,11 @@ interface PromptContextValue {
 	handleDeletePrompt: () => Promise<void>;
 	handleSendMessage: (pendingMessage?: Message) => Promise<void>;
 	handleSubmitToolResult: (afterIndex: number, toolCallId: string, content: string) => Promise<void>;
+
+	// RBAC permissions
+	canCreate: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
 }
 
 const PromptContext = createContext<PromptContextValue | null>(null);
@@ -105,6 +111,11 @@ export function usePromptContext() {
 }
 
 export function PromptProvider({ children }: { children: ReactNode }) {
+	// RBAC permissions
+	const canCreate = useRbac(RbacResource.PromptRepository, RbacOperation.Create);
+	const canUpdate = useRbac(RbacResource.PromptRepository, RbacOperation.Update);
+	const canDelete = useRbac(RbacResource.PromptRepository, RbacOperation.Delete);
+
 	// API queries
 	const { data: foldersData, isLoading: foldersLoading, error: foldersError } = useGetFoldersQuery();
 	const { data: promptsData, isLoading: promptsLoading, error: promptsError } = useGetPromptsQuery();
@@ -144,7 +155,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 	}, []);
 	const [provider, setProvider] = useState("");
 	const [model, setModel] = useState("");
-	const [modelParams, setModelParams] = useState<ModelParams>({});
+	const [modelParams, setModelParams] = useState<ModelParams>({ stream: true });
 	const [apiKeyId, setApiKeyId] = useState("__auto__");
 	const [isStreaming, setIsStreaming] = useState(false);
 	const activeRunRef = useRef<symbol | null>(null);
@@ -194,7 +205,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 
 		const loadFromParams = (params: ModelParams, prov: string, mod: string) => {
 			const { api_key_id, ...rest } = params || ({} as ModelParams);
-			setModelParams(rest);
+			setModelParams({ stream: true, ...rest });
 			setApiKeyId(api_key_id || "__auto__");
 			setProvider(prov || "");
 			setModel(mod || "");
@@ -235,7 +246,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setMessages([Message.system("")]);
 			setProvider("");
 			setModel("");
-			setModelParams({});
+			setModelParams({ stream: true });
 			setApiKeyId("__auto__");
 		}
 	}, [selectedSession, selectedVersion, selectedPrompt, selectedSessionId, selectedVersionId, setUrlState, isSessionsLoading, sessions.length]);
@@ -264,7 +275,14 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			const currentApiKeyId = apiKeyId !== "__auto__" ? apiKeyId : undefined;
 			if (currentApiKeyId !== (refApiKeyId || undefined)) return true;
 
-			if (JSON.stringify(modelParams, Object.keys(modelParams).sort()) !== JSON.stringify(refParamsRest, Object.keys(refParamsRest).sort()))
+			// Normalize: treat missing stream as stream: true so legacy params without stream don't appear changed
+			const normalizeParams = (p: ModelParams): ModelParams => {
+				const { stream = true, ...rest } = p;
+				return { stream, ...rest };
+			};
+			const normalizedCurrent = normalizeParams(modelParams);
+			const normalizedRef = normalizeParams(refParamsRest);
+			if (JSON.stringify(normalizedCurrent, Object.keys(normalizedCurrent).sort()) !== JSON.stringify(normalizedRef, Object.keys(normalizedRef).sort()))
 				return true;
 
 			const currentSerialized = Message.serializeAll(messages);
@@ -331,7 +349,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 			setMessages([Message.system("")]);
 			setProvider("");
 			setModel("");
-			setModelParams({});
+			setModelParams({ stream: true });
 			setApiKeyId("__auto__");
 			setUrlState({ promptId: id, sessionId: null, versionId: null });
 		},
@@ -569,6 +587,9 @@ export function PromptProvider({ children }: { children: ReactNode }) {
 		handleDeletePrompt,
 		handleSendMessage,
 		handleSubmitToolResult,
+		canCreate,
+		canUpdate,
+		canDelete,
 	};
 
 	return <PromptContext.Provider value={value}>{children}</PromptContext.Provider>;

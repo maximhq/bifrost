@@ -4,8 +4,8 @@ go 1.26.1
 
 require (
 	github.com/bytedance/sonic v1.15.0
-	github.com/maximhq/bifrost/core v1.4.7
-	github.com/maximhq/bifrost/framework v1.2.26
+	github.com/maximhq/bifrost/core v1.4.8
+	github.com/maximhq/bifrost/framework v1.2.27
 )
 
 require (

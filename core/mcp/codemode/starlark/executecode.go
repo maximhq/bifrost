@@ -5,6 +5,7 @@ package starlark
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -516,6 +517,14 @@ func (s *StarlarkCodeMode) callMCPTool(ctx context.Context, clientName, toolName
 		},
 	}
 
+	if client.ExecutionConfig.Headers != nil {
+		headers := make(http.Header)
+		for key, value := range client.ExecutionConfig.Headers {
+			headers.Add(key, value.GetValue())
+		}
+		callRequest.Header = headers
+	}
+
 	toolExecutionTimeout := s.getToolExecutionTimeout()
 	toolCtx, cancel := context.WithTimeout(nestedCtx, toolExecutionTimeout)
 	defer cancel()
@@ -606,6 +615,14 @@ func (s *StarlarkCodeMode) callMCPToolDirect(ctx context.Context, client *schema
 			Name:      originalToolName,
 			Arguments: args,
 		},
+	}
+
+	if client.ExecutionConfig.Headers != nil {
+		headers := make(http.Header)
+		for key, value := range client.ExecutionConfig.Headers {
+			headers.Add(key, value.GetValue())
+		}
+		callRequest.Header = headers
 	}
 
 	toolExecutionTimeout := s.getToolExecutionTimeout()

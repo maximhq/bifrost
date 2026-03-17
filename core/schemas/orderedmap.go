@@ -305,6 +305,133 @@ func (om *OrderedMap) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// jsonSchemaPriority maps JSON Schema keywords to their preferred
+// serialization position. Keys present in this map are emitted first
+// (in the given order), followed by all remaining keys alphabetically.
+// This matches the optimal ordering for LLM tool schemas: the model
+// sees type and description before properties, constraints, etc.
+var jsonSchemaPriority = map[string]int{
+	"type":        0,
+	"description": 1,
+	"properties":  2,
+	"required":    3,
+}
+
+// SortKeys sorts the keys of this OrderedMap using JSON Schema priority
+// ordering (type, description, properties, required first), with remaining
+// keys sorted alphabetically. Nested *OrderedMap values are also sorted
+// recursively.
+func (om *OrderedMap) SortKeys() {
+	if om == nil || len(om.keys) == 0 {
+		return
+	}
+	sort.Slice(om.keys, func(i, j int) bool {
+		pi, okI := jsonSchemaPriority[om.keys[i]]
+		pj, okJ := jsonSchemaPriority[om.keys[j]]
+		switch {
+		case okI && okJ:
+			return pi < pj
+		case okI:
+			return true
+		case okJ:
+			return false
+		default:
+			return om.keys[i] < om.keys[j]
+		}
+	})
+	for k, v := range om.values {
+		switch nested := v.(type) {
+		case *OrderedMap:
+			nested.SortKeys()
+		case map[string]interface{}:
+			converted := OrderedMapFromMap(nested)
+			converted.SortKeys()
+			om.values[k] = converted
+		case []interface{}:
+			sortOrderedMapsInSlice(nested)
+		}
+	}
+}
+
+func sortOrderedMapsInSlice(s []interface{}) {
+	for i, item := range s {
+		switch v := item.(type) {
+		case *OrderedMap:
+			v.SortKeys()
+		case map[string]interface{}:
+			converted := OrderedMapFromMap(v)
+			converted.SortKeys()
+			s[i] = converted
+		case []interface{}:
+			sortOrderedMapsInSlice(v)
+		}
+	}
+}
+
+// SortedCopy returns a new OrderedMap with keys sorted using JSON Schema
+// priority ordering. Nested *OrderedMap values are recursively copied and
+// sorted. Primitive values (strings, numbers, bools) are shared, not cloned.
+// This is much cheaper than a full JSON marshal/unmarshal Clone because it
+// only allocates new key slices and value maps.
+func (om *OrderedMap) SortedCopy() *OrderedMap {
+	if om == nil {
+		return nil
+	}
+	if len(om.keys) == 0 {
+		return &OrderedMap{values: make(map[string]interface{})}
+	}
+
+	newKeys := make([]string, len(om.keys))
+	copy(newKeys, om.keys)
+	sort.Slice(newKeys, func(i, j int) bool {
+		pi, okI := jsonSchemaPriority[newKeys[i]]
+		pj, okJ := jsonSchemaPriority[newKeys[j]]
+		switch {
+		case okI && okJ:
+			return pi < pj
+		case okI:
+			return true
+		case okJ:
+			return false
+		default:
+			return newKeys[i] < newKeys[j]
+		}
+	})
+
+	newValues := make(map[string]interface{}, len(om.values))
+	for k, v := range om.values {
+		switch nested := v.(type) {
+		case *OrderedMap:
+			newValues[k] = nested.SortedCopy()
+		case map[string]interface{}:
+			newValues[k] = OrderedMapFromMap(nested).SortedCopy()
+		case []interface{}:
+			newValues[k] = sortedCopySlice(nested)
+		default:
+			newValues[k] = v
+		}
+	}
+
+	return &OrderedMap{keys: newKeys, values: newValues}
+}
+
+func sortedCopySlice(s []interface{}) []interface{} {
+	out := make([]interface{}, len(s))
+	for i, item := range s {
+		switch v := item.(type) {
+		case *OrderedMap:
+			out[i] = v.SortedCopy()
+		case map[string]interface{}:
+			out[i] = OrderedMapFromMap(v).SortedCopy()
+		case []interface{}:
+			out[i] = sortedCopySlice(v)
+		default:
+			out[i] = item
+		}
+	}
+	return out
+}
+
 // decodeOrderedValue reads a single JSON value from the decoder.
 // Objects are decoded as *OrderedMap (preserving key order).
 // Arrays are decoded as []interface{} with each element recursively decoded.

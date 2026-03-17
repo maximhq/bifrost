@@ -12,11 +12,13 @@ import { useState } from "react";
 interface FilterPopoverProps {
 	filters: LogFiltersType;
 	onFilterChange: (key: keyof LogFiltersType, values: string[] | boolean) => void;
+	onMetadataFilterChange?: (metadataKey: string, value: string | undefined) => void;
 	showMissingCost?: boolean;
 }
 
-export function FilterPopover({ filters, onFilterChange, showMissingCost }: FilterPopoverProps) {
+export function FilterPopover({ filters, onFilterChange, onMetadataFilterChange, showMissingCost }: FilterPopoverProps) {
 	const [open, setOpen] = useState(false);
+	const [customMetadataInputs, setCustomMetadataInputs] = useState<Record<string, string>>({});
 
 	const { data: providersData, isLoading: providersLoading } = useGetProvidersQuery();
 	const { data: filterData, isLoading: filterDataLoading } = useGetAvailableFilterDataQuery();
@@ -27,13 +29,14 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 	const availableVirtualKeys = filterData?.virtual_keys || [];
 	const availableRoutingRules = filterData?.routing_rules || [];
 	const availableRoutingEngines = filterData?.routing_engines || [];
+	const availableMetadataKeys = filterData?.metadata_keys || {};
 
 	// Create mappings from name to ID for keys, virtual keys, and routing rules
 	const selectedKeyNameToId = new Map(availableSelectedKeys.map((key) => [key.name, key.id]));
 	const virtualKeyNameToId = new Map(availableVirtualKeys.map((key) => [key.name, key.id]));
 	const routingRuleNameToId = new Map(availableRoutingRules.map((rule) => [rule.name, rule.id]));
 
-	const FILTER_OPTIONS = {
+	const FILTER_OPTIONS: Record<string, string[]> = {
 		Status: [...Statuses],
 		Providers: providersLoading ? [] : availableProviders.map((provider) => provider.name),
 		Type: [...RequestTypes],
@@ -44,13 +47,16 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		"Routing Rules": filterDataLoading ? [] : availableRoutingRules.map((rule) => rule.name),
 	};
 
+	// Add dynamic metadata categories
+	for (const [metadataKey, values] of Object.entries(availableMetadataKeys)) {
+		FILTER_OPTIONS[`Metadata: ${metadataKey}`] = values;
+	}
+
 	const isCategoryLoading = (category: string) =>
 		(category === "Providers" && providersLoading) ||
-		(category !== "Status" && category !== "Type" && category !== "Providers" && filterDataLoading);
+		(category !== "Status" && category !== "Type" && category !== "Providers" && !category.startsWith("Metadata: ") && filterDataLoading);
 
-	type FilterCategory = keyof typeof FILTER_OPTIONS;
-
-	const filterKeyMap: Record<FilterCategory, keyof LogFiltersType> = {
+	const filterKeyMap: Record<string, keyof LogFiltersType> = {
 		Status: "status",
 		Providers: "providers",
 		Type: "objects",
@@ -61,14 +67,43 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		"Routing Engines": "routing_engine_used",
 	};
 
-	const resolveValueForCategory = (category: FilterCategory, value: string): string => {
+	const resolveValueForCategory = (category: string, value: string): string => {
 		if (category === "Selected Keys") return selectedKeyNameToId.get(value) || value;
 		if (category === "Virtual Keys") return virtualKeyNameToId.get(value) || value;
 		if (category === "Routing Rules") return routingRuleNameToId.get(value) || value;
 		return value;
 	};
 
-	const handleFilterSelect = (category: FilterCategory, value: string) => {
+	const handleFilterSelect = (category: string, value: string) => {
+		// Handle metadata categories
+		if (category.startsWith("Metadata: ")) {
+			const metadataKey = category.replace("Metadata: ", "");
+			const currentValue = filters.metadata_filters?.[metadataKey];
+			const predefinedValues = FILTER_OPTIONS[category] || [];
+
+			if (currentValue === value) {
+				// Deselect - clear the filter and the draft
+				onMetadataFilterChange?.(metadataKey, undefined);
+				setCustomMetadataInputs((prev) => {
+					const updated = { ...prev };
+					delete updated[category];
+					return updated;
+				});
+			} else {
+				// Select
+				onMetadataFilterChange?.(metadataKey, value);
+				// Only clear draft if selecting a predefined value (not custom input submission)
+				if (predefinedValues.includes(value)) {
+					setCustomMetadataInputs((prev) => {
+						const updated = { ...prev };
+						delete updated[category];
+						return updated;
+					});
+				}
+			}
+			return;
+		}
+
 		const filterKey = filterKeyMap[category];
 		const resolved = resolveValueForCategory(category, value);
 
@@ -80,7 +115,13 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		onFilterChange(filterKey, newValues);
 	};
 
-	const isSelected = (category: FilterCategory, value: string) => {
+	const isSelected = (category: string, value: string) => {
+		// Handle metadata categories
+		if (category.startsWith("Metadata: ")) {
+			const metadataKey = category.replace("Metadata: ", "");
+			return filters.metadata_filters?.[metadataKey] === value;
+		}
+
 		const filterKey = filterKeyMap[category];
 		const currentValues = filters[filterKey];
 		const resolved = resolveValueForCategory(category, value);
@@ -88,7 +129,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 		return Array.isArray(currentValues) && currentValues.includes(resolved);
 	};
 
-	const excludedKeys = ["start_time", "end_time", "content_search"];
+	const excludedKeys = ["start_time", "end_time", "content_search", "metadata_filters"];
 	const selectedCount = Object.entries(filters).reduce((count, [key, value]) => {
 		if (excludedKeys.includes(key)) {
 			return count;
@@ -97,7 +138,7 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 			return count + value.length;
 		}
 		return count + (value ? 1 : 0);
-	}, 0);
+	}, 0) + (filters.metadata_filters ? Object.keys(filters.metadata_filters).length : 0);
 
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
@@ -146,12 +187,12 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 										</CommandItem>
 									) : (
 										values.map((value: string) => {
-											const selected = isSelected(category as FilterCategory, value);
+											const selected = isSelected(category, value);
 											return (
 												<CommandItem
 													key={value}
-													data-testid={`filter-item-${category.toLowerCase().replace(/\s+/g, "-")}-${value}`}
-													onSelect={() => handleFilterSelect(category as FilterCategory, value)}
+													data-testid={`filter-item-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${value.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+													onSelect={() => handleFilterSelect(category, value)}
 												>
 													<div
 														className={cn(
@@ -169,6 +210,36 @@ export function FilterPopover({ filters, onFilterChange, showMissingCost }: Filt
 											);
 										})
 									)}
+									{category.startsWith("Metadata: ") && (() => {
+									const metadataKey = category.replace("Metadata: ", "");
+									const activeValue = filters.metadata_filters?.[metadataKey];
+									const isCustom = activeValue && !values.includes(activeValue);
+									const displayValue = customMetadataInputs[category] ?? (isCustom ? activeValue : "");
+									return (
+										<div className="flex items-center gap-1 px-2 py-1">
+											<input
+												className="h-7 w-full rounded border bg-transparent px-2 text-sm placeholder:text-muted-foreground"
+												placeholder="Custom value..."
+												data-testid={`filter-custom-${category.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
+												value={displayValue}
+												onChange={(e) => {
+													const newVal = e.target.value;
+													setCustomMetadataInputs((prev) => ({ ...prev, [category]: newVal }));
+													if (newVal === "" && isCustom) {
+														onMetadataFilterChange?.(metadataKey, undefined);
+													}
+												}}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" && customMetadataInputs[category]?.trim()) {
+														handleFilterSelect(category, customMetadataInputs[category].trim());
+													}
+													e.stopPropagation();
+												}}
+												onClick={(e) => e.stopPropagation()}
+											/>
+										</div>
+									);
+								})()}
 								</CommandGroup>
 							))}
 					</CommandList>

@@ -262,6 +262,23 @@ func ToOpenAIResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *Open
 			}
 		}
 
+		// Normalize function tool parameters for deterministic JSON serialization.
+		// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
+		if len(req.Tools) > 0 {
+			normalizedTools := make([]schemas.ResponsesTool, len(req.Tools))
+			copy(normalizedTools, req.Tools)
+			for i, tool := range normalizedTools {
+				if tool.Type == schemas.ResponsesToolTypeFunction &&
+					tool.ResponsesToolFunction != nil &&
+					tool.ResponsesToolFunction.Parameters != nil {
+					funcCopy := *tool.ResponsesToolFunction
+					funcCopy.Parameters = tool.ResponsesToolFunction.Parameters.Normalized()
+					normalizedTools[i].ResponsesToolFunction = &funcCopy
+				}
+			}
+			req.Tools = normalizedTools
+		}
+
 		// Filter out tools that OpenAI doesn't support
 		req.filterUnsupportedTools()
 	}

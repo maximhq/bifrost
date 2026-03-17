@@ -28,6 +28,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/network"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpproxy"
 )
@@ -45,6 +47,28 @@ func MarshalSorted(v interface{}) ([]byte, error) {
 // MarshalSortedIndent marshals v to indented JSON with map keys sorted alphabetically.
 func MarshalSortedIndent(v interface{}, prefix, indent string) ([]byte, error) {
 	return sortedAPI.MarshalIndent(v, prefix, indent)
+}
+
+// SetJSONField sets a field in JSON bytes without disturbing other fields' ordering.
+// Uses in-place byte manipulation for minimal allocations and preserves nested structure.
+func SetJSONField(data []byte, path string, value interface{}) ([]byte, error) {
+	return sjson.SetBytes(data, path, value)
+}
+
+// DeleteJSONField deletes a field from JSON bytes without disturbing other fields' ordering.
+// Uses in-place byte manipulation for minimal allocations and preserves nested structure.
+func DeleteJSONField(data []byte, path string) ([]byte, error) {
+	return sjson.DeleteBytes(data, path)
+}
+
+// JSONFieldExists checks if a field exists in JSON bytes.
+func JSONFieldExists(data []byte, path string) bool {
+	return gjson.GetBytes(data, path).Exists()
+}
+
+// GetJSONField retrieves a field value from JSON bytes without parsing the entire document.
+func GetJSONField(data []byte, path string) gjson.Result {
+	return gjson.GetBytes(data, path)
 }
 
 // logger is the global logger for the provider utils (thread-safe via atomic.Pointer).

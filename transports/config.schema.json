@@ -912,6 +912,19 @@
             "description": "Version of the plugin (default: 1). Increment in this number will force a reload of the plugin and DB update.",
             "optional": true,
             "default": 1
+          },
+          "placement": {
+            "type": "string",
+            "enum": ["pre_builtin", "post_builtin"],
+            "description": "Whether this plugin runs before or after built-in plugins. Default: post_builtin",
+            "optional": true,
+            "default": "post_builtin"
+          },
+          "order": {
+            "type": "integer",
+            "description": "Position within placement group. Lower values execute earlier. Default: 0",
+            "optional": true,
+            "default": 0
           }
         },
         "allOf": [
@@ -3134,6 +3147,12 @@
         "clientSecret": {
           "type": "string",
           "description": "Client secret (optional, required for token revocation)"
+        },
+        "cloud": {
+          "type": "string",
+          "enum": ["commercial", "gcc-high", "dod"],
+          "default": "commercial",
+          "description": "Cloud environment: 'commercial' (default), 'gcc-high' for US Government GCC High, or 'dod' for Department of Defense"
         },
         "audience": {
           "type": "string",

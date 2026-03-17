@@ -311,6 +311,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPromptRepoTables(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -329,7 +332,21 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 			// dirty after upgrade. StoreRawRequestResponse is now part of the
 			// hash input; rows written before this migration have stale hashes.
 			var providers []tables.TableProvider
-			if err := tx.Find(&providers).Error; err != nil {
+			if err := tx.
+				Select(
+					"id",
+					"name",
+					"network_config_json",
+					"concurrency_buffer_json",
+					"proxy_config_json",
+					"custom_provider_config_json",
+					"pricing_overrides_json",
+					"send_back_raw_request",
+					"send_back_raw_response",
+					"store_raw_request_response",
+					"encryption_status",
+				).
+				Find(&providers).Error; err != nil {
 				return fmt.Errorf("failed to fetch providers for hash backfill: %w", err)
 			}
 			for _, provider := range providers {
@@ -341,12 +358,20 @@ func migrationAddStoreRawRequestResponseColumn(ctx context.Context, db *gorm.DB)
 					SendBackRawResponse:      provider.SendBackRawResponse,
 					StoreRawRequestResponse:  provider.StoreRawRequestResponse,
 					CustomProviderConfig:     provider.CustomProviderConfig,
+					PricingOverrides:         provider.PricingOverrides,
+				}
+				// Here the default value of store_raw_request_response should be based on the default value of SendBackRawRequest and SendBackRawResponse
+				if provider.SendBackRawRequest || provider.SendBackRawResponse {
+					providerConfig.StoreRawRequestResponse = true
 				}
 				hash, err := providerConfig.GenerateConfigHash(provider.Name)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for provider %s: %w", provider.Name, err)
 				}
-				if err := tx.Model(&provider).Update("config_hash", hash).Error; err != nil {
+				if err := tx.Model(&provider).Updates(map[string]interface{}{
+					"config_hash":                hash,
+					"store_raw_request_response": providerConfig.StoreRawRequestResponse,
+				}).Error; err != nil {
 					return fmt.Errorf("failed to update hash for provider %s: %w", provider.Name, err)
 				}
 			}
@@ -4651,5 +4676,49 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
 	}
 
+	return nil
+}
+
+// migrationAddPluginOrderColumns adds placement and exec_order columns to config_plugins table
+func migrationAddPluginOrderColumns(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_plugin_order_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if !migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Placement"); err != nil {
+					return fmt.Errorf("failed to add placement column: %w", err)
+				}
+			}
+			if !migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.AddColumn(&tables.TablePlugin{}, "Order"); err != nil {
+					return fmt.Errorf("failed to add exec_order column: %w", err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+
+			if migrator.HasColumn(&tables.TablePlugin{}, "placement") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "placement"); err != nil {
+					return fmt.Errorf("failed to drop placement column: %w", err)
+				}
+			}
+			if migrator.HasColumn(&tables.TablePlugin{}, "exec_order") {
+				if err := migrator.DropColumn(&tables.TablePlugin{}, "exec_order"); err != nil {
+					return fmt.Errorf("failed to drop exec_order column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_plugin_order_columns migration: %s", err.Error())
+	}
 	return nil
 }

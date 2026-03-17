@@ -1,0 +1,112 @@
+# Infrastructure endpoints (WebSocket, MCP Server, Metrics)
+
+websocket:
+  get:
+    operationId: websocketConnect
+    summary: WebSocket connection
+    description: |
+      Upgrades to a WebSocket connection for real-time updates.
+      Server pushes log events, MCP log events, and store update notifications.
+      Heartbeat pings are sent every 30 seconds.
+    tags:
+      - Infrastructure
+    responses:
+      '101':
+        description: WebSocket upgrade successful
+
+mcp-server:
+  post:
+    operationId: mcpServerMessage
+    summary: MCP protocol message
+    description: |
+      Receives a JSON-RPC 2.0 message for the MCP protocol server.
+      Returns a JSON-RPC 2.0 response, or null for notifications.
+    tags:
+      - Infrastructure
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            description: JSON-RPC 2.0 request
+            properties:
+              jsonrpc:
+                type: string
+                enum: ["2.0"]
+              method:
+                type: string
+              params:
+                type: object
+              id:
+                oneOf:
+                  - type: string
+                  - type: integer
+    responses:
+      '200':
+        description: JSON-RPC 2.0 response
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                jsonrpc:
+                  type: string
+                  enum: ["2.0"]
+                result:
+                  type: object
+                error:
+                  type: object
+                  properties:
+                    code:
+                      type: integer
+                    message:
+                      type: string
+                id:
+                  oneOf:
+                    - type: string
+                    - type: integer
+  get:
+    operationId: mcpServerSSE
+    summary: MCP protocol SSE stream
+    description: |
+      Opens a Server-Sent Events stream for the MCP protocol server.
+      Returns `Content-Type: text/event-stream`.
+    tags:
+      - Infrastructure
+    responses:
+      '200':
+        description: SSE stream opened
+        content:
+          text/event-stream:
+            schema:
+              type: string
+
+metrics:
+  get:
+    operationId: getMetrics
+    summary: Prometheus metrics
+    description: Returns Prometheus-formatted metrics for monitoring.
+    tags:
+      - Infrastructure
+    responses:
+      '200':
+        description: Prometheus metrics
+        content:
+          text/plain:
+            schema:
+              type: string
+
+websocket-responses:
+  get:
+    operationId: websocketResponses
+    summary: WebSocket Responses API
+    description: |
+      Upgrades to a WebSocket connection for the streaming Responses API.
+      Clients send `response.create` events and receive streaming response events.
+      Supports authentication via Bearer token, x-api-key, or x-bf-vk headers.
+    tags:
+      - Infrastructure
+    responses:
+      '101':
+        description: WebSocket upgrade successful

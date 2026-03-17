@@ -306,6 +306,454 @@ logs-filterdata:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
+logs-by-id:
+  get:
+    operationId: getLogById
+    summary: Get a single log entry
+    description: Retrieves a single log entry by its ID.
+    tags:
+      - Logging
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: Log entry ID
+        schema:
+          type: string
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/LogEntry'
+      '404':
+        description: Log not found
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram:
+  get:
+    operationId: getLogsHistogram
+    summary: Get request count histogram
+    description: |
+      Returns time-bucketed request counts. Bucket size is auto-calculated from the time range.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/HistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-tokens:
+  get:
+    operationId: getLogsTokenHistogram
+    summary: Get token usage histogram
+    description: Returns time-bucketed token usage (prompt, completion, total).
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/TokenHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-cost:
+  get:
+    operationId: getLogsCostHistogram
+    summary: Get cost histogram
+    description: Returns time-bucketed cost data with model breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/CostHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-models:
+  get:
+    operationId: getLogsModelHistogram
+    summary: Get model usage histogram
+    description: Returns time-bucketed model usage with success/error breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/ModelHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-latency:
+  get:
+    operationId: getLogsLatencyHistogram
+    summary: Get latency histogram
+    description: Returns time-bucketed latency percentiles (avg, p90, p95, p99).
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/LatencyHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-cost-by-provider:
+  get:
+    operationId: getLogsProviderCostHistogram
+    summary: Get cost histogram by provider
+    description: Returns time-bucketed cost data with provider breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/ProviderCostHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-tokens-by-provider:
+  get:
+    operationId: getLogsProviderTokenHistogram
+    summary: Get token histogram by provider
+    description: Returns time-bucketed token usage with provider breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/ProviderTokenHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+logs-histogram-latency-by-provider:
+  get:
+    operationId: getLogsProviderLatencyHistogram
+    summary: Get latency histogram by provider
+    description: Returns time-bucketed latency percentiles with provider breakdown.
+    tags:
+      - Logging
+    parameters:
+      - $ref: '#/_histogram-parameters/providers'
+      - $ref: '#/_histogram-parameters/models'
+      - $ref: '#/_histogram-parameters/status'
+      - $ref: '#/_histogram-parameters/objects'
+      - $ref: '#/_histogram-parameters/selected_key_ids'
+      - $ref: '#/_histogram-parameters/virtual_key_ids'
+      - $ref: '#/_histogram-parameters/routing_rule_ids'
+      - $ref: '#/_histogram-parameters/routing_engine_used'
+      - $ref: '#/_histogram-parameters/start_time'
+      - $ref: '#/_histogram-parameters/end_time'
+      - $ref: '#/_histogram-parameters/min_latency'
+      - $ref: '#/_histogram-parameters/max_latency'
+      - $ref: '#/_histogram-parameters/min_tokens'
+      - $ref: '#/_histogram-parameters/max_tokens'
+      - $ref: '#/_histogram-parameters/min_cost'
+      - $ref: '#/_histogram-parameters/max_cost'
+      - $ref: '#/_histogram-parameters/missing_cost_only'
+      - $ref: '#/_histogram-parameters/content_search'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/logging.yaml#/ProviderLatencyHistogramResult'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+# Shared histogram filter parameters
+_histogram-parameters:
+  providers:
+    name: providers
+    in: query
+    description: Comma-separated list of providers to filter by
+    schema:
+      type: string
+  models:
+    name: models
+    in: query
+    description: Comma-separated list of models to filter by
+    schema:
+      type: string
+  status:
+    name: status
+    in: query
+    description: Comma-separated list of statuses to filter by
+    schema:
+      type: string
+  objects:
+    name: objects
+    in: query
+    description: Comma-separated list of object types to filter by
+    schema:
+      type: string
+  selected_key_ids:
+    name: selected_key_ids
+    in: query
+    description: Comma-separated list of selected key IDs to filter by
+    schema:
+      type: string
+  virtual_key_ids:
+    name: virtual_key_ids
+    in: query
+    description: Comma-separated list of virtual key IDs to filter by
+    schema:
+      type: string
+  routing_rule_ids:
+    name: routing_rule_ids
+    in: query
+    description: Comma-separated list of routing rule IDs to filter by
+    schema:
+      type: string
+  routing_engine_used:
+    name: routing_engine_used
+    in: query
+    description: Comma-separated list of routing engines to filter by
+    schema:
+      type: string
+  start_time:
+    name: start_time
+    in: query
+    description: Start time filter (RFC3339 format)
+    schema:
+      type: string
+      format: date-time
+  end_time:
+    name: end_time
+    in: query
+    description: End time filter (RFC3339 format)
+    schema:
+      type: string
+      format: date-time
+  min_latency:
+    name: min_latency
+    in: query
+    description: Minimum latency filter
+    schema:
+      type: number
+  max_latency:
+    name: max_latency
+    in: query
+    description: Maximum latency filter
+    schema:
+      type: number
+  min_tokens:
+    name: min_tokens
+    in: query
+    description: Minimum tokens filter
+    schema:
+      type: integer
+  max_tokens:
+    name: max_tokens
+    in: query
+    description: Maximum tokens filter
+    schema:
+      type: integer
+  min_cost:
+    name: min_cost
+    in: query
+    description: Minimum cost filter
+    schema:
+      type: number
+  max_cost:
+    name: max_cost
+    in: query
+    description: Maximum cost filter
+    schema:
+      type: number
+  missing_cost_only:
+    name: missing_cost_only
+    in: query
+    description: Only show logs with missing cost
+    schema:
+      type: boolean
+  content_search:
+    name: content_search
+    in: query
+    description: Search in request/response content
+    schema:
+      type: string
+
 logs-recalculate-cost:
   post:
     operationId: recalculateLogCosts

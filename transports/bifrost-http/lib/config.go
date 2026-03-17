@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -58,8 +59,8 @@ type StreamChunkInterceptor interface {
 type HandlerStore interface {
 	// ShouldAllowDirectKeys returns whether direct API keys in headers are allowed
 	ShouldAllowDirectKeys() bool
-	// GetHeaderFilterConfig returns the global header filter configuration
-	GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig
+	// GetHeaderMatcher returns the precompiled header matcher for header filtering
+	GetHeaderMatcher() *HeaderMatcher
 	// GetAvailableProviders returns the list of available providers
 	GetAvailableProviders() []schemas.ModelProvider
 	// GetStreamChunkInterceptor returns the interceptor for streaming chunks.
@@ -104,6 +105,12 @@ func IsBuiltinPlugin(name string) bool {
 		name == maxim.PluginName ||
 		name == semanticcache.PluginName ||
 		name == otel.PluginName
+}
+
+// pluginOrderInfo stores ordering metadata for a plugin.
+type pluginOrderInfo struct {
+	Placement schemas.PluginPlacement
+	Order     int
 }
 
 // ConfigData represents the configuration data for the Bifrost HTTP transport.
@@ -284,6 +291,7 @@ type Config struct {
 	// derived views rebuilt automatically on any plugin change.
 	// Lock-free reads via atomic.Pointer for hot-path performance.
 	pluginsMu            sync.Mutex                                    // Protects structural changes to BasePlugins
+	pluginOrderMap       map[string]pluginOrderInfo                    // Plugin ordering metadata (protected by pluginsMu)
 	BasePlugins          atomic.Pointer[[]schemas.BasePlugin]          // Master list of all plugins
 	LLMPlugins           atomic.Pointer[[]schemas.LLMPlugin]           // Derived cache (auto-rebuilt)
 	MCPPlugins           atomic.Pointer[[]schemas.MCPPlugin]           // Derived cache (auto-rebuilt)
@@ -320,6 +328,9 @@ type Config struct {
 	StreamingDecompressThreshold int64
 	// WebSocket configuration for WS gateway features (Responses WS mode, Realtime API).
 	WebSocketConfig *schemas.WebSocketConfig
+
+	// Precompiled header matcher for header filtering. Rebuilt on config change.
+	headerMatcher atomic.Pointer[HeaderMatcher]
 }
 
 var DefaultClientConfig = configstore.ClientConfig{
@@ -464,6 +475,8 @@ func loadConfigFromFile(ctx context.Context, config *Config, data []byte) (*Conf
 	// NOTE: We follow a standard practice: store -> config file -> update store.
 	// Load client config
 	loadClientConfigFromFile(ctx, config, &configData)
+	// Compile header filter config into optimized matcher
+	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// Load providers config with hash reconciliation
 	if err = loadProvidersFromFile(ctx, config, &configData); err != nil {
 		return nil, err
@@ -1635,10 +1648,12 @@ func loadPluginsFromFile(ctx context.Context, config *Config, configData *Config
 			config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 			for i, plugin := range plugins {
 				pluginConfig := &schemas.PluginConfig{
-					Name:    plugin.Name,
-					Enabled: plugin.Enabled,
-					Config:  plugin.Config,
-					Path:    plugin.Path,
+					Name:      plugin.Name,
+					Enabled:   plugin.Enabled,
+					Config:    plugin.Config,
+					Path:      plugin.Path,
+					Placement: plugin.Placement,
+					Order:     plugin.Order,
 				}
 				if plugin.Name == semanticcache.PluginName {
 					if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -1654,6 +1669,28 @@ func loadPluginsFromFile(ctx context.Context, config *Config, configData *Config
 	if len(configData.Plugins) > 0 {
 		mergePluginsFromFile(ctx, config, configData)
 	}
+}
+
+// placementEqual compares two optional PluginPlacement pointers.
+func placementEqual(a, b *schemas.PluginPlacement) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+// orderEqual compares two optional int pointers.
+func orderEqual(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
 
 // mergePluginsFromFile merges plugins from config file with existing config
@@ -1680,8 +1717,9 @@ func mergePluginsFromFile(ctx context.Context, config *Config, configData *Confi
 				if existingPlugin.Version != nil {
 					existingVersion = *existingPlugin.Version
 				}
-				if *plugin.Version > existingVersion {
-					logger.Debug("replacing plugin %s with higher version %d (was %d)", plugin.Name, *plugin.Version, existingVersion)
+				placementChanged := !placementEqual(existingPlugin.Placement, plugin.Placement) || !orderEqual(existingPlugin.Order, plugin.Order)
+				if *plugin.Version > existingVersion || placementChanged {
+					logger.Debug("replacing plugin %s (version %d→%d, placementChanged=%v)", plugin.Name, existingVersion, *plugin.Version, placementChanged)
 					config.PluginConfigs[existingIdx] = plugin
 				}
 			}
@@ -1711,11 +1749,13 @@ func mergePluginsFromFile(ctx context.Context, config *Config, configData *Confi
 				plugin.Version = bifrost.Ptr(int16(1))
 			}
 			pluginConfig := &configstoreTables.TablePlugin{
-				Name:    plugin.Name,
-				Enabled: plugin.Enabled,
-				Config:  pluginConfigCopy,
-				Path:    plugin.Path,
-				Version: *plugin.Version,
+				Name:      plugin.Name,
+				Enabled:   plugin.Enabled,
+				Config:    pluginConfigCopy,
+				Path:      plugin.Path,
+				Version:   *plugin.Version,
+				Placement: plugin.Placement,
+				Order:     plugin.Order,
 			}
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.RemoveProviderKeysFromSemanticCacheConfig(pluginConfig); err != nil {
@@ -1961,6 +2001,8 @@ func loadConfigFromDefaults(ctx context.Context, config *Config, configDBPath, l
 	if err = loadDefaultClientConfig(ctx, config); err != nil {
 		return nil, err
 	}
+	// Compile header filter config into optimized matcher
+	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// Initialize logs store
 	if err = initDefaultLogsStore(ctx, config, logsDBPath); err != nil {
 		return nil, err
@@ -2196,10 +2238,13 @@ func loadDefaultPlugins(ctx context.Context, config *Config) error {
 		config.PluginConfigs = make([]*schemas.PluginConfig, len(plugins))
 		for i, plugin := range plugins {
 			pluginConfig := &schemas.PluginConfig{
-				Name:    plugin.Name,
-				Enabled: plugin.Enabled,
-				Config:  plugin.Config,
-				Path:    plugin.Path,
+				Name:      plugin.Name,
+				Enabled:   plugin.Enabled,
+				Config:    plugin.Config,
+				Path:      plugin.Path,
+				Placement: plugin.Placement,
+				Order:     plugin.Order,
+				Version:   new(plugin.Version),
 			}
 			if plugin.Name == semanticcache.PluginName {
 				if err := config.AddProviderKeysToSemanticCacheConfig(pluginConfig); err != nil {
@@ -2515,19 +2560,33 @@ func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
 }
 
-// GetHeaderFilterConfig returns the global header filter configuration
-// Note: This method doesn't use locking for performance. In rare cases during
-// config updates, it may return stale data, but this is acceptable since pointer
-// reads are atomic and won't cause panics.
-func (c *Config) GetHeaderFilterConfig() *configstoreTables.GlobalHeaderFilterConfig {
-	return c.ClientConfig.HeaderFilterConfig
+// GetHeaderMatcher returns the precompiled header matcher for header filtering.
+// Lock-free via atomic pointer; safe for concurrent reads from hot paths.
+func (c *Config) GetHeaderMatcher() *HeaderMatcher {
+	return c.headerMatcher.Load()
 }
 
-// GetLoadedLLMPlugins returns the current snapshot of loaded LLM plugins.
+// SetHeaderMatcher atomically stores a new precompiled header matcher.
+// Called when header filter config changes.
+func (c *Config) SetHeaderMatcher(m *HeaderMatcher) {
+	c.headerMatcher.Store(m)
+}
+
+// GetPluginOrder returns the names of all base plugins in their sorted placement order.
 // This method is lock-free and safe for concurrent access from hot paths.
-// It returns the plugin slice from the atomic pointer, which is safe to iterate
-// even if plugins are being updated concurrently.
 // Do not modify the returned slice; it is a shared snapshot and must be treated read-only.
+func (c *Config) GetPluginOrder() []string {
+	plugins := c.BasePlugins.Load()
+	if plugins == nil {
+		return nil
+	}
+	names := make([]string, len(*plugins))
+	for i, p := range *plugins {
+		names[i] = p.GetName()
+	}
+	return names
+}
+
 func (c *Config) GetLoadedLLMPlugins() []schemas.LLMPlugin {
 	if plugins := c.LLMPlugins.Load(); plugins != nil {
 		return slices.Clone(*plugins)
@@ -2583,6 +2642,31 @@ func (c *Config) GetAsyncJobResultTTL() int {
 // GetKVStore returns the shared in-memory kvstore instance.
 func (c *Config) GetKVStore() *kvstore.Store {
 	return c.KVStore
+}
+
+// Close gracefully shuts down all background components associated with the Config.
+// This includes ModelCatalog sync worker, TokenRefreshWorker, KVStore cleanup loop,
+// ConfigStore, LogsStore, and VectorStore. It should be called when the Config is
+// no longer needed to prevent goroutine leaks.
+func (c *Config) Close(ctx context.Context) {
+	if c.ModelCatalog != nil {
+		c.ModelCatalog.Cleanup()
+	}
+	if c.TokenRefreshWorker != nil {
+		c.TokenRefreshWorker.Stop()
+	}
+	if c.KVStore != nil {
+		c.KVStore.Close()
+	}
+	if c.ConfigStore != nil {
+		c.ConfigStore.Close(ctx)
+	}
+	if c.LogsStore != nil {
+		c.LogsStore.Close(ctx)
+	}
+	if c.VectorStore != nil {
+		c.VectorStore.Close(ctx, "")
+	}
 }
 
 // initKVStore initializes the kvstore for the config
@@ -2774,7 +2858,7 @@ func (c *Config) GetPluginNameByDisplayName(displayName string) (string, bool) {
 	return "", false
 }
 
-// DeletePluginStatus completely removes a plugin status entry
+// DeletePluginOverallStatus completely removes a plugin status entry
 func (c *Config) DeletePluginOverallStatus(name string) {
 	c.pluginStatusMu.Lock()
 	defer c.pluginStatusMu.Unlock()
@@ -2852,7 +2936,7 @@ func (c *Config) UnregisterPlugin(name string) error {
 	for {
 		oldPlugins := c.BasePlugins.Load()
 		if oldPlugins == nil {
-			return fmt.Errorf("plugin %s not found", name)
+			return plugins.ErrPluginNotFound
 		}
 
 		newPlugins := make([]schemas.BasePlugin, 0, len(*oldPlugins))
@@ -2866,15 +2950,81 @@ func (c *Config) UnregisterPlugin(name string) error {
 		}
 
 		if !found {
-			return fmt.Errorf("plugin %s not found", name)
+			return plugins.ErrPluginNotFound
 		}
 
 		if c.BasePlugins.CompareAndSwap(oldPlugins, &newPlugins) {
+			delete(c.pluginOrderMap, name)
 			c.rebuildInterfaceCaches()
 			return nil
 		}
 		// CAS failed, retry with new snapshot
 	}
+}
+
+// SetPluginOrderInfo stores ordering metadata for a plugin.
+// If placement is nil, defaults to "post_builtin". If order is nil, defaults to 0.
+func (c *Config) SetPluginOrderInfo(name string, placement *schemas.PluginPlacement, order *int) {
+	c.pluginsMu.Lock()
+	defer c.pluginsMu.Unlock()
+
+	if c.pluginOrderMap == nil {
+		c.pluginOrderMap = make(map[string]pluginOrderInfo)
+	}
+
+	p := schemas.PluginPlacementPostBuiltin
+	if placement != nil {
+		p = *placement
+	}
+	o := 0
+	if order != nil {
+		o = *order
+	}
+
+	c.pluginOrderMap[name] = pluginOrderInfo{Placement: p, Order: o}
+}
+
+// SortAndRebuildPlugins sorts BasePlugins by placement group then order, and rebuilds caches.
+// Placement groups execute in order: pre_builtin → builtin → post_builtin.
+// Within each group, plugins are sorted by order (lower = earlier). Ties preserve registration order (stable sort).
+func (c *Config) SortAndRebuildPlugins() {
+	c.pluginsMu.Lock()
+	defer c.pluginsMu.Unlock()
+
+	oldPlugins := c.BasePlugins.Load()
+	if oldPlugins == nil || len(*oldPlugins) == 0 {
+		return
+	}
+
+	sorted := make([]schemas.BasePlugin, len(*oldPlugins))
+	copy(sorted, *oldPlugins)
+
+	groupRank := map[schemas.PluginPlacement]int{
+		schemas.PluginPlacementPreBuiltin:  0,
+		schemas.PluginPlacementBuiltin:     1,
+		schemas.PluginPlacementPostBuiltin: 2,
+	}
+	defaultRank := 2 // Unknown placements default to post_builtin (least privileged)
+
+	sort.SliceStable(sorted, func(i, j int) bool {
+		iInfo := c.pluginOrderMap[sorted[i].GetName()]
+		jInfo := c.pluginOrderMap[sorted[j].GetName()]
+		iRank, iOk := groupRank[iInfo.Placement]
+		if !iOk {
+			iRank = defaultRank
+		}
+		jRank, jOk := groupRank[jInfo.Placement]
+		if !jOk {
+			jRank = defaultRank
+		}
+		if iRank != jRank {
+			return iRank < jRank
+		}
+		return iInfo.Order < jInfo.Order
+	})
+
+	c.BasePlugins.Store(&sorted)
+	c.rebuildInterfaceCaches()
 }
 
 // FindPluginAs finds a plugin by name in the given config and returns it as type T
