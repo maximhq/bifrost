@@ -92,7 +92,7 @@ const (
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
-func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher) (*schemas.BifrostContext, context.CancelFunc) {
+func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, matcher *HeaderMatcher, mcpHeaderCombinedAllowlist schemas.WhiteList) (*schemas.BifrostContext, context.CancelFunc) {
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
 	var cancel context.CancelFunc
@@ -141,6 +141,8 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	maximTags := make(map[string]string)
 	// Initialize extra headers map for headers prefixed with x-bf-eh-
 	extraHeaders := make(map[string][]string)
+	// Initialize extra headers map for headers in the mcp header combined allowlist
+	mcpExtraHeaders := make(map[string][]string)
 	// Security denylist of header names that should never be accepted (case-insensitive)
 	// This denylist is always enforced regardless of user configuration
 	securityDenylist := map[string]bool{
@@ -377,6 +379,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 				return true
 			}
 		}
+		// Handle MCP extra headers
+		if mcpHeaderCombinedAllowlist.IsAllowed(keyStr) {
+			mcpExtraHeaders[keyStr] = append(mcpExtraHeaders[keyStr], string(value))
+			return true
+		}
 		// Send back raw response header
 		if keyStr == "x-bf-send-back-raw-response" {
 			if valueStr := string(value); valueStr == "true" {
@@ -409,6 +416,11 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, allowDirectKeys bool, mat
 	// Store collected extra headers in the context if any were found
 	if len(extraHeaders) > 0 {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyExtraHeaders, extraHeaders)
+	}
+
+	// Store collected MCP extra headers in the context if any were found
+	if len(mcpExtraHeaders) > 0 {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, mcpExtraHeaders)
 	}
 
 	// Collect all request headers for downstream use (e.g., governance required headers check)

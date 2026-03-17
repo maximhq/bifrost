@@ -40,6 +40,7 @@ export interface MCPClientConfig {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 }
 
 export interface MCPClient {
@@ -90,6 +91,7 @@ export interface UpdateMCPClientRequest {
 	is_ping_available?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global, -1 = disabled)
+	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 }
 
 // Pagination params for MCP clients list

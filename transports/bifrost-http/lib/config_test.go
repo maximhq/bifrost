@@ -397,7 +397,7 @@ func NewMockConfigStore() *MockConfigStore {
 func (m *MockConfigStore) Ping(ctx context.Context) error                 { return nil }
 func (m *MockConfigStore) EncryptPlaintextRows(ctx context.Context) error { return nil }
 func (m *MockConfigStore) Close(ctx context.Context) error                { return nil }
-func (m *MockConfigStore) DB() *gorm.DB                    { return nil }
+func (m *MockConfigStore) DB() *gorm.DB                                   { return nil }
 func (m *MockConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	return fn(nil)
 }
@@ -489,30 +489,32 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		if m.mcpConfig.ClientConfigs[i].ID == id {
 			// Found the entry, update it with the new config
 			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
-				ID:                 clientConfig.ClientID,
-				Name:               clientConfig.Name,
-				IsCodeModeClient:   clientConfig.IsCodeModeClient,
-				ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-				ConnectionString:   clientConfig.ConnectionString,
-				StdioConfig:        clientConfig.StdioConfig,
-				Headers:            clientConfig.Headers,
-				ToolsToExecute:     clientConfig.ToolsToExecute,
-				ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+				ID:                  clientConfig.ClientID,
+				Name:                clientConfig.Name,
+				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+				ConnectionString:    clientConfig.ConnectionString,
+				StdioConfig:         clientConfig.StdioConfig,
+				Headers:             clientConfig.Headers,
+				ToolsToExecute:      clientConfig.ToolsToExecute,
+				ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+				AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 			}
 			return nil
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
 	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
-		ID:                 clientConfig.ClientID,
-		Name:               clientConfig.Name,
-		IsCodeModeClient:   clientConfig.IsCodeModeClient,
-		ConnectionType:     schemas.MCPConnectionType(clientConfig.ConnectionType),
-		ConnectionString:   clientConfig.ConnectionString,
-		StdioConfig:        clientConfig.StdioConfig,
-		Headers:            clientConfig.Headers,
-		ToolsToExecute:     clientConfig.ToolsToExecute,
-		ToolsToAutoExecute: clientConfig.ToolsToAutoExecute,
+		ID:                  clientConfig.ClientID,
+		Name:                clientConfig.Name,
+		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
+		ConnectionString:    clientConfig.ConnectionString,
+		StdioConfig:         clientConfig.StdioConfig,
+		Headers:             clientConfig.Headers,
+		ToolsToExecute:      clientConfig.ToolsToExecute,
+		ToolsToAutoExecute:  clientConfig.ToolsToAutoExecute,
+		AllowedExtraHeaders: clientConfig.AllowedExtraHeaders,
 	})
 
 	return nil
@@ -12293,17 +12295,17 @@ func TestGenerateClientConfigHash(t *testing.T) {
 	initTestLogger()
 
 	cc1 := configstore.ClientConfig{
-		DropExcessRequests:      true,
-		InitialPoolSize:         300,
-		PrometheusLabels:        []string{"label1", "label2"},
-		EnableLogging:           true,
-		DisableContentLogging:   false,
-		LogRetentionDays:        30,
+		DropExcessRequests:     true,
+		InitialPoolSize:        300,
+		PrometheusLabels:       []string{"label1", "label2"},
+		EnableLogging:          true,
+		DisableContentLogging:  false,
+		LogRetentionDays:       30,
 		EnforceAuthOnInference: false,
 		AllowDirectKeys:        true,
-		AllowedOrigins:          []string{"http://localhost:3000"},
-		MaxRequestBodySizeMB:    100,
-		EnableLiteLLMFallbacks:  false,
+		AllowedOrigins:         []string{"http://localhost:3000"},
+		MaxRequestBodySizeMB:   100,
+		EnableLiteLLMFallbacks: false,
 	}
 
 	hash1, err := cc1.GenerateClientConfigHash()
@@ -13342,30 +13344,30 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		labels := []string{"provider", "model", "status"}
 
 		ccToSave := tables.TableClientConfig{
-			DropExcessRequests:      true,
-			InitialPoolSize:         300,
-			PrometheusLabels:        labels,
-			EnableLogging:           true,
-			DisableContentLogging:   false,
-			LogRetentionDays:        30,
+			DropExcessRequests:     true,
+			InitialPoolSize:        300,
+			PrometheusLabels:       labels,
+			EnableLogging:          true,
+			DisableContentLogging:  false,
+			LogRetentionDays:       30,
 			EnforceAuthOnInference: false,
-			AllowDirectKeys:         true,
-			MaxRequestBodySizeMB:    100,
-			EnableLiteLLMFallbacks:  false,
+			AllowDirectKeys:        true,
+			MaxRequestBodySizeMB:   100,
+			EnableLiteLLMFallbacks: false,
 		}
 
 		// Generate hash from config
 		clientConfig := configstore.ClientConfig{
-			DropExcessRequests:      ccToSave.DropExcessRequests,
-			InitialPoolSize:         ccToSave.InitialPoolSize,
-			PrometheusLabels:        ccToSave.PrometheusLabels,
-			EnableLogging:           ccToSave.EnableLogging,
-			DisableContentLogging:   ccToSave.DisableContentLogging,
-			LogRetentionDays:        ccToSave.LogRetentionDays,
+			DropExcessRequests:     ccToSave.DropExcessRequests,
+			InitialPoolSize:        ccToSave.InitialPoolSize,
+			PrometheusLabels:       ccToSave.PrometheusLabels,
+			EnableLogging:          ccToSave.EnableLogging,
+			DisableContentLogging:  ccToSave.DisableContentLogging,
+			LogRetentionDays:       ccToSave.LogRetentionDays,
 			EnforceAuthOnInference: ccToSave.EnforceAuthOnInference,
-			AllowDirectKeys:         ccToSave.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccToSave.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccToSave.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccToSave.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccToSave.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccToSave.EnableLiteLLMFallbacks,
 		}
 		hashBeforeSave, _ := clientConfig.GenerateClientConfigHash()
 
@@ -13375,16 +13377,16 @@ func TestGenerateClientConfigHash_RuntimeVsMigrationParity(t *testing.T) {
 		db.Where("id = ?", ccToSave.ID).First(&ccFromDB)
 
 		clientConfigFromDB := configstore.ClientConfig{
-			DropExcessRequests:      ccFromDB.DropExcessRequests,
-			InitialPoolSize:         ccFromDB.InitialPoolSize,
-			PrometheusLabels:        ccFromDB.PrometheusLabels,
-			EnableLogging:           ccFromDB.EnableLogging,
-			DisableContentLogging:   ccFromDB.DisableContentLogging,
-			LogRetentionDays:        ccFromDB.LogRetentionDays,
+			DropExcessRequests:     ccFromDB.DropExcessRequests,
+			InitialPoolSize:        ccFromDB.InitialPoolSize,
+			PrometheusLabels:       ccFromDB.PrometheusLabels,
+			EnableLogging:          ccFromDB.EnableLogging,
+			DisableContentLogging:  ccFromDB.DisableContentLogging,
+			LogRetentionDays:       ccFromDB.LogRetentionDays,
 			EnforceAuthOnInference: ccFromDB.EnforceAuthOnInference,
-			AllowDirectKeys:         ccFromDB.AllowDirectKeys,
-			MaxRequestBodySizeMB:    ccFromDB.MaxRequestBodySizeMB,
-			EnableLiteLLMFallbacks:  ccFromDB.EnableLiteLLMFallbacks,
+			AllowDirectKeys:        ccFromDB.AllowDirectKeys,
+			MaxRequestBodySizeMB:   ccFromDB.MaxRequestBodySizeMB,
+			EnableLiteLLMFallbacks: ccFromDB.EnableLiteLLMFallbacks,
 		}
 		hashAfterLoad, _ := clientConfigFromDB.GenerateClientConfigHash()
 
@@ -15407,13 +15409,13 @@ var enterpriseSchemaPaths = map[string]bool{
 var excludedGoFields = map[string]map[string]bool{
 	// ClientConfig - MCP fields are managed at MCP level, not client level
 	"configstore.ClientConfig": {
-		"ConfigHash":                  true,
-		"allowed_headers":             true, // Internal use
-		"mcp_agent_depth":             true, // Managed via MCP config
-		"mcp_code_mode_binding_level": true,
-		"mcp_tool_execution_timeout":  true,
-		"mcp_tool_sync_interval":        true,
-		"mcp_disable_auto_tool_inject":  true,
+		"ConfigHash":                   true,
+		"allowed_headers":              true, // Internal use
+		"mcp_agent_depth":              true, // Managed via MCP config
+		"mcp_code_mode_binding_level":  true,
+		"mcp_tool_execution_timeout":   true,
+		"mcp_tool_sync_interval":       true,
+		"mcp_disable_auto_tool_inject": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
 	// GovernanceConfig - some fields are internal/enterprise

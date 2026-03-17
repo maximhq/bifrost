@@ -326,6 +326,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -5026,6 +5029,37 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) er
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running backfill_allowed_models_wildcard migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPClientAllowedExtraHeadersJSONColumn adds the allowed_extra_headers_json column to the mcp_client table
+func migrationAddMCPClientAllowedExtraHeadersJSONColumn(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "add_mcp_client_allowed_extra_headers_json_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if !migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.AddColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			migrator := tx.Migrator()
+			if migrator.HasColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json") {
+				if err := migrator.DropColumn(&tables.TableMCPClient{}, "allowed_extra_headers_json"); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_mcp_client_allowed_extra_headers_json_column migration: %s", err.Error())
 	}
 	return nil
 }

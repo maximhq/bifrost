@@ -142,7 +142,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, oauth2Provider
 						manager.clientMap[clientConfig.ID].State = schemas.MCPConnectionStateDisconnected
 					}
 					manager.mu.Unlock()
-					monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, clientConfig.IsPingAvailable, manager.logger)
+					isPingAvailable := true
+				if clientConfig.IsPingAvailable != nil {
+					isPingAvailable = *clientConfig.IsPingAvailable
+				}
+				monitor := NewClientHealthMonitor(manager, clientConfig.ID, DefaultHealthCheckInterval, isPingAvailable, manager.logger)
 					manager.healthMonitorManager.StartMonitoring(monitor)
 				}
 			}(clientConfig)
