@@ -1,0 +1,64 @@
+---
+title: "v1.3.9"
+description: "v1.3.9 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.9">
+
+## Changelog
+
+This release upgrades the base OSS version from v1.4.11 to v1.4.12, bringing a full-featured prompt repository with RBAC, large payload optimization, WebSocket-based responses API, Anthropic passthrough, session stickiness, and a unified pricing engine. On the enterprise side, this release adds KV store gossip protocol support, RBAC for the prompt repository, and build/deployment improvements.
+
+## ✨ Features
+
+- **Prompt Repository** — Full prompt management system with folders, prompts, versions, sessions, playground, versioning, deployment features, and Jinja2 variable support
+- **Prompt Repository RBAC** — Added role-based access control for prompt repository operations
+- **Large Payload Optimization** — End-to-end large payload support with streaming primitives, detection hooks, passthrough eligibility, provider support, plugin awareness, and enterprise settings UI
+- **WebSocket Responses aAPI** — Added WebSocket transport for OpenAI responses API and realtime API support
+- **Anthropic Passthrough** — Added native Anthropic passthrough endpoint
+- **KV Store Gossip Protocol** — Added gossip-based KV store for distributed state synchronization
+- **Session Stickiness** — Added session stickiness in key selection for consistent routing
+- **Model Parameters API** — Added model parameters table and API endpoint with in-memory caching
+- **Virtual Key Limit Resets** — Added virtual key limit reset functionality
+- **Pricing Engine Refactor** — Unified cost calculation with quality-based image and video pricing
+- **Image Configuration** — Added size/aspect ratio config for Gemini and size-to-resolution conversion for Replicate
+- **Streaming Request Decompression** — Threshold-gated streaming decompression with pooled readers
+- **Raw Request/Response Storage** — Allow storing raw request/response without returning them to clients
+- **Weighted Routing Targets** — Added weighted routing targets for probabilistic routing rules with key selection support
+- **API Key Selection by ID** — Added API key selection by ID with priority over name selection
+- **TLS Configuration** — Added TLS configuration support for all providers and TLS termination inside Bifrost server
+- **K8s Deployment Workflow** — Added workflow to deploy Bifrost Enterprise to Maxim K8s cluster
+
+## 🐞 Fixed
+
+- **Deterministic Tool Schema** — Fixed deterministic tool schema serialization for Anthropic prompt caching
+- **CORS Wildcard** — Fixed CORS issue with allowing * origin
+- **Bedrock toolChoice** — Fixed toolChoice silently dropped on Bedrock /converse and /converse-stream endpoints
+- **Count Tokens Passthrough** — Fixed request body passthrough for count tokens endpoint for Anthropic and Vertex
+- **Chat Finish Reason** — Map chat finish_reason to responses status and preserve terminal stream semantics
+- **Tool Call Indexes** — Fixed streaming tool call indices for parallel tool calls in chat completions stream
+- **Video Pricing** — Fixed video pricing calculation
+- **SQLite Migration** — Prevented CASCADE deletion during routing targets migration
+- **Log Serialization** — Reduced logstore serialization overhead and batch cost updates
+- **Log List Queries** — Avoid loading raw_request/raw_response in log list queries
+- **MCP Reconnection** — Improved MCP client reconnection with exponential backoff and connection timeout
+- **Create Manifest Flow** — Fixed create manifest flow
+- **Build Pipeline** — Fixed builds skipping latest changes
+- **BigQuery Import** — Fixed import for codeEditor in bigqueryFormFragment.tsx
+- **OSS Build Integration** — Support latest-main OSS build with go.mod replace directives
+
+## 📀 Base OSS version
+
+`transports/v1.4.12`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+github.com/maximhq/bifrost/core v1.4.8
+github.com/maximhq/bifrost/framework v1.2.27
+github.com/maximhq/bifrost/plugins/governance v1.4.28
+github.com/maximhq/bifrost/plugins/logging v1.4.28
+github.com/maximhq/bifrost/transports v1.4.12
+```
+
+</Update>
