@@ -71,6 +71,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 		},
 	});
 
@@ -85,6 +86,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 			tools_to_auto_execute: mcpClient.config.tools_to_auto_execute || [],
 			tool_pricing: mcpClient.config.tool_pricing || {},
 			tool_sync_interval: toolSyncIntervalToMinutes(mcpClient.config.tool_sync_interval),
+			allowed_extra_headers: mcpClient.config.allowed_extra_headers || [],
 		});
 	}, [form, mcpClient]);
 
@@ -101,6 +103,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 					tools_to_auto_execute: data.tools_to_auto_execute,
 					tool_pricing: data.tool_pricing,
 					tool_sync_interval: data.tool_sync_interval ?? 0,
+					allowed_extra_headers: data.allowed_extra_headers,
 				},
 			}).unwrap();
 
@@ -377,6 +380,48 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 													useEnvVarInput
 												/>
 											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+								<FormField
+									control={form.control}
+									name="allowed_extra_headers"
+									render={({ field }) => (
+										<FormItem className="flex flex-col gap-2">
+											<div className="flex items-center gap-2">
+												<FormLabel>Allowed Extra Headers</FormLabel>
+												<TooltipProvider>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Info className="text-muted-foreground h-4 w-4 cursor-help" />
+														</TooltipTrigger>
+														<TooltipContent className="max-w-xs">
+															<p>
+																Allowlist of headers that callers can forward to this MCP server at request time.
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												</TooltipProvider>
+											</div>
+											<FormControl>
+												<Input
+													data-testid="mcpclient-input-allowed-extra-headers"
+													placeholder="*, or: authorization, x-user-id"
+													name={field.name}
+													ref={field.ref}
+													value={(field.value || []).join(", ")}
+													onChange={(e) => {
+														const raw = e.target.value;
+														const parsed = raw.trim() ? raw.split(",").map((h) => h.trim()).filter(Boolean) : [];
+														field.onChange(parsed);
+													}}
+													onBlur={field.onBlur}
+												/>
+											</FormControl>
+											<p className="text-muted-foreground text-xs">
+												Comma-separated header names, or <code>*</code> to allow all. Leave empty to block all extra headers.
+											</p>
 											<FormMessage />
 										</FormItem>
 									)}
