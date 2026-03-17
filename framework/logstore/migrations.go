@@ -3,11 +3,18 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 
 	"github.com/maximhq/bifrost/framework/migrator"
 	"gorm.io/gorm"
 )
+
+// isValidJSON checks if a string is valid JSON.
+func isValidJSON(s string) bool {
+	var js json.RawMessage
+	return json.Unmarshal([]byte(s), &js) == nil
+}
 
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
@@ -1696,6 +1703,56 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			// Only create GIN index for Postgres
 			if tx.Dialector.Name() == "postgres" {
+				// Clean empty strings first (not valid JSON)
+				if err := tx.Exec("UPDATE logs SET metadata = NULL WHERE metadata = ''").Error; err != nil {
+					return fmt.Errorf("failed to clean empty metadata values: %w", err)
+				}
+
+				// Clean invalid JSON values before creating the GIN index.
+				// The index expression (metadata::jsonb) will fail if any row contains invalid JSON.
+				//
+				// We fetch all rows with metadata and validate each one in Go, then update
+				// the invalid ones. This avoids depending on PL/pgSQL which may not be available.
+				// Rows are processed in batches to avoid loading all rows into memory.
+				type metadataRow struct {
+					ID       string
+					Metadata string
+				}
+
+				const batchSize = 5000
+				var lastSeenID string
+
+				for {
+					var batch []metadataRow
+					if err := tx.Raw("SELECT id, metadata FROM logs WHERE metadata IS NOT NULL AND metadata != '' AND id > ? ORDER BY id LIMIT ?", lastSeenID, batchSize).Scan(&batch).Error; err != nil {
+						return fmt.Errorf("failed to fetch metadata rows: %w", err)
+					}
+					if len(batch) == 0 {
+						break
+					}
+
+					// Collect invalid IDs for this batch
+					var invalidIDs []string
+					for _, row := range batch {
+						if !isValidJSON(row.Metadata) {
+							invalidIDs = append(invalidIDs, row.ID)
+						}
+					}
+
+					// Flush invalid rows immediately per batch
+					if len(invalidIDs) > 0 {
+						if err := tx.Where("id IN ?", invalidIDs).Table("logs").Update("metadata", nil).Error; err != nil {
+							return fmt.Errorf("failed to clean invalid metadata values: %w", err)
+						}
+					}
+
+					lastSeenID = batch[len(batch)-1].ID
+					if len(batch) < batchSize {
+						break
+					}
+				}
+
+				// Create the GIN index now that all metadata values are valid JSON or NULL.
 				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb))").Error; err != nil {
 					return fmt.Errorf("failed to create metadata GIN index: %w", err)
 				}

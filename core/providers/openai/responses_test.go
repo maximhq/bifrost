@@ -1471,14 +1471,15 @@ func TestToOpenAIResponsesRequest_ToolNormalization(t *testing.T) {
 		t.Fatal("expected function tool in result")
 	}
 
-	// Verify parameters are normalized: Properties keys should be sorted alphabetically
+	// Verify parameters are normalized: Properties keys should preserve original order
+	// (user-defined property names are kept in client order for LLM generation quality)
 	normalizedParams := funcTool.ResponsesToolFunction.Parameters
 	if normalizedParams == nil {
 		t.Fatal("expected normalized parameters to be non-nil")
 	}
 	keys := normalizedParams.Properties.Keys()
-	if len(keys) != 2 || keys[0] != "alpha" || keys[1] != "zebra" {
-		t.Errorf("expected Properties keys sorted as [alpha, zebra], got %v", keys)
+	if len(keys) != 2 || keys[0] != "zebra" || keys[1] != "alpha" {
+		t.Errorf("expected Properties keys preserved as [zebra, alpha], got %v", keys)
 	}
 
 	// Verify non-function tools are present and unaffected

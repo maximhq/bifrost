@@ -1879,6 +1879,78 @@ func SetupStreamCancellation(ctx context.Context, bodyStream io.Reader, logger s
 	}
 }
 
+// DefaultStreamIdleTimeout is how long a stream read can block with zero data
+// before bifrost considers the connection stalled and closes it. This protects
+// against providers that stop sending data but keep the TCP connection open
+// (e.g., Azure TPM throttling).
+const DefaultStreamIdleTimeout = 60 * time.Second
+
+// SetStreamIdleTimeoutIfEmpty sets the stream idle timeout on the context from
+// the provider's network config, but only if no valid timeout is already present.
+// This allows upstream layers (transport, headers) to set the timeout first,
+// with the provider config acting as a fallback.
+func SetStreamIdleTimeoutIfEmpty(ctx *schemas.BifrostContext, configSeconds int) {
+	if existing, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && existing > 0 {
+		return // already set from upstream (transport/header), respect it
+	}
+	if configSeconds > 0 {
+		ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Duration(configSeconds)*time.Second)
+	}
+}
+
+// GetStreamIdleTimeout reads the per-chunk idle timeout from context,
+// falling back to DefaultStreamIdleTimeout if not set.
+func GetStreamIdleTimeout(ctx *schemas.BifrostContext) time.Duration {
+	if timeout, ok := ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration); ok && timeout > 0 {
+		return timeout
+	}
+	return DefaultStreamIdleTimeout
+}
+
+// idleTimeoutReader wraps an io.Reader and closes the underlying body stream
+// if no data arrives within the configured timeout. This unblocks any pending
+// Read() call on the wrapped reader.
+type idleTimeoutReader struct {
+	reader     io.Reader
+	bodyStream io.Reader // closed via type assertion to io.Closer on timeout
+	timeout    time.Duration
+	timer      *time.Timer
+	once       sync.Once
+}
+
+// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
+// no data for the given timeout duration, bodyStream is closed to unblock the read.
+// bodyStream must implement io.Closer for the timeout to take effect; if it does not,
+// the wrapper still functions but cannot force-close the stream.
+// Returns the wrapped reader and a cleanup function that MUST be called (via defer)
+// when streaming is complete, to stop the timer and prevent premature closure.
+func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.Duration) (io.Reader, func()) {
+	if timeout <= 0 {
+		timeout = DefaultStreamIdleTimeout
+	}
+	r := &idleTimeoutReader{
+		reader:     reader,
+		bodyStream: bodyStream,
+		timeout:    timeout,
+	}
+	r.timer = time.AfterFunc(timeout, func() {
+		r.once.Do(func() {
+			if closer, ok := r.bodyStream.(io.Closer); ok {
+				closer.Close()
+			}
+		})
+	})
+	return r, func() { r.timer.Stop() }
+}
+
+func (r *idleTimeoutReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		r.timer.Reset(r.timeout)
+	}
+	return n, err
+}
+
 // HandleStreamCancellation should be called when a streaming goroutine exits
 // due to context cancellation. It ensures proper cleanup by:
 // 1. Checking if StreamEndIndicator was already set (to avoid duplicate handling)

@@ -24,9 +24,10 @@ func TestAzure(t *testing.T) {
 	defer cancel()
 
 	testConfig := llmtests.ComprehensiveTestConfig{
-		Provider:       schemas.Azure,
-		ChatModel:      "gpt-4o-backup",
-		VisionModel:    "gpt-4o",
+		Provider:           schemas.Azure,
+		ChatModel:          "gpt-4o-backup",
+		PromptCachingModel: "gpt-4o-backup",
+		VisionModel:        "gpt-4o",
 		ChatAudioModel: "gpt-4o-mini-audio-preview",
 		Fallbacks: []schemas.Fallback{
 			{Provider: schemas.Azure, Model: "gpt-4o-backup"},
@@ -62,6 +63,7 @@ func TestAzure(t *testing.T) {
 			SpeechSynthesis:       true,
 			SpeechSynthesisStream: true,
 			StructuredOutputs:     true,  // Structured outputs with nullable enum support
+			PromptCaching:         true,
 			ImageGeneration:       false, // Skipped for Azure
 			ImageGenerationStream: false, // Skipped for Azure
 			ImageEdit:             false, // Model not deployed on Azure endpoint

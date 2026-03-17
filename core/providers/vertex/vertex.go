@@ -3373,7 +3373,15 @@ func (provider *VertexProvider) PassthroughStream(
 		)
 	}
 
-	stopCancellation := providerUtils.SetupStreamCancellation(ctx, bodyStream, provider.logger)
+	// Set stream idle timeout from provider config.
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	// Wrap body with idle timeout to detect stalled streams.
+	rawBodyStream := bodyStream
+	bodyStream, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(bodyStream, rawBodyStream, providerUtils.GetStreamIdleTimeout(ctx))
+
+	// Cancellation must close the raw stream to unblock reads.
+	stopCancellation := providerUtils.SetupStreamCancellation(ctx, rawBodyStream, provider.logger)
 
 	extraFields := schemas.BifrostResponseExtraFields{
 		Provider:       provider.GetProviderKey(),
@@ -3397,6 +3405,7 @@ func (provider *VertexProvider) PassthroughStream(
 			close(ch)
 		}()
 		defer providerUtils.ReleaseStreamingResponse(resp)
+		defer stopIdleTimeout()
 		defer stopCancellation()
 
 		buf := make([]byte, 4096)

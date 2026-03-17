@@ -1111,6 +1111,7 @@ func convertFunctionParametersToSchema(params schemas.ToolFunctionParameters) *S
 
 	if params.Properties != nil && params.Properties.Len() > 0 {
 		schema.Properties = make(map[string]*Schema)
+		schema.PropertyOrdering = params.Properties.Keys()
 		params.Properties.Range(func(k string, v interface{}) bool {
 			schema.Properties[k] = convertPropertyToSchema(v)
 			return true
@@ -1234,12 +1235,14 @@ func convertPropertyToSchema(prop interface{}) *Schema {
 				}
 			case *schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true
 				})
 			case schemas.OrderedMap:
 				schema.Properties = make(map[string]*Schema)
+				schema.PropertyOrdering = p.Keys()
 				p.Range(func(key string, nestedProp interface{}) bool {
 					schema.Properties[key] = convertPropertyToSchema(nestedProp)
 					return true

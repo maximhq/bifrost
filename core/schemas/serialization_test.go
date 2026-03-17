@@ -256,6 +256,298 @@ func TestSonic_ChatTool_ToolFunctionParametersPreservesOrder(t *testing.T) {
 	assert.Equal(t, "$defs", paramOutputKeys[0], "parameters should have $defs first")
 }
 
+// --- Normalized() property ordering tests ---
+
+func TestNormalized_PreservesPropertyOrder_CoTBeforeAnswer(t *testing.T) {
+	// The exact customer schema: chain_of_thought before answer
+	params := &ToolFunctionParameters{
+		Type: "object",
+		Properties: NewOrderedMapFromPairs(
+			KV("chain_of_thought", NewOrderedMapFromPairs(
+				KV("description", "Step by step reasoning"),
+				KV("type", "string"),
+				KV("title", "Chain of Thought"),
+			)),
+			KV("answer", NewOrderedMapFromPairs(
+				KV("description", "The detailed answer"),
+				KV("type", "string"),
+				KV("title", "Answer"),
+			)),
+			KV("citations", NewOrderedMapFromPairs(
+				KV("description", "Supporting citations"),
+				KV("type", "array"),
+			)),
+			KV("is_unanswered", NewOrderedMapFromPairs(
+				KV("type", "boolean"),
+				KV("title", "Is Unanswered"),
+			)),
+		),
+		Required: []string{"chain_of_thought", "answer", "citations", "is_unanswered"},
+	}
+
+	normalized := params.Normalized()
+
+	// CoT: property order preserved
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations", "is_unanswered"}, normalized.Properties.Keys())
+
+	// Caching: structural keys within each property are sorted by JSON Schema priority
+	cot, _ := normalized.Properties.Get("chain_of_thought")
+	cotOM := cot.(*OrderedMap)
+	assert.Equal(t, []string{"type", "description", "title"}, cotOM.Keys(),
+		"structural keys within property should be sorted: type > description > others alpha")
+
+	// Immutability: original unchanged
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations", "is_unanswered"}, params.Properties.Keys())
+}
+
+func TestNormalized_CachingDeterminism_DifferentStructuralOrder(t *testing.T) {
+	// Two schemas with same properties but different structural key orders
+	// Should produce identical JSON after normalization
+	propsA := NewOrderedMapFromPairs(
+		KV("reasoning", NewOrderedMapFromPairs(
+			KV("type", "string"),
+			KV("description", "Step by step"),
+		)),
+		KV("answer", NewOrderedMapFromPairs(
+			KV("type", "string"),
+			KV("description", "Final answer"),
+		)),
+	)
+	propsB := NewOrderedMapFromPairs(
+		KV("reasoning", NewOrderedMapFromPairs(
+			KV("description", "Step by step"),
+			KV("type", "string"),
+		)),
+		KV("answer", NewOrderedMapFromPairs(
+			KV("description", "Final answer"),
+			KV("type", "string"),
+		)),
+	)
+
+	schemaA := &ToolFunctionParameters{Type: "object", Properties: propsA, Required: []string{"reasoning"}}
+	schemaB := &ToolFunctionParameters{Type: "object", Properties: propsB, Required: []string{"reasoning"}}
+
+	jsonA, err := Marshal(schemaA.Normalized())
+	require.NoError(t, err)
+	jsonB, err := Marshal(schemaB.Normalized())
+	require.NoError(t, err)
+
+	// Caching: identical JSON regardless of input structural key order
+	assert.Equal(t, string(jsonA), string(jsonB), "same schema with different structural key order should produce identical JSON")
+
+	// CoT: property order preserved in both
+	normA := schemaA.Normalized()
+	normB := schemaB.Normalized()
+	assert.Equal(t, []string{"reasoning", "answer"}, normA.Properties.Keys())
+	assert.Equal(t, []string{"reasoning", "answer"}, normB.Properties.Keys())
+}
+
+func TestNormalized_WithDefs_PropertiesPreserved(t *testing.T) {
+	params := &ToolFunctionParameters{
+		Type: "object",
+		Defs: NewOrderedMapFromPairs(
+			KV("Citation", NewOrderedMapFromPairs(
+				KV("type", "object"),
+				KV("properties", NewOrderedMapFromPairs(
+					KV("url", NewOrderedMapFromPairs(KV("type", "string"))),
+					KV("text", NewOrderedMapFromPairs(KV("type", "string"))),
+				)),
+			)),
+		),
+		Properties: NewOrderedMapFromPairs(
+			KV("chain_of_thought", NewOrderedMapFromPairs(KV("type", "string"))),
+			KV("answer", NewOrderedMapFromPairs(KV("type", "string"))),
+			KV("citations", NewOrderedMapFromPairs(KV("type", "array"))),
+			KV("is_unanswered", NewOrderedMapFromPairs(KV("type", "boolean"))),
+		),
+		Required: []string{"answer", "is_unanswered"},
+	}
+
+	normalized := params.Normalized()
+
+	// CoT: properties order preserved
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations", "is_unanswered"}, normalized.Properties.Keys())
+
+	// CoT: properties within $defs preserved
+	citation, _ := normalized.Defs.Get("Citation")
+	citOM := citation.(*OrderedMap)
+	citProps, _ := citOM.Get("properties")
+	citPropsOM := citProps.(*OrderedMap)
+	assert.Equal(t, []string{"url", "text"}, citPropsOM.Keys())
+}
+
+func TestNormalized_NestedObjectProperties_PreservedAtAllLevels(t *testing.T) {
+	params := &ToolFunctionParameters{
+		Type: "object",
+		Properties: NewOrderedMapFromPairs(
+			KV("output", NewOrderedMapFromPairs(
+				KV("type", "object"),
+				KV("properties", NewOrderedMapFromPairs(
+					KV("verdict", NewOrderedMapFromPairs(KV("type", "string"))),
+					KV("metadata", NewOrderedMapFromPairs(
+						KV("type", "object"),
+						KV("properties", NewOrderedMapFromPairs(
+							KV("timestamp", NewOrderedMapFromPairs(KV("type", "string"))),
+							KV("source", NewOrderedMapFromPairs(KV("type", "string"))),
+							KV("confidence", NewOrderedMapFromPairs(KV("type", "number"))),
+							KV("author", NewOrderedMapFromPairs(KV("type", "string"))),
+						)),
+					)),
+					KV("score", NewOrderedMapFromPairs(KV("type", "number"))),
+				)),
+			)),
+			KV("chain_of_thought", NewOrderedMapFromPairs(KV("type", "string"))),
+			KV("answer", NewOrderedMapFromPairs(KV("type", "string"))),
+		),
+	}
+
+	normalized := params.Normalized()
+
+	// Level 1: top-level properties preserved
+	assert.Equal(t, []string{"output", "chain_of_thought", "answer"}, normalized.Properties.Keys())
+
+	// Level 2: output.properties preserved
+	output, _ := normalized.Properties.Get("output")
+	outputOM := output.(*OrderedMap)
+	outputProps, _ := outputOM.Get("properties")
+	outputPropsOM := outputProps.(*OrderedMap)
+	assert.Equal(t, []string{"verdict", "metadata", "score"}, outputPropsOM.Keys())
+
+	// Level 3: metadata.properties preserved
+	meta, _ := outputPropsOM.Get("metadata")
+	metaOM := meta.(*OrderedMap)
+	metaProps, _ := metaOM.Get("properties")
+	metaPropsOM := metaProps.(*OrderedMap)
+	assert.Equal(t, []string{"timestamp", "source", "confidence", "author"}, metaPropsOM.Keys())
+}
+
+func TestNormalized_OriginalNotMutated(t *testing.T) {
+	params := &ToolFunctionParameters{
+		Type: "object",
+		Properties: NewOrderedMapFromPairs(
+			KV("zebra", NewOrderedMapFromPairs(
+				KV("description", "last alpha"),
+				KV("type", "string"),
+			)),
+			KV("alpha", NewOrderedMapFromPairs(
+				KV("description", "first alpha"),
+				KV("type", "number"),
+			)),
+		),
+	}
+
+	_ = params.Normalized()
+
+	// Original property order unchanged
+	assert.Equal(t, []string{"zebra", "alpha"}, params.Properties.Keys())
+
+	// Original structural key order within properties unchanged
+	zebra, _ := params.Properties.Get("zebra")
+	zebraOM := zebra.(*OrderedMap)
+	assert.Equal(t, []string{"description", "type"}, zebraOM.Keys())
+}
+
+// --- Caching regression tests ---
+
+func TestNormalized_CachingRegression_PropertyOrderDoesNotAffectCache(t *testing.T) {
+	// Three independently constructed schemas with the SAME properties and
+	// SAME structural key order. All three must produce byte-identical JSON.
+	// This proves normalization is deterministic (no Go map iteration randomness).
+	makeSchema := func() *ToolFunctionParameters {
+		return &ToolFunctionParameters{
+			Type: "object",
+			Properties: NewOrderedMapFromPairs(
+				KV("chain_of_thought", NewOrderedMapFromPairs(
+					KV("type", "string"),
+					KV("description", "Reasoning steps"),
+				)),
+				KV("answer", NewOrderedMapFromPairs(
+					KV("type", "string"),
+					KV("description", "The answer"),
+				)),
+			),
+			Required: []string{"chain_of_thought", "answer"},
+		}
+	}
+
+	jsonA, err := Marshal(makeSchema().Normalized())
+	require.NoError(t, err)
+	jsonB, err := Marshal(makeSchema().Normalized())
+	require.NoError(t, err)
+	jsonC, err := Marshal(makeSchema().Normalized())
+	require.NoError(t, err)
+
+	assert.Equal(t, string(jsonA), string(jsonB), "first two normalizations must be identical")
+	assert.Equal(t, string(jsonB), string(jsonC), "all three normalizations must be identical")
+}
+
+func TestNormalized_CachingRegression_FullToolMarshal(t *testing.T) {
+	// Tests the complete serialization path: ChatTool → ToolFunctionParameters.MarshalJSON
+	// This is what actually hits the wire and forms the cache key.
+	tool := ChatTool{
+		Type: "function",
+		Function: &ChatToolFunction{
+			Name:        "AnswerResponseModel",
+			Description: Ptr("Correctly extracted response model"),
+			Parameters: &ToolFunctionParameters{
+				Type: "object",
+				Properties: NewOrderedMapFromPairs(
+					KV("chain_of_thought", NewOrderedMapFromPairs(
+						KV("description", "Step by step chain of thought"),
+						KV("title", "Chain of Thought"),
+						KV("type", "string"),
+					)),
+					KV("answer", NewOrderedMapFromPairs(
+						KV("description", "The detailed answer"),
+						KV("title", "Answer"),
+						KV("type", "string"),
+					)),
+					KV("is_unanswered", NewOrderedMapFromPairs(
+						KV("title", "Is Unanswered"),
+						KV("type", "boolean"),
+					)),
+					KV("citations", NewOrderedMapFromPairs(
+						KV("description", "List of citations"),
+						KV("type", "array"),
+					)),
+				),
+				Required: []string{"answer", "chain_of_thought", "citations", "is_unanswered"},
+			},
+		},
+	}
+
+	// Normalize and marshal twice
+	normalizedParams := tool.Function.Parameters.Normalized()
+	toolCopy1 := tool
+	funcCopy1 := *tool.Function
+	funcCopy1.Parameters = normalizedParams
+	toolCopy1.Function = &funcCopy1
+
+	normalizedParams2 := tool.Function.Parameters.Normalized()
+	toolCopy2 := tool
+	funcCopy2 := *tool.Function
+	funcCopy2.Parameters = normalizedParams2
+	toolCopy2.Function = &funcCopy2
+
+	json1, err := Marshal(toolCopy1)
+	require.NoError(t, err)
+	json2, err := Marshal(toolCopy2)
+	require.NoError(t, err)
+
+	// Caching: full tool JSON is byte-identical
+	assert.Equal(t, string(json1), string(json2),
+		"full ChatTool marshal must be deterministic for prompt caching")
+
+	// CoT: verify property order in the serialized JSON
+	// Parse back and check properties key order
+	var roundTripped ChatTool
+	err = Unmarshal(json1, &roundTripped)
+	require.NoError(t, err)
+	keys := roundTripped.Function.Parameters.Properties.Keys()
+	assert.Equal(t, []string{"chain_of_thought", "answer", "is_unanswered", "citations"}, keys,
+		"property order must be preserved through full marshal round-trip")
+}
+
 // TestNetworkConfig_TLSFieldsRoundTrip verifies that insecure_skip_verify and ca_cert_pem
 // round-trip correctly through JSON marshaling (used by config.json).
 func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
@@ -278,4 +570,23 @@ func TestNetworkConfig_TLSFieldsRoundTrip(t *testing.T) {
 	assert.Equal(t, nc.CACertPEM, decoded.CACertPEM, "ca_cert_pem should round-trip")
 	assert.Contains(t, string(data), `"insecure_skip_verify":true`)
 	assert.Contains(t, string(data), `"ca_cert_pem"`)
+}
+
+// TestNetworkConfig_StreamIdleTimeoutRoundTrip verifies that stream_idle_timeout_in_seconds
+// round-trips correctly through JSON marshaling.
+func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
+	nc := NetworkConfig{
+		DefaultRequestTimeoutInSeconds: 30,
+		StreamIdleTimeoutInSeconds:     120,
+	}
+
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+
+	var decoded NetworkConfig
+	err = json.Unmarshal(data, &decoded)
+	require.NoError(t, err)
+
+	assert.Equal(t, 120, decoded.StreamIdleTimeoutInSeconds, "stream_idle_timeout_in_seconds should round-trip")
+	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }

@@ -2,6 +2,7 @@ package llmtests
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -630,5 +631,193 @@ func RunPromptCachingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Con
 		}
 
 		t.Logf("🎉 Prompt caching test completed!")
+	})
+}
+
+// RunPromptCachingMultiTurnTest verifies prompt caching across a 10-turn
+// multi-turn conversation. Each turn appends the assistant's previous response
+// and a new user message, while keeping the system message and tools constant.
+// The system prefix + tools form the cached prefix; turns 2+ should show
+// cached_read_tokens > 0, proving caching is intact.
+func RunPromptCachingMultiTurnTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
+	if !testConfig.Scenarios.SimpleChat {
+		t.Logf("Prompt caching multi-turn test requires SimpleChat support")
+		return
+	}
+	if !testConfig.Scenarios.PromptCaching {
+		t.Logf("Prompt caching multi-turn test not supported for provider %s", testConfig.Provider)
+		return
+	}
+	if testConfig.PromptCachingModel == "" {
+		t.Logf("No PromptCachingModel configured for provider %s, skipping", testConfig.Provider)
+		return
+	}
+
+	t.Run("PromptCachingMultiTurn", func(t *testing.T) {
+		if os.Getenv("SKIP_PARALLEL_TESTS") != "true" {
+			t.Parallel()
+		}
+
+		tools := GetPromptCachingTools()
+		systemMessage := schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleSystem,
+			Content: &schemas.ChatMessageContent{
+				ContentBlocks: []schemas.ChatContentBlock{
+					{
+						Type: schemas.ChatContentBlockTypeText,
+						Text: bifrost.Ptr(longSharedPrefix),
+						CacheControl: &schemas.CacheControl{
+							Type: schemas.CacheControlTypeEphemeral,
+						},
+					},
+				},
+			},
+		}
+
+		queries := []string{
+			"Explain our API to a beginner.",
+			"What authentication methods does the API support?",
+			"How do I set up rate limiting?",
+			"Describe the analytics dashboard features.",
+			"What security certifications do we have?",
+			"How does the support tier system work?",
+			"Explain the pricing model for compute instances.",
+			"What SDKs are available for developers?",
+			"How do I configure webhooks?",
+			"Give me a summary of everything we discussed.",
+		}
+
+		// Conversation history grows with each turn
+		var conversationMessages []schemas.ChatMessage
+
+		for i, query := range queries {
+			turnName := fmt.Sprintf("Turn%d", i+1)
+			t.Run(turnName, func(t *testing.T) {
+				userMessage := schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: bifrost.Ptr(query),
+					},
+				}
+
+				// Build input: system + conversation history + new user message
+				input := make([]schemas.ChatMessage, 0, 2+len(conversationMessages))
+				input = append(input, systemMessage)
+				input = append(input, conversationMessages...)
+				input = append(input, userMessage)
+
+				chatReq := &schemas.BifrostChatRequest{
+					Provider: testConfig.Provider,
+					Model:    testConfig.PromptCachingModel,
+					Input:    input,
+					Params: &schemas.ChatParameters{
+						Tools: tools,
+						ToolChoice: &schemas.ChatToolChoice{
+							ChatToolChoiceStr: bifrost.Ptr("none"),
+						},
+					},
+					Fallbacks: testConfig.Fallbacks,
+				}
+
+				retryConfig := ChatRetryConfig{
+					MaxAttempts: 5,
+					BaseDelay:   2 * time.Second,
+					MaxDelay:    10 * time.Second,
+					Conditions:  []ChatRetryCondition{},
+					OnRetry: func(attempt int, reason string, t *testing.T) {
+						t.Logf("Retrying turn %d (attempt %d): %s", i+1, attempt, reason)
+					},
+					OnFinalFail: func(attempts int, finalErr error, t *testing.T) {
+						t.Logf("Turn %d failed after %d attempts: %v", i+1, attempts, finalErr)
+					},
+				}
+
+				expectations := ResponseExpectations{
+					ShouldHaveContent:    true,
+					ShouldHaveUsageStats: true,
+				}
+
+				// No percentage-based validation here — the conversation grows faster
+				// than the cached prefix, so percentage drops naturally. The meaningful
+				// assertion is cached_read_tokens > 0 on turns 2+, checked below.
+
+				retryContext := TestRetryContext{
+					ScenarioName: "PromptCachingMultiTurn",
+					ExpectedBehavior: map[string]interface{}{
+						"turn":  i + 1,
+						"query": query,
+					},
+					TestMetadata: map[string]interface{}{
+						"provider": testConfig.Provider,
+						"model":    testConfig.PromptCachingModel,
+					},
+				}
+
+				operation := func() (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+					bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+					return client.ChatCompletionRequest(bfCtx, chatReq)
+				}
+
+				response, err := WithChatTestRetry(t, retryConfig, retryContext, expectations, turnName, operation)
+
+				require.Nil(t, err, "Turn %d should succeed: %v", i+1, err)
+				require.NotNil(t, response, "Response should not be nil")
+				require.NotNil(t, response.Usage, "Usage information should be present")
+
+				var cachedTokens int
+				if response.Usage.PromptTokensDetails != nil {
+					cachedTokens = response.Usage.PromptTokensDetails.CachedReadTokens + response.Usage.PromptTokensDetails.CachedWriteTokens
+				}
+
+				promptTokens := response.Usage.PromptTokens
+
+				t.Logf("Turn %d: prompt_tokens=%d, cached_tokens=%d (read=%d, write=%d)",
+					i+1, promptTokens, cachedTokens,
+					func() int {
+						if response.Usage.PromptTokensDetails != nil {
+							return response.Usage.PromptTokensDetails.CachedReadTokens
+						}
+						return 0
+					}(),
+					func() int {
+						if response.Usage.PromptTokensDetails != nil {
+							return response.Usage.PromptTokensDetails.CachedWriteTokens
+						}
+						return 0
+					}(),
+				)
+
+				// For turns 2+, verify cache is being used
+				if i >= 1 {
+					var cachedRead int
+					if response.Usage.PromptTokensDetails != nil {
+						cachedRead = response.Usage.PromptTokensDetails.CachedReadTokens
+					}
+					require.Greater(t, cachedRead, 0,
+						"Turn %d: cached_read_tokens should be > 0 (caching broken)", i+1)
+					t.Logf("Turn %d: cache HIT confirmed (cached_read_tokens=%d)", i+1, cachedRead)
+				}
+
+				// Log final turn percentage for observability (no assertion — conversation
+				// growth naturally dilutes the cached prefix percentage)
+				if i == len(queries)-1 && promptTokens > 0 {
+					cachedPercentage := float64(cachedTokens) / float64(promptTokens)
+					t.Logf("Turn %d: final cached percentage: %.2f%% (cached=%d, prompt=%d)",
+						i+1, cachedPercentage*100, cachedTokens, promptTokens)
+				}
+
+				// Add user message and assistant response to conversation history
+				content := GetChatContent(response)
+				conversationMessages = append(conversationMessages, userMessage)
+				conversationMessages = append(conversationMessages, schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: &content,
+					},
+				})
+			})
+		}
+
+		t.Logf("Multi-turn prompt caching test completed (%d turns)", len(queries))
 	})
 }

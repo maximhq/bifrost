@@ -1,3 +1,8 @@
-- fix: mcp tools now correctly pass headers to the MCP server
-- fix: ensure tool calls are always detected in mcp agent mode
-- fix: gemini models now correctly return finish_reason "tool_calls" when tool calls are present
+- feat: added plugin execution ordering with placement and priority controls
+- feat: added speech synthesis (TTS) and transcription (STT) support for Groq provider
+- feat: added support for Gemini metadata endpoint (thanks [@Vaibhav701161](https://github.com/Vaibhav701161)!)
+- feat: preserved JSON key ordering for prompt caching using byte-level operations with gjson/sjson
+- feat: improved fasthttp connection pooling with connection lifetime limits and MaxConnDuration
+- fix: MCP tools now correctly pass headers to the MCP server
+- fix: ensure tool calls are always detected in MCP agent mode
+- fix: Gemini models now correctly return finish_reason "tool_calls" when tool calls are present

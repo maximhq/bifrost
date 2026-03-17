@@ -853,6 +853,95 @@ func TestBifrostToGeminiToolConversion(t *testing.T) {
 	}
 }
 
+func TestBifrostToGeminiToolConversion_PropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        "AnswerResponseModel",
+					Description: schemas.Ptr("Extract answer"),
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("chain_of_thought", map[string]interface{}{"type": "string", "description": "Reasoning"}),
+							schemas.KV("answer", map[string]interface{}{"type": "string", "description": "The answer"}),
+							schemas.KV("citations", map[string]interface{}{"type": "array"}),
+						),
+						Required: []string{"chain_of_thought", "answer"},
+					},
+				},
+			}},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(input)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// CoT: PropertyOrdering preserves client's intended field order
+	assert.Equal(t, []string{"chain_of_thought", "answer", "citations"}, fd.Parameters.PropertyOrdering,
+		"PropertyOrdering should preserve original property order")
+
+	// All properties present in map
+	assert.Len(t, fd.Parameters.Properties, 3)
+	assert.Contains(t, fd.Parameters.Properties, "chain_of_thought")
+	assert.Contains(t, fd.Parameters.Properties, "answer")
+	assert.Contains(t, fd.Parameters.Properties, "citations")
+}
+
+func TestBifrostToGeminiToolConversion_NestedPropertyOrdering(t *testing.T) {
+	input := &schemas.BifrostChatRequest{
+		Model: "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+		}},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name: "nested_tool",
+					Parameters: &schemas.ToolFunctionParameters{
+						Type: "object",
+						Properties: schemas.NewOrderedMapFromPairs(
+							schemas.KV("output", schemas.NewOrderedMapFromPairs(
+								schemas.KV("type", "object"),
+								schemas.KV("properties", schemas.NewOrderedMapFromPairs(
+									schemas.KV("verdict", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+									schemas.KV("score", schemas.NewOrderedMapFromPairs(schemas.KV("type", "number"))),
+									schemas.KV("explanation", schemas.NewOrderedMapFromPairs(schemas.KV("type", "string"))),
+								)),
+							)),
+							schemas.KV("reasoning", map[string]interface{}{"type": "string"}),
+						),
+					},
+				},
+			}},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(input)
+	require.NotNil(t, result)
+	require.Len(t, result.Tools, 1)
+	fd := result.Tools[0].FunctionDeclarations[0]
+
+	// Top-level property ordering
+	assert.Equal(t, []string{"output", "reasoning"}, fd.Parameters.PropertyOrdering)
+
+	// Nested property ordering
+	outputSchema := fd.Parameters.Properties["output"]
+	require.NotNil(t, outputSchema)
+	assert.Equal(t, []string{"verdict", "score", "explanation"}, outputSchema.PropertyOrdering,
+		"nested PropertyOrdering should preserve original order")
+}
+
 // TestStructuredOutputConversion tests that response_format with json_schema is properly converted to Gemini's responseJsonSchema
 func TestStructuredOutputConversion(t *testing.T) {
 	tests := []struct {

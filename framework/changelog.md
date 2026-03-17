@@ -1,0 +1,4 @@
+- feat: added plugin sequencing with placement and order fields in plugin configuration
+- feat: added metadata columns in logs and filters
+- fix: manual cascade deletion for prompt entities
+- chore: upgraded core to v1.4.9

@@ -83,7 +83,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Run core tests
         env:
@@ -303,7 +303,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Set up Docker Compose
         run: |
@@ -348,7 +348,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Set up Docker Compose
         run: |
@@ -390,7 +390,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Set up Docker Compose
         run: |
@@ -442,7 +442,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Install Newman
         run: npm install -g newman newman-reporter-html
@@ -511,7 +511,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Install Newman
         run: npm install -g newman newman-reporter-html
@@ -595,7 +595,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Configure Git
         run: |
@@ -778,7 +778,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Configure Git
         run: |
@@ -878,7 +878,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "25"
 
       - name: Configure Git
         run: |

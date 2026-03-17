@@ -3657,6 +3657,20 @@ func convertAnthropicContentBlocksToResponsesMessages(ctx *schemas.BifrostContex
 			if block.ToolUseID != nil {
 				attachWebSearchSourcesToCall(bifrostMessages, *block.ToolUseID, block, true)
 			}
+
+		case AnthropicContentBlockTypeWebSearchToolResultError:
+			// Handle web search errors — find matching web_search_call and mark as failed
+			if block.ToolUseID != nil {
+				for i := len(bifrostMessages) - 1; i >= 0; i-- {
+					msg := &bifrostMessages[i]
+					if msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+						msg.ID != nil && *msg.ID == *block.ToolUseID {
+						msg.Status = schemas.Ptr("failed")
+						break
+					}
+				}
+			}
+
 		case AnthropicContentBlockTypeMCPToolUse:
 			// Convert MCP tool use to MCP call (assistant's tool call)
 			if block.ID != nil && block.Name != nil {
@@ -4142,37 +4156,40 @@ func convertBifrostWebSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage)
 
 	blocks = append(blocks, serverToolUseBlock)
 
-	// 2. Create web_search_tool_result block if sources are present
-	if len(action.Sources) > 0 {
-		var resultBlocks []AnthropicContentBlock
-		for _, source := range action.Sources {
-			if source.URL != "" {
-				resultBlock := AnthropicContentBlock{
-					Type:             AnthropicContentBlockTypeWebSearchResult,
-					URL:              schemas.Ptr(source.URL),
-					EncryptedContent: source.EncryptedContent,
-					PageAge:          source.PageAge,
-				}
-				if source.Title != nil {
-					resultBlock.Title = source.Title
-				} else if source.URL != "" {
-					resultBlock.Title = schemas.Ptr(source.URL)
-				}
-				resultBlocks = append(resultBlocks, resultBlock)
+	// 2. Always create web_search_tool_result block — Anthropic requires it alongside every server_tool_use.
+	// Without this block, the API returns: "web_search tool use was found without a corresponding web_search_tool_result block"
+	var resultBlocks []AnthropicContentBlock
+	for _, source := range action.Sources {
+		if source.URL != "" {
+			resultBlock := AnthropicContentBlock{
+				Type:             AnthropicContentBlockTypeWebSearchResult,
+				URL:              schemas.Ptr(source.URL),
+				EncryptedContent: source.EncryptedContent,
+				PageAge:          source.PageAge,
 			}
-		}
-
-		if len(resultBlocks) > 0 {
-			webSearchResultBlock := AnthropicContentBlock{
-				Type:      AnthropicContentBlockTypeWebSearchToolResult,
-				ToolUseID: msg.ID,
-				Content: &AnthropicContent{
-					ContentBlocks: resultBlocks,
-				},
+			if source.Title != nil {
+				resultBlock.Title = source.Title
+			} else if source.URL != "" {
+				resultBlock.Title = schemas.Ptr(source.URL)
 			}
-			blocks = append(blocks, webSearchResultBlock)
+			resultBlocks = append(resultBlocks, resultBlock)
 		}
 	}
+	// Determine the tool use ID - prefer CallID (authoritative), fall back to msg.ID
+	var toolUseID *string
+	if msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.CallID != nil {
+		toolUseID = msg.ResponsesToolMessage.CallID
+	} else {
+		toolUseID = msg.ID
+	}
+	webSearchResultBlock := AnthropicContentBlock{
+		Type:      AnthropicContentBlockTypeWebSearchToolResult,
+		ToolUseID: toolUseID,
+		Content: &AnthropicContent{
+			ContentBlocks: resultBlocks,
+		},
+	}
+	blocks = append(blocks, webSearchResultBlock)
 
 	return blocks
 }
