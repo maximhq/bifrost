@@ -1914,6 +1914,8 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		if state.Model != nil {
 			response.Model = *state.Model
 		}
+		var allOutput []ResponsesMessage
+
 		if state.TextItemAdded {
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeMessage
@@ -1942,7 +1944,39 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				msg.ID = &itemID
 			}
-			response.Output = []ResponsesMessage{msg}
+			allOutput = append(allOutput, msg)
+		}
+
+		for toolCallID, args := range state.ToolArgumentBuffers {
+			if args == "" {
+				continue
+			}
+			statusFinal := terminalStatus
+			messageType := ResponsesMessageTypeFunctionCall
+			callName, hasName := state.ToolCallNames[toolCallID]
+			var callNamePtr *string
+			if hasName && callName != "" {
+				callNamePtr = &callName
+			}
+			argsValue := args
+			fcMsg := ResponsesMessage{
+				Type:   &messageType,
+				Status: &statusFinal,
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    &toolCallID,
+					Name:      callNamePtr,
+					Arguments: &argsValue,
+				},
+			}
+			itemID := state.ItemIDs[toolCallID]
+			if itemID != "" {
+				fcMsg.ID = &itemID
+			}
+			allOutput = append(allOutput, fcMsg)
+		}
+
+		if len(allOutput) > 0 {
+			response.Output = allOutput
 		}
 
 		responses = append(responses, &BifrostResponsesStreamResponse{
