@@ -1,6 +1,16 @@
 "use client";
 
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import {
+	AlertDialog,
+	AlertDialogAction,
+	AlertDialogCancel,
+	AlertDialogContent,
+	AlertDialogDescription,
+	AlertDialogFooter,
+	AlertDialogHeader,
+	AlertDialogTitle,
+} from "@/components/ui/alertDialog";
 import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
 import { Button } from "@/components/ui/button";
 import { ConfigSyncAlert } from "@/components/ui/configSyncAlert";
@@ -16,10 +26,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
+import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/components/ui/utils";
 import { ModelPlaceholders } from "@/lib/constants/config";
-import { resetDurationOptions } from "@/lib/constants/governance";
+import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import {
@@ -94,6 +105,7 @@ const formSchema = z
 		// Budget
 		budgetMaxLimit: z.string().optional(),
 		budgetResetDuration: z.string().optional(),
+		budgetCalendarAligned: z.boolean(),
 		// Token limits
 		tokenMaxLimit: z.string().optional(),
 		tokenResetDuration: z.string().optional(),
@@ -191,6 +203,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 			isActive: virtualKey?.is_active ?? true,
 			budgetMaxLimit: virtualKey?.budget ? String(virtualKey.budget.max_limit) : "",
 			budgetResetDuration: virtualKey?.budget?.reset_duration || "1M",
+			budgetCalendarAligned: virtualKey?.budget?.calendar_aligned ?? false,
 			tokenMaxLimit: virtualKey?.rate_limit?.token_max_limit ? String(virtualKey.rate_limit.token_max_limit) : "",
 			tokenResetDuration: virtualKey?.rate_limit?.token_reset_duration || "1h",
 			requestMaxLimit: virtualKey?.rate_limit?.request_max_limit ? String(virtualKey.rate_limit.request_max_limit) : "",
@@ -246,6 +259,7 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 
 	// Watch budget/rate-limit fields for conditional rendering of reset buttons
 	const watchedBudgetMaxLimit = form.watch("budgetMaxLimit");
+	const watchedBudgetResetDuration = form.watch("budgetResetDuration") || "1M";
 	const watchedTokenMaxLimit = form.watch("tokenMaxLimit");
 	const watchedRequestMaxLimit = form.watch("requestMaxLimit");
 
@@ -309,9 +323,20 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 		form.setValue("mcpConfigs", updatedConfigs, { shouldDirty: true });
 	};
 
+	const [showCalendarAlignWarning, setShowCalendarAlignWarning] = useState(false);
+
 	const clearVirtualKeyBudget = () => {
 		form.setValue("budgetMaxLimit", "", { shouldDirty: true });
 		form.setValue("budgetResetDuration", "1M", { shouldDirty: true });
+		form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
+	};
+
+	const handleCalendarAlignedChange = (checked: boolean) => {
+		if (checked && isEditing && virtualKey?.budget && !virtualKey.budget.calendar_aligned) {
+			setShowCalendarAlignWarning(true);
+		} else {
+			form.setValue("budgetCalendarAligned", checked, { shouldDirty: true });
+		}
 	};
 
 	const clearVirtualKeyRateLimits = () => {
@@ -405,18 +430,19 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-				// Add budget if enabled
-				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				const hadBudget = !!virtualKey.budget;
-				const hasBudget = budgetMaxLimit !== undefined;
-				if (hasBudget) {
-					updateData.budget = {
-						max_limit: budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-					};
-				} else if (hadBudget) {
-					updateData.budget = {};
-				}
+			// Add budget if enabled
+			const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
+			const hadBudget = !!virtualKey.budget;
+			const hasBudget = budgetMaxLimit !== undefined;
+			if (hasBudget) {
+				updateData.budget = {
+					max_limit: budgetMaxLimit,
+					reset_duration: data.budgetResetDuration || "1M",
+					calendar_aligned: data.budgetCalendarAligned,
+				};
+			} else if (hadBudget) {
+				updateData.budget = {};
+			}
 
 				// Add rate limit if enabled
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
@@ -450,14 +476,15 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 					is_active: data.isActive,
 				};
 
-				// Add budget if enabled
-				const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
-				if (budgetMaxLimit !== undefined) {
-					createData.budget = {
-						max_limit: budgetMaxLimit,
-						reset_duration: data.budgetResetDuration || "1M",
-					};
-				}
+			// Add budget if enabled
+			const budgetMaxLimit = normalizeNumericField(data.budgetMaxLimit);
+			if (budgetMaxLimit !== undefined) {
+				createData.budget = {
+					max_limit: budgetMaxLimit,
+					reset_duration: data.budgetResetDuration || "1M",
+					calendar_aligned: data.budgetCalendarAligned,
+				};
+			}
 
 				// Add rate limit if enabled
 				const tokenMaxLimit = normalizeIntegerField(data.tokenMaxLimit);
@@ -1042,30 +1069,87 @@ export default function VirtualKeySheet({ virtualKey, teams, customers, onSave, 
 										</Button>
 									)}
 								</div>
-								<FormField
-									control={form.control}
-									name="budgetMaxLimit"
-									render={({ field }) => (
-										<FormItem>
-											<NumberAndSelect
-												id="budgetMaxLimit"
-												labelClassName="font-normal"
-												label="Maximum Spend (USD)"
-												value={field.value || ""}
-												selectValue={form.watch("budgetResetDuration") || "1M"}
-												onChangeNumber={(value) => {
-													field.onChange(value);
-												}}
-												onChangeSelect={(value) => form.setValue("budgetResetDuration", value, { shouldDirty: true })}
-												options={resetDurationOptions}
-											/>
-											<FormMessage />
-										</FormItem>
-									)}
-								/>
-							</div>
+							<FormField
+								control={form.control}
+								name="budgetMaxLimit"
+								render={({ field }) => (
+									<FormItem>
+										<NumberAndSelect
+											id="budgetMaxLimit"
+											labelClassName="font-normal"
+											label="Maximum Spend (USD)"
+											value={field.value || ""}
+									selectValue={watchedBudgetResetDuration}
+										onChangeNumber={(value) => {
+											field.onChange(value);
+										}}
+										onChangeSelect={(value) => {
+											form.setValue("budgetResetDuration", value, { shouldDirty: true });
+											if (!supportsCalendarAlignment(value)) {
+												form.setValue("budgetCalendarAligned", false, { shouldDirty: true });
+											}
+										}}
+											options={resetDurationOptions}
+										/>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
 
-							{/* Rate Limiting Configuration */}
+					{/* Calendar alignment toggle — only shown when a budget is set and the period supports alignment */}
+					{watchedBudgetMaxLimit && supportsCalendarAlignment(watchedBudgetResetDuration) && (
+						<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
+							<div className="space-y-0.5">
+								<Label className="text-sm font-normal">Align to calendar cycle</Label>
+								<p className="text-muted-foreground text-xs">
+									Reset at the start of each period (e.g. 1st of month) instead of rolling from creation date
+								</p>
+							</div>
+							<Switch
+								checked={form.watch("budgetCalendarAligned")}
+								onCheckedChange={handleCalendarAlignedChange}
+								data-testid="vk-budget-calendar-aligned-toggle"
+							/>
+						</div>
+					)}
+
+							{/* Warning dialog shown when enabling calendar alignment on an existing budget */}
+							<AlertDialog open={showCalendarAlignWarning} onOpenChange={setShowCalendarAlignWarning}>
+								<AlertDialogContent>
+									<AlertDialogHeader>
+										<AlertDialogTitle>Reset budget usage?</AlertDialogTitle>
+										<AlertDialogDescription>
+											Enabling calendar alignment will immediately reset this budget&apos;s current usage to{" "}
+											<span className="font-semibold">$0.00</span> and snap the reset date to the start of the current{" "}
+											{form.watch("budgetResetDuration") === "1d"
+												? "day"
+												: form.watch("budgetResetDuration") === "1w"
+													? "week"
+													: form.watch("budgetResetDuration") === "1M"
+														? "month"
+														: form.watch("budgetResetDuration") === "1Y"
+															? "year"
+															: "period"}
+											. This cannot be undone.
+										</AlertDialogDescription>
+									</AlertDialogHeader>
+								<AlertDialogFooter>
+									<AlertDialogCancel data-testid="vk-calendar-align-cancel-btn">Cancel</AlertDialogCancel>
+									<AlertDialogAction
+										data-testid="vk-calendar-align-enable-btn"
+										onClick={() => {
+											form.setValue("budgetCalendarAligned", true, { shouldDirty: true });
+											setShowCalendarAlignWarning(false);
+										}}
+									>
+										Enable Calendar Alignment
+									</AlertDialogAction>
+								</AlertDialogFooter>
+								</AlertDialogContent>
+							</AlertDialog>
+						</div>
+
+						{/* Rate Limiting Configuration */}
 							<div className="space-y-4">
 								<div className="flex items-center justify-between gap-2">
 									<Label className="text-sm font-medium">Rate Limiting Configuration</Label>
