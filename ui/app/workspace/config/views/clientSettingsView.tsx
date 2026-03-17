@@ -498,6 +498,7 @@ export default function ClientSettingsView() {
 							<div key={index} className="flex items-center gap-2">
 								<Input
 									placeholder="e.g. anthropic-*, custom-id"
+									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&
@@ -541,6 +542,7 @@ export default function ClientSettingsView() {
 							<div key={index} className="flex items-center gap-2">
 								<Input
 									placeholder="e.g. x-internal-*"
+									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
 										isSecurityHeader(header) &&

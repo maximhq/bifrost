@@ -6,10 +6,10 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
-// headerMatchesPattern returns true if headerName matches the pattern.
+// HeaderMatchesPattern returns true if headerName matches the pattern.
 // Patterns support trailing wildcard: "anthropic-*" matches "anthropic-beta".
 // A bare "*" matches everything. All comparisons are case-insensitive.
-func headerMatchesPattern(pattern, headerName string) bool {
+func HeaderMatchesPattern(pattern, headerName string) bool {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	headerName = strings.ToLower(strings.TrimSpace(headerName))
 	if pattern == "*" {
@@ -41,35 +41,37 @@ func NewHeaderMatcher(config *configstoreTables.GlobalHeaderFilterConfig) *Heade
 		return nil
 	}
 	m := &HeaderMatcher{
-		hasAllowlist: len(config.Allowlist) > 0,
-		hasDenylist:  len(config.Denylist) > 0,
+		allowExact: make(map[string]bool, len(config.Allowlist)),
+		denyExact:  make(map[string]bool, len(config.Denylist)),
 	}
-	if m.hasAllowlist {
-		m.allowExact = make(map[string]bool, len(config.Allowlist))
-		for _, p := range config.Allowlist {
-			lp := strings.ToLower(strings.TrimSpace(p))
-			if lp == "*" {
-				m.allowAll = true
-			} else if strings.HasSuffix(lp, "*") {
-				m.allowPrefixes = append(m.allowPrefixes, lp[:len(lp)-1])
-			} else {
-				m.allowExact[lp] = true
-			}
+	for _, p := range config.Allowlist {
+		lp := strings.ToLower(strings.TrimSpace(p))
+		if lp == "" {
+			continue
+		}
+		if lp == "*" {
+			m.allowAll = true
+		} else if strings.HasSuffix(lp, "*") {
+			m.allowPrefixes = append(m.allowPrefixes, lp[:len(lp)-1])
+		} else {
+			m.allowExact[lp] = true
 		}
 	}
-	if m.hasDenylist {
-		m.denyExact = make(map[string]bool, len(config.Denylist))
-		for _, p := range config.Denylist {
-			lp := strings.ToLower(strings.TrimSpace(p))
-			if lp == "*" {
-				m.denyAll = true
-			} else if strings.HasSuffix(lp, "*") {
-				m.denyPrefixes = append(m.denyPrefixes, lp[:len(lp)-1])
-			} else {
-				m.denyExact[lp] = true
-			}
+	for _, p := range config.Denylist {
+		lp := strings.ToLower(strings.TrimSpace(p))
+		if lp == "" {
+			continue
+		}
+		if lp == "*" {
+			m.denyAll = true
+		} else if strings.HasSuffix(lp, "*") {
+			m.denyPrefixes = append(m.denyPrefixes, lp[:len(lp)-1])
+		} else {
+			m.denyExact[lp] = true
 		}
 	}
+	m.hasAllowlist = m.allowAll || len(m.allowExact) > 0 || len(m.allowPrefixes) > 0
+	m.hasDenylist = m.denyAll || len(m.denyExact) > 0 || len(m.denyPrefixes) > 0
 	return m
 }
 

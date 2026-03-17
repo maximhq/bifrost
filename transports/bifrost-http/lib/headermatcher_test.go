@@ -45,9 +45,9 @@ func TestHeaderMatchesPattern(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_"+tt.headerName, func(t *testing.T) {
-			got := headerMatchesPattern(tt.pattern, tt.headerName)
+			got := HeaderMatchesPattern(tt.pattern, tt.headerName)
 			if got != tt.want {
-				t.Errorf("headerMatchesPattern(%q, %q) = %v, want %v", tt.pattern, tt.headerName, got, tt.want)
+				t.Errorf("HeaderMatchesPattern(%q, %q) = %v, want %v", tt.pattern, tt.headerName, got, tt.want)
 			}
 		})
 	}

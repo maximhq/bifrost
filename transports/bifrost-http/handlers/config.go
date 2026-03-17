@@ -798,28 +798,43 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		return nil
 	}
 
-	// Validate pattern syntax for all entries
-	for i, header := range config.Allowlist {
+	// Validate pattern syntax and normalize entries (trim, lowercase, drop empties)
+	filteredAllow := config.Allowlist[:0]
+	for _, header := range config.Allowlist {
 		h := strings.ToLower(strings.TrimSpace(header))
-		config.Allowlist[i] = h
+		if h == "" {
+			continue
+		}
 		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
 			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
 		}
+		filteredAllow = append(filteredAllow, h)
 	}
-	for i, header := range config.Denylist {
+	config.Allowlist = filteredAllow
+	filteredDeny := config.Denylist[:0]
+	for _, header := range config.Denylist {
 		h := strings.ToLower(strings.TrimSpace(header))
-		config.Denylist[i] = h
+		if h == "" {
+			continue
+		}
 		if idx := strings.Index(h, "*"); idx != -1 && idx != len(h)-1 {
 			return fmt.Errorf("invalid pattern %q: wildcard (*) is only supported at the end of a pattern", h)
 		}
+		filteredDeny = append(filteredDeny, h)
 	}
+	config.Denylist = filteredDeny
 
 	var foundSecurityHeaders []string
 
-	// Check allowlist for security headers (skip wildcard patterns)
+	// Check allowlist for security headers (including wildcard patterns)
 	for _, header := range config.Allowlist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
 		if strings.Contains(headerLower, "*") {
+			for _, secHeader := range securityHeaders {
+				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
+					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
+				}
+			}
 			continue
 		}
 		if slices.Contains(securityHeaders, headerLower) {
@@ -827,10 +842,15 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 		}
 	}
 
-	// Check denylist for security headers (skip wildcard patterns)
+	// Check denylist for security headers (including wildcard patterns)
 	for _, header := range config.Denylist {
 		headerLower := strings.ToLower(strings.TrimSpace(header))
 		if strings.Contains(headerLower, "*") {
+			for _, secHeader := range securityHeaders {
+				if lib.HeaderMatchesPattern(headerLower, secHeader) && !slices.Contains(foundSecurityHeaders, secHeader) {
+					foundSecurityHeaders = append(foundSecurityHeaders, secHeader)
+				}
+			}
 			continue
 		}
 		if slices.Contains(securityHeaders, headerLower) && !slices.Contains(foundSecurityHeaders, headerLower) {
