@@ -3468,7 +3468,6 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 					}
 				}
 			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
-				// Handle web_search tool
 				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 				bifrostMsg.ResponsesToolMessage.Name = nil
 				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
@@ -3477,7 +3476,19 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
 								Type:    "search",
 								Query:   schemas.Ptr(query),
-								Queries: []string{query}, // Anthropic uses single query
+								Queries: []string{query},
+							},
+						}
+					}
+				}
+			} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
+				bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
+				bifrostMsg.ResponsesToolMessage.Name = nil
+				if inputMap, ok := toolBlock.Input.(map[string]interface{}); ok {
+					if url, ok := inputMap["url"].(string); ok {
+						bifrostMsg.ResponsesToolMessage.Action = &schemas.ResponsesToolMessageActionStruct{
+							ResponsesWebFetchToolCallAction: &schemas.ResponsesWebFetchToolCallAction{
+								URL: url,
 							},
 						}
 					}
