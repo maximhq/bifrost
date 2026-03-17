@@ -4,7 +4,6 @@ package governance
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -277,10 +276,7 @@ func (r *BudgetResolver) isModelAllowed(vk *configstoreTables.TableVirtualKey, p
 			}
 			// Fallback when model catalog is not available: simple string matching
 			// ["*"] = allow all models; [] = deny all models
-			if slices.Contains(pc.AllowedModels, "*") {
-				return true
-			}
-			return slices.Contains(pc.AllowedModels, model)
+			return pc.AllowedModels.IsAllowed(model)
 		}
 	}
 

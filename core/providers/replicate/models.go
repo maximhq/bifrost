@@ -1,7 +1,6 @@
 package replicate
 
 import (
-	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -11,11 +10,15 @@ import (
 func ToBifrostListModelsResponse(
 	deploymentsResponse *ReplicateDeploymentListResponse,
 	providerKey schemas.ModelProvider,
-	allowedModels []string,
+	allowedModels schemas.WhiteList,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0),
+	}
+
+	if !unfiltered && allowedModels.IsEmpty() {
+		return bifrostResponse
 	}
 
 	includedModels := make(map[string]bool)
@@ -27,7 +30,7 @@ func ToBifrostListModelsResponse(
 			modelName := schemas.Ptr(deployment.Name)
 			var created *int64
 
-			if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, deploymentID) {
+			if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(deploymentID) {
 				continue
 			}
 
@@ -51,7 +54,7 @@ func ToBifrostListModelsResponse(
 			}
 
 			bifrostResponse.Data = append(bifrostResponse.Data, bifrostModel)
-			includedModels[deploymentID] = true
+			includedModels[strings.ToLower(deploymentID)] = true
 		}
 
 		if deploymentsResponse.Next != nil {
@@ -60,9 +63,9 @@ func ToBifrostListModelsResponse(
 	}
 
 	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
+	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
-			if !includedModels[allowedModel] {
+			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
 					Name: schemas.Ptr(allowedModel),

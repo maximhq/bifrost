@@ -149,7 +149,6 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	return func(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
 		hydrateOpenAIRequestFromLargePayloadMetadata(bifrostCtx, req)
 
-
 		azureKey := ctx.Request.Header.Peek("authorization")
 		deploymentEndpoint := ctx.Request.Header.Peek("x-bf-azure-endpoint")
 		apiVersion := string(ctx.QueryArgs().Peek("api-version"))
@@ -280,7 +279,7 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 
 		key := schemas.Key{
 			ID:             uuid.New().String(),
-			Models:         []string{},
+			Models:         schemas.WhiteList{"*"},
 			AzureKeyConfig: &schemas.AzureKeyConfig{},
 		}
 
@@ -539,7 +538,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
 				return schemas.ChatCompletionRequest
 			},
-			GetRequestTypeInstance: func(ctx context.Context) interface{} {				
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIChatRequest{}
 			},
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
@@ -3294,4 +3293,3 @@ func parseContainerFileCreateMultipartRequest(ctx *fasthttp.RequestCtx, req inte
 
 	return nil
 }
-

@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 
@@ -317,13 +316,13 @@ func (h *MCPServerHandler) fetchToolsForVK(vk *tables.TableVirtualKey) ([]schema
 
 	if len(vk.MCPConfigs) > 0 {
 		for _, vkMcpConfig := range vk.MCPConfigs {
-			if len(vkMcpConfig.ToolsToExecute) == 0 {
+			if vkMcpConfig.ToolsToExecute.IsEmpty() {
 				// No tools specified in virtual key config - skip this client entirely
 				continue
 			}
 
 			// Handle wildcard in virtual key config - allow all tools from this client
-			if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
+			if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
 				// Virtual key uses wildcard - use client-specific wildcard
 				executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
 				continue
