@@ -190,6 +190,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "X-Proxy-Token: ${MY_PROXY_SECRET}" \
   -d '{"model": "gpt-4o", "messages": [{"role": "user", "content": "Hello"}]}'
+```
 
 You can also use a literal value instead of an env var reference if the value is not sensitive:
 
