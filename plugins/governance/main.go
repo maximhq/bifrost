@@ -910,6 +910,8 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 	var invalid []string
 	for _, h := range *p.requiredHeaders {
 		name, rawRequiredValue, hasValue := strings.Cut(h, "=")
+		name = strings.TrimSpace(name)
+		rawRequiredValue = strings.TrimSpace(rawRequiredValue)
 		actual, ok := headers[strings.ToLower(name)]
 		if !ok {
 			missing = append(missing, name)

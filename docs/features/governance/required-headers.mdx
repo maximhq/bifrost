@@ -70,6 +70,7 @@ Each entry in `required_headers` can be:
 | `Header-Name` | Header must be **present** (any value accepted) |
 | `Header-Name=value` | Header must be present **and** its value must exactly equal `value` |
 | `Header-Name=env.VAR_NAME` | Header must be present **and** its value must equal the resolved value of environment variable `VAR_NAME` |
+| `Header-Name=` | Header must be present **and** its value must be an empty string |
 
 <Tabs group="config-method">
 <Tab title="Web UI">

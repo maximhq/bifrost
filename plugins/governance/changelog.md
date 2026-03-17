@@ -1,0 +1,1 @@
+- feat: required_headers now supports Name=value constraints and env.VAR resolution
