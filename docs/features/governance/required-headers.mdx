@@ -26,11 +26,10 @@ Header name matching is **case-insensitive** — configuring `X-Tenant-ID` will 
 
 ```mermaid
 graph LR
-    A[Request] --> B{All required<br/>headers present?}
-    B -->|No| D[400 Bad Request<br/>missing_required_headers]
-    B -->|Yes| E{Value constraints<br/>satisfied?}
-    E -->|No| F[400 Bad Request<br/>invalid required header value]
-    E -->|Yes| C[Continue to<br/>governance evaluation]
+    A[Request] --> B[Validate required headers<br/>(presence + value)]
+    B --> C{Any validation failures?}
+    C -->|Yes| D[400 Bad Request<br/>missing_required_headers<br/>(message may include missing and/or invalid)]
+    C -->|No| E[Continue to<br/>governance evaluation]
 ```
 
 When a request arrives:
