@@ -26,6 +26,7 @@ export default function PromptsViewHeader() {
 		modelParams,
 		provider,
 		model,
+		variables,
 		hasChanges,
 		hasVersionChanges,
 		hasSessionChanges,
@@ -87,6 +88,7 @@ export default function PromptsViewHeader() {
 					model_params: buildSaveParams(),
 					provider,
 					model,
+					variables: Object.keys(variables).length > 0 ? variables : undefined,
 				},
 			}).unwrap();
 			setUrlState({ sessionId: result.session.id, versionId: null });
@@ -94,7 +96,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, hasChanges, isStreaming]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, hasChanges, isStreaming]);
 
 	// Cmd+S / Ctrl+S to save session
 	useHotkeys(
@@ -126,6 +128,7 @@ export default function PromptsViewHeader() {
 					model_params: buildSaveParams(),
 					provider,
 					model,
+					variables: Object.keys(variables).length > 0 ? variables : undefined,
 				},
 			}).unwrap();
 			setUrlState({ sessionId: result.session.id, versionId: null });
@@ -133,7 +136,7 @@ export default function PromptsViewHeader() {
 		} catch (err) {
 			toast.error("Failed to save session", { description: getErrorMessage(err) });
 		}
-	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, createSession, setUrlState, onSessionSaved, hasChanges]);
+	}, [selectedPrompt?.id, messages, buildSaveParams, provider, model, variables, createSession, setUrlState, onSessionSaved, hasChanges]);
 
 	const handleRenameSession = useCallback(
 		async (sessionId: number, name: string) => {

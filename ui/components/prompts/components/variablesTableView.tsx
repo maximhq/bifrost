@@ -10,7 +10,7 @@ export function VariablesTableView({
 	variables: VariableMap;
 	onChange: React.Dispatch<React.SetStateAction<VariableMap>>;
 }) {
-	const entries = useMemo(() => Object.entries(variables), [variables]);
+	const entries = useMemo(() => Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)), [variables]);
 
 	const handleValueChange = useCallback(
 		(name: string, value: string) => {
@@ -25,7 +25,7 @@ export function VariablesTableView({
 			<p className="text-muted-foreground text-xs">
 				Detected from <code className="bg-muted rounded px-1">{"{{ }}"}</code> syntax in messages. Values are substituted at runtime.
 			</p>
-			<div className="border-border overflow-hidden rounded-md border">
+			<div className="border-border overflow-hidden rounded-sm border">
 				<table className="w-full table-fixed text-sm">
 					<thead>
 						<tr className="bg-muted/50 border-border border-b">
