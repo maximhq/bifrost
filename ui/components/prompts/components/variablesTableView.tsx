@@ -10,7 +10,7 @@ export function VariablesTableView({
 	variables: VariableMap;
 	onChange: React.Dispatch<React.SetStateAction<VariableMap>>;
 }) {
-	const entries = useMemo(() => Object.entries(variables), [variables]);
+	const entries = useMemo(() => Object.entries(variables).sort(([a], [b]) => a.localeCompare(b)), [variables]);
 
 	const handleValueChange = useCallback(
 		(name: string, value: string) => {
