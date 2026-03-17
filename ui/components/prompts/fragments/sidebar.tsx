@@ -126,13 +126,6 @@ export function PromptSidebar() {
 		return { folders: filteredFolders, promptsByFolder: filteredPromptsByFolder, rootPrompts: filteredRootPrompts };
 	}, [folders, prompts, promptsByFolder, rootPrompts, searchQuery]);
 
-	const getPromptHref = useCallback(
-		(promptId: string) => {
-			return `${pathname}?promptId=${encodeURIComponent(promptId)}`;
-		},
-		[pathname],
-	);
-
 	// Prompt lookup for drag events
 	const promptMap = useMemo(() => {
 		const map = new Map<string, Prompt>();
@@ -190,7 +183,12 @@ export function PromptSidebar() {
 					{canCreate && (
 						<DropdownMenu>
 							<DropdownMenuTrigger asChild>
-								<Button variant="outline" className="h-8 w-8 shrink-0 bg-transparent" data-testid="sidebar-create-menu" aria-label="Create prompt or folder">
+								<Button
+									variant="outline"
+									className="h-8 w-8 shrink-0 bg-transparent"
+									data-testid="sidebar-create-menu"
+									aria-label="Create prompt or folder"
+								>
 									<PlusIcon className="h-3.5 w-3.5" />
 								</Button>
 							</DropdownMenuTrigger>
@@ -218,9 +216,8 @@ export function PromptSidebar() {
 					)}
 				</div>
 
-				{/* Tree content */}
 				<ScrollArea className="grow overflow-y-auto" viewportClassName="no-table viewport-table-height-full">
-					<div className="flex h-full flex-col p-2">
+					<div className="flex flex-col p-2 px-3">
 						{filteredData.folders.length === 0 && filteredData.rootPrompts.length === 0 ? (
 							<div className="text-muted-foreground py-8 text-center text-sm">{searchQuery ? "No results found" : "No prompts yet"}</div>
 						) : (
@@ -235,7 +232,6 @@ export function PromptSidebar() {
 										selectedPromptId={selectedPromptId}
 										onToggle={() => toggleFolder(folder.id)}
 										onSelectPrompt={onSelectPrompt}
-										getPromptHref={getPromptHref}
 										onEdit={() => onEditFolder(folder)}
 										onDelete={() => onDeleteFolder(folder)}
 										onCreatePrompt={() => onCreatePrompt(folder.id)}
@@ -250,7 +246,6 @@ export function PromptSidebar() {
 									isDragOver={dragOverTarget === "root-drop-zone"}
 									rootPrompts={filteredData.rootPrompts}
 									selectedPromptId={selectedPromptId}
-									getPromptHref={getPromptHref}
 									onSelectPrompt={onSelectPrompt}
 									onEditPrompt={onEditPrompt}
 									onDeletePrompt={onDeletePrompt}
@@ -270,7 +265,6 @@ interface RootDropZoneProps {
 	isDragOver: boolean;
 	rootPrompts: Prompt[];
 	selectedPromptId?: string | null;
-	getPromptHref: (promptId: string) => string;
 	onSelectPrompt: (promptId: string) => void;
 	onEditPrompt: (prompt: Prompt) => void;
 	onDeletePrompt: (prompt: Prompt) => void;
@@ -282,7 +276,6 @@ function RootDropZone({
 	isDragOver,
 	rootPrompts,
 	selectedPromptId,
-	getPromptHref,
 	onSelectPrompt,
 	onEditPrompt,
 	onDeletePrompt,
@@ -298,7 +291,6 @@ function RootDropZone({
 					key={prompt.id}
 					prompt={prompt}
 					isSelected={selectedPromptId === prompt.id}
-					href={getPromptHref(prompt.id)}
 					onSelect={() => onSelectPrompt(prompt.id)}
 					onEdit={() => onEditPrompt(prompt)}
 					onDelete={() => onDeletePrompt(prompt)}
@@ -318,7 +310,6 @@ interface DroppableFolderProps {
 	selectedPromptId?: string | null;
 	onToggle: () => void;
 	onSelectPrompt: (promptId: string) => void;
-	getPromptHref: (promptId: string) => string;
 	onEdit: () => void;
 	onDelete: () => void;
 	onCreatePrompt: () => void;
@@ -337,7 +328,6 @@ function DroppableFolder({
 	selectedPromptId,
 	onToggle,
 	onSelectPrompt,
-	getPromptHref,
 	onEdit,
 	onDelete,
 	onCreatePrompt,
@@ -354,7 +344,7 @@ function DroppableFolder({
 		<div ref={ref} className="mb-1 last:mb-0">
 			<div
 				className={cn(
-					"hover:bg-muted/50 group relative flex cursor-pointer items-center gap-1 rounded-sm px-2 h-[30px] transition-colors",
+					"hover:bg-muted/50 group relative flex h-[30px] cursor-pointer items-center gap-1 rounded-sm px-2 transition-colors",
 					isDragOver && "bg-primary/10 ring-primary/30 ring-1",
 				)}
 				onClick={onToggle}
@@ -368,16 +358,22 @@ function DroppableFolder({
 					)}
 				</button>
 				{isExpanded ? (
-					<FolderOpen className="text-muted-foreground mr-2 h-4 w-4 shrink-0" />
+					<FolderOpen className="text-muted-foreground h-4 w-4 shrink-0" />
 				) : (
-					<FolderIcon className="text-muted-foreground mr-2 h-4 w-4 shrink-0" />
+					<FolderIcon className="text-muted-foreground h-4 w-4 shrink-0" />
 				)}
 				<span className="flex-1 truncate text-sm font-medium">{folder.name}</span>
 				<span className="text-muted-foreground mr-1 shrink-0 text-xs">{prompts.length}</span>
 				{showActions && (
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()} className="bg-card absolute top-1/2 right-2 -translate-y-1/2">
-							<Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-folder-actions-${folder.id}`} aria-label="Folder actions">
+							<Button
+								variant="ghost"
+								size="icon"
+								className="h-6 w-6 shrink-0 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+								data-testid={`sidebar-folder-actions-${folder.id}`}
+								aria-label="Folder actions"
+							>
 								<MoreHorizontal className="h-4 w-4" />
 							</Button>
 						</DropdownMenuTrigger>
@@ -403,7 +399,7 @@ function DroppableFolder({
 										onEdit();
 									}}
 								>
-									<Pencil className="mr-2 h-4 w-4" />
+									<Pencil className="h-4 w-4" />
 									Edit Folder
 								</DropdownMenuItem>
 							)}
@@ -416,7 +412,7 @@ function DroppableFolder({
 										onDelete();
 									}}
 								>
-									<Trash2 className="mr-2 h-4 w-4" />
+									<Trash2 className="h-4 w-4" />
 									Delete Folder
 								</DropdownMenuItem>
 							)}
@@ -435,7 +431,6 @@ function DroppableFolder({
 								key={prompt.id}
 								prompt={prompt}
 								isSelected={selectedPromptId === prompt.id}
-								href={getPromptHref(prompt.id)}
 								onSelect={() => onSelectPrompt(prompt.id)}
 								onEdit={() => onEditPrompt(prompt)}
 								onDelete={() => onDeletePrompt(prompt)}
@@ -453,7 +448,6 @@ function DroppableFolder({
 interface DraggablePromptItemProps {
 	prompt: Prompt;
 	isSelected: boolean;
-	href: string;
 	onSelect: () => void;
 	onEdit: () => void;
 	onDelete: () => void;
@@ -461,7 +455,7 @@ interface DraggablePromptItemProps {
 	canDelete: boolean;
 }
 
-function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
+function DraggablePromptItem({ prompt, isSelected, onSelect, onEdit, onDelete, canUpdate, canDelete }: DraggablePromptItemProps) {
 	const { ref, isDragging } = useDraggable({ id: `prompt-${prompt.id}`, disabled: !canUpdate });
 	const showActions = canUpdate || canDelete;
 
@@ -470,7 +464,7 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 			ref={ref}
 			data-testid={`sidebar-prompt-${prompt.id}`}
 			className={cn(
-				"group flex cursor-pointer items-center gap-2 rounded-sm px-2 h-[30px] mb-1 last:mb-0",
+				"group mb-1 flex h-[30px] cursor-pointer items-center gap-2 rounded-sm px-2 last:mb-0",
 				isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50",
 				isDragging && "opacity-50",
 			)}
@@ -485,7 +479,13 @@ function DraggablePromptItem({ prompt, isSelected, href, onSelect, onEdit, onDel
 			{showActions && (
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-						<Button variant="ghost" size="icon" className="h-6 w-6 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 group-focus-within:opacity-100" data-testid={`sidebar-prompt-actions-${prompt.id}`} aria-label="Prompt actions">
+						<Button
+							variant="ghost"
+							size="icon"
+							className="h-6 w-6 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+							data-testid={`sidebar-prompt-actions-${prompt.id}`}
+							aria-label="Prompt actions"
+						>
 							<MoreHorizontal className="h-4 w-4" />
 						</Button>
 					</DropdownMenuTrigger>

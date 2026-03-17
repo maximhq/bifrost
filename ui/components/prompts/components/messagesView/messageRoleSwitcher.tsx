@@ -30,7 +30,7 @@ export default function MessageRoleSwitcher({
 					)}
 				>
 					{role}
-					<ChevronDown className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
+					<ChevronDown className="size-3 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100" />
 				</button>
 			</DropdownMenuTrigger>
 			<DropdownMenuContent align="start">

@@ -58,7 +58,7 @@ export function MessagesView() {
 	const isLastMessageStreaming = isStreaming && lastMessage?.type === MessageType.CompletionResult;
 
 	return (
-		<div className="space-y-1 p-4">
+		<div className="space-y-1 px-1 py-4">
 			{messages.map((msg, index) => {
 				const isStreamingMsg = isLastMessageStreaming && index === messages.length - 1;
 				const canRemove = index > 0;
