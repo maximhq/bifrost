@@ -1103,9 +1103,9 @@ append_dynamic_columns_postgres() {
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
   fi
-  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_imag"; then
-    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 1;" >> "$output_file"
-    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 2;" >> "$output_file"
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512x512_pixels_premium"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
   fi
   if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_1024_and_1024_pixels"; then
     echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 1;" >> "$output_file"
@@ -1505,9 +1505,9 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
     fi
-    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_image"; then
-      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 1;" >> "$output_file"
-      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 2;" >> "$output_file"
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512x512_pixels_premium"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512x512_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
     fi
     if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_1024_and_1024_pixels"; then
       echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 1;" >> "$output_file"
