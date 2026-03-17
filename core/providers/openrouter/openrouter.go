@@ -97,13 +97,8 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 		return bifrostErr
 	}
 
-	// Check for auth errors (401, 403)
-	statusCode := resp.StatusCode()
-	if statusCode == fasthttp.StatusUnauthorized || statusCode == fasthttp.StatusForbidden {
-		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), "")
-	}
-
 	// Any 4xx/5xx error indicates the key might be invalid
+	statusCode := resp.StatusCode()
 	if statusCode > 400 {
 		return openai.ParseOpenAIError(resp, schemas.ChatCompletionRequest, provider.GetProviderKey(), "")
 	}
