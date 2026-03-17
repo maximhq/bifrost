@@ -1,7 +1,12 @@
 // Package schemas defines the core schemas and types used by the Bifrost system.
 package schemas
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"slices"
+	"strings"
+)
 
 type KeyStatusType string
 
@@ -10,13 +15,71 @@ const (
 	KeyStatusListModelsFailed KeyStatusType = "list_models_failed"
 )
 
+// WhiteList is a list of values that are allowed to be used.
+// Semantics:
+//   - "*" (alone) means all values are allowed.
+//   - Empty list means nothing is allowed.
+//   - Non-empty list (without "*") means only the listed values are allowed.
+//
+// This type is used generically for any field that needs whitelist behavior
+// (e.g., allowed models, allowed tools).
+type WhiteList []string
+
+// Contains reports whether value is in the whitelist.
+// Returns true if value is in the list.
+func (wl WhiteList) Contains(value string) bool {
+	return slices.ContainsFunc(wl, func(s string) bool {
+		return strings.EqualFold(s, value)
+	})
+}
+
+// IsAllowed reports whether value is in the whitelist.
+// Returns true if value is in the list.
+func (wl WhiteList) IsAllowed(value string) bool {
+	return wl.IsUnrestricted() || wl.Contains(value)
+}
+
+// IsEmpty reports whether the whitelist has no entries.
+func (wl WhiteList) IsEmpty() bool {
+	return len(wl) == 0
+}
+
+// IsUnrestricted reports whether the whitelist contains only "*",
+// meaning all values are allowed.
+func (wl WhiteList) IsUnrestricted() bool {
+	return len(wl) == 1 && wl[0] == "*"
+}
+
+// IsRestricted reports whether the whitelist contains entries other than "*",
+// meaning only the listed values are allowed.
+func (wl WhiteList) IsRestricted() bool {
+	return !wl.IsUnrestricted()
+}
+
+// Validate checks that the whitelist is well-formed.
+// Returns an error if "*" is present alongside other values, or if there are duplicate entries.
+func (wl WhiteList) Validate() error {
+	if wl.Contains("*") && len(wl) > 1 {
+		return fmt.Errorf("wildcard '*' cannot be used with other values in the whitelist")
+	}
+	seen := make(map[string]struct{}, len(wl))
+	for _, v := range wl {
+		normalized := strings.ToLower(v)
+		if _, ok := seen[normalized]; ok {
+			return fmt.Errorf("duplicate value '%s' in whitelist", v)
+		}
+		seen[normalized] = struct{}{}
+	}
+	return nil
+}
+
 // Key represents an API key and its associated configuration for a provider.
 // It contains the key value, supported models, and a weight for load balancing.
 type Key struct {
 	ID                   string                `json:"id"`                               // The unique identifier for the key (used by bifrost to identify the key)
 	Name                 string                `json:"name"`                             // The name of the key (used by users to identify the key, not used by bifrost)
 	Value                EnvVar                `json:"value"`                            // The actual API key value
-	Models               []string              `json:"models"`                           // List of models this key can access
+	Models               WhiteList             `json:"models"`                           // List of models this key can access
 	Weight               float64               `json:"weight"`                           // Weight for load balancing between multiple keys
 	AzureKeyConfig       *AzureKeyConfig       `json:"azure_key_config,omitempty"`       // Azure-specific key configuration
 	VertexKeyConfig      *VertexKeyConfig      `json:"vertex_key_config,omitempty"`      // Vertex-specific key configuration

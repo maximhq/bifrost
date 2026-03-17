@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	
+
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
-
 
 type AgentModeExecutor struct {
 	logger schemas.Logger
@@ -39,7 +38,7 @@ func (a *AgentModeExecutor) ExecuteAgentForChatRequest(
 	makeReq func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError),
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
-	clientManager ClientManager,	
+	clientManager ClientManager,
 ) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	// Create adapter for Chat API
 	adapter := &chatAPIAdapter{
@@ -142,7 +141,7 @@ func (a *AgentModeExecutor) executeAgent(
 	adapter agentAPIAdapter,
 	fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string,
 	executeToolFunc func(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error),
-	clientManager ClientManager,	
+	clientManager ClientManager,
 ) (interface{}, *schemas.BifrostError) {
 	// Get initial response from adapter
 	currentResponse := adapter.getInitialResponse()
@@ -454,25 +453,23 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 
 		// Get auto-executable tools from config
 		toolsToAutoExecute := client.ExecutionConfig.ToolsToAutoExecute
-		if len(toolsToAutoExecute) == 0 {
+		if toolsToAutoExecute.IsEmpty() {
 			// No auto-executable tools configured for this client
 			continue
 		}
 
 		// Parse tool names (as they appear in JavaScript code)
 		autoExecutableTools := []string{}
-		for _, originalToolName := range toolsToAutoExecute {
-			// Handle wildcard "*" - means all tools are auto-executable
-			if originalToolName == "*" {
-				autoExecutableTools = append(autoExecutableTools, "*")
-				continue
+		if toolsToAutoExecute.IsUnrestricted() {
+			autoExecutableTools = append(autoExecutableTools, "*")
+		} else {
+			for _, originalToolName := range toolsToAutoExecute {
+				// Replace - with _ for code mode compatibility, then parse for JS compatibility
+				toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
+				parsedToolName := parseToolName(toolNameForCode)
+				autoExecutableTools = append(autoExecutableTools, parsedToolName)
 			}
-			// Replace - with _ for code mode compatibility, then parse for JS compatibility
-			toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
-			parsedToolName := parseToolName(toolNameForCode)
-			autoExecutableTools = append(autoExecutableTools, parsedToolName)
 		}
-
 		// Add to map if there are auto-executable tools
 		if len(autoExecutableTools) > 0 {
 			allowedTools[clientName] = autoExecutableTools

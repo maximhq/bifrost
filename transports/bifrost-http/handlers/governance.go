@@ -69,14 +69,14 @@ type CreateVirtualKeyRequest struct {
 	ProviderConfigs []struct {
 		Provider      string                  `json:"provider" validate:"required"`
 		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels []string                `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
+		AllowedModels schemas.WhiteList       `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
 		Budget        *CreateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *CreateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
-		KeyIDs        []string                `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
+		KeyIDs        schemas.WhiteList       `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs []struct {
-		MCPClientName  string   `json:"mcp_client_name" validate:"required"`
-		ToolsToExecute []string `json:"tools_to_execute,omitempty"`
+		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
+		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"` // Empty means no MCP clients allowed (deny-by-default)
 	TeamID     *string                 `json:"team_id,omitempty"`     // Mutually exclusive with CustomerID
 	CustomerID *string                 `json:"customer_id,omitempty"` // Mutually exclusive with TeamID
@@ -93,15 +93,15 @@ type UpdateVirtualKeyRequest struct {
 		ID            *uint                   `json:"id,omitempty"` // null for new entries
 		Provider      string                  `json:"provider" validate:"required"`
 		Weight        *float64                `json:"weight,omitempty"`
-		AllowedModels []string                `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
+		AllowedModels schemas.WhiteList       `json:"allowed_models,omitempty"` // ["*"] allows all models; empty denies all
 		Budget        *UpdateBudgetRequest    `json:"budget,omitempty"`         // Provider-level budget
 		RateLimit     *UpdateRateLimitRequest `json:"rate_limit,omitempty"`     // Provider-level rate limit
-		KeyIDs        []string                `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
+		KeyIDs        schemas.WhiteList       `json:"key_ids,omitempty"`        // List of DBKey UUIDs to associate with this provider config
 	} `json:"provider_configs,omitempty"`
 	MCPConfigs []struct {
-		ID             *uint    `json:"id,omitempty"` // null for new entries
-		MCPClientName  string   `json:"mcp_client_name" validate:"required"`
-		ToolsToExecute []string `json:"tools_to_execute,omitempty"`
+		ID             *uint             `json:"id,omitempty"` // null for new entries
+		MCPClientName  string            `json:"mcp_client_name" validate:"required"`
+		ToolsToExecute schemas.WhiteList `json:"tools_to_execute,omitempty"`
 	} `json:"mcp_configs,omitempty"`
 	TeamID     *string                 `json:"team_id,omitempty"`
 	CustomerID *string                 `json:"customer_id,omitempty"`
@@ -494,12 +494,19 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 				}
 
+				if err := pc.AllowedModels.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+				}
+				if err := pc.KeyIDs.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+				}
+
 				// Get keys for this provider config if specified
 				var keys []configstoreTables.TableKey
 				allowAllKeys := false
-				if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+				if pc.KeyIDs.IsUnrestricted() {
 					allowAllKeys = true
-				} else if len(pc.KeyIDs) > 0 {
+				} else if !pc.KeyIDs.IsEmpty() {
 					var err error
 					keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 					if err != nil {
@@ -566,12 +573,15 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenMCPClientNames := make(map[string]bool)
 			for _, mc := range req.MCPConfigs {
 				if seenMCPClientNames[mc.MCPClientName] {
-					return fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)
+					return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
 				}
 				seenMCPClientNames[mc.MCPClientName] = true
 			}
 
 			for _, mc := range req.MCPConfigs {
+				if err := mc.ToolsToExecute.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
+				}
 				mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
 				if err != nil {
 					return fmt.Errorf("failed to get MCP client: %w", err)
@@ -587,8 +597,8 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		return nil
 	}); err != nil {
-		// Check if this is a duplicate MCPClientName error and return 400 instead of 500
-		if strings.Contains(err.Error(), "duplicate mcp_client_name:") {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) {
 			SendError(ctx, 400, err.Error())
 			return
 		}
@@ -835,12 +845,19 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 							return fmt.Errorf("both max_limit and reset_duration are required when creating a new provider budget")
 						}
 					}
+					if err := pc.AllowedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.KeyIDs.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					}
+
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
 					allowAllKeys := false
-					if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+					if pc.KeyIDs.IsUnrestricted() {
 						allowAllKeys = true
-					} else if len(pc.KeyIDs) > 0 {
+					} else if !pc.KeyIDs.IsEmpty() {
 						var err error
 						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 						if err != nil {
@@ -906,6 +923,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						return fmt.Errorf("provider config %d does not belong to this virtual key", *pc.ID)
 					}
 					requestConfigsMap[*pc.ID] = true
+					if err := pc.AllowedModels.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid allowed_models for provider %s: %w", pc.Provider, err)}
+					}
+					if err := pc.KeyIDs.Validate(); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					}
 					existing.Provider = pc.Provider
 					existing.Weight = pc.Weight
 					existing.AllowedModels = pc.AllowedModels
@@ -913,9 +936,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
 					allowAllKeys := false
-					if len(pc.KeyIDs) == 1 && pc.KeyIDs[0] == "*" {
+					if pc.KeyIDs.IsUnrestricted() {
 						allowAllKeys = true
-					} else if len(pc.KeyIDs) > 0 {
+					} else if !pc.KeyIDs.IsEmpty() {
 						var err error
 						keys, err = h.configStore.GetKeysByIDs(ctx, pc.KeyIDs)
 						if err != nil {
@@ -1054,7 +1077,7 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			seenMCPClientNames := make(map[string]bool)
 			for _, mc := range req.MCPConfigs {
 				if seenMCPClientNames[mc.MCPClientName] {
-					return fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)
+					return &badRequestError{err: fmt.Errorf("duplicate mcp_client_name: %s", mc.MCPClientName)}
 				}
 				seenMCPClientNames[mc.MCPClientName] = true
 			}
@@ -1071,6 +1094,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 			requestMCPConfigsMap := make(map[uint]bool)
 			// Process new configs: create new ones and update existing ones
 			for _, mc := range req.MCPConfigs {
+				if err := mc.ToolsToExecute.Validate(); err != nil {
+					return &badRequestError{err: fmt.Errorf("invalid tools_to_execute for mcp client %s: %w", mc.MCPClientName, err)}
+				}
 				if mc.ID == nil {
 					mcpClient, err := h.configStore.GetMCPClientByName(ctx, mc.MCPClientName)
 					if err != nil {
@@ -1130,11 +1156,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 
 		return nil
 	}); err != nil {
-		errMsg := err.Error()
-		// Check if this is a duplicate MCPClientName error and return 400 instead of 500
-		if strings.Contains(errMsg, "duplicate mcp_client_name:") ||
-			strings.Contains(errMsg, "already exists'") ||
-			strings.Contains(errMsg, "duplicate key") {
+		var badReqErr *badRequestError
+		if errors.As(err, &badReqErr) ||
+			strings.Contains(err.Error(), "already exists") ||
+			strings.Contains(err.Error(), "duplicate key") {
 			SendError(ctx, 400, fmt.Sprintf("Failed to update virtual key: %v", err))
 			return
 		}

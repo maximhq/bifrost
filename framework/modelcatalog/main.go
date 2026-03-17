@@ -530,14 +530,14 @@ func (mc *ModelCatalog) GetProvidersForModel(model string) []schemas.ModelProvid
 //	// Explicit allowedModels without prefix
 //	mc.IsModelAllowedForProvider("openai", "gpt-4o", []string{"gpt-4o"})
 //	// Returns: true (direct match)
-func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels []string) bool {
+func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider, model string, allowedModels schemas.WhiteList) bool {
 	// Case 1: ["*"] = allow all models; use catalog to determine support
 	// Empty allowedModels = deny all (fail-safe deny-by-default)
-	if slices.Contains(allowedModels, "*") {
+	if allowedModels.IsUnrestricted() {
 		supportedProviders := mc.GetProvidersForModel(model)
 		return slices.Contains(supportedProviders, provider)
 	}
-	if len(allowedModels) == 0 {
+	if allowedModels.IsEmpty() {
 		return false
 	}
 

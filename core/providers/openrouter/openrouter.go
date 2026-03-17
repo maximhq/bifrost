@@ -4,7 +4,6 @@ package openrouter
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
@@ -189,27 +188,33 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	allowedModels := key.Models
 	providerPrefix := string(schemas.OpenRouter) + "/"
 
-	if !request.Unfiltered && len(allowedModels) > 0 {
+	if !request.Unfiltered && allowedModels.IsEmpty() {
+		openrouterResponse.Data = make([]schemas.Model, 0)
+	} else if !request.Unfiltered && allowedModels.IsRestricted() {
 		filteredData := make([]schemas.Model, 0, len(openrouterResponse.Data))
 		includedModels := make(map[string]bool)
 		for i := range openrouterResponse.Data {
 			rawID := openrouterResponse.Data[i].ID
-			if !(slices.Contains(allowedModels, rawID) || slices.Contains(allowedModels, providerPrefix+rawID)) {
+			if !(allowedModels.Contains(rawID) || allowedModels.Contains(providerPrefix+rawID)) {
 				continue
 			}
 			openrouterResponse.Data[i].ID = providerPrefix + rawID
 			filteredData = append(filteredData, openrouterResponse.Data[i])
-			includedModels[rawID] = true
+			includedModels[strings.ToLower(rawID)] = true
 		}
 		// Backfill allowed models not in the API response
 		for _, allowedModel := range allowedModels {
-			rawID := strings.TrimPrefix(allowedModel, providerPrefix)
-			if !includedModels[rawID] {
+			// Strip provider prefix case-insensitively to handle any casing users may supply
+			rawID := allowedModel
+			if strings.HasPrefix(strings.ToLower(allowedModel), strings.ToLower(providerPrefix)) {
+				rawID = allowedModel[len(providerPrefix):]
+			}
+			if !includedModels[strings.ToLower(rawID)] {
 				filteredData = append(filteredData, schemas.Model{
 					ID:   providerPrefix + rawID,
 					Name: schemas.Ptr(rawID),
 				})
-				includedModels[rawID] = true // avoid duplicate backfill
+				includedModels[strings.ToLower(rawID)] = true // avoid duplicate backfill
 			}
 		}
 		openrouterResponse.Data = filteredData

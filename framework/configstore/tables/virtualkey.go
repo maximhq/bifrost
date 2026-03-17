@@ -24,14 +24,14 @@ func (TableVirtualKeyProviderConfigKey) TableName() string {
 
 // TableVirtualKeyProviderConfig represents a provider configuration for a virtual key
 type TableVirtualKeyProviderConfig struct {
-	ID            uint     `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID  string   `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
-	Provider      string   `gorm:"type:varchar(50);not null" json:"provider"`
-	Weight        *float64 `json:"weight"`
-	AllowedModels []string `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
-	AllowAllKeys  bool     `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
-	BudgetID      *string  `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
-	RateLimitID   *string  `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
+	ID            uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID  string            `gorm:"type:varchar(255);not null" json:"virtual_key_id"`
+	Provider      string            `gorm:"type:varchar(50);not null" json:"provider"`
+	Weight        *float64          `json:"weight"`
+	AllowedModels schemas.WhiteList `gorm:"type:text;serializer:json" json:"allowed_models"` // ["*"] allows all models; empty denies all (deny-by-default)
+	AllowAllKeys  bool              `gorm:"default:false" json:"allow_all_keys"`             // True means all keys allowed; false with empty Keys means no keys allowed (deny-by-default)
+	BudgetID      *string           `gorm:"type:varchar(255);index" json:"budget_id,omitempty"`
+	RateLimitID   *string           `gorm:"type:varchar(255);index" json:"rate_limit_id,omitempty"`
 
 	// Relationships
 	Budget    *TableBudget    `gorm:"foreignKey:BudgetID;onDelete:CASCADE" json:"budget,omitempty"`
@@ -75,6 +75,14 @@ func (pc *TableVirtualKeyProviderConfig) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	return nil
+}
+
+// BeforeSave validates WhiteList fields before GORM persists the record.
+func (pc *TableVirtualKeyProviderConfig) BeforeSave(tx *gorm.DB) error {
+	if err := pc.AllowedModels.Validate(); err != nil {
+		return fmt.Errorf("invalid allowed_models: %w", err)
+	}
 	return nil
 }
 
@@ -147,11 +155,11 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 }
 
 type TableVirtualKeyMCPConfig struct {
-	ID             uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	VirtualKeyID   string         `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_mcpclient" json:"virtual_key_id"`
-	MCPClientID    uint           `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
-	MCPClient      TableMCPClient `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
-	ToolsToExecute []string       `gorm:"type:text;serializer:json" json:"tools_to_execute"`
+	ID             uint              `gorm:"primaryKey;autoIncrement" json:"id"`
+	VirtualKeyID   string            `gorm:"type:varchar(255);not null;uniqueIndex:idx_vk_mcpclient" json:"virtual_key_id"`
+	MCPClientID    uint              `gorm:"not null;uniqueIndex:idx_vk_mcpclient" json:"mcp_client_id"`
+	MCPClient      TableMCPClient    `gorm:"foreignKey:MCPClientID" json:"mcp_client"`
+	ToolsToExecute schemas.WhiteList `gorm:"type:text;serializer:json" json:"tools_to_execute"`
 
 	// MCPClientName is used during config file parsing to resolve the MCP client by name.
 	// This field is not persisted to the database - it's only used to capture
@@ -162,6 +170,14 @@ type TableVirtualKeyMCPConfig struct {
 // TableName sets the table name for each model
 func (TableVirtualKeyMCPConfig) TableName() string {
 	return "governance_virtual_key_mcp_configs"
+}
+
+// BeforeSave validates WhiteList fields before GORM persists the record.
+func (mc *TableVirtualKeyMCPConfig) BeforeSave(tx *gorm.DB) error {
+	if err := mc.ToolsToExecute.Validate(); err != nil {
+		return fmt.Errorf("invalid tools_to_execute: %w", err)
+	}
+	return nil
 }
 
 // UnmarshalJSON custom unmarshaller to handle both "mcp_client_id" (database format)
