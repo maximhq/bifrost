@@ -1097,10 +1097,10 @@ type LatencyHistogramBucket struct {
 	P90Latency    float64   `json:"p90_latency"`
 	P95Latency    float64   `json:"p95_latency"`
 	P99Latency    float64   `json:"p99_latency"`
-	AvgTokensPerSecond  float64 `json:"avg_tokens_per_second"`
-	P90TokensPerSecond  float64 `json:"p90_tokens_per_second"`
-	AvgTimeToFirstToken float64 `json:"avg_time_to_first_token"`
-	P90TimeToFirstToken float64 `json:"p90_time_to_first_token"`
+	AvgTokensPerSecond  *float64 `json:"avg_tokens_per_second"`
+	P90TokensPerSecond  *float64 `json:"p90_tokens_per_second"`
+	AvgTimeToFirstToken *float64 `json:"avg_time_to_first_token"`
+	P90TimeToFirstToken *float64 `json:"p90_time_to_first_token"`
 	TotalRequests int64     `json:"total_requests"`
 }
 
@@ -1152,10 +1152,10 @@ type ProviderLatencyStats struct {
 	P90Latency    float64 `json:"p90_latency"`
 	P95Latency    float64 `json:"p95_latency"`
 	P99Latency    float64 `json:"p99_latency"`
-	AvgTokensPerSecond  float64 `json:"avg_tokens_per_second"`
-	P90TokensPerSecond  float64 `json:"p90_tokens_per_second"`
-	AvgTimeToFirstToken float64 `json:"avg_time_to_first_token"`
-	P90TimeToFirstToken float64 `json:"p90_time_to_first_token"`
+	AvgTokensPerSecond  *float64 `json:"avg_tokens_per_second"`
+	P90TokensPerSecond  *float64 `json:"p90_tokens_per_second"`
+	AvgTimeToFirstToken *float64 `json:"avg_time_to_first_token"`
+	P90TimeToFirstToken *float64 `json:"p90_time_to_first_token"`
 	TotalRequests int64   `json:"total_requests"`
 }
 

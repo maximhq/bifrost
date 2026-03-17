@@ -1158,6 +1158,12 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		return nil, fmt.Errorf("failed to get latency histogram: %w", err)
 	}
 
+	// Note:
+	// We rely on NULL semantics to distinguish "no data" from zero values.
+	// Metrics are only aggregated when present (Valid == true).
+	// Aggregation is performed in-memory to maintain cross-database compatibility
+	// (SQLite, MySQL, Postgres), as percentile functions are not uniformly supported.
+	// This ensures consistent behavior across all supported backends.
 	// Group latency values by bucket (already sorted by latency due to ORDER BY)
 	type bucketData struct {
 		latencies         []float64
@@ -1175,10 +1181,10 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 			orderedKeys = append(orderedKeys, r.BucketTimestamp)
 		}
 		bd.latencies = append(bd.latencies, r.Latency)
-		if r.TokensPerSecond.Valid && r.TokensPerSecond.Float64 > 0 {
+		if r.TokensPerSecond.Valid {
 			bd.tokensPerSecond = append(bd.tokensPerSecond, r.TokensPerSecond.Float64)
 		}
-		if r.TimeToFirstToken.Valid && r.TimeToFirstToken.Float64 >= 0 {
+		if r.TimeToFirstToken.Valid {
 			bd.timeToFirstTokens = append(bd.timeToFirstTokens, r.TimeToFirstToken.Float64)
 		}
 	}
@@ -1196,20 +1202,24 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 			sort.Float64s(bd.timeToFirstTokens)
 		}
 
-		var avgTokensPerSecond float64
-		for _, v := range bd.tokensPerSecond {
-			avgTokensPerSecond += v
-		}
+		var avgTokensPerSecond *float64
 		if len(bd.tokensPerSecond) > 0 {
-			avgTokensPerSecond = avgTokensPerSecond / float64(len(bd.tokensPerSecond))
+			var sumTokensPerSecond float64
+			for _, v := range bd.tokensPerSecond {
+				sumTokensPerSecond += v
+			}
+			val := sumTokensPerSecond / float64(len(bd.tokensPerSecond))
+			avgTokensPerSecond = &val
 		}
 
-		var avgTimeToFirstToken float64
-		for _, v := range bd.timeToFirstTokens {
-			avgTimeToFirstToken += v
-		}
+		var avgTimeToFirstToken *float64
 		if len(bd.timeToFirstTokens) > 0 {
-			avgTimeToFirstToken = avgTimeToFirstToken / float64(len(bd.timeToFirstTokens))
+			var sumTimeToFirstToken float64
+			for _, v := range bd.timeToFirstTokens {
+				sumTimeToFirstToken += v
+			}
+			val := sumTimeToFirstToken / float64(len(bd.timeToFirstTokens))
+			avgTimeToFirstToken = &val
 		}
 
 		p90Latency := 0.0
@@ -1224,13 +1234,15 @@ func (s *RDBLogStore) getLatencyHistogramSQLite(ctx context.Context, baseQuery *
 		if len(bd.latencies) > 0 {
 			p99Latency = computePercentile(bd.latencies, 0.99)
 		}
-		p90TokensPerSecond := 0.0
+		var p90TokensPerSecond *float64
 		if len(bd.tokensPerSecond) > 0 {
-			p90TokensPerSecond = computePercentile(bd.tokensPerSecond, 0.90)
+			val := computePercentile(bd.tokensPerSecond, 0.90)
+			p90TokensPerSecond = &val
 		}
-		p90TimeToFirstToken := 0.0
+		var p90TimeToFirstToken *float64
 		if len(bd.timeToFirstTokens) > 0 {
-			p90TimeToFirstToken = computePercentile(bd.timeToFirstTokens, 0.90)
+			val := computePercentile(bd.timeToFirstTokens, 0.90)
+			p90TimeToFirstToken = &val
 		}
 
 		computedBuckets[ts] = LatencyHistogramBucket{
@@ -1839,6 +1851,12 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 		return nil, fmt.Errorf("failed to get provider latency histogram: %w", err)
 	}
 
+	// Note:
+	// We rely on NULL semantics to distinguish "no data" from zero values.
+	// Metrics are only aggregated when present (Valid == true).
+	// Aggregation is performed in-memory to maintain cross-database compatibility
+	// (SQLite, MySQL, Postgres), as percentile functions are not uniformly supported.
+	// This ensures consistent behavior across all supported backends.
 	// Group latency values by (bucket, provider)
 	type providerBucketKey struct {
 		BucketTimestamp int64
@@ -1863,10 +1881,10 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 			metricMap[key] = md
 		}
 		md.latencies = append(md.latencies, r.Latency)
-		if r.TokensPerSecond.Valid && r.TokensPerSecond.Float64 > 0 {
+		if r.TokensPerSecond.Valid {
 			md.tokensPerSecond = append(md.tokensPerSecond, r.TokensPerSecond.Float64)
 		}
-		if r.TimeToFirstToken.Valid && r.TimeToFirstToken.Float64 >= 0 {
+		if r.TimeToFirstToken.Valid {
 			md.timeToFirstTokens = append(md.timeToFirstTokens, r.TimeToFirstToken.Float64)
 		}
 		if !seenBuckets[r.BucketTimestamp] {
@@ -1893,20 +1911,24 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 			sort.Float64s(md.timeToFirstTokens)
 		}
 
-		var avgTokensPerSecond float64
-		for _, v := range md.tokensPerSecond {
-			avgTokensPerSecond += v
-		}
+		var avgTokensPerSecond *float64
 		if len(md.tokensPerSecond) > 0 {
-			avgTokensPerSecond = avgTokensPerSecond / float64(len(md.tokensPerSecond))
+			var sumTokensPerSecond float64
+			for _, v := range md.tokensPerSecond {
+				sumTokensPerSecond += v
+			}
+			val := sumTokensPerSecond / float64(len(md.tokensPerSecond))
+			avgTokensPerSecond = &val
 		}
 
-		var avgTimeToFirstToken float64
-		for _, v := range md.timeToFirstTokens {
-			avgTimeToFirstToken += v
-		}
+		var avgTimeToFirstToken *float64
 		if len(md.timeToFirstTokens) > 0 {
-			avgTimeToFirstToken = avgTimeToFirstToken / float64(len(md.timeToFirstTokens))
+			var sumTimeToFirstToken float64
+			for _, v := range md.timeToFirstTokens {
+				sumTimeToFirstToken += v
+			}
+			val := sumTimeToFirstToken / float64(len(md.timeToFirstTokens))
+			avgTimeToFirstToken = &val
 		}
 
 		p90Latency := 0.0
@@ -1921,13 +1943,15 @@ func (s *RDBLogStore) getProviderLatencyHistogramSQLite(ctx context.Context, bas
 		if len(md.latencies) > 0 {
 			p99Latency = computePercentile(md.latencies, 0.99)
 		}
-		p90TokensPerSecond := 0.0
+		var p90TokensPerSecond *float64
 		if len(md.tokensPerSecond) > 0 {
-			p90TokensPerSecond = computePercentile(md.tokensPerSecond, 0.90)
+			val := computePercentile(md.tokensPerSecond, 0.90)
+			p90TokensPerSecond = &val
 		}
-		p90TimeToFirstToken := 0.0
+		var p90TimeToFirstToken *float64
 		if len(md.timeToFirstTokens) > 0 {
-			p90TimeToFirstToken = computePercentile(md.timeToFirstTokens, 0.90)
+			val := computePercentile(md.timeToFirstTokens, 0.90)
+			p90TimeToFirstToken = &val
 		}
 
 		stats := ProviderLatencyStats{

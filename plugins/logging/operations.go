@@ -612,13 +612,43 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 	}
 }
 
+// computeTokensPerSecond computes the derived throughput metric from completion tokens and latency.
+//
+// Design note:
+// tokens_per_second is computed at write-time to ensure consistency
+// across logs, APIs, and aggregations. It may also be computed during
+// deferred usage updates when token usage arrives asynchronously.
+// This avoids repeated computation at query-time while preserving a
+// single lifecycle contract for persisted metrics.
+//
+// Additional benefits of write-time derivation:
+// - avoid repeated computation during aggregation queries
+// - enable future indexing or pre-aggregation optimizations
+//
+// Lifecycle:
+//   - Called from PostLLMHook after output fields are finalized.
+//   - Not called from intermediate streaming update paths.
+//   - Deferred usage updates use the same helper formula.
+//
+// Formula:
+//   - tokens_per_second = completion_tokens / (latency_ms / 1000.0)
+//
+// Constraints:
+//   - completion_tokens > 0
+//   - latency_ms > 0
+func computeTokensPerSecond(completionTokens int, latencyMs float64) (float64, bool) {
+	if completionTokens <= 0 || latencyMs <= 0 {
+		return 0, false
+	}
+	return float64(completionTokens) / (latencyMs / 1000.0), true
+}
+
 // applyPerformanceMetricsToEntry computes derived performance metrics for a finalized log entry.
 //
 // Design note:
-// tokens_per_second is computed at write-time rather than query-time to:
-// - avoid repeated computation during aggregation queries
-// - ensure consistency across analytics and UI surfaces
-// - enable future indexing or pre-aggregation optimizations
+// tokens_per_second is computed at write-time to ensure consistency
+// across logs, APIs, and aggregations. It may also be computed during
+// deferred usage updates when token usage arrives asynchronously.
 //
 // Lifecycle:
 //   - Called once from PostLLMHook after output fields are finalized.
@@ -634,8 +664,7 @@ func applyPerformanceMetricsToEntry(entry *logstore.Log) {
 	if entry == nil || entry.Latency == nil {
 		return
 	}
-	if entry.CompletionTokens > 0 && *entry.Latency > 0 {
-		tokensPerSecond := float64(entry.CompletionTokens) / (*entry.Latency / 1000.0)
+	if tokensPerSecond, ok := computeTokensPerSecond(entry.CompletionTokens, *entry.Latency); ok {
 		entry.TokensPerSecond = &tokensPerSecond
 	}
 }

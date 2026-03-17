@@ -133,6 +133,17 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 			"completion_tokens": deferredUsage.CompletionTokens,
 			"total_tokens":      deferredUsage.TotalTokens,
 		}
+
+		// tokens_per_second may also be computed during deferred usage updates
+		// when completion tokens are not available at initial finalization.
+		if logEntry, findErr := p.store.FindByID(p.ctx, requestID); findErr != nil {
+			p.logger.Warn("failed to load log entry for deferred usage update %s: %v", requestID, findErr)
+		} else if logEntry != nil && logEntry.Latency != nil {
+			if tokensPerSecond, ok := computeTokensPerSecond(deferredUsage.CompletionTokens, *logEntry.Latency); ok {
+				usageUpdates["tokens_per_second"] = tokensPerSecond
+			}
+		}
+
 		tempEntry := &logstore.Log{TokenUsageParsed: deferredUsage}
 		if serErr := tempEntry.SerializeFields(); serErr == nil {
 			usageUpdates["token_usage"] = tempEntry.TokenUsage
