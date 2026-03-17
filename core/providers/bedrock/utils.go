@@ -74,8 +74,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Check for response_format and convert to tool
-	responseFormatTool := convertResponseFormatToTool(ctx, bifrostReq.Params)
+	// Handle structured output conversion:
+	// - Anthropic models on Bedrock use native output_config.format
+	// - Other models keep the response_format->tool conversion.
+	responseFormatTool, anthropicOutputFormat := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	if anthropicOutputFormat != nil {
+		if bedrockReq.AdditionalModelRequestFields == nil {
+			bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+		}
+		setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "format", anthropicOutputFormat)
+	}
 
 	// Convert tool config
 	if toolConfig := convertToolConfig(bifrostReq.Model, bifrostReq.Params); toolConfig != nil {
@@ -188,9 +196,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
 						"type": "adaptive",
 					})
-					bedrockReq.AdditionalModelRequestFields.Set("output_config", map[string]any{
-						"effort": effort,
-					})
+					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
 					// Opus 4.5 and older models: budget_tokens thinking
 					budgetTokens, err := providerUtils.GetBudgetTokensFromReasoningEffort(*bifrostReq.Params.Reasoning.Effort, anthropic.MinimumReasoningMaxTokens, maxTokens)
@@ -268,7 +274,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			if requestFields, exists := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"]; exists {
 				if orderedFields, ok := schemas.SafeExtractOrderedMap(requestFields); ok {
 					delete(bedrockReq.ExtraParams, "additionalModelRequestFieldPaths")
-					bedrockReq.AdditionalModelRequestFields = orderedFields
+					bedrockReq.AdditionalModelRequestFields = mergeAdditionalModelRequestFields(
+						bedrockReq.AdditionalModelRequestFields,
+						orderedFields,
+					)
 				}
 			}
 
@@ -337,6 +346,103 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 	return nil
+}
+
+// setOutputConfigField upserts a single key in additionalModelRequestFields.output_config
+// while preserving any existing output_config keys (e.g. keep "format" when adding "effort").
+func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
+	if fields == nil {
+		return
+	}
+	current := schemas.NewOrderedMap()
+	if existing, ok := fields.Get("output_config"); ok {
+		if om, ok := toOrderedMap(existing); ok && om != nil {
+			current = om
+		}
+	}
+	current.Set(key, value)
+	fields.Set("output_config", current)
+}
+
+func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *schemas.OrderedMap {
+	if existing == nil {
+		if incoming == nil {
+			return nil
+		}
+		return incoming.Clone()
+	}
+	if incoming == nil {
+		return existing
+	}
+
+	merged := existing.Clone()
+	incoming.Range(func(key string, value interface{}) bool {
+		if key == "output_config" {
+			current := schemas.NewOrderedMap()
+			if existingValue, ok := merged.Get(key); ok {
+				if om, ok := toOrderedMap(existingValue); ok && om != nil {
+					current = om
+				}
+			}
+			if incomingMap, ok := toOrderedMap(value); ok && incomingMap != nil {
+				mergeOrderedMapInto(current, incomingMap)
+				merged.Set(key, current)
+			} else {
+				merged.Set(key, value)
+			}
+			return true
+		}
+		merged.Set(key, value)
+		return true
+	})
+	return merged
+}
+
+func toOrderedMap(v any) (*schemas.OrderedMap, bool) {
+	switch m := v.(type) {
+	case *schemas.OrderedMap:
+		if m == nil {
+			return nil, false
+		}
+		return m.Clone(), true
+	case schemas.OrderedMap:
+		return m.Clone(), true
+	case map[string]interface{}:
+		// Fallback for callers that still provide a plain map. Order cannot be
+		// reconstructed here, but keeping this path preserves compatibility.
+		return schemas.OrderedMapFromMap(m), true
+	default:
+		return nil, false
+	}
+}
+
+// mergeOrderedMapInto deep-merges src into dst. Nested OrderedMap values are
+// merged recursively; non-map values from src overwrite dst. Existing key order
+// is preserved and newly introduced keys are appended in source order.
+func mergeOrderedMapInto(dst, src *schemas.OrderedMap) {
+	if dst == nil || src == nil {
+		return
+	}
+	src.Range(func(key string, srcVal interface{}) bool {
+		if srcMap, ok := toOrderedMap(srcVal); ok && srcMap != nil {
+			if dstVal, exists := dst.Get(key); exists {
+				if dstMap, ok := toOrderedMap(dstVal); ok && dstMap != nil {
+					mergeOrderedMapInto(dstMap, srcMap)
+					dst.Set(key, dstMap)
+					return true
+				}
+			}
+		}
+		dst.Set(key, srcVal)
+		return true
+	})
+}
+
+func newAnthropicOutputFormatOrderedMap(schemaObj any) *schemas.OrderedMap {
+	return schemas.NewOrderedMapFromPairs(
+		schemas.KV("type", "json_schema"),
+		schemas.KV("schema", schemaObj),
+	)
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -816,44 +922,70 @@ func convertImageToBedrockSource(imageURL string) (*BedrockImageSource, error) {
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
 // Returns nil if no response_format is present or if it's not a json_schema type
 // Ref: https://aws.amazon.com/blogs/machine-learning/structured-data-response-with-amazon-bedrock-prompt-engineering-and-tool-use/
-func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.ChatParameters) *BedrockTool {
+func convertResponseFormatToTool(
+	ctx *schemas.BifrostContext,
+	model string,
+	params *schemas.ChatParameters,
+) (*BedrockTool, any) {
 	if params == nil || params.ResponseFormat == nil {
-		return nil
+		return nil, nil
 	}
 
-	// ResponseFormat is stored as interface{}, need to parse it
-	responseFormatMap, ok := (*params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		return nil
+	responseFormatMap, ok := schemas.SafeExtractOrderedMap(*params.ResponseFormat)
+	if !ok || responseFormatMap == nil {
+		return nil, nil
 	}
 
 	// Check if type is "json_schema"
-	formatType, ok := responseFormatMap["type"].(string)
+	formatTypeRaw, ok := responseFormatMap.Get("type")
+	if !ok {
+		return nil, nil
+	}
+	formatType, ok := schemas.SafeExtractString(formatTypeRaw)
 	if !ok || formatType != "json_schema" {
-		return nil
+		return nil, nil
 	}
 
 	// Extract json_schema object
-	jsonSchemaObj, ok := responseFormatMap["json_schema"].(map[string]interface{})
+	jsonSchemaRaw, ok := responseFormatMap.Get("json_schema")
 	if !ok {
-		return nil
+		return nil, nil
+	}
+	jsonSchemaObj, ok := schemas.SafeExtractOrderedMap(jsonSchemaRaw)
+	if !ok || jsonSchemaObj == nil {
+		return nil, nil
+	}
+
+	schemaObj, ok := jsonSchemaObj.Get("schema")
+	if !ok {
+		return nil, nil
+	}
+
+	// Anthropic Bedrock supports native output_config.format. Keep this provider-specific
+	// conversion encapsulated here, and let caller just apply returned values.
+	if schemas.IsAnthropicModel(model) {
+		return nil, newAnthropicOutputFormatOrderedMap(schemaObj)
 	}
 
 	// Extract name and schema
-	toolName, ok := jsonSchemaObj["name"].(string)
-	if !ok || toolName == "" {
+	toolNameRaw, hasName := jsonSchemaObj.Get("name")
+	toolName, ok := schemas.SafeExtractString(toolNameRaw)
+	if !hasName || !ok || toolName == "" {
 		toolName = "json_response"
-	}
-
-	schemaObj, ok := jsonSchemaObj["schema"].(map[string]interface{})
-	if !ok {
-		return nil
 	}
 
 	// Extract description from schema if available
 	description := "Returns structured JSON output"
-	if desc, ok := schemaObj["description"].(string); ok && desc != "" {
-		description = desc
+	if schemaMap, ok := schemas.SafeExtractOrderedMap(schemaObj); ok && schemaMap != nil {
+		if descRaw, hasDesc := schemaMap.Get("description"); hasDesc {
+			if desc, ok := schemas.SafeExtractString(descRaw); ok && desc != "" {
+				description = desc
+			}
+		}
+	} else if schemaMap, ok := schemaObj.(map[string]interface{}); ok {
+		if desc, ok := schemaMap["description"].(string); ok && desc != "" {
+			description = desc
+		}
 	}
 
 	// set bifrost context key structured output tool name
@@ -869,7 +1001,7 @@ func convertResponseFormatToTool(ctx *schemas.BifrostContext, params *schemas.Ch
 				JSON: schemaObj,
 			},
 		},
-	}
+	}, nil
 }
 
 // convertTextFormatToTool converts a text config to a Bedrock tool for structured outpute
