@@ -51,6 +51,7 @@ export interface PromptVersion {
   model_params: ModelParams
   provider: string
   model: string
+  variables?: Record<string, string>
   is_latest: boolean
   created_by_id?: number
   created_by?: PromptUser
@@ -76,6 +77,7 @@ export interface PromptSession {
   model_params: ModelParams
   provider: string
   model: string
+  variables?: Record<string, string>
   created_by_id?: number
   created_by?: PromptUser
   created_at: string
@@ -211,6 +213,7 @@ export interface CreateSessionRequest {
   model_params: ModelParams
   provider: string
   model: string
+  variables?: Record<string, string>
 }
 
 export interface CreateSessionResponse {
@@ -223,6 +226,7 @@ export interface UpdateSessionRequest {
   model_params: ModelParams
   provider: string
   model: string
+  variables?: Record<string, string>
 }
 
 export interface UpdateSessionResponse {
