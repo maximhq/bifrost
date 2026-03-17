@@ -279,7 +279,8 @@ func (provider *GeminiProvider) downloadBatchResultsFile(ctx context.Context, ke
 	}
 
 	// Make request
-	_, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	_, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, bifrostErr
 	}

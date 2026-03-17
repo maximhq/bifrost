@@ -534,7 +534,10 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- governance_model_pricing (model pricing data - with ALL columns)
--- NOTE: base_model column is added dynamically via append_dynamic_inserts() for schema compatibility
+-- NOTE: base_model and newer columns (above_128k with underscore, priority tiers, pixel/quality pricing, etc.)
+-- are added dynamically via append_dynamic_inserts() for schema compatibility.
+-- This INSERT covers columns that exist in the oldest tested version's schema (v1.4.10),
+-- including the old-format names (above128k without underscore, output_cost_per_character).
 INSERT INTO governance_model_pricing (id, model, provider, input_cost_per_token, output_cost_per_token, mode, input_cost_per_video_per_second, input_cost_per_audio_per_second, input_cost_per_character, output_cost_per_character, input_cost_per_token_above128k_tokens, input_cost_per_character_above128k_tokens, input_cost_per_image_above128k_tokens, input_cost_per_video_per_second_above128k_tokens, input_cost_per_audio_per_second_above128k_tokens, output_cost_per_token_above128k_tokens, output_cost_per_character_above128k_tokens, input_cost_per_token_above_200k_tokens, output_cost_per_token_above_200k_tokens, cache_creation_input_token_cost_above_200k_tokens, cache_read_input_token_cost_above_200k_tokens, cache_read_input_token_cost, cache_creation_input_token_cost, input_cost_per_token_batches, output_cost_per_token_batches, input_cost_per_image_token, output_cost_per_image_token, input_cost_per_image, output_cost_per_image, cache_read_input_image_token_cost)
 VALUES
   (1, 'gpt-4', 'openai', 0.00003, 0.00006, 'chat', NULL, NULL, NULL, NULL, 0.00006, NULL, NULL, NULL, NULL, 0.00012, NULL, NULL, NULL, NULL, NULL, 0.000015, 0.000045, 0.000015, 0.00003, NULL, NULL, NULL, NULL, NULL),
@@ -642,6 +645,20 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 -- ============================================================================
+-- 2b. Prompt Repository Tables (added in v1.4.12+)
+-- NOTE: These tables are dynamically created, INSERTs generated via append_dynamic functions
+-- ============================================================================
+
+-- folders (generic folder container for prompts - no FK)
+-- NOTE: This table is added dynamically via generate_prompt_repo_tables_insert() for schema compatibility
+
+-- prompts (prompt entity - references folders)
+-- NOTE: This table is added dynamically via generate_prompt_repo_tables_insert() for schema compatibility
+
+-- prompt_versions, prompt_version_messages, prompt_sessions, prompt_session_messages
+-- NOTE: These tables are added dynamically via generate_prompt_repo_tables_insert() for schema compatibility
+
+-- ============================================================================
 -- 3. Log store tables
 -- ============================================================================
 
@@ -687,6 +704,9 @@ append_dynamic_mcp_clients_insert() {
     past="NOW() - INTERVAL '1 day'"
     generate_mcp_clients_insert_postgres "$now" "$faker_sql"
     generate_async_jobs_insert_postgres "$now" "$future" "$faker_sql"
+    generate_prompt_repo_tables_insert_postgres "$now" "$faker_sql"
+    generate_model_parameters_insert_postgres "$now" "$faker_sql"
+    generate_routing_targets_insert_postgres "$now" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
   else
     now="datetime('now')"
@@ -694,6 +714,9 @@ append_dynamic_mcp_clients_insert() {
     past="datetime('now', '-1 day')"
     generate_mcp_clients_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_async_jobs_insert_sqlite "$now" "$future" "$faker_sql"
+    generate_prompt_repo_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_model_parameters_insert_sqlite "$now" "$faker_sql" "$config_db"
+    generate_routing_targets_insert_sqlite "$now" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
   fi
 }
@@ -959,6 +982,189 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
     echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.12 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.hide_deleted_virtual_keys_in_filters (added in v1.4.12)
+  if column_exists_postgres "config_client" "hide_deleted_virtual_keys_in_filters"; then
+    echo "UPDATE config_client SET hide_deleted_virtual_keys_in_filters = false WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_providers.store_raw_request_response (added in v1.4.12)
+  if column_exists_postgres "config_providers" "store_raw_request_response"; then
+    echo "UPDATE config_providers SET store_raw_request_response = false WHERE name = 'openai';" >> "$output_file"
+    echo "UPDATE config_providers SET store_raw_request_response = true WHERE name = 'anthropic';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.12 columns - log store tables
+  # -------------------------------------------------------------------------
+
+  # logs.passthrough_request_body (added in v1.4.12)
+  if column_exists_postgres "logs" "passthrough_request_body"; then
+    echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.passthrough_response_body (added in v1.4.12)
+  if column_exists_postgres "logs" "passthrough_response_body"; then
+    echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.is_large_payload_request (added in v1.4.12)
+  if column_exists_postgres "logs" "is_large_payload_request"; then
+    echo "UPDATE logs SET is_large_payload_request = false WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET is_large_payload_request = false WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET is_large_payload_request = false WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.is_large_payload_response (added in v1.4.12)
+  if column_exists_postgres "logs" "is_large_payload_response"; then
+    echo "UPDATE logs SET is_large_payload_response = false WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET is_large_payload_response = false WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET is_large_payload_response = false WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.12 columns - governance_model_pricing new pricing columns
+  # -------------------------------------------------------------------------
+
+  # Priority tier columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_priority"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_priority"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # 128k tier columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_token_above_128k_tokens"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_token_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_image_above_128k_tokens"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_image_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_image_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_video_per_second_above_128k_tokens"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_video_per_second_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_video_per_second_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_audio_per_second_above_128k_tokens"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_audio_per_second_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_audio_per_second_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_token_above_128k_tokens"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_token_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Cache columns (1hr tier, audio)
+  if column_exists_postgres "governance_model_pricing" "cache_creation_input_token_cost_above_1hr"; then
+    echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_creation_input_token_cost_above_1hr_above_200k_tokens"; then
+    echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr_above_200k_tokens = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr_above_200k_tokens = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_creation_input_audio_token_cost"; then
+    echo "UPDATE governance_model_pricing SET cache_creation_input_audio_token_cost = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_creation_input_audio_token_cost = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "cache_read_input_token_cost_priority"; then
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_priority = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_priority = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Pixel-based pricing columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_pixel"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_pixel = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_pixel = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_pixel"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_pixel = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_pixel = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Image output premium/resolution columns
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_premium_image"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_premium_image = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_premium_image = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_imag"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_imag = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_1024_and_1024_pixels"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_1024x1024_pixels_premium"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024x1024_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024x1024_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_2048_and_2048_pixels"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_2048_and_2048_pixels = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_2048_and_2048_pixels = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_above_4096_and_4096_pixels"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_4096_and_4096_pixels = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_above_4096_and_4096_pixels = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Image quality columns
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_low_quality"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_low_quality = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_low_quality = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_medium_quality"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_medium_quality = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_medium_quality = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_high_quality"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_high_quality = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_high_quality = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_image_auto_quality"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_auto_quality = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_image_auto_quality = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Audio/Video pricing columns
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_audio_token"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_audio_token = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_audio_token = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "input_cost_per_second"; then
+    echo "UPDATE governance_model_pricing SET input_cost_per_second = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET input_cost_per_second = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "output_cost_per_audio_token"; then
+    echo "UPDATE governance_model_pricing SET output_cost_per_audio_token = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET output_cost_per_audio_token = NULL WHERE id = 2;" >> "$output_file"
+  fi
+
+  # Other pricing columns
+  if column_exists_postgres "governance_model_pricing" "search_context_cost_per_query"; then
+    echo "UPDATE governance_model_pricing SET search_context_cost_per_query = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET search_context_cost_per_query = NULL WHERE id = 2;" >> "$output_file"
+  fi
+  if column_exists_postgres "governance_model_pricing" "code_interpreter_cost_per_session"; then
+    echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 2;" >> "$output_file"
+  fi
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (SQLite)
@@ -1209,6 +1415,183 @@ append_dynamic_columns_sqlite() {
       echo "UPDATE config_keys SET bedrock_role_session_name = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
     fi
   fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.12 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  if [ -f "$config_db" ]; then
+    # config_client.hide_deleted_virtual_keys_in_filters (added in v1.4.12)
+    if column_exists_sqlite "$config_db" "config_client" "hide_deleted_virtual_keys_in_filters"; then
+      echo "UPDATE config_client SET hide_deleted_virtual_keys_in_filters = 0 WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_providers.store_raw_request_response (added in v1.4.12)
+    if column_exists_sqlite "$config_db" "config_providers" "store_raw_request_response"; then
+      echo "UPDATE config_providers SET store_raw_request_response = 0 WHERE name = 'openai';" >> "$output_file"
+      echo "UPDATE config_providers SET store_raw_request_response = 1 WHERE name = 'anthropic';" >> "$output_file"
+    fi
+
+    # -------------------------------------------------------------------------
+    # v1.4.12 columns - governance_model_pricing new pricing columns
+    # -------------------------------------------------------------------------
+
+    # Priority tier columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_priority"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_priority"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # 128k tier columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_token_above_128k_tokens"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_token_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_image_above_128k_tokens"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_image_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_image_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_video_per_second_above_128k_tokens"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_video_per_second_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_video_per_second_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_audio_per_second_above_128k_tokens"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_audio_per_second_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_audio_per_second_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_token_above_128k_tokens"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_128k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_token_above_128k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Cache columns (1hr tier, audio)
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_creation_input_token_cost_above_1hr"; then
+      echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_creation_input_token_cost_above_1hr_above_200k_tokens"; then
+      echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr_above_200k_tokens = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_creation_input_token_cost_above_1hr_above_200k_tokens = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_creation_input_audio_token_cost"; then
+      echo "UPDATE governance_model_pricing SET cache_creation_input_audio_token_cost = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_creation_input_audio_token_cost = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "cache_read_input_token_cost_priority"; then
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_priority = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET cache_read_input_token_cost_priority = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Pixel-based pricing columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_pixel"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_pixel = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_pixel = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_pixel"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_pixel = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_pixel = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Image output premium/resolution columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_premium_image"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_premium_image = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_premium_image = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_512_and_512_pixels_and_premium_image"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_512_and_512_pixels_and_premium_image = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_1024_and_1024_pixels"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024_and_1024_pixels = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_1024x1024_pixels_premium"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024x1024_pixels_premium = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_1024x1024_pixels_premium = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_2048_and_2048_pixels"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_2048_and_2048_pixels = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_2048_and_2048_pixels = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_above_4096_and_4096_pixels"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_4096_and_4096_pixels = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_above_4096_and_4096_pixels = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Image quality columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_low_quality"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_low_quality = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_low_quality = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_medium_quality"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_medium_quality = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_medium_quality = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_high_quality"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_high_quality = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_high_quality = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_image_auto_quality"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_auto_quality = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_image_auto_quality = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Audio/Video pricing columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_audio_token"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_audio_token = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_audio_token = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "input_cost_per_second"; then
+      echo "UPDATE governance_model_pricing SET input_cost_per_second = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET input_cost_per_second = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "output_cost_per_audio_token"; then
+      echo "UPDATE governance_model_pricing SET output_cost_per_audio_token = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET output_cost_per_audio_token = NULL WHERE id = 2;" >> "$output_file"
+    fi
+
+    # Other pricing columns
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "search_context_cost_per_query"; then
+      echo "UPDATE governance_model_pricing SET search_context_cost_per_query = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET search_context_cost_per_query = NULL WHERE id = 2;" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "governance_model_pricing" "code_interpreter_cost_per_session"; then
+      echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET code_interpreter_cost_per_session = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.4.12 columns - log store tables (emitted unconditionally; fail silently on config_db)
+  # -------------------------------------------------------------------------
+
+  # logs.passthrough_request_body (added in v1.4.12)
+  echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET passthrough_request_body = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.passthrough_response_body (added in v1.4.12)
+  echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET passthrough_response_body = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.is_large_payload_request (added in v1.4.12)
+  echo "UPDATE logs SET is_large_payload_request = 0 WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET is_large_payload_request = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET is_large_payload_request = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
+
+  # logs.is_large_payload_response (added in v1.4.12)
+  echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-001';" >> "$output_file"
+  echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-002';" >> "$output_file"
+  echo "UPDATE logs SET is_large_payload_response = 0 WHERE id = 'log-migration-test-003';" >> "$output_file"
 }
 
 # ============================================================================
@@ -1231,8 +1614,9 @@ extract_faker_columns() {
 
   # Also extract UPDATE SET columns (for dynamically added columns)
   # Pattern: UPDATE table SET col = value WHERE ...
-  grep -E "^UPDATE [a-z_]+ SET [a-z_]+" "$faker_sql" | \
-    sed -E 's/UPDATE ([a-z_]+) SET ([a-z_]+) =.*/\1:\2/' | \
+  # Note: Column names can contain digits (e.g., input_cost_per_token_above_128k_tokens)
+  grep -E "^UPDATE [a-z_]+ SET [a-z0-9_]+" "$faker_sql" | \
+    sed -E 's/UPDATE ([a-z_]+) SET ([a-z0-9_]+) =.*/\1:\2/' | \
     tr -d ' ' | sort -u >> "$output_file"
 }
 
@@ -1543,6 +1927,202 @@ generate_async_jobs_insert_sqlite() {
   echo "" >> "$output_file"
   echo "-- async_jobs (async job tracking table - added in v1.4.8)" >> "$output_file"
   echo "INSERT INTO async_jobs (id, status, request_type, response, status_code, error, virtual_key_id, result_ttl, expires_at, created_at, completed_at) VALUES ('async-job-migration-test-001', 'completed', 'chat_completion', '{\"id\":\"resp-async-001\"}', 200, '', 'vk-migration-test-1', 3600, $future, $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate prompt repository tables INSERTs for PostgreSQL
+# These tables were added in v1.4.12+: folders, prompts, prompt_versions, prompt_version_messages,
+# prompt_sessions, prompt_session_messages
+generate_prompt_repo_tables_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if folders table exists (indicator that prompt repo tables exist)
+  if ! column_exists_postgres "folders" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Prompt Repository Tables (added in v1.4.12+, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # folders (base table, no FK)
+  echo "" >> "$output_file"
+  echo "-- folders (generic folder container for prompts)" >> "$output_file"
+  echo "INSERT INTO folders (id, name, description, config_hash, created_at, updated_at) VALUES ('folder-migration-test-001', 'Migration Test Folder', 'A test folder for migration testing', 'folder-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO folders (id, name, description, config_hash, created_at, updated_at) VALUES ('folder-migration-test-002', 'Migration Test Folder 2', NULL, 'folder-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompts (references folders)
+  echo "" >> "$output_file"
+  echo "-- prompts (prompt entity - references folders)" >> "$output_file"
+  echo "INSERT INTO prompts (id, name, folder_id, config_hash, created_at, updated_at) VALUES ('prompt-migration-test-001', 'Migration Test Prompt 1', 'folder-migration-test-001', 'prompt-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompts (id, name, folder_id, config_hash, created_at, updated_at) VALUES ('prompt-migration-test-002', 'Migration Test Prompt 2', NULL, 'prompt-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_versions (references prompts, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_versions (immutable prompt versions - references prompts)" >> "$output_file"
+  echo "INSERT INTO prompt_versions (prompt_id, version_number, commit_message, model_params_json, provider, model, is_latest, created_at) VALUES ('prompt-migration-test-001', 1, 'Initial version', '{\"temperature\": 0.7}', 'openai', 'gpt-4', false, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_versions (prompt_id, version_number, commit_message, model_params_json, provider, model, is_latest, created_at) VALUES ('prompt-migration-test-001', 2, 'Updated version', '{\"temperature\": 0.8}', 'openai', 'gpt-4-turbo', true, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_version_messages (references prompt_versions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_version_messages (messages in immutable versions)" >> "$output_file"
+  echo "INSERT INTO prompt_version_messages (prompt_id, version_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"system\",\"content\":\"You are a helpful assistant.\"}' FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_version_messages (prompt_id, version_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 1, '{\"role\":\"user\",\"content\":\"Hello!\"}' FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_sessions (references prompts and optionally prompt_versions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_sessions (mutable working drafts - references prompts)" >> "$output_file"
+  echo "INSERT INTO prompt_sessions (prompt_id, version_id, name, model_params_json, provider, model, created_at, updated_at) SELECT 'prompt-migration-test-001', id, 'Migration Test Session', '{\"temperature\": 0.9}', 'anthropic', 'claude-3-opus', $now, $now FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_sessions (prompt_id, version_id, name, model_params_json, provider, model, created_at, updated_at) VALUES ('prompt-migration-test-002', NULL, 'Session without version', '{}', 'openai', 'gpt-4', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_session_messages (references prompt_sessions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_session_messages (messages in mutable sessions)" >> "$output_file"
+  echo "INSERT INTO prompt_session_messages (prompt_id, session_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"user\",\"content\":\"Test message in session\"}' FROM prompt_sessions WHERE prompt_id = 'prompt-migration-test-001' LIMIT 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate prompt repository tables INSERTs for SQLite
+generate_prompt_repo_tables_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='folders';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+  echo "-- Prompt Repository Tables (added in v1.4.12+, dynamically generated)" >> "$output_file"
+  echo "-- ============================================================================" >> "$output_file"
+
+  # folders (base table, no FK)
+  echo "" >> "$output_file"
+  echo "-- folders (generic folder container for prompts)" >> "$output_file"
+  echo "INSERT INTO folders (id, name, description, config_hash, created_at, updated_at) VALUES ('folder-migration-test-001', 'Migration Test Folder', 'A test folder for migration testing', 'folder-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO folders (id, name, description, config_hash, created_at, updated_at) VALUES ('folder-migration-test-002', 'Migration Test Folder 2', NULL, 'folder-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompts (references folders)
+  echo "" >> "$output_file"
+  echo "-- prompts (prompt entity - references folders)" >> "$output_file"
+  echo "INSERT INTO prompts (id, name, folder_id, config_hash, created_at, updated_at) VALUES ('prompt-migration-test-001', 'Migration Test Prompt 1', 'folder-migration-test-001', 'prompt-hash-001', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompts (id, name, folder_id, config_hash, created_at, updated_at) VALUES ('prompt-migration-test-002', 'Migration Test Prompt 2', NULL, 'prompt-hash-002', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_versions (references prompts, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_versions (immutable prompt versions - references prompts)" >> "$output_file"
+  echo "INSERT INTO prompt_versions (prompt_id, version_number, commit_message, model_params_json, provider, model, is_latest, created_at) VALUES ('prompt-migration-test-001', 1, 'Initial version', '{\"temperature\": 0.7}', 'openai', 'gpt-4', 0, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_versions (prompt_id, version_number, commit_message, model_params_json, provider, model, is_latest, created_at) VALUES ('prompt-migration-test-001', 2, 'Updated version', '{\"temperature\": 0.8}', 'openai', 'gpt-4-turbo', 1, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_version_messages (references prompt_versions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_version_messages (messages in immutable versions)" >> "$output_file"
+  echo "INSERT INTO prompt_version_messages (prompt_id, version_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"system\",\"content\":\"You are a helpful assistant.\"}' FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_version_messages (prompt_id, version_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 1, '{\"role\":\"user\",\"content\":\"Hello!\"}' FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_sessions (references prompts and optionally prompt_versions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_sessions (mutable working drafts - references prompts)" >> "$output_file"
+  echo "INSERT INTO prompt_sessions (prompt_id, version_id, name, model_params_json, provider, model, created_at, updated_at) SELECT 'prompt-migration-test-001', id, 'Migration Test Session', '{\"temperature\": 0.9}', 'anthropic', 'claude-3-opus', $now, $now FROM prompt_versions WHERE prompt_id = 'prompt-migration-test-001' AND version_number = 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO prompt_sessions (prompt_id, version_id, name, model_params_json, provider, model, created_at, updated_at) VALUES ('prompt-migration-test-002', NULL, 'Session without version', '{}', 'openai', 'gpt-4', $now, $now) ON CONFLICT DO NOTHING;" >> "$output_file"
+
+  # prompt_session_messages (references prompt_sessions, has auto-increment id)
+  echo "" >> "$output_file"
+  echo "-- prompt_session_messages (messages in mutable sessions)" >> "$output_file"
+  echo "INSERT INTO prompt_session_messages (prompt_id, session_id, order_index, message_json) SELECT 'prompt-migration-test-001', id, 0, '{\"role\":\"user\",\"content\":\"Test message in session\"}' FROM prompt_sessions WHERE prompt_id = 'prompt-migration-test-001' LIMIT 1 ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate governance_model_parameters INSERT for PostgreSQL
+# This table stores model parameters/capabilities data synced from external API
+generate_model_parameters_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if the table exists
+  if ! column_exists_postgres "governance_model_parameters" "id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- governance_model_parameters (model parameters/capabilities data - dynamically generated)" >> "$output_file"
+  echo "INSERT INTO governance_model_parameters (model, data) VALUES ('gpt-4', '{\"max_tokens\": 8192, \"supports_functions\": true}') ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO governance_model_parameters (model, data) VALUES ('claude-3-opus', '{\"max_tokens\": 4096, \"supports_vision\": true}') ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate governance_model_parameters INSERT for SQLite
+generate_model_parameters_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='governance_model_parameters';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- governance_model_parameters (model parameters/capabilities data - dynamically generated)" >> "$output_file"
+  echo "INSERT INTO governance_model_parameters (model, data) VALUES ('gpt-4', '{\"max_tokens\": 8192, \"supports_functions\": true}') ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO governance_model_parameters (model, data) VALUES ('claude-3-opus', '{\"max_tokens\": 4096, \"supports_vision\": true}') ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate routing_targets INSERT for PostgreSQL
+# This table stores weighted routing targets for routing rules (added with routing refactor)
+generate_routing_targets_insert_postgres() {
+  local now="$1"
+  local output_file="$2"
+
+  # Check if the table exists
+  if ! column_exists_postgres "routing_targets" "rule_id"; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- routing_targets (weighted routing targets - references routing_rules, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-1', 'openai', 'gpt-4', NULL, 1.0) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', 'anthropic', 'claude-3-opus', NULL, 0.7) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', NULL, NULL, NULL, 0.3) ON CONFLICT DO NOTHING;" >> "$output_file"
+}
+
+# Generate routing_targets INSERT for SQLite
+generate_routing_targets_insert_sqlite() {
+  local now="$1"
+  local output_file="$2"
+  local config_db="$3"
+
+  # Check if the table exists in the database
+  if [ ! -f "$config_db" ]; then
+    return
+  fi
+
+  local table_exists
+  table_exists=$(sqlite3 "$config_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='routing_targets';" 2>/dev/null || echo "0")
+
+  if [ "$table_exists" != "1" ]; then
+    return
+  fi
+
+  echo "" >> "$output_file"
+  echo "-- routing_targets (weighted routing targets - references routing_rules, dynamically generated)" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-1', 'openai', 'gpt-4', NULL, 1.0) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', 'anthropic', 'claude-3-opus', NULL, 0.7) ON CONFLICT DO NOTHING;" >> "$output_file"
+  echo "INSERT INTO routing_targets (rule_id, provider, model, key_id, weight) VALUES ('rule-migration-test-2', NULL, NULL, NULL, 0.3) ON CONFLICT DO NOTHING;" >> "$output_file"
 }
 
 # Validate faker column coverage for SQLite

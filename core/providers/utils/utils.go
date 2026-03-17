@@ -106,13 +106,20 @@ func getLogger() schemas.Logger {
 
 var UnsupportedSpeechStreamModels = []string{"tts-1", "tts-1-hd"}
 
-// MakeRequestWithContext makes a request with a context and returns the latency and error.
+// noop is a reusable no-op function returned by MakeRequestWithContext on the normal path.
+var noop = func() {}
+
+// MakeRequestWithContext makes a request with a context and returns the latency, error, and a
+// wait function. The wait function MUST be called (typically via defer) before releasing the
+// request or response objects. On the normal path it is a no-op. On the context-cancellation
+// path it blocks until the background client.Do goroutine finishes, preventing a data race
+// between the still-running goroutine and the caller's release of req/resp.
+//
 // IMPORTANT: This function does NOT truly cancel the underlying fasthttp network request if the
 // context is done. The fasthttp client call will continue in its goroutine until it completes
 // or times out based on its own settings. This function merely stops *waiting* for the
 // fasthttp call and returns an error related to the context.
-// Returns the request latency and any error that occurred.
-func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError) {
+func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) (time.Duration, *schemas.BifrostError, func()) {
 	startTime := time.Now()
 	errChan := make(chan error, 1)
 
@@ -127,6 +134,9 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 		// Context was cancelled (e.g., deadline exceeded or manual cancellation).
 		// Calculate latency even for cancelled requests
 		latency := time.Since(startTime)
+		// Return a wait function that blocks until the background goroutine finishes.
+		// The caller MUST invoke this (via defer) before releasing req/resp to avoid
+		// a data race with the still-running client.Do goroutine.
 		return latency, &schemas.BifrostError{
 			IsBifrostError: true,
 			Error: &schemas.ErrorField{
@@ -134,7 +144,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 				Message: fmt.Sprintf("Request cancelled or timed out by context: %v", ctx.Err()),
 				Error:   ctx.Err(),
 			},
-		}
+		}, func() { <-errChan }
 	case err := <-errChan:
 		// The fasthttp.Do call completed.
 		// Calculate latency for both successful and failed requests
@@ -148,16 +158,16 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 						Message: schemas.ErrRequestCancelled,
 						Error:   err,
 					},
-				}
+				}, noop
 			}
 			// Check for timeout errors first before checking net.OpError to avoid misclassification
 			if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check if error implements net.Error and has Timeout() == true
 			var netErr net.Error
 			if errors.As(err, &netErr) && netErr.Timeout() {
-				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, "")
+				return latency, NewBifrostOperationError(schemas.ErrProviderRequestTimedOut, err, ""), noop
 			}
 			// Check for DNS lookup and network errors after timeout checks
 			var opErr *net.OpError
@@ -169,7 +179,7 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 						Message: schemas.ErrProviderNetworkError,
 						Error:   err,
 					},
-				}
+				}, noop
 			}
 			// The HTTP request itself failed (e.g., connection error, fasthttp timeout).
 			return latency, &schemas.BifrostError{
@@ -178,11 +188,11 @@ func MakeRequestWithContext(ctx context.Context, client *fasthttp.Client, req *f
 					Message: schemas.ErrProviderDoRequest,
 					Error:   err,
 				},
-			}
+			}, noop
 		}
 		// HTTP request was successful from fasthttp's perspective (err is nil).
 		// The caller should check resp.StatusCode() for HTTP-level errors (4xx, 5xx).
-		return latency, nil
+		return latency, nil, noop
 	}
 }
 

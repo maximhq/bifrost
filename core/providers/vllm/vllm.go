@@ -306,7 +306,8 @@ func (provider *VLLMProvider) callVLLMRerankEndpoint(
 		req.SetBody(jsonData)
 	}
 
-	latency, bifrostErr := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
 	if bifrostErr != nil {
 		return nil, nil, nil, nil, 0, latency, bifrostErr
 	}
