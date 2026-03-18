@@ -2,6 +2,7 @@ package logstore
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -124,10 +125,10 @@ func TestMigrationAddMetadataGINIndex_ValidJSON(t *testing.T) {
 	setupLogsTableForGINIndexTest(t, db)
 	ctx := context.Background()
 
-	// Insert logs with valid JSON metadata
+	// Insert logs with valid JSON object metadata (arrays are not supported)
 	validJSON1 := `{"key": "value"}`
 	validJSON2 := `{"nested": {"foo": "bar"}, "array": [1, 2, 3]}`
-	validJSON3 := `[1, 2, 3]`
+	validJSON3 := `{"empty": {}}`
 	validJSON4 := `{"number": 42, "bool": true, "null": null}`
 
 	insertTestLog(t, db, "log-valid-1", &validJSON1)
@@ -141,21 +142,21 @@ func TestMigrationAddMetadataGINIndex_ValidJSON(t *testing.T) {
 	err = ensureMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "GIN index creation should succeed")
 
-	// Verify all valid JSON values are preserved
+	// Verify all valid JSON object values are preserved
 	meta1 := getMetadataValue(t, db, "log-valid-1")
-	assert.NotNil(t, meta1, "Valid JSON should be preserved")
+	assert.NotNil(t, meta1, "Valid JSON object should be preserved")
 	assert.Equal(t, validJSON1, *meta1)
 
 	meta2 := getMetadataValue(t, db, "log-valid-2")
-	assert.NotNil(t, meta2, "Valid JSON should be preserved")
+	assert.NotNil(t, meta2, "Valid JSON object should be preserved")
 	assert.Equal(t, validJSON2, *meta2)
 
 	meta3 := getMetadataValue(t, db, "log-valid-3")
-	assert.NotNil(t, meta3, "Valid JSON array should be preserved")
+	assert.NotNil(t, meta3, "Valid JSON object with nested empty object should be preserved")
 	assert.Equal(t, validJSON3, *meta3)
 
 	meta4 := getMetadataValue(t, db, "log-valid-4")
-	assert.NotNil(t, meta4, "Valid JSON with various types should be preserved")
+	assert.NotNil(t, meta4, "Valid JSON object with various types should be preserved")
 	assert.Equal(t, validJSON4, *meta4)
 
 	// Verify the GIN index was created
@@ -171,7 +172,7 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	setupLogsTableForGINIndexTest(t, db)
 	ctx := context.Background()
 
-	// Insert logs with invalid JSON metadata that would pass the old regex but fail ::jsonb cast
+	// Insert logs with invalid JSON metadata (not valid JSON objects)
 	invalid1 := `{"key": invalid}`            // Unquoted value
 	invalid2 := `{key: "value"}`              // Unquoted key
 	invalid3 := `{"key": "value",}`           // Trailing comma
@@ -182,7 +183,8 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	invalid8 := `{'single': 'quotes'}`        // Single quotes
 	invalid9 := `[NULL]`                      // Literal string [NULL] (not valid JSON)
 	invalid10 := `NULL`                       // Literal string NULL (not valid JSON)
-	invalid11 := `null`                       // Valid JSON null (lowercase)
+	invalid11 := `null`                       // Valid JSON but not a JSON object
+	invalid12 := `[1, 2, 3]`                  // Valid JSON array but not a JSON object
 
 	insertTestLog(t, db, "log-invalid-1", &invalid1)
 	insertTestLog(t, db, "log-invalid-2", &invalid2)
@@ -195,6 +197,7 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	insertTestLog(t, db, "log-invalid-9", &invalid9)
 	insertTestLog(t, db, "log-invalid-10", &invalid10)
 	insertTestLog(t, db, "log-invalid-11", &invalid11)
+	insertTestLog(t, db, "log-invalid-12", &invalid12)
 	insertTestLog(t, db, "log-actual-null", nil) // Actual SQL NULL
 
 	// Run the migration (cleanup only) then ensure the index is built.
@@ -203,22 +206,12 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	err = ensureMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "GIN index creation should succeed after invalid JSON cleanup")
 
-	// Verify invalid JSON values were set to NULL
-	for i := 1; i <= 10; i++ {
-		var id string
-		if i < 10 {
-			id = "log-invalid-" + string(rune('0'+i))
-		} else {
-			id = "log-invalid-10"
-		}
+	// Verify all non-object values were set to NULL (only JSON objects are supported)
+	for i := 1; i <= 12; i++ {
+		id := fmt.Sprintf("log-invalid-%d", i)
 		meta := getMetadataValue(t, db, id)
-		assert.Nil(t, meta, "Invalid JSON for %s should be set to NULL", id)
+		assert.Nil(t, meta, "Non-object JSON for %s should be set to NULL", id)
 	}
-
-	// Verify valid JSON "null" is preserved (it's valid JSON)
-	metaNull := getMetadataValue(t, db, "log-invalid-11")
-	assert.NotNil(t, metaNull, "Valid JSON null should be preserved")
-	assert.Equal(t, "null", *metaNull)
 
 	// Verify actual SQL NULL remains NULL
 	metaActualNull := getMetadataValue(t, db, "log-actual-null")
@@ -338,9 +331,9 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	setupLogsTableForGINIndexTest(t, db)
 	ctx := context.Background()
 
-	// Test edge cases that might be tricky
+	// Test edge cases that might be tricky (only JSON objects are supported)
 	emptyObject := `{}`
-	emptyArray := `[]`
+	emptyArray := `[]`                        // Not a JSON object, should be nullified
 	whitespaceJSON := `  {"key": "value"}  ` // Valid JSON with surrounding whitespace
 	unicodeJSON := `{"emoji": "🎉", "chinese": "中文"}`
 	largeNumber := `{"bignum": 99999999999999999999}`
@@ -360,20 +353,20 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify all edge cases are handled correctly
-	// Empty object and array should be preserved
+	// Empty object should be preserved, but empty array is not a JSON object
 	assert.NotNil(t, getMetadataValue(t, db, "log-edge-empty-obj"), "Empty object should be preserved")
-	assert.NotNil(t, getMetadataValue(t, db, "log-edge-empty-arr"), "Empty array should be preserved")
+	assert.Nil(t, getMetadataValue(t, db, "log-edge-empty-arr"), "Empty array should be nullified (not a JSON object)")
 
 	// Whitespace JSON should be preserved (Postgres handles it)
 	meta := getMetadataValue(t, db, "log-edge-whitespace")
-	assert.NotNil(t, meta, "Whitespace JSON should be preserved")
+	assert.NotNil(t, meta, "Whitespace JSON object should be preserved")
 
 	// Unicode should be preserved
-	assert.NotNil(t, getMetadataValue(t, db, "log-edge-unicode"), "Unicode JSON should be preserved")
+	assert.NotNil(t, getMetadataValue(t, db, "log-edge-unicode"), "Unicode JSON object should be preserved")
 
 	// Large numbers and scientific notation should be preserved
-	assert.NotNil(t, getMetadataValue(t, db, "log-edge-large-num"), "Large number JSON should be preserved")
-	assert.NotNil(t, getMetadataValue(t, db, "log-edge-scientific"), "Scientific notation JSON should be preserved")
+	assert.NotNil(t, getMetadataValue(t, db, "log-edge-large-num"), "Large number JSON object should be preserved")
+	assert.NotNil(t, getMetadataValue(t, db, "log-edge-scientific"), "Scientific notation JSON object should be preserved")
 
 	// Verify the GIN index was created
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should be created")
