@@ -2,6 +2,7 @@
 package copilot
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 type CopilotProvider struct {
 	logger              schemas.Logger
 	client              *fasthttp.Client
+	streamingClient     *fasthttp.Client // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
@@ -35,10 +37,12 @@ func NewCopilotProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
 	client = providerUtils.ConfigureDialer(client)
+	streamingClient := providerUtils.BuildStreamingClient(client)
 
 	return &CopilotProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     streamingClient,
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -197,7 +201,7 @@ func (provider *CopilotProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 }
 
 // ChatCompletionStream performs a streaming chat completion request to the Copilot API.
-func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	authHeader, apiBase, bifrostErr := provider.getCopilotAuth(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -205,11 +209,12 @@ func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
-		provider.client,
+		provider.streamingClient,
 		apiBase+providerUtils.GetPathFromContext(ctx, "/chat/completions"),
 		request,
 		authHeader,
 		provider.mergedExtraHeaders(),
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		provider.GetProviderKey(),
@@ -220,6 +225,7 @@ func (provider *CopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		nil,
 		nil,
 		provider.logger,
+		postHookSpanFinalizer,
 	)
 }
 
@@ -233,15 +239,15 @@ func (provider *CopilotProvider) Responses(ctx *schemas.BifrostContext, key sche
 	response := chatResponse.ToBifrostResponsesResponse()
 	response.ExtraFields.RequestType = schemas.ResponsesRequest
 	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.ModelRequested = request.Model
+	response.ExtraFields.OriginalModelRequested = request.Model
 
 	return response, nil
 }
 
 // ResponsesStream performs a streaming responses request to the Copilot API.
-func (provider *CopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(ctx, postHookRunner, key, request.ToChatRequest())
+	return provider.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
 }
 
 // TextCompletion is not supported by the Copilot provider.
@@ -250,7 +256,7 @@ func (provider *CopilotProvider) TextCompletion(_ *schemas.BifrostContext, _ sch
 }
 
 // TextCompletionStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) TextCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) TextCompletionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TextCompletionStreamRequest, provider.GetProviderKey())
 }
 
@@ -270,7 +276,7 @@ func (provider *CopilotProvider) Speech(_ *schemas.BifrostContext, _ schemas.Key
 }
 
 // SpeechStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) SpeechStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) SpeechStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
 }
 
@@ -280,7 +286,7 @@ func (provider *CopilotProvider) Transcription(_ *schemas.BifrostContext, _ sche
 }
 
 // TranscriptionStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) TranscriptionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) TranscriptionStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
@@ -290,7 +296,7 @@ func (provider *CopilotProvider) ImageGeneration(_ *schemas.BifrostContext, _ sc
 }
 
 // ImageGenerationStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) ImageGenerationStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) ImageGenerationStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
 }
 
@@ -300,7 +306,7 @@ func (provider *CopilotProvider) ImageEdit(_ *schemas.BifrostContext, _ schemas.
 }
 
 // ImageEditStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) ImageEditStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) ImageEditStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
 }
 
@@ -450,6 +456,6 @@ func (provider *CopilotProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 }
 
 // PassthroughStream is not supported by the Copilot provider.
-func (provider *CopilotProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *CopilotProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
 }

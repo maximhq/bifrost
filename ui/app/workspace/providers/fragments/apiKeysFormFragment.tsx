@@ -9,8 +9,10 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TagInput } from "@/components/ui/tagInput";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { isRedacted } from "@/lib/utils/validation";
-import { Info } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useRefreshModelsMutation } from "@/lib/store/apis/providersApi";
+import { getApiBaseUrl } from "@/lib/utils/port";
+import { CheckCircle2, Copy, ExternalLink, Info, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Control, UseFormReturn } from "react-hook-form";
 
 // Providers that support batch APIs
@@ -41,6 +43,9 @@ function normalizeAliasesValue(v: Record<string, string> | string | undefined | 
 	}
 	return {};
 }
+
+// Providers that support live model refresh (dynamic model discovery)
+const MODEL_REFRESH_PROVIDERS = ["copilot"];
 
 interface Props {
 	control: Control<any>;
@@ -80,7 +85,16 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 	const isOllama = providerName === "ollama";
 	const isSGL = providerName === "sgl";
 	const isKeylessProvider = isOllama || isSGL;
+	const isCopilot = providerName === "copilot";
 	const supportsBatchAPI = BATCH_SUPPORTED_PROVIDERS.includes(providerName);
+	const supportsModelRefresh = MODEL_REFRESH_PROVIDERS.includes(providerName);
+	const [refreshModels, { isLoading: isRefreshingModels }] = useRefreshModelsMutation();
+	// For providers that support model refresh, enable the button only when a token
+	// is available — either a freshly obtained local token (device-login / manual)
+	// or a saved/redacted one from the server.
+	const copilotKeyValue = supportsModelRefresh ? form.watch('key.value') : undefined;
+	// Enable refresh when there's a literal token value OR an env-var reference (e.g. env.GITHUB_COPILOT_TOKEN)
+	const hasToken = !!(copilotKeyValue?.value || copilotKeyValue?.env_var);
 
 	// Auth type state for Azure: 'api_key', 'entra_id', or 'default_credential'
 	const [azureAuthType, setAzureAuthType] = useState<"api_key" | "entra_id" | "default_credential">("api_key");
@@ -150,6 +164,20 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 		}
 	}, [isBedrock, form]);
 
+	// Copilot auth type state: 'device_login' or 'manual_token'
+	const [copilotAuthType, setCopilotAuthType] = useState<'device_login' | 'manual_token'>('device_login')
+
+	// Detect copilot auth type from existing form values when editing
+	useEffect(() => {
+		if (form.formState.isDirty) return
+		if (isCopilot) {
+			const apiKey = form.getValues('key.value')?.value
+			if (apiKey && !isRedacted(apiKey)) {
+				setCopilotAuthType('manual_token')
+			}
+		}
+	}, [isCopilot, form])
+
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
 			<div className="flex items-start gap-4">
@@ -217,8 +245,8 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					)}
 				/>
 			</div>
-			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isVertex && (
+			{/* Hide API Key field for Azure when using Entra ID, for Bedrock when using IAM Role, for Vertex, and for Copilot when using Device Login */}
+			{!(isAzure && (azureAuthType === 'entra_id' || azureAuthType === 'default_credential')) && !(isBedrock && bedrockAuthType === 'iam_role') && !isVertex && !(isCopilot && copilotAuthType === 'device_login') && (
 				<FormField
 					control={control}
 					name={`key.value`}
@@ -282,6 +310,11 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 													: "Search models..."
 										}
 										unfiltered={true}
+										{...(supportsModelRefresh ? {
+											onRefresh: () => refreshModels(providerName),
+											isRefreshing: isRefreshingModels,
+											refreshDisabled: !hasToken,
+										} : {})}
 									/>
 								</FormControl>
 								<FormMessage />
@@ -686,6 +719,9 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					/>
 				</div>
 			)}
+			{isCopilot && (
+				<CopilotDeviceLoginSection control={control} form={form} copilotAuthType={copilotAuthType} setCopilotAuthType={setCopilotAuthType} />
+			)}
 			{isVLLM && (
 				<div className="space-y-4">
 					<Separator className="my-6" />
@@ -948,6 +984,470 @@ export function ApiKeyFormFragment({ control, providerName, form }: Props) {
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}
+		</div>
+	);
+}
+
+// Copilot GitHub OAuth device code login section
+function CopilotDeviceLoginSection({
+	control,
+	form,
+	copilotAuthType,
+	setCopilotAuthType,
+}: {
+	control: Control<any>;
+	form: UseFormReturn<any>;
+	copilotAuthType: 'device_login' | 'manual_token';
+	setCopilotAuthType: (v: 'device_login' | 'manual_token') => void;
+}) {
+	const [deviceState, setDeviceState] = useState<{
+		status: 'idle' | 'awaiting_auth' | 'complete' | 'error';
+		userCode?: string;
+		verificationUri?: string;
+		deviceCode?: string;
+		interval?: number;
+		error?: string;
+	}>({ status: 'idle' });
+
+	const [copied, setCopied] = useState(false);
+	const [countdown, setCountdown] = useState<number | null>(null);
+	const [isChecking, setIsChecking] = useState(false);
+	const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const authTypeRef = useRef(copilotAuthType);
+	const pollSessionRef = useRef(0);
+
+	useEffect(() => {
+		authTypeRef.current = copilotAuthType;
+	}, [copilotAuthType]);
+
+	const clearCountdown = useCallback(() => {
+		if (countdownRef.current) {
+			clearInterval(countdownRef.current);
+			countdownRef.current = null;
+		}
+		setCountdown(null);
+	}, []);
+
+	// Clean up on unmount
+	useEffect(() => {
+		return () => {
+			if (countdownRef.current) clearInterval(countdownRef.current);
+		};
+	}, []);
+
+	const invalidatePolling = useCallback(() => {
+		pollSessionRef.current += 1;
+	}, []);
+
+	const initiateLogin = useCallback(async () => {
+		invalidatePolling();
+		setDeviceState({ status: 'awaiting_auth' });
+		try {
+			const baseUrl = getApiBaseUrl();
+			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/initiate`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+			});
+			if (!resp.ok) {
+				const errData = await resp.json().catch(() => ({ error: { message: resp.statusText } }));
+				setDeviceState({ status: 'error', error: errData?.error?.message || 'Failed to start device login' });
+				return;
+			}
+			const data = await resp.json();
+			setDeviceState({
+				status: 'awaiting_auth',
+				userCode: data.user_code,
+				verificationUri: data.verification_uri,
+				deviceCode: data.device_code,
+				interval: data.interval || 5,
+			});
+		} catch (err) {
+			setDeviceState({ status: 'error', error: 'Failed to connect to server' });
+		}
+	}, [invalidatePolling]);
+
+	const startCountdown = useCallback((seconds?: number) => {
+		clearCountdown();
+		const interval = (seconds ?? deviceState.interval) || 5;
+		setCountdown(interval);
+		countdownRef.current = setInterval(() => {
+			setCountdown(prev => {
+				if (prev === null || prev <= 1) return 0;
+				return prev - 1;
+			});
+		}, 1000);
+	}, [clearCountdown, deviceState.interval]);
+
+	const pollOnce = useCallback(async () => {
+		if (!deviceState.deviceCode || authTypeRef.current !== 'device_login') return;
+
+		clearCountdown();
+		setIsChecking(true);
+		const pollSession = pollSessionRef.current;
+
+		try {
+			const baseUrl = getApiBaseUrl();
+			const resp = await fetch(`${baseUrl}/providers/copilot/device-login/poll`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ device_code: deviceState.deviceCode }),
+			});
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+				return;
+			}
+			if (!resp.ok) {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to check authorization status' }));
+				return;
+			}
+			const data = await resp.json();
+			if (pollSession !== pollSessionRef.current || authTypeRef.current !== 'device_login') {
+				return;
+			}
+
+			if (data.status === 'complete' && data.access_token) {
+				form.setValue('key.value', { value: data.access_token, env_var: '', from_env: false }, { shouldDirty: true, shouldValidate: true });
+				setDeviceState(prev => ({ ...prev, status: 'complete' }));
+				return;
+			}
+
+			if (data.status === 'expired' || data.status === 'error') {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: data.error || 'Authorization failed' }));
+				return;
+			}
+
+			// Still pending — restart countdown.
+			// If GitHub sent "slow_down", increase the interval by 5s as per the device flow spec.
+			let nextInterval = deviceState.interval || 5;
+			if (data.status === 'slow_down') {
+				nextInterval += 5;
+				setDeviceState(prev => ({ ...prev, interval: nextInterval }));
+			}
+			startCountdown(nextInterval);
+		} catch {
+			if (pollSession === pollSessionRef.current && authTypeRef.current === 'device_login') {
+				setDeviceState(prev => ({ ...prev, status: 'error', error: 'Failed to connect to server' }));
+			}
+		} finally {
+			if (pollSession === pollSessionRef.current) {
+				setIsChecking(false);
+			}
+		}
+	}, [deviceState.deviceCode, deviceState.interval, form, clearCountdown, startCountdown]);
+
+	// Trigger poll when countdown reaches 0 (only in device_login mode)
+	useEffect(() => {
+		if (countdown === 0 && !isChecking && copilotAuthType === 'device_login') {
+			pollOnce();
+		}
+	}, [countdown, isChecking, pollOnce, copilotAuthType]);
+
+	const copyCode = useCallback(() => {
+		if (deviceState.userCode) {
+			navigator.clipboard.writeText(deviceState.userCode);
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		}
+	}, [deviceState.userCode]);
+
+	// Auto-start countdown when user code is obtained
+	useEffect(() => {
+		if (deviceState.status === 'awaiting_auth' && deviceState.userCode) {
+			startCountdown();
+		}
+	}, [deviceState.status, deviceState.userCode, startCountdown]);
+
+	const resetFlow = useCallback(() => {
+		invalidatePolling();
+		clearCountdown();
+		setIsChecking(false);
+		setDeviceState({ status: 'idle' });
+	}, [clearCountdown, invalidatePolling]);
+
+	return (
+		<div className="space-y-4">
+			<Separator className="my-6" />
+			<div className="space-y-2">
+				<FormLabel>Authentication Method</FormLabel>
+				<Tabs value={copilotAuthType} onValueChange={(v) => {
+					setCopilotAuthType(v as 'device_login' | 'manual_token');
+					if (v === 'device_login') {
+						resetFlow();
+					} else {
+						// Switching away from device login — stop any active polling
+						invalidatePolling();
+						clearCountdown();
+						setIsChecking(false);
+					}
+				}}>
+					<TabsList className="grid w-full grid-cols-2">
+						<TabsTrigger data-testid="apikey-copilot-device-login-tab" value="device_login">GitHub Device Login</TabsTrigger>
+						<TabsTrigger data-testid="apikey-copilot-manual-token-tab" value="manual_token">Manual Token</TabsTrigger>
+					</TabsList>
+				</Tabs>
+			</div>
+
+			{copilotAuthType === 'device_login' && (
+				<div className="space-y-4">
+					{deviceState.status === 'idle' && (
+						<>
+							<Alert variant="default">
+								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+								<AlertTitle>GitHub Copilot Authentication</AlertTitle>
+								<AlertDescription>
+									Copilot requires a GitHub OAuth token obtained through the device login flow.
+									Your GitHub account must have an active Copilot subscription.
+								</AlertDescription>
+							</Alert>
+							<Button
+								type="button"
+								data-testid="copilot-device-login-button"
+								onClick={initiateLogin}
+								className="w-full"
+							>
+								Login with GitHub
+							</Button>
+						</>
+					)}
+
+					{deviceState.status === 'awaiting_auth' && deviceState.userCode && (
+						<div className="space-y-4">
+							<Alert variant="default">
+								<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+								<AlertTitle>Enter this code on GitHub</AlertTitle>
+								<AlertDescription className="space-y-3">
+									<div className="flex items-center gap-3 pt-2">
+										<code className="bg-muted rounded-md px-4 py-2 text-2xl font-bold tracking-widest">
+											{deviceState.userCode}
+										</code>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={copyCode}
+											data-testid="copilot-copy-code-button"
+										>
+											{copied ? <CheckCircle2 className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+										</Button>
+									</div>
+									<p className="text-sm">
+										Visit{" "}
+										{deviceState.verificationUri &&
+										 /^https:\/\/([a-z0-9-]+\.)*github\.com(\/|$)/i.test(deviceState.verificationUri) ? (
+											<a
+												href={deviceState.verificationUri}
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="copilot-verification-link"
+												className="text-blue-600 underline hover:text-blue-800 inline-flex items-center gap-1"
+											>
+												{deviceState.verificationUri}
+												<ExternalLink className="h-3 w-3" />
+											</a>
+										) : (
+											<code data-testid="copilot-verification-link" className="bg-muted rounded px-1 py-0.5 text-sm">
+												{deviceState.verificationUri}
+											</code>
+										)}
+										{" "}and enter the code above to authorize Bifrost.
+									</p>
+								</AlertDescription>
+							</Alert>
+
+							<Button
+								type="button"
+								data-testid="copilot-confirm-auth-button"
+								onClick={pollOnce}
+								disabled={isChecking}
+								className="w-full"
+							>
+								{isChecking ? (
+									<><Loader2 className="h-4 w-4 animate-spin" /> Checking authorization...</>
+								) : countdown !== null && countdown > 0 ? (
+									<>Check authorization ({countdown}s)</>
+								) : (
+									<>Check authorization</>
+								)}
+							</Button>
+
+							<Button
+								type="button"
+								variant="ghost"
+								size="sm"
+								onClick={resetFlow}
+								className="w-full"
+								data-testid="copilot-cancel-login-button"
+							>
+								Cancel and start over
+							</Button>
+						</div>
+					)}
+
+					{deviceState.status === 'complete' && (
+						<Alert variant="default">
+							<CheckCircle2 className="mt-0.5 h-4 w-4 flex-shrink-0 text-green-600" />
+							<AlertTitle>Authentication successful</AlertTitle>
+							<AlertDescription>
+								GitHub OAuth token has been set. You can now save the provider configuration.
+							</AlertDescription>
+						</Alert>
+					)}
+
+					{deviceState.status === 'error' && (
+						<div className="space-y-3">
+							<Alert variant="destructive">
+								<AlertTitle>Authentication failed</AlertTitle>
+								<AlertDescription>
+									{deviceState.error || 'An unknown error occurred'}
+								</AlertDescription>
+							</Alert>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={initiateLogin}
+								className="w-full"
+								data-testid="copilot-retry-login-button"
+							>
+								Try again
+							</Button>
+						</div>
+					)}
+				</div>
+			)}
+
+			{copilotAuthType === 'manual_token' && (
+				<div className="space-y-2">
+					<Alert variant="default">
+						<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+						<AlertTitle>Manual Token Entry</AlertTitle>
+						<AlertDescription>
+							Enter an OAuth access token obtained from the GitHub device code flow.
+							Standard GitHub PATs will not work — you must use the device login flow token.
+						</AlertDescription>
+					</Alert>
+					<FormField
+						control={control}
+						name={`key.value`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>OAuth Access Token</FormLabel>
+								<FormControl>
+									<EnvVarInput placeholder="ghu_xxxxxxxxxxxx or env.GITHUB_COPILOT_TOKEN" type="text" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+		</div>
+	);
+}
+
+// Bedrock S3 configuration section for batch operations
+function BedrockBatchS3ConfigSection({ control, form }: { control: Control<any>; form: UseFormReturn<any> }) {
+	const buckets = form.watch("key.bedrock_key_config.batch_s3_config.buckets") || [];
+
+	const addBucket = () => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		form.setValue(
+			"key.bedrock_key_config.batch_s3_config.buckets",
+			[...currentBuckets, { bucket_name: "", prefix: "", is_default: currentBuckets.length === 0 }],
+			{ shouldDirty: true },
+		);
+	};
+
+	const removeBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.filter((_: any, i: number) => i !== index);
+		// If we removed the default bucket and there are still buckets, make the first one default
+		if (currentBuckets[index]?.is_default && newBuckets.length > 0) {
+			newBuckets[0].is_default = true;
+		}
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	const setDefaultBucket = (index: number) => {
+		const currentBuckets = form.getValues("key.bedrock_key_config.batch_s3_config.buckets") || [];
+		const newBuckets = currentBuckets.map((bucket: any, i: number) => ({
+			...bucket,
+			is_default: i === index,
+		}));
+		form.setValue("key.bedrock_key_config.batch_s3_config.buckets", newBuckets, { shouldDirty: true });
+	};
+
+	return (
+		<div className="space-y-4">
+			<Separator className="my-4" />
+			<div className="flex items-center justify-between">
+				<div>
+					<FormLabel className="text-base">S3 Bucket Configuration</FormLabel>
+					<FormDescription>Configure S3 buckets for Bedrock batch operations</FormDescription>
+				</div>
+				<Button type="button" variant="outline" size="sm" onClick={addBucket}>
+					<Plus className="mr-2 h-4 w-4" />
+					Add Bucket
+				</Button>
+			</div>
+			{buckets.length === 0 && (
+				<Alert variant="default" className="-z-10">
+					<Info className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+					<AlertTitle>No S3 Buckets Configured</AlertTitle>
+					<AlertDescription>
+						Add at least one S3 bucket to store batch job input/output files for Bedrock batch operations.
+					</AlertDescription>
+				</Alert>
+			)}
+			{buckets.map((_: any, index: number) => (
+				<div key={index} className="space-y-4 rounded-sm border p-2">
+					<div className="flex items-center justify-between">
+						<div className="flex items-center gap-2">
+							<span className="text-sm font-medium">Bucket {index + 1}</span>
+							{buckets[index]?.is_default && (
+								<span className="bg-primary/10 text-primary rounded-full px-2 py-0.5 text-xs font-medium">Default</span>
+							)}
+						</div>
+						<div className="flex items-center gap-2">
+							{!buckets[index]?.is_default && buckets.length > 1 && (
+								<Button type="button" variant="ghost" size="sm" onClick={() => setDefaultBucket(index)}>
+									Set as Default
+								</Button>
+							)}
+							<Button type="button" variant="ghost" size="sm" onClick={() => removeBucket(index)}>
+								<Trash2 className="text-destructive h-4 w-4" />
+							</Button>
+						</div>
+					</div>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.bucket_name`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Bucket Name</FormLabel>
+								<FormControl>
+									<Input placeholder="my-batch-bucket or env.S3_BUCKET_NAME" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={`key.bedrock_key_config.batch_s3_config.buckets.${index}.prefix`}
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Prefix (Optional)</FormLabel>
+								<FormControl>
+									<Input placeholder="batch-jobs/ or env.S3_PREFIX" {...field} value={field.value ?? ""} />
+								</FormControl>
+								<FormDescription>Optional path prefix for batch files in the bucket</FormDescription>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			))}
 		</div>
 	);
 }
