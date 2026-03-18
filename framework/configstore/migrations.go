@@ -314,13 +314,13 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddPluginOrderColumns(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
+		return err
+	}
 	if err := migrationBackfillEmptyVirtualKeyConfigs(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationAddMCPDisableAutoToolInjectColumn(ctx, db); err != nil {
-		return err
-	}
-	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
 		return err
 	}
 	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
@@ -3746,6 +3746,7 @@ func migrationBackfillEmptyVirtualKeyConfigs(ctx context.Context, db *gorm.DB) e
 							Provider:      provider.Name,
 							Weight:        bifrost.Ptr(1.0),
 							AllowedModels: []string{},
+							AllowAllKeys:  true,
 						}
 						if err := tx.Create(&providerConfig).Error; err != nil {
 							return fmt.Errorf("failed to create provider config for VK %s, provider %s: %w", vk.ID, provider.Name, err)
