@@ -1387,8 +1387,21 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				if bifrostResp.Item.Type != nil {
 					switch *bifrostResp.Item.Type {
 					case schemas.ResponsesMessageTypeMessage:
-						contentBlock.Type = AnthropicContentBlockTypeText
-						contentBlock.Text = schemas.Ptr("")
+						// Check for compaction block (Message type with compaction ContentBlock)
+						if bifrostResp.Item.Content != nil && len(bifrostResp.Item.Content.ContentBlocks) > 0 {
+							for _, block := range bifrostResp.Item.Content.ContentBlocks {
+								if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction &&
+									block.ResponsesOutputMessageContentCompaction != nil {
+									contentBlock.Type = AnthropicContentBlockTypeCompaction
+									contentBlock.CacheControl = block.CacheControl
+									break
+								}
+							}
+						}
+						if contentBlock.Type == "" {
+							contentBlock.Type = AnthropicContentBlockTypeText
+							contentBlock.Text = schemas.Ptr("")
+						}
 					case schemas.ResponsesMessageTypeReasoning:
 						contentBlock.Type = AnthropicContentBlockTypeThinking
 						contentBlock.Thinking = schemas.Ptr("")
@@ -1514,6 +1527,31 @@ func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp
 				}
 				deltaEvents := generateSyntheticInputJSONDeltas(argumentsJSON, indexToUse)
 				events = append(events, deltaEvents...)
+			}
+		}
+
+		// Emit content_block_delta for compaction blocks (summary arrives in delta, not start)
+		if bifrostResp.Item != nil && bifrostResp.Item.Content != nil && len(bifrostResp.Item.Content.ContentBlocks) > 0 {
+			for _, block := range bifrostResp.Item.Content.ContentBlocks {
+				if block.Type == schemas.ResponsesOutputMessageContentTypeCompaction &&
+					block.ResponsesOutputMessageContentCompaction != nil &&
+					block.ResponsesOutputMessageContentCompaction.Summary != "" {
+					var indexToUse *int
+					if bifrostResp.OutputIndex != nil {
+						indexToUse = bifrostResp.OutputIndex
+					} else if bifrostResp.ContentIndex != nil {
+						indexToUse = bifrostResp.ContentIndex
+					}
+					events = append(events, &AnthropicStreamEvent{
+						Type:  AnthropicStreamEventTypeContentBlockDelta,
+						Index: indexToUse,
+						Delta: &AnthropicStreamDelta{
+							Type:    AnthropicStreamDeltaTypeCompaction,
+							Content: &block.ResponsesOutputMessageContentCompaction.Summary,
+						},
+					})
+					break
+				}
 			}
 		}
 
