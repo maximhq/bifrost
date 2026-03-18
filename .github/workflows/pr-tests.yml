@@ -69,7 +69,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "25"
+          node-version: "20"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -125,6 +125,7 @@ jobs:
           REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
           REPLICATE_OWNER : ${{ secrets.REPLICATE_OWNER }}
           RUNWAY_API_KEY : ${{ secrets.RUNWAY_API_KEY }}
+          GITHUB_COPILOT_TOKEN: ${{ secrets.GITHUB_COPILOT_TOKEN }}
         run: |
           echo "Running tests for PR #${{ github.event.pull_request.number || 'manual run' }}"
           ./.github/workflows/scripts/run-tests.sh

@@ -57,6 +57,7 @@ const (
 	Replicate   ModelProvider = "replicate"
 	VLLM        ModelProvider = "vllm"
 	Runway      ModelProvider = "runway"
+	Copilot     ModelProvider = "copilot"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -94,6 +95,7 @@ var StandardProviders = []ModelProvider{
 	Replicate,
 	VLLM,
 	Runway,
+	Copilot,
 }
 
 // RequestType represents the type of request being made to a provider.
@@ -180,7 +182,6 @@ const (
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"            // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"               // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
 	BifrostContextKeyStreamEndIndicator                  BifrostContextKey = "bifrost-stream-end-indicator"         // bool (set by bifrost - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyStreamIdleTimeout                   BifrostContextKey = "bifrost-stream-idle-timeout"          // time.Duration (per-chunk idle timeout for streaming)
 	BifrostContextKeySkipKeySelection                    BifrostContextKey = "bifrost-skip-key-selection"           // bool (will pass an empty key to the provider)
 	BifrostContextKeyExtraHeaders                        BifrostContextKey = "bifrost-extra-headers"                // map[string][]string
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"               // string
