@@ -104,6 +104,7 @@ func TestOpenAI(t *testing.T) {
 			ContainerFileRetrieve: true,
 			ContainerFileContent:  true,
 			ContainerFileDelete:   true,
+			PromptCaching:         true,
 			PassthroughAPI:        true,
 			WebSocketResponses:    true,
 			Realtime:              false,

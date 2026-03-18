@@ -1,6 +1,8 @@
 package vertex_test
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -139,5 +141,98 @@ func TestVertex_AnthropicModel_PreservesPropertyOrder(t *testing.T) {
 		if keys[i] != k {
 			t.Errorf("property %d: expected %q, got %q (full order: %v)", i, k, keys[i], keys)
 		}
+	}
+}
+
+// TestVertex_ToolInputKeyOrderPreservation verifies that tool call arguments
+// preserve their original key ordering through the Vertex→Anthropic delegation path.
+// TestVertex_ToolInputKeyOrderPreservation verifies that Vertex→Anthropic delegation
+// preserves the original key ordering of tool call arguments for prompt caching.
+// Tests multiple parallel tool calls with different key orderings per block.
+func TestVertex_ToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Vertex,
+		Model:    "claude-sonnet-4-20250514",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff"}`,
+							},
+						},
+						{
+							Index: 2,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_vrtx_003"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git log main..HEAD","description":"Show commits"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result, err := anthropic.ToAnthropicChatRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Collect all tool_use content blocks
+	var toolUseBlocks []struct{ jsonStr string }
+	for _, msg := range result.Messages {
+		for _, block := range msg.Content.ContentBlocks {
+			if block.Type == "tool_use" {
+				jsonBytes, _ := json.Marshal(block.Input)
+				toolUseBlocks = append(toolUseBlocks, struct{ jsonStr string }{string(jsonBytes)})
+			}
+		}
+	}
+
+	if len(toolUseBlocks) != 3 {
+		t.Fatalf("expected 3 tool_use blocks, got %d", len(toolUseBlocks))
+	}
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	s0 := toolUseBlocks[0].jsonStr
+	if !(strings.Index(s0, "description") < strings.Index(s0, "timeout") &&
+		strings.Index(s0, "timeout") < strings.Index(s0, "command")) {
+		t.Errorf("block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+	}
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	s1 := toolUseBlocks[1].jsonStr
+	if !(strings.Index(s1, "command") < strings.Index(s1, "description")) {
+		t.Errorf("block 1: key order not preserved, expected command < description in: %s", s1)
+	}
+
+	// Block 2: keys should be command, description
+	s2 := toolUseBlocks[2].jsonStr
+	if !(strings.Index(s2, "command") < strings.Index(s2, "description")) {
+		t.Errorf("block 2: key order not preserved, expected command < description in: %s", s2)
 	}
 }

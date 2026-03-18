@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -223,9 +224,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_123",
-										Args: map[string]interface{}{
-											"location": "San Francisco",
-										},
+										Args: json.RawMessage(`{"location":"San Francisco"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -252,9 +251,7 @@ func TestThoughtSignatureInToolCalls(t *testing.T) {
 									FunctionCall: &gemini.FunctionCall{
 										Name: "get_weather",
 										ID:   "call_456",
-										Args: map[string]interface{}{
-											"location": "New York",
-										},
+										Args: json.RawMessage(`{"location":"New York"}`),
 									},
 									ThoughtSignature: thoughtSig,
 								},
@@ -2372,4 +2369,79 @@ func TestConvertGeminiUsageMetadataToResponsesUsage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGeminiToolInputKeyOrderPreservation verifies that multiple parallel tool calls
+// preserve the client's original key ordering after conversion to Gemini format.
+func TestGeminiToolInputKeyOrderPreservation(t *testing.T) {
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.0-flash",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("test")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							Index: 0,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_001"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"description":"Find references quickly","timeout":30000,"command":"grep -r auth_injector ."}`,
+							},
+						},
+						{
+							Index: 1,
+							Type:  schemas.Ptr("function"),
+							ID:    schemas.Ptr("toolu_002"),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("bash"),
+								Arguments: `{"command":"git diff main...HEAD --stat","description":"Show diff"}`,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := gemini.ToGeminiChatCompletionRequest(bifrostReq)
+	require.NotNil(t, result)
+
+	// Collect all FunctionCall parts
+	var argsList []json.RawMessage
+	for _, content := range result.Contents {
+		for _, part := range content.Parts {
+			if part.FunctionCall != nil {
+				argsList = append(argsList, part.FunctionCall.Args)
+			}
+		}
+	}
+
+	require.Len(t, argsList, 2, "expected 2 FunctionCall parts")
+
+	// Block 0: keys should be description, timeout, command (NOT alphabetical)
+	s0 := string(argsList[0])
+	descIdx := strings.Index(s0, `"description"`)
+	timeoutIdx := strings.Index(s0, `"timeout"`)
+	commandIdx := strings.Index(s0, `"command"`)
+	require.NotEqual(t, -1, descIdx, "block 0: missing description key in: %s", s0)
+	require.NotEqual(t, -1, timeoutIdx, "block 0: missing timeout key in: %s", s0)
+	require.NotEqual(t, -1, commandIdx, "block 0: missing command key in: %s", s0)
+	assert.True(t, descIdx < timeoutIdx && timeoutIdx < commandIdx,
+		"block 0: key order not preserved, expected description < timeout < command in: %s", s0)
+
+	// Block 1: keys should be command, description (NOT alphabetical)
+	s1 := string(argsList[1])
+	commandIdx = strings.Index(s1, `"command"`)
+	descIdx = strings.Index(s1, `"description"`)
+	require.NotEqual(t, -1, commandIdx, "block 1: missing command key in: %s", s1)
+	require.NotEqual(t, -1, descIdx, "block 1: missing description key in: %s", s1)
+	assert.True(t, commandIdx < descIdx,
+		"block 1: key order not preserved, expected command < description in: %s", s1)
 }

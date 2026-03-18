@@ -135,9 +135,11 @@ func TestMigrationAddMetadataGINIndex_ValidJSON(t *testing.T) {
 	insertTestLog(t, db, "log-valid-3", &validJSON3)
 	insertTestLog(t, db, "log-valid-4", &validJSON4)
 
-	// Run the migration
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify all valid JSON values are preserved
 	meta1 := getMetadataValue(t, db, "log-valid-1")
@@ -195,9 +197,11 @@ func TestMigrationAddMetadataGINIndex_InvalidJSON(t *testing.T) {
 	insertTestLog(t, db, "log-invalid-11", &invalid11)
 	insertTestLog(t, db, "log-actual-null", nil) // Actual SQL NULL
 
-	// Run the migration
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed even with invalid JSON")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed after invalid JSON cleanup")
 
 	// Verify invalid JSON values were set to NULL
 	for i := 1; i <= 10; i++ {
@@ -241,9 +245,11 @@ func TestMigrationAddMetadataGINIndex_MixedData(t *testing.T) {
 	insertTestLog(t, db, "log-mixed-invalid", &invalidJSON)
 	insertTestLog(t, db, "log-mixed-null", nil)
 
-	// Run the migration
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify valid JSON is preserved
 	metaValid := getMetadataValue(t, db, "log-mixed-valid")
@@ -275,9 +281,11 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	validJSON := `{"test": "idempotent"}`
 	insertTestLog(t, db, "log-idempotent", &validJSON)
 
-	// Run the migration first time
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "First migration should succeed")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify index exists
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should exist after first migration")
@@ -290,6 +298,8 @@ func TestMigrationAddMetadataGINIndex_Idempotent(t *testing.T) {
 	// Run the migration second time (should be idempotent due to gomigrate tracking)
 	err = migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Second migration should succeed (idempotent)")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "ensureMetadataGINIndex should be a no-op when index already exists")
 
 	// Verify index still exists
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should exist after second migration")
@@ -309,9 +319,11 @@ func TestMigrationAddMetadataGINIndex_EmptyTable(t *testing.T) {
 	setupLogsTableForGINIndexTest(t, db)
 	ctx := context.Background()
 
-	// Run the migration on an empty table
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed on empty table")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed on empty table")
 
 	// Verify the GIN index was created
 	assert.True(t, indexExists(t, db, "idx_logs_metadata_gin"), "GIN index should be created even on empty table")
@@ -341,9 +353,11 @@ func TestMigrationAddMetadataGINIndex_EdgeCases(t *testing.T) {
 	insertTestLog(t, db, "log-edge-large-num", &largeNumber)
 	insertTestLog(t, db, "log-edge-scientific", &scientificNotation)
 
-	// Run the migration
+	// Run the migration (cleanup only) then ensure the index is built.
 	err := migrationAddMetadataGINIndex(ctx, db)
 	require.NoError(t, err, "Migration should succeed")
+	err = ensureMetadataGINIndex(ctx, db)
+	require.NoError(t, err, "GIN index creation should succeed")
 
 	// Verify all edge cases are handled correctly
 	// Empty object and array should be preserved

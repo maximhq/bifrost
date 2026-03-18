@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -95,19 +96,8 @@ func (r *ReplicatePredictionRequestInput) MarshalJSON() ([]byte, error) {
 		return aliasData, nil
 	}
 
-	// Unmarshal into a map to merge with ExtraParams
-	var result map[string]interface{}
-	if err := sonic.Unmarshal(aliasData, &result); err != nil {
-		return nil, err
-	}
-
-	// Add all ExtraParams to the top level
-	for key, value := range r.ExtraParams {
-		result[key] = value
-	}
-
-	// Marshal the final result
-	return sonic.Marshal(result)
+	// Use order-preserving merge to avoid destroying key ordering in the serialized JSON.
+	return providerUtils.MergeExtraParamsIntoJSON(aliasData, r.ExtraParams)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ReplicatePredictionRequestInput.

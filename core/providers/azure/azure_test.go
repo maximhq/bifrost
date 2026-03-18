@@ -59,10 +59,10 @@ func TestAzure(t *testing.T) {
 			ListModels:            true,
 			Reasoning:             true,
 			ChatAudio:             true,
-			Transcription:         true,
+			Transcription:         false, // Disabled for azure because of 3 calls/minute quota	
 			TranscriptionStream:   false, // Not properly supported yet by Azure
-			SpeechSynthesis:       true,
-			SpeechSynthesisStream: true,
+			SpeechSynthesis:       false, // Disabled for azure because of 3 calls/minute quota
+			SpeechSynthesisStream: false, // Disabled for azure because of 3 calls/minute quota
 			StructuredOutputs:     true,  // Structured outputs with nullable enum support
 			PromptCaching:         true,
 			ImageGeneration:       false, // Skipped for Azure

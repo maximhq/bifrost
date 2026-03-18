@@ -1,8 +1,10 @@
 package gemini
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -1723,10 +1725,17 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 			for _, toolCall := range message.ChatAssistantMessage.ToolCalls {
 				// Convert tool call to function call part
 				if toolCall.Function.Name != nil {
-					// Create function call part - simplified implementation
-					argsMap := make(map[string]any)
+					// Preserve original key ordering of tool arguments for prompt caching.
+					var argsRaw json.RawMessage
 					if toolCall.Function.Arguments != "" {
-						sonic.Unmarshal([]byte(toolCall.Function.Arguments), &argsMap)
+						var buf bytes.Buffer
+						if err := json.Compact(&buf, []byte(toolCall.Function.Arguments)); err == nil {
+							argsRaw = buf.Bytes()
+						} else {
+							argsRaw = json.RawMessage("{}")
+						}
+					} else {
+						argsRaw = json.RawMessage("{}")
 					}
 					// Handle ID: use it if available, otherwise fallback to function name
 					callID := *toolCall.Function.Name
@@ -1747,7 +1756,7 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage) ([]Content, 
 						FunctionCall: &FunctionCall{
 							ID:   callID,
 							Name: *toolCall.Function.Name,
-							Args: argsMap,
+							Args: argsRaw,
 						},
 					}
 					// Store the mapping for later use in FunctionResponse

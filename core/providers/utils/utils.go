@@ -982,7 +982,7 @@ func MergeExtraParamsIntoJSON(jsonBody []byte, extraParams map[string]interface{
 				if existingDec.Decode(&existingMap) == nil {
 					if newDec.Decode(&newMap) == nil {
 						MergeExtraParams(existingMap, newMap)
-						if merged, err := sonic.Marshal(existingMap); err == nil {
+						if merged, err := sortedAPI.Marshal(existingMap); err == nil {
 							pairs[idx].val = merged
 							continue
 						}

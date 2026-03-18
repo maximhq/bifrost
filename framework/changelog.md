@@ -1,0 +1,5 @@
+- fix: rewrote GIN index migration to use CREATE INDEX CONCURRENTLY in background goroutine, preventing deadlocks during rolling upgrades
+- fix: generalized advisory lock into acquireAdvisoryLock with dedicated ginIndexAdvisoryLockKey for serialized index builds
+- fix: changed Log.Metadata from string to *string with graceful serialization error handling
+- fix: added nil-store guards to DistributedLock methods (Lock, TryLock, Extend, IsHeld, cleanupExpiredLock)
+- feat: added PostgreSQL 16 minimum version requirement with server-side IS NOT JSON OBJECT validation

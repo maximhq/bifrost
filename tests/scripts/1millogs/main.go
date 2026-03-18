@@ -47,6 +47,28 @@ var models = map[string][]string{
 var statuses = []string{"success", "error", "processing"}
 var objects = []string{"chat.completion", "text.completion", "embedding"}
 
+// validMetadataValues are realistic metadata samples used by ~15% of generated logs.
+var validMetadataValues = []string{
+	`{"environment": "production", "version": "1.0.0"}`,
+	`{"team": "backend", "project": "api-gateway"}`,
+	`{"user_id": "user-123", "session": "sess-abc"}`,
+	`{"source": "web", "region": "us-east-1", "tier": "premium"}`,
+	`{"app": "mobile", "os": "ios", "release": "2.4.1"}`,
+}
+
+// invalidMetadataValues simulate corrupt legacy data used by ~2% of generated logs.
+// The migration cleanup must NULL these out before the GIN index can be created.
+var invalidMetadataValues = []string{
+	`{"key": invalid}`,     // unquoted value
+	`{key: "value"}`,       // unquoted key
+	`{"key": "value",}`,    // trailing comma
+	`just a plain string`,  // not JSON at all
+	`{"unclosed": "brace"`, // unclosed brace
+	`{'single': 'quotes'}`, // JS-style single quotes
+	`NULL`,                 // literal SQL-style NULL string
+	`undefined`,            // JavaScript undefined
+}
+
 // Sample conversation content for realistic data
 var userPrompts = []string{
 	"Explain quantum computing in simple terms.",
@@ -551,6 +573,14 @@ func generateLog(index int, targetSize int) logstore.Log {
 		}
 		errorJSON, _ := json.Marshal(errorDetails)
 		log.ErrorDetails = string(errorJSON)
+	}
+
+	// Assign metadata: ~15% valid JSON, ~2% invalid JSON (simulates legacy corrupt rows).
+	switch r := rand.Float32(); {
+	case r < 0.02:
+		log.Metadata = new(invalidMetadataValues[rand.Intn(len(invalidMetadataValues))])
+	case r < 0.17:
+		log.Metadata = new(validMetadataValues[rand.Intn(len(validMetadataValues))])
 	}
 
 	// Randomly add selected key and virtual key

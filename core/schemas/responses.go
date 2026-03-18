@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"reflect"
 	"time"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // =============================================================================
@@ -1368,193 +1371,112 @@ type ResponsesTool struct {
 	*ResponsesToolWebSearchPreview
 }
 
-// MarshalJSON implements custom JSON marshaling for ResponsesTool
-// It merges common fields with the appropriate embedded struct based on type
-func (t ResponsesTool) MarshalJSON() ([]byte, error) {
-	// Start with common fields
-	result := map[string]interface{}{
-		"type": t.Type,
-	}
+// mergeJSONFields merges all top-level fields from src into dst using sjson,
+// preserving the key order from src. This avoids map[string]interface{} which
+// has non-deterministic iteration order in Go, breaking prompt caching.
+func mergeJSONFields(dst, src []byte) ([]byte, error) {
+	var mergeErr error
+	gjson.ParseBytes(src).ForEach(func(key, value gjson.Result) bool {
+		dst, mergeErr = sjson.SetRawBytes(dst, key.String(), []byte(value.Raw))
+		return mergeErr == nil
+	})
+	return dst, mergeErr
+}
 
+// MarshalJSON implements custom JSON marshaling for ResponsesTool.
+// It merges common fields with the appropriate embedded struct based on type.
+// Uses sjson to build JSON bytes incrementally, ensuring deterministic key
+// ordering critical for prompt caching (OpenAI caches based on request prefix).
+func (t ResponsesTool) MarshalJSON() ([]byte, error) {
+	// Build JSON bytes with deterministic key order using sjson
+	data := []byte(`{}`)
+	var err error
+
+	// Set common fields in a fixed order
+	if data, err = sjson.SetBytes(data, "type", t.Type); err != nil {
+		return nil, err
+	}
 	if t.Name != nil {
-		result["name"] = t.Name
+		if data, err = sjson.SetBytes(data, "name", *t.Name); err != nil {
+			return nil, err
+		}
 	}
 	if t.Description != nil {
-		result["description"] = t.Description
+		if data, err = sjson.SetBytes(data, "description", *t.Description); err != nil {
+			return nil, err
+		}
 	}
 	if t.CacheControl != nil {
-		result["cache_control"] = t.CacheControl
+		ccBytes, ccErr := Marshal(t.CacheControl)
+		if ccErr != nil {
+			return nil, ccErr
+		}
+		if data, err = sjson.SetRawBytes(data, "cache_control", ccBytes); err != nil {
+			return nil, err
+		}
 	}
 
-	// Based on type, marshal the appropriate embedded struct
+	// Marshal the type-specific embedded struct and merge its fields
+	var typeBytes []byte
 	switch t.Type {
 	case ResponsesToolTypeFunction:
 		if t.ResponsesToolFunction != nil {
-			bytes, err := Marshal(t.ResponsesToolFunction)
-			if err != nil {
-				return nil, err
-			}
-			var funcFields map[string]interface{}
-			if err := Unmarshal(bytes, &funcFields); err != nil {
-				return nil, err
-			}
-			for k, v := range funcFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolFunction)
 		}
-
 	case ResponsesToolTypeFileSearch:
 		if t.ResponsesToolFileSearch != nil {
-			bytes, err := Marshal(t.ResponsesToolFileSearch)
-			if err != nil {
-				return nil, err
-			}
-			var fileSearchFields map[string]interface{}
-			if err := Unmarshal(bytes, &fileSearchFields); err != nil {
-				return nil, err
-			}
-			for k, v := range fileSearchFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolFileSearch)
 		}
-
 	case ResponsesToolTypeComputerUsePreview:
 		if t.ResponsesToolComputerUsePreview != nil {
-			bytes, err := Marshal(t.ResponsesToolComputerUsePreview)
-			if err != nil {
-				return nil, err
-			}
-			var computerFields map[string]interface{}
-			if err := Unmarshal(bytes, &computerFields); err != nil {
-				return nil, err
-			}
-			for k, v := range computerFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolComputerUsePreview)
 		}
-
 	case ResponsesToolTypeWebSearch:
 		if t.ResponsesToolWebSearch != nil {
-			bytes, err := Marshal(t.ResponsesToolWebSearch)
-			if err != nil {
-				return nil, err
-			}
-			var webSearchFields map[string]interface{}
-			if err := Unmarshal(bytes, &webSearchFields); err != nil {
-				return nil, err
-			}
-			for k, v := range webSearchFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolWebSearch)
 		}
-
 	case ResponsesToolTypeWebFetch:
 		if t.ResponsesToolWebFetch != nil {
-			bytes, err := Marshal(t.ResponsesToolWebFetch)
-			if err != nil {
-				return nil, err
-			}
-			var webFetchFields map[string]interface{}
-			if err := Unmarshal(bytes, &webFetchFields); err != nil {
-				return nil, err
-			}
-			for k, v := range webFetchFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolWebFetch)
 		}
-
 	case ResponsesToolTypeMCP:
 		if t.ResponsesToolMCP != nil {
-			bytes, err := Marshal(t.ResponsesToolMCP)
-			if err != nil {
-				return nil, err
-			}
-			var mcpFields map[string]interface{}
-			if err := Unmarshal(bytes, &mcpFields); err != nil {
-				return nil, err
-			}
-			for k, v := range mcpFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolMCP)
 		}
-
 	case ResponsesToolTypeCodeInterpreter:
 		if t.ResponsesToolCodeInterpreter != nil {
-			bytes, err := Marshal(t.ResponsesToolCodeInterpreter)
-			if err != nil {
-				return nil, err
-			}
-			var codeInterpreterFields map[string]interface{}
-			if err := Unmarshal(bytes, &codeInterpreterFields); err != nil {
-				return nil, err
-			}
-			for k, v := range codeInterpreterFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolCodeInterpreter)
 		}
-
 	case ResponsesToolTypeImageGeneration:
 		if t.ResponsesToolImageGeneration != nil {
-			bytes, err := Marshal(t.ResponsesToolImageGeneration)
-			if err != nil {
-				return nil, err
-			}
-			var imageGenFields map[string]interface{}
-			if err := Unmarshal(bytes, &imageGenFields); err != nil {
-				return nil, err
-			}
-			for k, v := range imageGenFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolImageGeneration)
 		}
-
 	case ResponsesToolTypeLocalShell:
 		if t.ResponsesToolLocalShell != nil {
-			bytes, err := Marshal(t.ResponsesToolLocalShell)
-			if err != nil {
-				return nil, err
-			}
-			var localShellFields map[string]interface{}
-			if err := Unmarshal(bytes, &localShellFields); err != nil {
-				return nil, err
-			}
-			for k, v := range localShellFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolLocalShell)
 		}
-
 	case ResponsesToolTypeCustom:
 		if t.ResponsesToolCustom != nil {
-			bytes, err := Marshal(t.ResponsesToolCustom)
-			if err != nil {
-				return nil, err
-			}
-			var customFields map[string]interface{}
-			if err := Unmarshal(bytes, &customFields); err != nil {
-				return nil, err
-			}
-			for k, v := range customFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolCustom)
 		}
-
 	case ResponsesToolTypeWebSearchPreview:
 		if t.ResponsesToolWebSearchPreview != nil {
-			bytes, err := Marshal(t.ResponsesToolWebSearchPreview)
-			if err != nil {
-				return nil, err
-			}
-			var webSearchPreviewFields map[string]interface{}
-			if err := Unmarshal(bytes, &webSearchPreviewFields); err != nil {
-				return nil, err
-			}
-			for k, v := range webSearchPreviewFields {
-				result[k] = v
-			}
+			typeBytes, err = Marshal(t.ResponsesToolWebSearchPreview)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Merge type-specific fields into data preserving their serialization order
+	if typeBytes != nil {
+		data, err = mergeJSONFields(data, typeBytes)
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	return Marshal(result)
+	return data, nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ResponsesTool
@@ -1713,30 +1635,41 @@ func (f *ResponsesToolFileSearchFilter) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("neither comparison nor compound filter is set; exactly one must be non-nil")
 	}
 
-	// Create a map to hold the JSON data
-	result := make(map[string]interface{})
-	result["type"] = f.Type
+	// Build JSON bytes with deterministic key order using sjson
+	data := []byte(`{}`)
+	var err error
 
-	// Marshal the appropriate embedded struct based on type
+	if data, err = sjson.SetBytes(data, "type", f.Type); err != nil {
+		return nil, err
+	}
+
 	switch f.Type {
 	case "eq", "ne", "gt", "gte", "lt", "lte":
 		if f.ResponsesToolFileSearchComparisonFilter == nil {
 			return nil, fmt.Errorf("comparison filter is nil but type is %s", f.Type)
 		}
-		// Copy fields from the embedded struct
-		result["key"] = f.ResponsesToolFileSearchComparisonFilter.Key
-		result["value"] = f.ResponsesToolFileSearchComparisonFilter.Value
+		if data, err = sjson.SetBytes(data, "key", f.ResponsesToolFileSearchComparisonFilter.Key); err != nil {
+			return nil, err
+		}
+		if data, err = sjson.SetBytes(data, "value", f.ResponsesToolFileSearchComparisonFilter.Value); err != nil {
+			return nil, err
+		}
 	case "and", "or":
 		if f.ResponsesToolFileSearchCompoundFilter == nil {
 			return nil, fmt.Errorf("compound filter is nil but type is %s", f.Type)
 		}
-		// Copy fields from the embedded struct
-		result["filters"] = f.ResponsesToolFileSearchCompoundFilter.Filters
+		filtersBytes, fErr := Marshal(f.ResponsesToolFileSearchCompoundFilter.Filters)
+		if fErr != nil {
+			return nil, fErr
+		}
+		if data, err = sjson.SetRawBytes(data, "filters", filtersBytes); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unknown filter type: %s", f.Type)
 	}
 
-	return Marshal(result)
+	return data, nil
 }
 
 // UnmarshalJSON implements custom JSON unmarshaling for ResponsesToolFileSearchFilter
@@ -1964,15 +1897,28 @@ func (as ResponsesToolMCPAllowedToolsApprovalSetting) MarshalJSON() ([]byte, err
 		return Marshal(*as.Setting)
 	}
 	if as.Always != nil || as.Never != nil {
-		// Marshal as an object with always/never fields
-		obj := make(map[string]interface{})
+		// Build JSON bytes with deterministic key order using sjson
+		data := []byte(`{}`)
+		var err error
 		if as.Always != nil {
-			obj["always"] = as.Always
+			alwaysBytes, aErr := Marshal(as.Always)
+			if aErr != nil {
+				return nil, aErr
+			}
+			if data, err = sjson.SetRawBytes(data, "always", alwaysBytes); err != nil {
+				return nil, err
+			}
 		}
 		if as.Never != nil {
-			obj["never"] = as.Never
+			neverBytes, nErr := Marshal(as.Never)
+			if nErr != nil {
+				return nil, nErr
+			}
+			if data, err = sjson.SetRawBytes(data, "never", neverBytes); err != nil {
+				return nil, err
+			}
 		}
-		return Marshal(obj)
+		return data, nil
 	}
 	// If all are nil, return null
 	return Marshal(nil)

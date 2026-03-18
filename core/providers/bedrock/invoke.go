@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -108,13 +109,15 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 		r.ExtraParams = make(map[string]interface{})
 	}
 
+	// Preserve nested key ordering for prompt caching.
 	for key, value := range rawData {
 		if !bedrockInvokeRequestKnownFields[key] {
-			var v interface{}
-			if err := sonic.Unmarshal(value, &v); err != nil {
-				continue
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, value); err == nil {
+				r.ExtraParams[key] = json.RawMessage(buf.Bytes())
+			} else {
+				r.ExtraParams[key] = json.RawMessage(value)
 			}
-			r.ExtraParams[key] = v
 		}
 	}
 

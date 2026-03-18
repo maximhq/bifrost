@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -402,14 +403,17 @@ func (req *AnthropicMessageRequest) UnmarshalJSON(data []byte) error {
 		req.ExtraParams = make(map[string]interface{})
 	}
 
-	// Extract unknown fields
+	// Extract unknown fields, preserving nested key ordering for prompt caching.
+	// Store as json.RawMessage (compacted) instead of parsing into map[string]interface{}
+	// which would destroy key order on re-serialization.
 	for key, value := range rawData {
 		if !anthropicMessageRequestKnownFields[key] {
-			var v interface{}
-			if err := sonic.Unmarshal(value, &v); err != nil {
-				continue // Skip fields that can't be unmarshaled
+			var buf bytes.Buffer
+			if err := json.Compact(&buf, value); err == nil {
+				req.ExtraParams[key] = json.RawMessage(buf.Bytes())
+			} else {
+				req.ExtraParams[key] = json.RawMessage(value)
 			}
-			req.ExtraParams[key] = v
 		}
 	}
 

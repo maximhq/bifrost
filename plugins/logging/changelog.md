@@ -1,0 +1,1 @@
+- fix: adapted log size estimation for Metadata *string change

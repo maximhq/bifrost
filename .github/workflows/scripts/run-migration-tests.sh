@@ -843,6 +843,14 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_plugins SET encryption_status = 'plain_text' WHERE name = 'migration-test-plugin';" >> "$output_file"
   fi
 
+  # config_plugins.placement, exec_order (added in v1.4.13)
+  if column_exists_postgres "config_plugins" "placement"; then
+    echo "UPDATE config_plugins SET placement = 'post_builtin' WHERE name = 'migration-test-plugin';" >> "$output_file"
+  fi
+  if column_exists_postgres "config_plugins" "exec_order"; then
+    echo "UPDATE config_plugins SET exec_order = 0 WHERE name = 'migration-test-plugin';" >> "$output_file"
+  fi
+
   # config_vector_store.encryption_status (added in v1.4.8)
   if column_exists_postgres "config_vector_store" "encryption_status"; then
     echo "UPDATE config_vector_store SET encryption_status = 'plain_text' WHERE id = 1;" >> "$output_file"
@@ -1289,6 +1297,14 @@ append_dynamic_columns_sqlite() {
     # config_plugins.encryption_status (added in v1.4.8)
     if column_exists_sqlite "$config_db" "config_plugins" "encryption_status"; then
       echo "UPDATE config_plugins SET encryption_status = 'plain_text' WHERE name = 'migration-test-plugin';" >> "$output_file"
+    fi
+
+    # config_plugins.placement, exec_order (added in v1.4.13)
+    if column_exists_sqlite "$config_db" "config_plugins" "placement"; then
+      echo "UPDATE config_plugins SET placement = 'post_builtin' WHERE name = 'migration-test-plugin';" >> "$output_file"
+    fi
+    if column_exists_sqlite "$config_db" "config_plugins" "exec_order"; then
+      echo "UPDATE config_plugins SET exec_order = 0 WHERE name = 'migration-test-plugin';" >> "$output_file"
     fi
 
     # config_vector_store.encryption_status (added in v1.4.8)
