@@ -130,6 +130,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cohere",
+                  "providers/supported-providers/copilot",
                   "providers/supported-providers/elevenlabs",
                   "providers/supported-providers/gemini",
                   "providers/supported-providers/groq",
@@ -220,7 +221,6 @@
             "pages": [
               "plugins/getting-started",
               "plugins/building-dynamic-binary",
-              "plugins/sequencing",
               {
                 "group": "Writing Plugins",
                 "icon": "code",
@@ -269,13 +269,6 @@
               },
               "features/telemetry",
               "features/semantic-caching",
-              {
-                "group": "Prompt Repository",
-                "icon": "folder",
-                "pages": [
-                  "features/prompt-repository/playground"
-                ]
-              },
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
@@ -572,8 +565,6 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v1.3.10",
-              "changelogs/ent-v1.3.9",
               "changelogs/ent-v1.3.8"
             ]
           },

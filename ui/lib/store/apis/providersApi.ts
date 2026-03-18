@@ -74,6 +74,7 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 			helpText:
 				"What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.",
 			type: "number",
+			default: 1,
 			range: { min: 0, max: 2, step: 0.01 },
 		},
 		{
@@ -81,14 +82,8 @@ const DEFAULT_MODEL_PARAMETERS: ModelDatasheetResponse = {
 			label: "Max Tokens",
 			helpText: "The maximum number of tokens that can be generated in the Result.",
 			type: "number",
+			default: 4096,
 			range: { min: 1, max: 8192, step: 1 },
-		},
-		{
-			id: "stream",
-			label: "Stream",
-			helpText:
-				"The stream parameter in the API controls whether the response is sent in incremental updates, like tokenized data as it's generated, or as a complete result in one go.",
-			type: "boolean",
 		},
 	],
 };
@@ -115,6 +110,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "POST",
 				body: data,
 			}),
+			invalidatesTags: ["Models", "BaseModels"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: newProvider } = await queryFulfilled;
@@ -135,6 +131,7 @@ export const providersApi = baseApi.injectEndpoints({
 				method: "PUT",
 				body: provider,
 			}),
+			invalidatesTags: ["Models", "BaseModels"],
 			async onQueryStarted(arg, { dispatch, queryFulfilled }) {
 				try {
 					const { data: updatedProvider } = await queryFulfilled;
@@ -203,6 +200,20 @@ export const providersApi = baseApi.injectEndpoints({
 			providesTags: ["BaseModels"],
 		}),
 
+		// Refresh model cache for a specific provider
+		refreshModels: builder.mutation<{ status: string }, string>({
+			query: (provider) => ({
+				url: `/models/refresh?provider=${encodeURIComponent(provider)}`,
+				method: "POST",
+			}),
+			invalidatesTags: (_result, _error, provider) => [
+				"Models",
+				"BaseModels",
+				"Providers",
+				{ type: "Providers" as const, id: provider },
+			],
+		}),
+
 		// Get model parameters (parameters, capabilities) from local API
 		// Falls back to default parameters if the API returns an error (e.g. model not found)
 		getModelParameters: builder.query<ModelDatasheetResponse, string>({
@@ -230,6 +241,7 @@ export const {
 	useGetAllKeysQuery,
 	useGetModelsQuery,
 	useGetBaseModelsQuery,
+	useRefreshModelsMutation,
 	useLazyGetProvidersQuery,
 	useLazyGetProviderQuery,
 	useLazyGetAllKeysQuery,
