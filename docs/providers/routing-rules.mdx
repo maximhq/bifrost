@@ -218,6 +218,7 @@ Access routing rules from the dashboard:
 
 **Features:**
 - List all rules with scope, priority, and enabled status
+- Search rules by name with server-side pagination
 - Filter by scope or scope_id
 - Create/Edit/Delete rules
 - View rule expressions and targets
@@ -259,8 +260,12 @@ The dashboard includes a visual query builder for CEL expressions:
 GET /api/governance/routing-rules
 
 # Optional query parameters:
-?scope=global&scope_id=<id>&from_memory=true
+?search=premium&limit=25&offset=0
+?scope=team&scope_id=<id>
+?from_memory=true
 ```
+
+`search`, `limit`, and `offset` apply to the default database-backed list path. `scope`/`scope_id` and `from_memory=true` continue to return wrapped list responses, but they bypass the paginated search path.
 
 **Response:**
 ```json
@@ -284,7 +289,10 @@ GET /api/governance/routing-rules
       "updated_at": "2024-01-15T10:30:00Z"
     }
   ],
-  "count": 1
+  "count": 1,
+  "total_count": 4,
+  "limit": 25,
+  "offset": 0
 }
 ```
 
@@ -903,6 +911,16 @@ curl http://localhost:8080/api/governance/routing-rules \
   -G \
   --data-urlencode "scope=team" \
   --data-urlencode "scope_id=team-uuid-123"
+```
+
+#### Search Rules by Name
+```bash
+curl http://localhost:8080/api/governance/routing-rules \
+  -H "Authorization: Bearer your-token" \
+  -G \
+  --data-urlencode "search=premium" \
+  --data-urlencode "limit=25" \
+  --data-urlencode "offset=0"
 ```
 
 #### Get In-Memory Rules (Debug)

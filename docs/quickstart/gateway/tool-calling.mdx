@@ -98,7 +98,12 @@ curl --location 'http://localhost:8080/api/mcp/client' \
 **List configured MCP clients:**
 ```bash
 curl --location 'http://localhost:8080/api/mcp/clients'
+
+# Search configured clients by name
+curl --location 'http://localhost:8080/api/mcp/clients?search=filesystem&limit=25&offset=0'
 ```
+
+The list endpoint returns a wrapped response with `clients`, `count`, `total_count`, `limit`, and `offset`.
 </Tab>
 
 <Tab title="Using config.json">

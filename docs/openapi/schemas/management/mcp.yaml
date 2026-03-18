@@ -321,6 +321,27 @@ MCPClient:
     state:
       $ref: '#/MCPConnectionState'
 
+ListMCPClientsResponse:
+  type: object
+  description: Response containing MCP clients with pagination metadata
+  properties:
+    clients:
+      type: array
+      items:
+        $ref: '#/MCPClient'
+    count:
+      type: integer
+      description: Number of MCP clients returned in this response
+    total_count:
+      type: integer
+      description: Total number of MCP clients matching the active filters
+    limit:
+      type: integer
+      description: Applied page size
+    offset:
+      type: integer
+      description: Applied page offset
+
 ExecuteToolRequest:
   oneOf:
     - title: Chat (Default)
