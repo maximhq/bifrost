@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -508,9 +509,36 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	bfCtx.SetValue(schemas.BifrostContextKeyValidateKeys, true) // Validate keys during provider add/update
 	defer bfCtx.Cancel()
 
-	allModels, bifrostErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-		Provider: provider,
-	})
+	// Getting allowed models from all provider keys (needed before model listing)
+	providerKeys, err := s.Config.ConfigStore.GetKeysByProvider(ctx, string(provider))
+	if err != nil {
+		return nil, fmt.Errorf("failed to update provider model catalog: failed to get keys by provider: %s", err)
+	}
+
+	// Run filtered and unfiltered model listing concurrently
+	var (
+		allModels         *schemas.BifrostListModelsResponse
+		bifrostErr        *schemas.BifrostError
+		unfilteredModels  *schemas.BifrostListModelsResponse
+		listModelsErr     *schemas.BifrostError
+		listWg            sync.WaitGroup
+	)
+	listWg.Add(2)
+	go func() {
+		defer listWg.Done()
+		allModels, bifrostErr = s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+			Provider: provider,
+		})
+	}()
+	go func() {
+		defer listWg.Done()
+		unfilteredModels, listModelsErr = s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+			Provider:   provider,
+			Unfiltered: true,
+		})
+	}()
+	listWg.Wait()
+
 	if allModels != nil && len(allModels.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
 		s.updateKeyStatus(ctx, allModels.KeyStatuses)
 	}
@@ -525,11 +553,6 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 			Data: make([]schemas.Model, 0),
 		}
 	}
-	// Getting allowed models from all provider keys
-	providerKeys, err := s.Config.ConfigStore.GetKeysByProvider(ctx, string(provider))
-	if err != nil {
-		return nil, fmt.Errorf("failed to update provider model catalog: failed to get keys by provider: %s", err)
-	}
 	modelsInKeys := make([]schemas.Model, 0)
 	for _, key := range providerKeys {
 		for _, model := range key.Models {
@@ -543,14 +566,10 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		}
 	}
 	s.Config.ModelCatalog.UpsertModelDataForProvider(provider, allModels, modelsInKeys)
-	unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-		Provider:   provider,
-		Unfiltered: true,
-	})
 	if listModelsErr != nil {
 		logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 	} else {
-		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+		s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModels)
 	}
 	return updatedProvider, nil
 }
@@ -756,38 +775,44 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 		}
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
+		var wg sync.WaitGroup
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
-			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider: provider,
-			})
-			if listModelsErr != nil {
-				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			}
-			allowedModels := make([]schemas.Model, 0)
-			for _, key := range providerConfig.Keys {
-				for _, model := range key.Models {
-					if model == "*" {
-						continue
-					}
-					allowedModels = append(allowedModels, schemas.Model{
-						ID: string(provider) + "/" + model,
-					})
+			wg.Add(1)
+			go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
+				defer wg.Done()
+				bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
+				bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+				defer bfCtx.Cancel()
+				modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+					Provider: provider,
+				})
+				if listModelsErr != nil {
+					logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 				}
-			}
-			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider:   provider,
-				Unfiltered: true,
-			})
-			if listModelsErr != nil {
-				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			} else {
-				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
-			}
-			bfCtx.Cancel()
+				allowedModels := make([]schemas.Model, 0)
+				for _, key := range providerConfig.Keys {
+					for _, model := range key.Models {
+						if model == "*" {
+							continue
+						}
+						allowedModels = append(allowedModels, schemas.Model{
+							ID: string(provider) + "/" + model,
+						})
+					}
+				}
+				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+					Provider:   provider,
+					Unfiltered: true,
+				})
+				if listModelsErr != nil {
+					logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+				} else {
+					s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+				}
+			}(provider, providerConfig)
 		}
+		wg.Wait()
 	}
 	return nil
 }
@@ -1241,45 +1266,51 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if s.Config.ModelCatalog != nil {
 		// Fetching keys for all providers and allowed models first
 		// Based on allowed models we will set the data in the model catalog
+		var wg sync.WaitGroup
 		for provider, providerConfig := range s.Config.Providers {
-			bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
-			bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+			wg.Add(1)
+			go func(provider schemas.ModelProvider, providerConfig configstore.ProviderConfig) {
+				defer wg.Done()
+				bfCtx := schemas.NewBifrostContext(ctx, time.Now().Add(15*time.Second))
+				bfCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
+				defer bfCtx.Cancel()
 
-			modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider: provider,
-			})
-			if modelData != nil && len(modelData.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-				s.updateKeyStatus(ctx, modelData.KeyStatuses)
-			}
-			if listModelsErr != nil {
-				if len(listModelsErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
-					s.updateKeyStatus(ctx, listModelsErr.ExtraFields.KeyStatuses)
+				modelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+					Provider: provider,
+				})
+				if modelData != nil && len(modelData.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+					s.updateKeyStatus(ctx, modelData.KeyStatuses)
 				}
-				logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			}
-			allowedModels := make([]schemas.Model, 0)
-			for _, key := range providerConfig.Keys {
-				for _, model := range key.Models {
-					if model == "*" {
-						continue
+				if listModelsErr != nil {
+					if len(listModelsErr.ExtraFields.KeyStatuses) > 0 && s.Config.ConfigStore != nil {
+						s.updateKeyStatus(ctx, listModelsErr.ExtraFields.KeyStatuses)
 					}
-					allowedModels = append(allowedModels, schemas.Model{
-						ID: string(provider) + "/" + model,
-					})
+					logger.Error("failed to list models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
 				}
-			}
-			s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
-			unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
-				Provider:   provider,
-				Unfiltered: true,
-			})
-			if listModelsErr != nil {
-				logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
-			} else {
-				s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
-			}
-			bfCtx.Cancel()
+				allowedModels := make([]schemas.Model, 0)
+				for _, key := range providerConfig.Keys {
+					for _, model := range key.Models {
+						if model == "*" {
+							continue
+						}
+						allowedModels = append(allowedModels, schemas.Model{
+							ID: string(provider) + "/" + model,
+						})
+					}
+				}
+				s.Config.ModelCatalog.UpsertModelDataForProvider(provider, modelData, allowedModels)
+				unfilteredModelData, listModelsErr := s.Client.ListModelsRequest(bfCtx, &schemas.BifrostListModelsRequest{
+					Provider:   provider,
+					Unfiltered: true,
+				})
+				if listModelsErr != nil {
+					logger.Error("failed to list unfiltered models for provider %s: %v: falling back onto the static datasheet", provider, bifrost.GetErrorMessage(listModelsErr))
+				} else {
+					s.Config.ModelCatalog.UpsertUnfilteredModelDataForProvider(provider, unfilteredModelData)
+				}
+			}(provider, providerConfig)
 		}
+		wg.Wait()
 	}
 
 	logger.Info("models added to catalog")
