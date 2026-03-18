@@ -1,15 +1,27 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { buildPinStyle, ColumnConfigDropdown, DraggableColumnHeader, PIN_SHADOW_LEFT, PIN_SHADOW_RIGHT, useColumnConfig, useHeaderCellRefs, usePinOffsets } from "@/components/table";
+import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
 import { useTablePageSize } from "@/hooks/useTablePageSize";
 import type { LogEntry, LogFilters, Pagination } from "@/lib/types/logs";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ColumnDef, flexRender, getCoreRowModel, SortingState, VisibilityState, useReactTable } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, Columns3, Pause, RefreshCw, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
+import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
+import { ChevronLeft, ChevronRight, Pause, RefreshCw, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogFilters as LogFiltersComponent } from "./filters";
+
+const COLUMN_LABELS: Record<string, string> = {
+	timestamp: "Time",
+	request_type: "Type",
+	input: "Message",
+	provider: "Provider",
+	model: "Model",
+	latency: "Latency",
+	tokens: "Tokens",
+	cost: "Cost",
+};
+
 
 interface DataTableProps {
 	columns: ColumnDef<LogEntry>[];
@@ -47,9 +59,53 @@ export function LogsDataTable({
 	metadataKeys = [],
 }: DataTableProps) {
 	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
-	const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
 	const tableContainerRef = useRef<HTMLDivElement>(null);
 	const calculatedPageSize = useTablePageSize(tableContainerRef);
+
+	const columnIds = useMemo(
+		() => columns.map((col) => ("id" in col && col.id ? col.id : "accessorKey" in col ? String(col.accessorKey) : "")).filter(Boolean),
+		[columns],
+	);
+
+	const fixedColumnIds = useMemo(() => new Set(["status", "actions"]), []);
+
+	// Column config: order, visibility, pinning — persisted in URL
+	const { entries, columnOrder, columnVisibility, columnPinning, toggleVisibility, togglePin, reorder, reset } = useColumnConfig({
+		columnIds,
+		paramName: "cols",
+		fixedColumns: { left: ["status"], right: ["actions"] },
+	});
+
+	// Measure actual header cell widths for pixel-perfect pin offsets
+	const { headerCellRefs, setHeaderCellRef } = useHeaderCellRefs();
+	const pinOffsets = usePinOffsets(headerCellRefs, columnPinning);
+
+	// Shadow on the edge of pinned groups
+	const lastLeftPinId = columnPinning.left?.at(-1);
+	const firstRightPinId = columnPinning.right?.at(0);
+
+	// Build labels including dynamic metadata columns
+	const columnLabels = useMemo(() => {
+		const labels = { ...COLUMN_LABELS };
+		for (const key of metadataKeys) {
+			labels[`metadata_${key}`] = key.charAt(0).toUpperCase() + key.slice(1);
+		}
+		return labels;
+	}, [metadataKeys]);
+
+	// Handle native drag-and-drop reorder
+	const handleColumnDrop = useCallback(
+		(draggedId: string, targetId: string) => {
+			const newEntries = [...entries];
+			const draggedIdx = newEntries.findIndex((e) => e.id === draggedId);
+			const targetIdx = newEntries.findIndex((e) => e.id === targetId);
+			if (draggedIdx === -1 || targetIdx === -1) return;
+			const [moved] = newEntries.splice(draggedIdx, 1);
+			newEntries.splice(targetIdx, 0, moved);
+			reorder(newEntries);
+		},
+		[entries, reorder],
+	);
 
 	// Refs to avoid stale closures in the page size effect
 	const paginationRef = useRef(pagination);
@@ -57,13 +113,12 @@ export function LogsDataTable({
 	paginationRef.current = pagination;
 	onPaginationChangeRef.current = onPaginationChange;
 
-	// Update pagination limit when calculated page size increases (don't reduce on size reduction)
 	useEffect(() => {
 		if (calculatedPageSize && calculatedPageSize > paginationRef.current.limit) {
 			onPaginationChangeRef.current({
 				...paginationRef.current,
 				limit: calculatedPageSize,
-				offset: 0, // Reset to first page when page size changes
+				offset: 0,
 			});
 		}
 	}, [calculatedPageSize]);
@@ -91,10 +146,11 @@ export function LogsDataTable({
 		pageCount: Math.ceil(totalItems / pagination.limit),
 		state: {
 			sorting,
+			columnOrder,
 			columnVisibility,
+			columnPinning,
 		},
 		onSortingChange: handleSortingChange,
-		onColumnVisibilityChange: setColumnVisibility,
 	});
 
 	const currentPage = Math.floor(pagination.offset / pagination.limit) + 1;
@@ -123,56 +179,42 @@ export function LogsDataTable({
 						fetchStats={fetchStats}
 					/>
 				</div>
-				{metadataKeys.length > 0 && (
-					<Popover>
-						<PopoverTrigger asChild>
-							<Button variant="outline" size="sm" className="h-7.5" data-testid="logs-columns-trigger">
-								<Columns3 className="h-4 w-4" />
-								Columns
-							</Button>
-						</PopoverTrigger>
-						<PopoverContent className="w-[200px] p-2" align="end">
-							<div className="space-y-1">
-								<div className="text-muted-foreground px-1 pb-1 text-xs font-medium">Metadata Columns</div>
-								{metadataKeys.map((key) => {
-									const columnId = `metadata_${key}`;
-									const columnToken = key.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-									const isVisible = columnVisibility[columnId] !== false;
-									return (
-										<label key={key} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/50">
-											<Checkbox
-												data-testid={`logs-checkbox-${columnToken}`}
-												checked={isVisible}
-												onCheckedChange={(checked) => {
-													setColumnVisibility((prev) => ({
-														...prev,
-														[columnId]: !!checked,
-													}));
-												}}
-											/>
-											<span className="truncate text-sm">{key}</span>
-										</label>
-									);
-								})}
-							</div>
-						</PopoverContent>
-					</Popover>
-				)}
+				<ColumnConfigDropdown
+					entries={entries}
+					labels={columnLabels}
+					onToggleVisibility={toggleVisibility}
+					onReset={reset}
+				/>
 			</div>
-			
+
 			<div ref={tableContainerRef} className="min-h-0 flex-1 overflow-hidden rounded-sm border">
 				<Table containerClassName="h-full overflow-auto">
-					<TableHeader className="px-2">
+					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (
-							<TableRow key={headerGroup.id}>
+							<tr
+								key={headerGroup.id}
+								className="hover:bg-muted/50 dark:hover:bg-muted/75 data-[state=selected]:bg-muted border-b transition-colors"
+							>
 								{headerGroup.headers.map((header) => (
-									<TableHead key={header.id}>
-										{header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
-									</TableHead>
+									<DraggableColumnHeader
+										key={header.id}
+										header={header}
+										isConfigurable={!fixedColumnIds.has(header.column.id)}
+										pinStyle={buildPinStyle(header.column, pinOffsets)}
+										pinnedHeaderClassName="bg-[#f9f9f9] dark:bg-[#27272a]"
+										className={cn(
+											header.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+											header.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+										)}
+										onHide={toggleVisibility}
+										onPin={togglePin}
+										onDrop={handleColumnDrop}
+										cellRef={setHeaderCellRef(header.column.id)}
+									/>
 								))}
-							</TableRow>
+							</tr>
 						))}
-					</TableHeader>
+					</thead>
 					<TableBody>
 						{loading ? (
 							<TableRow>
@@ -209,12 +251,25 @@ export function LogsDataTable({
 								</TableRow>
 								{table.getRowModel().rows.length ? (
 									table.getRowModel().rows.map((row) => (
-										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer">
-											{row.getVisibleCells().map((cell) => (
-												<TableCell onClick={() => onRowClick?.(row.original, cell.column.id)} key={cell.id}>
-													{flexRender(cell.column.columnDef.cell, cell.getContext())}
-												</TableCell>
-											))}
+										<TableRow key={row.id} className="hover:bg-muted/50 h-12 cursor-pointer group/table-row">
+											{row.getVisibleCells().map((cell) => {
+												const pinned = cell.column.getIsPinned();
+												return (
+													<TableCell
+														onClick={() => onRowClick?.(row.original, cell.column.id)}
+														key={cell.id}
+														style={buildPinStyle(cell.column, pinOffsets)}
+														className={cn(
+															pinned && "bg-card",
+															cell.column.id === lastLeftPinId && PIN_SHADOW_LEFT,
+															cell.column.id === firstRightPinId && PIN_SHADOW_RIGHT,
+															"group-hover/table-row:bg-[#f7f7f7] dark:group-hover/table-row:bg-[#232327]",
+														)}
+													>
+														{flexRender(cell.column.columnDef.cell, cell.getContext())}
+													</TableCell>
+												);
+											})}
 										</TableRow>
 									))
 								) : (
