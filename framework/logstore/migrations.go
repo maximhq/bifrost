@@ -1753,7 +1753,7 @@ func migrationAddMetadataGINIndex(ctx context.Context, db *gorm.DB) error {
 				}
 
 				// Create the GIN index now that all metadata values are valid JSON or NULL.
-				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((metadata::jsonb))").Error; err != nil {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_metadata_gin ON logs USING gin ((NULLIF(metadata,'')::jsonb))").Error; err != nil {
 					return fmt.Errorf("failed to create metadata GIN index: %w", err)
 				}
 			}

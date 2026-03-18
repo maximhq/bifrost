@@ -164,7 +164,7 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 				} else {
 					jsonFragment = fmt.Sprintf(`{%q: %q}`, key, value)
 				}
-				baseQuery = baseQuery.Where("metadata::jsonb @> ?::jsonb", jsonFragment)
+				baseQuery = baseQuery.Where("NULLIF(metadata,'')::jsonb @> ?::jsonb", jsonFragment)
 			default:
 				// SQLite: quote the member name so dots/hyphens stay part of the key
 				path := `$."` + key + `"`
