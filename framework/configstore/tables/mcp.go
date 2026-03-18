@@ -43,8 +43,8 @@ type TableMCPClient struct {
 
 	// Virtual fields for runtime use (not stored in DB)
 	StdioConfig        *schemas.MCPStdioConfig   `gorm:"-" json:"stdio_config,omitempty"`
-	ToolsToExecute     []string                  `gorm:"-" json:"tools_to_execute"`
-	ToolsToAutoExecute []string                  `gorm:"-" json:"tools_to_auto_execute"`
+	ToolsToExecute     schemas.WhiteList         `gorm:"-" json:"tools_to_execute"`
+	ToolsToAutoExecute schemas.WhiteList         `gorm:"-" json:"tools_to_auto_execute"`
 	Headers            map[string]schemas.EnvVar `gorm:"-" json:"headers"`
 	ToolPricing        map[string]float64        `gorm:"-" json:"tool_pricing"`
 }
@@ -68,6 +68,9 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if c.ToolsToExecute != nil {
+		if err := c.ToolsToExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToExecute)
 		if err != nil {
 			return err
@@ -78,6 +81,9 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 	}
 
 	if c.ToolsToAutoExecute != nil {
+		if err := c.ToolsToAutoExecute.Validate(); err != nil {
+			return fmt.Errorf("invalid tools_to_auto_execute: %w", err)
+		}
 		data, err := json.Marshal(c.ToolsToAutoExecute)
 		if err != nil {
 			return err

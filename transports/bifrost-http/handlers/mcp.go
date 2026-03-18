@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,8 +303,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Auto-clear tools_to_auto_execute if tools_to_execute is empty
 	// If no tools are allowed to execute, no tools can be auto-executed
-	if len(req.ToolsToExecute) == 0 {
-		req.ToolsToAutoExecute = []string{}
+	if req.ToolsToExecute.IsEmpty() {
+		req.ToolsToAutoExecute = schemas.WhiteList{}
 	}
 	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid tools_to_auto_execute: %v", err))
@@ -506,8 +505,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// Auto-clear tools_to_auto_execute if tools_to_execute is empty
 	// If no tools are allowed to execute, no tools can be auto-executed
-	if len(req.ToolsToExecute) == 0 {
-		req.ToolsToAutoExecute = []string{}
+	if req.ToolsToExecute.IsEmpty() {
+		req.ToolsToAutoExecute = schemas.WhiteList{}
 	}
 	// Validate tools_to_auto_execute
 	if err := validateToolsToAutoExecute(req.ToolsToAutoExecute, req.ToolsToExecute); err != nil {
@@ -648,64 +647,30 @@ func getIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return idStr, nil
 }
 
-func validateToolsToExecute(toolsToExecute []string) error {
-	if len(toolsToExecute) > 0 {
-		// Check if wildcard "*" is combined with other tool names
-		hasWildcard := slices.Contains(toolsToExecute, "*")
-		if hasWildcard && len(toolsToExecute) > 1 {
-			return fmt.Errorf("invalid tools_to_execute: wildcard '*' cannot be combined with other tool names")
-		}
-
-		// Check for duplicate entries
-		seen := make(map[string]bool)
-		for _, tool := range toolsToExecute {
-			if seen[tool] {
-				return fmt.Errorf("invalid tools_to_execute: duplicate tool name '%s'", tool)
-			}
-			seen[tool] = true
-		}
+func validateToolsToExecute(toolsToExecute schemas.WhiteList) error {
+	if err := toolsToExecute.Validate(); err != nil {
+		return fmt.Errorf("invalid tools_to_execute: %w", err)
 	}
-
 	return nil
 }
 
-func validateToolsToAutoExecute(toolsToAutoExecute []string, toolsToExecute []string) error {
-	if len(toolsToAutoExecute) > 0 {
-		// Check if wildcard "*" is combined with other tool names
-		hasWildcard := slices.Contains(toolsToAutoExecute, "*")
-		if hasWildcard && len(toolsToAutoExecute) > 1 {
-			return fmt.Errorf("wildcard '*' cannot be combined with other tool names")
-		}
+func validateToolsToAutoExecute(toolsToAutoExecute schemas.WhiteList, toolsToExecute schemas.WhiteList) error {
+	if err := toolsToAutoExecute.Validate(); err != nil {
+		return fmt.Errorf("invalid tools_to_auto_execute: %w", err)
+	}
 
-		// Check for duplicate entries
-		seen := make(map[string]bool)
-		for _, tool := range toolsToAutoExecute {
-			if seen[tool] {
-				return fmt.Errorf("duplicate tool name '%s'", tool)
-			}
-			seen[tool] = true
+	if !toolsToAutoExecute.IsEmpty() {
+		// If ToolsToExecute allows all, no further cross-validation needed
+		if toolsToExecute.IsUnrestricted() {
+			return nil
 		}
 
 		// Check that all tools in ToolsToAutoExecute are also in ToolsToExecute
-		// Create a set of allowed tools from ToolsToExecute
-		allowedTools := make(map[string]bool)
-		hasWildcardInExecute := slices.Contains(toolsToExecute, "*")
-		if hasWildcardInExecute {
-			// If "*" is in ToolsToExecute, all tools are allowed
-			return nil
-		}
-		for _, tool := range toolsToExecute {
-			allowedTools[tool] = true
-		}
-
-		// Validate each tool in ToolsToAutoExecute
 		for _, tool := range toolsToAutoExecute {
 			if tool == "*" {
-				// Wildcard is allowed if "*" is in ToolsToExecute
-				if !hasWildcardInExecute {
-					return fmt.Errorf("tool '%s' in tools_to_auto_execute is not in tools_to_execute", tool)
-				}
-			} else if !allowedTools[tool] {
+				return fmt.Errorf("tool '*' in tools_to_auto_execute requires '*' in tools_to_execute")
+			}
+			if !toolsToExecute.Contains(tool) {
 				return fmt.Errorf("tool '%s' in tools_to_auto_execute is not in tools_to_execute", tool)
 			}
 		}

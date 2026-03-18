@@ -381,12 +381,12 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 	// If ToolsToExecute is specified (not nil), apply filtering
 	if config.ToolsToExecute != nil {
 		// Handle empty array [] - means no tools are allowed
-		if len(config.ToolsToExecute) == 0 {
+		if config.ToolsToExecute.IsEmpty() {
 			return true // No tools allowed
 		}
 
 		// Handle wildcard "*" - if present, all tools are allowed
-		if slices.Contains(config.ToolsToExecute, "*") {
+		if config.ToolsToExecute.IsUnrestricted() {
 			return false // All tools allowed
 		}
 
@@ -396,7 +396,7 @@ func shouldSkipToolForConfig(toolName string, config *schemas.MCPClientConfig) b
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the allowed list
-		return !slices.Contains(config.ToolsToExecute, unprefixedToolName) // Tool not in allowed list
+		return !config.ToolsToExecute.Contains(unprefixedToolName) // Tool not in allowed list
 	}
 
 	return true // Tool is skipped (nil is treated as [] - no tools)
@@ -413,12 +413,12 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 	// If ToolsToAutoExecute is specified (not nil), apply filtering
 	if config.ToolsToAutoExecute != nil {
 		// Handle empty array [] - means no tools are auto-executed
-		if len(config.ToolsToAutoExecute) == 0 {
+		if config.ToolsToAutoExecute.IsEmpty() {
 			return false // No tools auto-executed
 		}
 
 		// Handle wildcard "*" - if present, all tools are auto-executed
-		if slices.Contains(config.ToolsToAutoExecute, "*") {
+		if config.ToolsToAutoExecute.IsUnrestricted() {
 			return true // All tools auto-executed
 		}
 
@@ -428,7 +428,7 @@ func canAutoExecuteTool(toolName string, config *schemas.MCPClientConfig) bool {
 		unprefixedToolName := stripClientPrefix(toolName, config.Name)
 
 		// Check if specific tool is in the auto-execute list
-		return slices.Contains(config.ToolsToAutoExecute, unprefixedToolName)
+		return config.ToolsToAutoExecute.Contains(unprefixedToolName)
 	}
 
 	return false // Tool is not auto-executed (nil is treated as [] - no tools)

@@ -1,7 +1,7 @@
 package cohere
 
 import (
-	"slices"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -43,7 +43,7 @@ type CohereRerankMeta struct {
 	Tokens      *CohereTokenUsage          `json:"tokens,omitempty"`
 }
 
-func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels []string, unfiltered bool) *schemas.BifrostListModelsResponse {
+func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKey schemas.ModelProvider, allowedModels schemas.WhiteList, unfiltered bool) *schemas.BifrostListModelsResponse {
 	if response == nil {
 		return nil
 	}
@@ -52,9 +52,13 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 		Data: make([]schemas.Model, 0, len(response.Models)),
 	}
 
+	if !unfiltered && allowedModels.IsEmpty() {
+		return bifrostResponse
+	}
+
 	includedModels := make(map[string]bool)
 	for _, model := range response.Models {
-		if !unfiltered && len(allowedModels) > 0 && !slices.Contains(allowedModels, model.Name) {
+		if !unfiltered && allowedModels.IsRestricted() && !allowedModels.Contains(model.Name) {
 			continue
 		}
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
@@ -63,13 +67,13 @@ func (response *CohereListModelsResponse) ToBifrostListModelsResponse(providerKe
 			ContextLength:    schemas.Ptr(int(model.ContextLength)),
 			SupportedMethods: model.Endpoints,
 		})
-		includedModels[model.Name] = true
+		includedModels[strings.ToLower(model.Name)] = true
 	}
 
 	// Backfill allowed models that were not in the response
-	if !unfiltered && len(allowedModels) > 0 {
+	if !unfiltered && allowedModels.IsRestricted() {
 		for _, allowedModel := range allowedModels {
-			if !includedModels[allowedModel] {
+			if !includedModels[strings.ToLower(allowedModel)] {
 				bifrostResponse.Data = append(bifrostResponse.Data, schemas.Model{
 					ID:   string(providerKey) + "/" + allowedModel,
 					Name: schemas.Ptr(allowedModel),

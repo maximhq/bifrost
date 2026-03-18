@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/url"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -614,11 +613,7 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 		} else {
 			// Fallback when model catalog is not available: simple string matching
 			// ["*"] = allow all models; [] = deny all models
-			if slices.Contains(config.AllowedModels, "*") {
-				isProviderAllowed = true
-			} else {
-				isProviderAllowed = slices.Contains(config.AllowedModels, modelStr)
-			}
+			isProviderAllowed = config.AllowedModels.IsAllowed(modelStr)
 		}
 
 		if isProviderAllowed {
@@ -908,12 +903,12 @@ func (p *GovernancePlugin) addMCPIncludeTools(headers map[string]string, virtual
 
 	executeOnlyTools := make([]string, 0)
 	for _, vkMcpConfig := range virtualKey.MCPConfigs {
-		if len(vkMcpConfig.ToolsToExecute) == 0 {
+		if vkMcpConfig.ToolsToExecute.IsEmpty() {
 			// No tools specified in virtual key config - skip this client entirely
 			continue
 		}
 		// Handle wildcard in virtual key config - allow all tools from this client
-		if slices.Contains(vkMcpConfig.ToolsToExecute, "*") {
+		if vkMcpConfig.ToolsToExecute.IsUnrestricted() {
 			// Virtual key uses wildcard - use client-specific wildcard
 			executeOnlyTools = append(executeOnlyTools, fmt.Sprintf("%s-*", vkMcpConfig.MCPClient.Name))
 			continue
@@ -1121,18 +1116,18 @@ func isMCPToolAllowedByVK(vk *configstoreTables.TableVirtualKey, toolPattern str
 		clientName := mcpConfig.MCPClient.Name
 		// Wildcard pattern "clientName-*": VK just needs to have this client configured at all.
 		if toolPattern == clientName+"-*" {
-			if len(mcpConfig.ToolsToExecute) > 0 {
+			if !mcpConfig.ToolsToExecute.IsEmpty() {
 				return true
 			}
 			continue
 		}
 		// Specific tool "clientName-toolName"
 		if strings.HasPrefix(toolPattern, clientName+"-") {
-			if slices.Contains(mcpConfig.ToolsToExecute, "*") {
+			if mcpConfig.ToolsToExecute.IsUnrestricted() {
 				return true
 			}
 			toolSuffix := strings.TrimPrefix(toolPattern, clientName+"-")
-			if slices.Contains(mcpConfig.ToolsToExecute, toolSuffix) {
+			if mcpConfig.ToolsToExecute.Contains(toolSuffix) {
 				return true
 			}
 		}
