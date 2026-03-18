@@ -10,7 +10,7 @@ Enterprise Governance extends Bifrost's [core governance capabilities](../featur
 
 **Enterprise Extensions:**
 - **Identity & Access Management** - OpenID Connect integration with Okta and Microsoft Entra
-- **User-Level Governance** - Individual user authentication and budget allocation
+- **User-Level Governance** - Individual user authentication plus per-user budgets and rate limits
 - **[Role-Based Access Control](./rbac)** - Fine-grained permissions with custom roles and resource-level controls
 - **Team Synchronization** - Automatic team membership based on identity provider groups
 - **Compliance Framework** - SOC 2 Type II, GDPR, ISO 27001, and HIPAA compliance
@@ -87,9 +87,56 @@ Virtual Key (API-level budget + rate limits)
 **User Features:**
 - **Individual Authentication** - SSO-based login credentials
 - **Personal Budgets** - User-specific cost allocation
+- **Personal Rate Limits** - Token and request ceilings per individual user
 - **Access Controls** - Per-user model and provider restrictions
 - **Usage Tracking** - Individual consumption monitoring
 - **Audit Trails** - User-specific activity logging
+
+### Managing User Limits
+
+User-level governance is an enterprise-only management surface. In the enterprise dashboard, administrators can open the **Users** view, search for a user, and assign or edit limits directly from the **Set Limits** action.
+
+The same workflow is available over the management API:
+
+```bash
+curl -X POST http://localhost:8080/api/governance/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user-alice-001",
+    "budget": {
+      "max_limit": 250,
+      "reset_duration": "1M"
+    },
+    "rate_limit": {
+      "token_max_limit": 200000,
+      "token_reset_duration": "1h",
+      "request_max_limit": 500,
+      "request_reset_duration": "1h"
+    }
+  }'
+```
+
+```bash
+curl -X PUT http://localhost:8080/api/governance/users/user-alice-001 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "budget": {
+      "max_limit": 400,
+      "reset_duration": "1M"
+    }
+  }'
+```
+
+Use `DELETE /api/governance/users/{user_id}` to remove user-specific limits and fall back to the surrounding team, customer, and virtual key policies.
+
+### How User Governance Composes with Other Controls
+
+User-level governance does not replace the rest of Bifrost governance. It adds another enforcement layer:
+
+- Identity provider authentication establishes the enterprise user context.
+- User budgets and rate limits are evaluated for that principal.
+- Virtual key policies still apply, including provider/model restrictions and allowed API key routing.
+- Team and customer budgets remain useful for higher-level rollups and shared spending controls.
 
 ### User Authentication Flow
 
@@ -120,6 +167,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+In enterprise deployments, this means a single request can be governed by both the authenticated user and the virtual key it carries. The user-level policy decides whether the caller still has budget or rate-limit headroom, while the virtual key continues to constrain the providers, models, API keys, and MCP tools available to that request.
 
 ---
 

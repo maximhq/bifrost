@@ -293,6 +293,7 @@
               "enterprise/guardrails",
               "enterprise/clustering",
               "enterprise/adaptive-load-balancing",
+              "enterprise/large-payload-optimization",
               {
                 "group": "Advanced Governance",
                 "icon": "shield-check",
