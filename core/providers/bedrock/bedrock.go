@@ -3564,6 +3564,23 @@ func (provider *BedrockProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 	}
 	if bifrostErr != nil {
+		if isCountTokensUnsupported(bifrostErr) {
+			estimated := estimateTokenCount(jsonData)
+			return &schemas.BifrostCountTokensResponse{
+				Model:       deployment,
+				InputTokens: estimated,
+				TotalTokens: &estimated,
+				Object:      "response.input_tokens",
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					Provider:                providerName,
+					RequestType:             schemas.CountTokensRequest,
+					ModelRequested:          request.Model,
+					ModelDeployment:         deployment,
+					Latency:                 latency.Milliseconds(),
+					ProviderResponseHeaders: providerResponseHeaders,
+				},
+			}, nil
+		}
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse)
 	}
 
