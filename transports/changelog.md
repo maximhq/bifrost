@@ -3,3 +3,4 @@
 - feat: virtual key MCP configs now act as an execution-time allow-list — tools not permitted by the VK are blocked at inference and MCP tool execution
 - refactor: standardize empty array conventions in bifrost. Empty array means no tools/keys are allowed, ["*"] means all tools/keys are allowed.
 - feat: add support for request level extra headers in MCP tool execution.
+- fix: add support for `x-bf-mcp-include-clients` and `x-bf-mcp-include-tools` request headers to filter MCP tools/list response when using bifrost as an MCP gateway.
