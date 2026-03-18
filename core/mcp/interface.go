@@ -3,8 +3,6 @@
 package mcp
 
 import (
-	"context"
-
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -14,10 +12,10 @@ import (
 type MCPManagerInterface interface {
 	// Tool Operations
 	// AddToolsToRequest parses available MCP tools and adds them to the request
-	AddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest
+	AddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest
 
 	// GetAvailableTools returns all available MCP tools for the given context
-	GetAvailableTools(ctx context.Context) []schemas.ChatTool
+	GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool
 
 	// ExecuteToolCall executes a single tool call and returns the result
 	ExecuteToolCall(ctx *schemas.BifrostContext, request *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error)

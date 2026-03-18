@@ -177,7 +177,7 @@ func (m *ToolsManager) GetCodeModeDependencies() *CodeModeDependencies {
 }
 
 // GetAvailableTools returns the available tools for the given context.
-func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool {
+func (m *ToolsManager) GetAvailableTools(ctx *schemas.BifrostContext) []schemas.ChatTool {
 	availableToolsPerClient := m.clientManager.GetToolPerClient(ctx)
 	// Flatten tools from all clients into a single slice, avoiding duplicates
 	var availableTools []schemas.ChatTool
@@ -193,14 +193,14 @@ func (m *ToolsManager) GetAvailableTools(ctx context.Context) []schemas.ChatTool
 		}
 		if client.ExecutionConfig.IsCodeModeClient {
 			includeCodeModeTools = true
-		} else {
-			// Add tools from this client, checking for duplicates
-			for _, tool := range clientTools {
-				if tool.Function != nil && tool.Function.Name != "" {
-					if !seenToolNames[tool.Function.Name] {
-						availableTools = append(availableTools, tool)
-						seenToolNames[tool.Function.Name] = true
-					}
+		}
+		// Add tools from this client, checking for duplicates
+		for _, tool := range clientTools {
+			if tool.Function != nil && tool.Function.Name != "" && !seenToolNames[tool.Function.Name] {
+				seenToolNames[tool.Function.Name] = true
+				schemas.AppendToContextList(ctx, schemas.BifrostContextKeyMCPAddedTools, tool.Function.Name)
+				if !client.ExecutionConfig.IsCodeModeClient {
+					availableTools = append(availableTools, tool)
 				}
 			}
 		}
@@ -290,7 +290,7 @@ func buildIntegrationDuplicateCheckMap(existingTools []schemas.ChatTool, integra
 //
 // Returns:
 //   - *schemas.BifrostRequest: Bifrost request with MCP tools added
-func (m *ToolsManager) ParseAndAddToolsToRequest(ctx context.Context, req *schemas.BifrostRequest) *schemas.BifrostRequest {
+func (m *ToolsManager) ParseAndAddToolsToRequest(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostRequest {
 	// MCP is only supported for chat and responses requests
 	if req.ChatRequest == nil && req.ResponsesRequest == nil {
 		return req
