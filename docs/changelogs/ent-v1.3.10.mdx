@@ -1,0 +1,48 @@
+---
+title: "v1.3.10"
+description: "v1.3.10 changelog"
+---
+
+<Update label="Bifrost Enterprise" description="v1.3.10">
+
+
+## Changelog
+
+This release upgrades the base OSS version from v1.4.12 to v1.4.13, bringing plugin execution sequencing, Groq speech support, Azure GCC cloud environments, and connection pool management. On the enterprise side, this release adds Azure Entra ID support for GCC High environments, new customer deployments, and deployment pipeline improvements.
+
+## ✨ Features
+
+- **Plugin Sequencing** — Added plugin execution ordering with placement and priority controls for custom plugins relative to built-in plugins
+- **Groq Speech** — Added speech synthesis (TTS) and transcription (STT) support for Groq provider
+- **Gemini Model Metadata** — Added support for Gemini metadata endpoint (/v1beta/models/{model})
+- **Azure GCC High Integration** — Added Azure Entra ID support for GCC High and DoD cloud environments, including cloud-specific endpoints for SCIM provisioning and JWT validation
+- **Wildcard Header Forwarding** — Added wildcard pattern support in header forwarding configuration
+- **Log Metadata Columns** — Added metadata columns in logs and filters for richer observability
+- **Prompt Caching Improvements** — Preserved JSON key ordering for LLM prompt caching using byte-level operations
+- **Connection Pool Management** — Added connection lifetime limits and optimized pool behavior to prevent stale connections
+
+## 🐞 Fixed
+
+- **MCP Tool Headers** — Fixed MCP tools not passing required headers to the MCP server
+- **MCP Tool Call Detection** — Fixed tool calls not being detected in MCP agent mode when providers return "stop" finish reason
+- **Gemini Finish Reason** — Fixed Gemini models not returning correct "tool_calls" finish reason
+- **Prompt Cascade Deletion** — Fixed manual cascade deletion for prompt entities
+- **Deploy Maxim Workflow** — Fixed deployment workflow for Maxim environment
+- **Commit Message Parsing** — Fixed commit message parsing in enterprise build pipeline
+- **Customer License Expiry** — Updated license expiry configurations for customer deployments
+
+## 📀 Base OSS version
+
+`transports/v1.4.13`
+
+## 🔌 If you are compiling plugin against this release - use following deps
+
+```
+github.com/maximhq/bifrost/core v1.4.10
+github.com/maximhq/bifrost/framework v1.2.29
+github.com/maximhq/bifrost/plugins/governance v1.4.29
+github.com/maximhq/bifrost/plugins/logging v1.4.29
+github.com/maximhq/bifrost/transports v1.4.13
+```
+
+</Update>

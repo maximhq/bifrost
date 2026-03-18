@@ -2694,14 +2694,36 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		// Inline requests: convert Bifrost requests to Gemini format
 		geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
 		for i, bifrostItem := range request.Requests {
-			requestBytes, err := sonic.Marshal(bifrostItem.Body)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err, providerName)
-			}
+			body := bifrostItem.Body
+
 			var geminiReq GeminiBatchGenerateContentRequest
-			err = sonic.Unmarshal(requestBytes, &geminiReq)
-			if err != nil {
-				return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err, providerName)
+
+			// The body is in OpenAI format (with "messages"), so we need to convert
+			// messages to Gemini's "contents" format using the standard conversion.
+			if rawMessages, ok := body["messages"]; ok {
+				messagesBytes, err := sonic.Marshal(rawMessages)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to marshal messages", err, providerName)
+				}
+				var chatMessages []schemas.ChatMessage
+				err = sonic.Unmarshal(messagesBytes, &chatMessages)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to unmarshal messages", err, providerName)
+				}
+
+				contents, systemInstruction := convertBifrostMessagesToGemini(chatMessages)
+				geminiReq.Contents = contents
+				geminiReq.SystemInstruction = systemInstruction
+			} else {
+				// If no "messages" key, try direct unmarshal (already in Gemini format)
+				requestBytes, err := sonic.Marshal(body)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to marshal gemini request", err, providerName)
+				}
+				err = sonic.Unmarshal(requestBytes, &geminiReq)
+				if err != nil {
+					return nil, providerUtils.NewBifrostOperationError("failed to unmarshal gemini request", err, providerName)
+				}
 			}
 
 			geminiRequests[i] = GeminiBatchRequestItem{

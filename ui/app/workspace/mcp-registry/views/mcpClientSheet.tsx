@@ -220,7 +220,7 @@ export default function MCPClientSheet({ mcpClient, onClose, onSubmitSuccess }: 
 
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="dark:bg-card flex w-full flex-col overflow-x-hidden bg-white p-8 sm:max-w-[60%]">
+			<SheetContent className="flex w-full flex-col overflow-x-hidden p-8 sm:max-w-[60%]">
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col">
 						<SheetHeader className="w-full p-0" showCloseButton={false}>

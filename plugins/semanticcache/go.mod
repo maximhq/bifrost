@@ -5,8 +5,8 @@ go 1.26.1
 require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
-	github.com/maximhq/bifrost/core v1.4.8
-	github.com/maximhq/bifrost/framework v1.2.27
+	github.com/maximhq/bifrost/core v1.4.10
+	github.com/maximhq/bifrost/framework v1.2.29
 	github.com/maximhq/bifrost/plugins/mocker v1.4.17
 )
 
@@ -98,6 +98,10 @@ require (
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
+	github.com/tidwall/gjson v1.18.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.0 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.68.0 // indirect

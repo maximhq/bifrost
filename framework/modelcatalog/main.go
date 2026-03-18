@@ -254,9 +254,6 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	// Start background sync worker
 	mc.syncCtx, mc.syncCancel = context.WithCancel(ctx)
 	mc.startSyncWorker(mc.syncCtx)
-	mc.configStore = configStore
-	mc.logger = logger
-
 	return mc, nil
 }
 
