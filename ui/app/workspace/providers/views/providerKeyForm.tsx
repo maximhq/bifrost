@@ -40,7 +40,7 @@ export default function ProviderKeyForm({ provider, keyIndex, onCancel, onSave }
 			key: (provider?.keys?.[keyIndex] as ProviderKeyFormValues) ?? {
 				id: uuid(),
 				name: "",
-				models: [],
+				models: ["*"],
 				weight: 1.0,
 				enabled: true,
 			},

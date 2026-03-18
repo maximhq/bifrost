@@ -613,8 +613,8 @@ func (p *GovernancePlugin) loadBalanceProvider(ctx *schemas.BifrostContext, req 
 			isProviderAllowed = p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(config.Provider), modelStr, config.AllowedModels)
 		} else {
 			// Fallback when model catalog is not available: simple string matching
-			if len(config.AllowedModels) == 0 {
-				// No restrictions, allow all models
+			// ["*"] = allow all models; [] = deny all models
+			if slices.Contains(config.AllowedModels, "*") {
 				isProviderAllowed = true
 			} else {
 				isProviderAllowed = slices.Contains(config.AllowedModels, modelStr)

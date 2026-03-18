@@ -323,6 +323,9 @@ func triggerMigrations(ctx context.Context, db *gorm.DB) error {
 	if err := migrationAddAllowAllKeysToProviderConfig(ctx, db); err != nil {
 		return err
 	}
+	if err := migrationBackfillAllowedModelsWildcard(ctx, db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -4922,6 +4925,108 @@ func migrationAddPromptRepoTables(ctx context.Context, db *gorm.DB) error {
 		return fmt.Errorf("error while running add_model_parameters_table migration: %s", err.Error())
 	}
 
+	return nil
+}
+
+// migrationBackfillAllowedModelsWildcard converts empty allowed_models on
+// governance_virtual_key_provider_configs and empty models_json on keys to ["*"],
+// preserving the previous "empty = allow all" semantics for existing records.
+// After this migration the new convention applies: ["*"] = allow all, [] = deny all.
+func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB) error {
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: "backfill_allowed_models_wildcard",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+
+			// --- Field 1: vk.provider_config.allowed_models ---
+			// Rows with '[]' previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Where("allowed_models = ? OR allowed_models IS NULL", `[]`).
+				Update("allowed_models", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill provider_config allowed_models: %w", err)
+			}
+
+			// Recompute config_hash for all VKs that have provider configs
+			// (any of them may have had their allowed_models updated above).
+			var modifiedVKIDs []string
+			if err := tx.Model(&tables.TableVirtualKeyProviderConfig{}).
+				Distinct("virtual_key_id").
+				Pluck("virtual_key_id", &modifiedVKIDs).Error; err != nil {
+				return fmt.Errorf("failed to query VK IDs for hash recomputation: %w", err)
+			}
+
+			for _, vkID := range modifiedVKIDs {
+				var vk tables.TableVirtualKey
+				if err := tx.
+					Preload("ProviderConfigs").
+					Preload("ProviderConfigs.Keys").
+					Preload("MCPConfigs").
+					First(&vk, "id = ?", vkID).Error; err != nil {
+					if err == gorm.ErrRecordNotFound {
+						// Orphaned provider config row — VK was deleted; skip.
+						continue
+					}
+					return fmt.Errorf("failed to reload VK %s for hash recomputation: %w", vkID, err)
+				}
+				newHash, err := GenerateVirtualKeyHash(vk)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for VK %s: %w", vkID, err)
+				}
+				if err := tx.Model(&tables.TableVirtualKey{}).
+					Where("id = ?", vkID).
+					Update("config_hash", newHash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for VK %s: %w", vkID, err)
+				}
+				log.Printf("[Migration] Recomputed config_hash for VK '%s' after allowed_models backfill", vk.Name)
+			}
+
+			// --- Field 2: provider.key.models (models_json column) ---
+			// Rows with '[]' or empty string previously meant "allow all models"; migrate to '["*"]'.
+			if err := tx.Model(&tables.TableKey{}).
+				Where("models_json = ? OR models_json = ? OR models_json IS NULL", `[]`, ``).
+				Update("models_json", `["*"]`).Error; err != nil {
+				return fmt.Errorf("failed to backfill key models_json: %w", err)
+			}
+
+			// Recompute config_hash for all keys since models_json is part of the hash input.
+			var keys []tables.TableKey
+			if err := tx.Find(&keys).Error; err != nil {
+				return fmt.Errorf("failed to fetch keys for hash recomputation: %w", err)
+			}
+			for _, key := range keys {
+				schemaKey := schemas.Key{
+					Name:               key.Name,
+					Value:              key.Value,
+					Models:             key.Models,
+					Weight:             getWeight(key.Weight),
+					AzureKeyConfig:     key.AzureKeyConfig,
+					VertexKeyConfig:    key.VertexKeyConfig,
+					BedrockKeyConfig:   key.BedrockKeyConfig,
+					ReplicateKeyConfig: key.ReplicateKeyConfig,
+					VLLMKeyConfig:      key.VLLMKeyConfig,
+					Enabled:            key.Enabled,
+					UseForBatchAPI:     key.UseForBatchAPI,
+				}
+				hash, err := GenerateKeyHash(schemaKey)
+				if err != nil {
+					return fmt.Errorf("failed to generate hash for key %s: %w", key.Name, err)
+				}
+				if err := tx.Model(&key).Update("config_hash", hash).Error; err != nil {
+					return fmt.Errorf("failed to update config_hash for key %s: %w", key.Name, err)
+				}
+			}
+
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Rollback is intentionally a no-op: reverting ["*"] back to [] would
+			// re-introduce the ambiguous "empty = allow all" semantics on downgrade.
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running backfill_allowed_models_wildcard migration: %s", err.Error())
+	}
 	return nil
 }
 

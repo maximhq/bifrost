@@ -1,2 +1,3 @@
 - feat: add DisableAutoToolInject to MCPToolManagerConfig to suppress automatic MCP tool injection per request
 - feat: add BifrostContextKeyMCPAddedTools to context to track MCP tools added to the request
+- refactor: standardize empty array conventions in bifrost. Empty array means deny all, ["*"] means allow all for models/tools/keys.

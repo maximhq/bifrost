@@ -415,14 +415,24 @@ func TestBudgetResolver_IsModelAllowed(t *testing.T) {
 			shouldBeAllowed: false,
 		},
 		{
-			name: "Empty allowed models (all models allowed)",
+			name: "Wildcard allowed models (all models allowed)",
 			vk: buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test",
 				[]configstoreTables.TableVirtualKeyProviderConfig{
-					buildProviderConfig("openai", []string{}), // Empty = all allowed
+					buildProviderConfig("openai", []string{"*"}), // ["*"] = allow all
 				}),
 			provider:        schemas.OpenAI,
 			model:           "gpt-4",
 			shouldBeAllowed: true,
+		},
+		{
+			name: "Empty allowed models (deny all)",
+			vk: buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test",
+				[]configstoreTables.TableVirtualKeyProviderConfig{
+					buildProviderConfig("openai", []string{}), // [] = deny all
+				}),
+			provider:        schemas.OpenAI,
+			model:           "gpt-4",
+			shouldBeAllowed: false,
 		},
 		{
 			name: "Model in allowlist",

@@ -33,8 +33,9 @@ Virtual Keys can be restricted to use only specific provider/models. When provid
 
 **Model Validation:**
 When you configure provider restrictions on a Virtual Key, Bifrost validates that the requested model is allowed for the selected provider:
-- **Explicit `allowed_models`**: If you specify models in the provider config, only those models are permitted
-- **Empty `allowed_models`**: Bifrost uses the **Model Catalog** (populated from pricing data + list models API) to determine which models the provider supports
+- **`allowed_models: ["*"]`**: Allow all models supported by the provider (uses the Model Catalog for validation).
+- **Empty `allowed_models`**: **Deny all** models (deny-by-default).
+- **Explicit model list**: Only those specific models are permitted.
 - **Model Catalog Sync**: On startup and provider updates, Bifrost calls each provider's list models API. If this fails, you'll see a warning: `{"level":"warn","message":"failed to list models for provider <name>: failed to execute HTTP request to provider API"}`
 
 <Note>
@@ -80,18 +81,18 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 Weights are automatically normalized to a sum 1.0 based on the weights of all providers available on the VK for the given model.
 </Info>
 
-**Example with Empty `allowed_models` (using Model Catalog):**
+**Example with Wildcard `allowed_models` (allow all via Model Catalog):**
 ```json
 {
   "provider_configs": [
     {
       "provider": "openai",
-      "allowed_models": [],  // Uses Model Catalog
+      "allowed_models": ["*"],  // Allow all — uses Model Catalog for validation
       "weight": 0.5
     },
     {
       "provider": "anthropic",
-      "allowed_models": [],  // Uses Model Catalog
+      "allowed_models": ["*"],  // Allow all — uses Model Catalog for validation
       "weight": 0.5
     }
   ]
@@ -149,7 +150,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 3. In **Provider Configurations** section, add the provider you want to restrict the VK to
 4. **Allowed Models**:
    - **Specify models**: Enter specific models (e.g., `["gpt-4o", "gpt-4o-mini"]`) to explicitly whitelist only those models
-   - **Leave blank**: Uses the Model Catalog to determine which models this provider supports (populated from pricing data and the provider's list models API)
+   - **`["*"]`**: Allow all models (uses the Model Catalog for validation).
+   - **Leave blank**: Deny all models (deny-by-default).
 5. Add the weight you want to give to this provider
 6. Click on the **Save** button
 </Tab>
@@ -231,7 +233,7 @@ Virtual Key Restrictions:
 │   └── Restricted Keys: [key-dev-002, key-test-003] ← Dev + test keys
 └── vk-unrestricted
     ├── Allowed Models: [all models]
-    └── Restricted Keys: [] ← Can use ANY available key
+    └── Restricted Keys: ["*"] ← Can use ANY available key
 ```
 
 **Request Behavior:**
@@ -290,7 +292,7 @@ curl -X PUT http://localhost:8080/api/governance/virtual-keys/{vk_id} \
         "provider_configs": [
           {
             "provider": "openai",
-            "allowed_keys": [
+            "key_ids": [
               "key-prod-001"
             ]
           }
@@ -325,10 +327,10 @@ If you see warnings like this in your Bifrost logs during startup or provider up
 **What this means:**
 - Bifrost attempted to call the provider's list models API to populate the Model Catalog
 - The request failed (network issue, provider unavailable, incorrect credentials, etc.)
-- If your Virtual Key has `allowed_models: []` (empty) for this provider, model validation will fall back to the pricing data only
+- If your Virtual Key has `allowed_models: []` (empty) for this provider, **all models will be denied**. Use `["*"]` to allow all models.
 
 **How to fix:**
 1. Check that the provider is correctly configured and accessible
 2. Verify network connectivity to the provider's API
 3. Ensure API credentials are valid
-4. Consider using explicit `allowed_models` instead of relying on the Model Catalog for critical providers
+4. Use `allowed_models: ["*"]` to allow all models, or specify an explicit list for critical providers

@@ -170,53 +170,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
 	}
-	// Extract provider configs from virtual keys.
-	// Keys can be either full definitions (with value) or references (name only).
-	// References are resolved by looking up the key by name from the providers section.
-	// NOTE: Only FULL key definitions (with Value) should be added to the provider.
-	// Reference lookups are for virtual key resolution only - they should NOT be added
-	// back to the provider since they already exist there.
-	if cd.Governance != nil && cd.Governance.VirtualKeys != nil {
-		for _, virtualKey := range cd.Governance.VirtualKeys {
-			if virtualKey.ProviderConfigs != nil {
-				for _, providerConfig := range virtualKey.ProviderConfigs {
-					// Only collect keys with Value (full definitions) to add to provider
-					var keysToAddToProvider []schemas.Key
-					for _, tableKey := range providerConfig.Keys {
-						if tableKey.Value.GetValue() != "" {
-							// Full key definition - add to provider
-							keysToAddToProvider = append(keysToAddToProvider, schemas.Key{
-								ID:               tableKey.KeyID,
-								Name:             tableKey.Name,
-								Value:            tableKey.Value,
-								Models:           tableKey.Models,
-								Weight:           getWeight(tableKey.Weight),
-								Enabled:          tableKey.Enabled,
-								UseForBatchAPI:   tableKey.UseForBatchAPI,
-								AzureKeyConfig:   tableKey.AzureKeyConfig,
-								VertexKeyConfig:  tableKey.VertexKeyConfig,
-								BedrockKeyConfig: tableKey.BedrockKeyConfig,
-								ConfigHash:       tableKey.ConfigHash,
-							})
-						}
-						// Reference lookups (no Value) are NOT added to provider - they already exist there
-					}
 
-					// Merge or create provider entry - only for full key definitions
-					if len(keysToAddToProvider) > 0 {
-						if existing, ok := cd.Providers[providerConfig.Provider]; ok {
-							existing.Keys = append(existing.Keys, keysToAddToProvider...)
-							cd.Providers[providerConfig.Provider] = existing
-						} else {
-							cd.Providers[providerConfig.Provider] = configstore.ProviderConfig{
-								Keys: keysToAddToProvider,
-							}
-						}
-					}
-				}
-			}
-		}
-	}
 	// Parse VectorStoreConfig using its internal unmarshaler
 	if len(temp.VectorStoreConfig) > 0 {
 		var vectorStoreConfig vectorstore.Config

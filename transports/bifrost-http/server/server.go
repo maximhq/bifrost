@@ -533,6 +533,10 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 	modelsInKeys := make([]schemas.Model, 0)
 	for _, key := range providerKeys {
 		for _, model := range key.Models {
+			if model == "*" {
+				// Wildcard means "allow all" — skip adding as a literal model name
+				continue
+			}
 			modelsInKeys = append(modelsInKeys, schemas.Model{
 				ID: string(provider) + "/" + model,
 			})
@@ -764,6 +768,9 @@ func (s *BifrostHTTPServer) ForceReloadPricing(ctx context.Context) error {
 			allowedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
 				for _, model := range key.Models {
+					if model == "*" {
+						continue
+					}
 					allowedModels = append(allowedModels, schemas.Model{
 						ID: string(provider) + "/" + model,
 					})
@@ -1253,6 +1260,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			allowedModels := make([]schemas.Model, 0)
 			for _, key := range providerConfig.Keys {
 				for _, model := range key.Models {
+					if model == "*" {
+						continue
+					}
 					allowedModels = append(allowedModels, schemas.Model{
 						ID: string(provider) + "/" + model,
 					})
